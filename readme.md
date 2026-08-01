@@ -1,11 +1,3 @@
-# Weebo base project
+# weebo-notify-v2
 
-This repository is meant to be a template used to bootstrap future projects.
-
-## Eclipse Che
-
-Those future projects are built around my way of viewing Eclipse Che and how i work with it. It's not, at least now, how it's commonly viewed.
-
-My view of Eclipse Che includes the usage of [mise](https://mise.jdx.dev/) to describe the packages needed in pair with [Weebo DotFile Che](https://github.com/batleforc/weebo-dotfiles-che) which is the base of all my workspaces.
-
-My custom image can be found [here](https://github.com/batleforc/WeeboDevImage)
+Project bootstrapped from the [weebo-base](https://github.com/batleforc/weebo-base) template.
