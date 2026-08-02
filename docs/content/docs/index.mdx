@@ -1,0 +1,74 @@
+---
+title: weebo-notify
+description: A self-hosted notification platform that treats a notification as a lifecycle object, not a message.
+---
+
+weebo-notify replaces Gotify and ntfy in the `weebo-si` stack. The difference is not
+a longer feature list — it is the core object.
+
+## A notification is a lifecycle, not a message
+
+Most notification servers accept a string and forget it. Here a notification is
+**addressable and mutable**: it has an identity, a state, and a history of revisions.
+
+```bash
+# Start of a CI pipeline
+curl -X PUT "$NOTIFY_URL/api/v1/channels/ci-infra/notifications/run-4521" \
+  -H "Authorization: Bearer $WNK_CHANNEL_KEY" \
+  -d '{ "title": "Pipeline infra #4521", "state": "open", "status": "info" }'
+
+# The end of it — same id, a new revision, not a second notification
+curl -X PUT "$NOTIFY_URL/api/v1/channels/ci-infra/notifications/run-4521" \
+  -H "Authorization: Bearer $WNK_CHANNEL_KEY" \
+  -d '{ "state": "closed", "status": "success" }'
+```
+
+One entry in the inbox, which went from running to succeeded — not two lines of noise.
+
+<Cards>
+  <Card
+    title="Development environment"
+    href="/docs/dev/environment"
+    description="One command to a full stack, identical under Docker Compose and Eclipse Che."
+  />
+  <Card
+    title="Configuration"
+    href="/docs/ops/configuration"
+    description="Layered defaults, TOML and WNK_ environment variables. Every key is overridable."
+  />
+  <Card
+    title="API"
+    href="/docs/api"
+    description="The OpenAPI document, generated from the handlers and committed."
+  />
+  <Card
+    title="Decisions"
+    href="/docs/adr"
+    description="Why the architecture is the way it is, including the debts taken on knowingly."
+  />
+</Cards>
+
+## What it is built for
+
+| Who | What they get |
+| --- | --- |
+| Sysadmin | One channel per cluster, incident open → resolved on a single entry, a status image, and buttons that do something (runbook, silence, ack) |
+| Solo developer | A long-running script's notification moving started → running → finished(status), with interactions the script can wait on |
+| Development team | CI/CD events published by jobs using short-lived federated tokens — no long-lived secret in the pipeline |
+
+## Design principles
+
+- **The server is trusted, and says so.** It reads content because compaction,
+  search and policy need it. Encryption is applied where a third party genuinely
+  carries the payload — mobile push relays — and nowhere it would only be theatre.
+  See [ADR-0003](/docs/adr/0003-sealed-box-per-device-rather-than-mls) and
+  [ADR-0007](/docs/adr/0007-no-application-level-encryption-at-rest).
+- **One resume mechanism.** The offline backlog, the live stream and reconnect all
+  use the same opaque cursor, backed by one append-only table
+  ([ADR-0012](/docs/adr/0012-single-events-table-as-the-cursor)).
+- **Content hygiene is a first-class concern.** A notification server renders text
+  from publishers less trusted than its readers: markdown only, ANSI and control
+  characters stripped, `http(s)` action URLs only.
+- **The recipient decides what may interrupt them.** `urgent` never bypasses
+  do-not-disturb unless the *recipient* opted in. A publisher cannot escalate its
+  way past someone's night.

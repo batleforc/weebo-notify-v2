@@ -1,0 +1,63 @@
+---
+title: Hardening
+description: What the deployment must provide, because the application deliberately does not.
+---
+
+Some guarantees are not the application's to make. They are listed here so nobody
+discovers the gap during an incident.
+
+## Encryption at rest is your job
+
+The application performs **no encryption at rest**
+([ADR-0007](/docs/adr/0007-no-application-level-encryption-at-rest)). Confidentiality
+of a disk, a snapshot or a dump rests **entirely** on:
+
+- **encrypted disks** for Postgres and the object store, and
+- **encrypted backups** — including logical ones such as `pg_dump`, which leave the
+  encrypted disk the moment they are written.
+
+<Callout type="warn">
+  A `pg_dump` of a weebo-notify database is plaintext notification content. If your
+  backup tooling does not encrypt, you do not have encryption at rest, regardless of
+  how the disks are configured.
+</Callout>
+
+## The cluster is the trust boundary
+
+TLS may terminate at the ingress. Inside the boundary — ingress to pod, pod to
+Postgres, pod to bucket — traffic is application-plaintext by design. Protecting it
+is network policy and, if you want it, a service mesh. It is not solved by adding
+another layer of application cryptography.
+
+## The bucket must be private
+
+Attachments are not encrypted at the application layer. The bucket must be **strictly
+private**, with a presigned URL as the only path to an object: short TTL, enforced
+content type and `content-length-range`. Any anonymous read access defeats the whole
+arrangement.
+
+## Release signing keys
+
+The minisign private key for the desktop updater is equivalent to **remote code
+execution across every installed desktop client** if it leaks. Strict custody: CI
+secrets scoped to the release workflow alone, never in the repository, with a
+documented rotation. The same applies to cosign, the Android signing keystore and the
+APNs `.p8` key.
+
+## Web Push means trusting the browser
+
+On the PWA path, protection from the push service comes from RFC 8291, with keys
+managed internally by the browser. In practice that is equivalent to the mobile path
+— but the guarantee is the browser's implementation, not ours. Worth stating to
+anyone running a sensitive channel.
+
+## Avatars are the only media the server decodes
+
+Avatar upload is the sole place where the server parses user-supplied image data.
+It is handled with a memory-safe decoder, a dimension ceiling checked **before** full
+decoding (a decompression bomb is cheap to build), animated formats refused, and all
+metadata stripped on resize — a photo taken on a phone carries GPS coordinates in
+EXIF.
+
+Any future feature that makes the server decode media has to come back through this
+same analysis.

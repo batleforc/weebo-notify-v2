@@ -1,0 +1,58 @@
+# cargo-deny policy, run by `task audit`.
+#
+# Two things it answers that `cargo audit` does not: which licences we are willing
+# to ship, and whether a dependency has quietly arrived from somewhere other than
+# crates.io.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisories. Yanked crates are an error too: a yank usually means the
+# author found something, and pinning to one is a decision, not an accident.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# weebo-notify ships under MPL-2.0. The list below is the permissive set that is
+# compatible with distributing a binary — anything copyleft-at-the-binary-level
+# (GPL, AGPL) is deliberately absent and must be an explicit, reviewed exception.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "OpenSSL",
+]
+# A crate whose licence cannot be determined is a decision to make, not a default
+# to accept: it lands here one line at a time, with a reason.
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
+
+# Per-crate exceptions go here, one at a time and each with its reason. There are
+# none today: rustls pulls aws-lc-rs rather than ring, so the usual suspect for a
+# non-SPDX licence is not in the tree.
+# [[licenses.exceptions]]
+# name = "..."
+# allow = ["..."]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Duplicate versions are noise in a young dependency tree; they become an error
+# once the tree settles, rather than training everyone to ignore warnings now.
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

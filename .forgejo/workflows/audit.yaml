@@ -1,0 +1,56 @@
+name: audit
+
+# Dependency and image vulnerability scanning.
+#
+# Scheduled rather than only on push, because this is the one check whose result
+# changes without the code changing: an advisory published tonight makes a
+# dependency vulnerable that was clean at merge time. A job that only ran on pull
+# requests would report the state of the world on the day of the merge and never
+# again.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "deny.toml"
+      - "**/pnpm-lock.yaml"
+      - "Containerfile*"
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "deny.toml"
+      - "**/pnpm-lock.yaml"
+      - "Containerfile*"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Rust dependencies
+        # RustSec advisories, plus the licence and source policy in deny.toml.
+        run: mise exec -- task audit:cargo
+
+      - name: JavaScript dependencies
+        run: mise exec -- task audit:web
+
+      - name: Repository and image scan
+        run: mise exec -- task audit:container

@@ -1,0 +1,46 @@
+---
+title: ADR-0003 — Sealed box per device rather than MLS
+description: Re-encrypt per recipient device on the push path only; no group key agreement.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+Mobile push traffic passes through relays we do not control (APNs, UnifiedPush
+distributors). Those relays must not be able to read "the cluster is down". A group
+messaging protocol such as MLS would give end-to-end confidentiality with forward
+secrecy — at the cost of key agreement between clients, epoch management, and a
+recipient having to be reachable to be added to a group.
+
+## Decision
+
+**The server is trusted** (it must read content to compact, search and apply
+policy). Where a third party carries the payload, the server **re-encrypts it into
+a sealed box (X25519 + XChaCha20-Poly1305) per recipient device** immediately
+before handing it to the transport. No MLS, no group state, no key agreement
+between clients.
+
+Only mobile devices hold an application key pair. Web Push is already end-to-end
+encrypted by RFC 8291 with browser-managed keys, and SSE/WS is TLS straight to us —
+so neither needs one.
+
+## Consequences
+
+**Positive**
+
+- Joining a channel is a server-side membership decision: no key exchange, no
+  requirement that an existing member be online.
+- Revoking a device is deleting its subscriptions, cursor and public key. Immediate,
+  with no group rekeying.
+- A throwaway `notify watch` in a debug pod needs no enrolment at all.
+
+**Negative**
+
+- No forward secrecy on the push path, and no protection against the server itself.
+  That is explicit in the threat model, not an oversight.
+
+**Accepted debt**
+
+- If the threat model ever has to exclude the server, this is a rewrite, not an
+  adjustment. Recorded so that decision is made deliberately.

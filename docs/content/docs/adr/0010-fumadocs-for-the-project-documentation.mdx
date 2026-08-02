@@ -1,0 +1,39 @@
+---
+title: ADR-0010 — Fumadocs for the project documentation
+description: A static documentation site in docs/, exported as plain files with local search.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+The project needs published documentation: architecture, operations, the API
+reference and the ADRs. Plain markdown in the repository costs nothing but offers
+no navigation, no search and no rendering of the OpenAPI document.
+
+## Decision
+
+**Fumadocs**, in `docs/`, as a **static export** with **Orama local search**.
+
+Content is MDX under `docs/content/docs/`. The design document stays in
+`docs/.prompt/` — deliberately outside the content tree: it is the source
+specification, not published documentation.
+
+## Consequences
+
+**Positive**
+
+- Navigation, search and MDX components, with output that is just static files —
+  no runtime, no third-party service, consistent with self-hosting everything else.
+- The generated OpenAPI document lands in the content tree and is rendered in place.
+
+**Negative**
+
+- A Node toolchain and a second `pnpm` project to keep patched.
+- MDX is not plain markdown: a file can break the build in a way a `.md` never could.
+
+**Accepted debt**
+
+- The build is part of CI, so a broken page is caught. If the toolchain ever becomes
+  more maintenance than the navigation is worth, the content is ordinary MDX and
+  moves elsewhere cheaply.

@@ -1,0 +1,136 @@
+version: 1
+metadata:
+  name: weebo-notify
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+# Authentik blueprint (design §12.5) — the fidelity reference.
+#
+# It must describe the SAME identities as dev/oidc-mock/*.yaml: alice in
+# infra-admins, bob in dev-team, carol in no group at all. That is what lets the
+# `oidc-compat` matrix replay one auth suite against mock, Dex and Authentik (T29),
+# and what lets a developer switch IdP with a single WNK_OIDC__ISSUER override
+# instead of a second config file.
+#
+# Applied by `task dev:seed` through the API using AUTHENTIK_BOOTSTRAP_TOKEN; the
+# /blueprints mount in compose is only a convenience.
+
+entries:
+  # --- Groups, mirroring the channel access rules in config/dev.toml (§11) ---
+  - model: authentik_core.group
+    id: group-infra-admins
+    identifiers:
+      name: infra-admins
+    attrs:
+      name: infra-admins
+
+  - model: authentik_core.group
+    id: group-dev-team
+    identifiers:
+      name: dev-team
+    attrs:
+      name: dev-team
+
+  # Platform role (§5.4). Declared here so the GitOps-only rule can be exercised
+  # locally: membership grants /admin/*, and no API path can grant it.
+  - model: authentik_core.group
+    id: group-platform-admins
+    identifiers:
+      name: platform-admins
+    attrs:
+      name: platform-admins
+
+  # --- Test users. Fixed password, no IdP privileges, disposable (§12.5) ---
+  - model: authentik_core.user
+    identifiers:
+      username: alice
+    attrs:
+      username: alice
+      name: Alice Martin
+      email: alice@weebo.local
+      password: weebo-dev
+      is_active: true
+      groups:
+        - !KeyOf group-infra-admins
+        - !KeyOf group-platform-admins
+
+  - model: authentik_core.user
+    identifiers:
+      username: bob
+    attrs:
+      username: bob
+      name: Bob Dupont
+      email: bob@weebo.local
+      password: weebo-dev
+      is_active: true
+      groups:
+        - !KeyOf group-dev-team
+
+  # No group: the "IdP without a groups claim" degradation path (T29).
+  - model: authentik_core.user
+    identifiers:
+      username: carol
+    attrs:
+      username: carol
+      name: Carol Nguyen
+      email: carol@weebo.local
+      password: weebo-dev
+      is_active: true
+
+  # --- Scope mapping so `groups` reaches the ACCESS token, not just the id token.
+  # The API authorises on the access token alone (§5.1), so this mapping is what
+  # makes group-based channel access work at all.
+  - model: authentik_providers_oauth2.scopemapping
+    id: scope-groups
+    identifiers:
+      scope_name: groups
+      name: "weebo-notify: groups"
+    attrs:
+      scope_name: groups
+      name: "weebo-notify: groups"
+      description: Group membership, mapped to channel access
+      expression: |
+        return [group.name for group in request.user.ak_groups.all()]
+
+  # --- OAuth2/OIDC provider: public client, Authorization Code + PKCE ---
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider-weebo-notify
+    identifiers:
+      name: weebo-notify
+    attrs:
+      name: weebo-notify
+      client_type: public
+      client_id: weebo-notify
+      sub_mode: hashed_user_id
+      include_claims_in_id_token: true
+      access_code_validity: minutes=1
+      access_token_validity: minutes=15
+      refresh_token_validity: days=30
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !KeyOf scope-groups
+      redirect_uris:
+        - matching_mode: strict
+          url: http://localhost:5173/auth/callback
+        - matching_mode: strict
+          url: http://localhost:8080/auth/callback
+        # Tauri desktop from M5 (§10bis.2): loopback on an ephemeral port, hence
+        # the regex; the custom scheme is the fallback path.
+        - matching_mode: regex
+          url: "http://127.0.0.1:[0-9]+/auth/callback"
+        - matching_mode: strict
+          url: weebo-notify://oauth/callback
+
+  - model: authentik_core.application
+    identifiers:
+      slug: weebo-notify
+    attrs:
+      name: weebo-notify
+      slug: weebo-notify
+      provider: !KeyOf provider-weebo-notify
+      meta_description: Rich, multi-channel, multi-device notifications

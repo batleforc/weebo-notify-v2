@@ -1,0 +1,47 @@
+---
+title: Configuration
+description: Layered defaults, TOML and WNK_ environment variables — with every key overridable, provably.
+---
+
+Configuration is layered, lowest priority first:
+
+1. Built-in defaults
+2. The TOML file (`--config`, default `config/dev.toml`)
+3. `WNK_`-prefixed environment variables
+
+## Every key is overridable, and that is tested
+
+The mapping is mechanical: a path becomes `WNK_` plus the path joined by `__`.
+
+```toml
+[oidc]
+issuer = "https://auth.weebo.poc"    # WNK_OIDC__ISSUER
+```
+
+This is not a convention we hope holds. **A generated test walks the entire
+configuration schema and asserts that every key, without exception, is overridable
+this way.** Adding a key that is not reachable from the environment fails CI.
+
+That property is what makes a single `config/dev.toml` work under Docker Compose and
+inside an Eclipse Che workspace, where browser-facing endpoints must be public routes
+rather than `localhost`. No second file, no `if env == che`.
+
+## GitOps: managed versus dynamic
+
+Channels and service accounts can be **declared in the configuration**, and then the
+file is their source of truth. At boot and on `SIGHUP` the server reconciles: it
+creates what is missing, corrects drift in access, TTL and receipts, and archives or
+deletes what has disappeared from the configuration according to `on_removed`.
+
+Anything created through the API or the UI is marked **dynamic** and is never touched
+by reconciliation. The UI shows a `managed` badge and makes GitOps-driven fields
+read-only — so it is always obvious which of the two you are looking at.
+
+A channel's `publishers` block is a trust policy **scoped to that channel**, and it
+takes priority over the global `[[trust_policy]]` entries.
+
+<Callout type="warn">
+  The platform-admin role is declared **only** in configuration, under `[admin]
+  oidc_groups`. No API path grants it. That is deliberate: a role that administers
+  the instance should not be reachable by a request to the instance.
+</Callout>

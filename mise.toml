@@ -1,4 +1,5 @@
 [tools]
+# --- Inherited from weebo-base ---
 cocogitto = "latest"
 node = "24"
 rust = "latest"
@@ -6,3 +7,21 @@ task = "latest"
 gitleaks = "latest"
 claude = "latest"
 rtk = "latest"
+herdr = "latest"
+
+# --- weebo-notify additions (design §3.1) ---
+pnpm = "latest"                  # web/ and docs/ package manager (ADR-0011)
+cargo-binstall = "latest"        # lets the cargo: backend below fetch prebuilt binaries
+"aqua:nextest-rs/nextest/cargo-nextest" = "latest"  # test runner (task test)
+"aqua:taiki-e/cargo-llvm-cov" = "latest"            # source-based coverage (task cover, CI check)
+"aqua:EmbarkStudios/cargo-deny" = "latest"          # dependency CVE/licence audit (task audit)
+"aqua:rustsec/rustsec/cargo-audit" = "latest"       # RustSec advisories (task audit)
+trivy = "latest"                 # Containerfile/image + filesystem CVE scan (task audit)
+awscli = "latest"                # seeds the RustFS bucket in dev/seed/seed.sh
+yq = "latest"                    # regenerates the devfile's inline OIDC config (task gen:devfile)
+"cargo:sqlx-cli" = "latest"      # migrations + `cargo sqlx prepare` (not in the mise registry)
+
+[settings]
+# `cargo:` tools are fetched as prebuilt binaries via cargo-binstall instead of
+# being compiled from source — keeps `mise install` in the seconds, not minutes.
+cargo.binstall = true

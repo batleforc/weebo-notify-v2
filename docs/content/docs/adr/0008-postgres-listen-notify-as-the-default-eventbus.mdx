@@ -1,0 +1,42 @@
+---
+title: ADR-0008 — Postgres LISTEN/NOTIFY as the default event bus
+description: Fan-out across replicas rides on Postgres by default; Redis is an opt-in for scale.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+With several replicas, each holds its own SSE connections, so every replica must
+learn about every publication. That needs a bus. Requiring Redis from the start
+would add infrastructure to every deployment, including the single-replica
+self-hosted case that is the common one.
+
+## Decision
+
+**`postgres` is the default backend**, using `LISTEN/NOTIFY` and carrying **pokes
+only** — identifiers and a cursor, never payloads, which the 8 KB `NOTIFY` limit
+would not allow anyway. **`redis`** (Valkey-compatible) is available through
+`[eventbus] backend` for deployments where per-transaction `NOTIFY` starts to weigh
+on Postgres.
+
+Best-effort delivery is sufficient precisely because the bus is not the source of
+truth: the database is, and the cursor recovers anything a poke misses.
+
+## Consequences
+
+**Positive**
+
+- Zero extra infrastructure in the default deployment.
+- A dropped poke costs latency, never correctness — the client's cursor catches up.
+- The domain sees one `EventBus` port; swapping backends is configuration.
+
+**Negative**
+
+- `LISTEN/NOTIFY` adds load to the database exactly when publication rates are high,
+  which is when the database is already busiest.
+
+**Accepted debt**
+
+- Two bus implementations to keep behaviourally identical. The shared poke contract
+  and a common test suite are what keep that honest.

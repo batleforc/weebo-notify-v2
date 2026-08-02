@@ -1,0 +1,60 @@
+version: "3"
+
+# Two flavours of every target:
+#   * the plain one APPLIES fixes — that is what the pre-commit hook wants, so a
+#     formatting slip never costs a round trip;
+#   * `:check` only REPORTS — that is what CI wants, so a pull request cannot be
+#     green on code nobody formatted.
+
+tasks:
+  default:
+    desc: "Lint and format everything (Rust + web + docs) — run by the cocogitto pre-commit hook"
+    cmds:
+      - task: rust
+      - task: web
+      - task: docs
+
+  check:
+    desc: "Read-only lint of everything — fails instead of fixing (used by the CI check job)"
+    cmds:
+      - task: rust:check
+      - task: web:check
+      - task: docs:check
+
+  rust:
+    desc: "Format and lint the cargo workspace (fmt applies, clippy denies warnings)"
+    cmds:
+      - cargo fmt --all
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  rust:check:
+    desc: "Read-only Rust lint: fails on unformatted code or any clippy warning"
+    cmds:
+      - cargo fmt --all --check
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  web:
+    desc: "Lint and format the web frontend, applying fixes"
+    cmds:
+      - cmd: |
+          if [ ! -f web/package.json ]; then echo "web/ not bootstrapped yet — skipping"; exit 0; fi
+          pnpm -C web format
+
+  web:check:
+    desc: "Read-only lint of the web frontend"
+    cmds:
+      - cmd: |
+          if [ ! -f web/package.json ]; then echo "web/ not bootstrapped yet — skipping"; exit 0; fi
+          pnpm -C web lint
+          pnpm -C web types:check
+
+  docs:
+    desc: "Lint and format the Fumadocs site, applying fixes"
+    cmds:
+      - pnpm -C docs format
+
+  docs:check:
+    desc: "Read-only lint and type-check of the Fumadocs site"
+    cmds:
+      - pnpm -C docs lint
+      - pnpm -C docs types:check

@@ -1,0 +1,76 @@
+---
+title: Daily workflow
+description: Every command goes through Task; what each one does and which of them CI replays.
+---
+
+Every command lives in the `Taskfile`. `task --list` is the complete inventory —
+nothing important is hidden in a shell history.
+
+## The commands you will actually type
+
+```bash
+task dev:up      # start the stack
+task dev:run     # run the server
+task test        # fast tests: pure domain and use cases, no containers
+task lint        # fmt + clippy + web/docs formatting
+task recu        # regenerate everything derived from the code
+```
+
+## What `task recu` regenerates
+
+`recu` is the contract-keeping command. It regenerates, in order:
+
+1. **The OpenAPI document** from the utoipa annotations, without booting a server.
+2. **The Rust client** (`notify-client-api`) with progenitor.
+3. **The TypeScript client** (`web/src/lib/api/`) with HeyApi.
+4. **The sqlx offline data**, so the workspace builds without a live database.
+5. **The devfile's inlined OIDC configuration**, from `dev/oidc-mock/`.
+
+All of it is **committed**. The CI `contract` job runs `task recu` and then
+`git diff --exit-code`: forgetting to regenerate breaks the pull request instead of
+shipping a client that disagrees with the server. Every step is deterministic —
+running it twice produces identical bytes.
+
+The cocogitto **pre-commit hook** runs `task recu` and `task lint` for you, so drift
+is usually caught before it reaches CI at all.
+
+## Tests
+
+| Command | Scope | Speed |
+| --- | --- | --- |
+| `task test` | Domain and use cases, in-memory | Sub-second |
+| `task test:critical` | The `critical` suite — blocking on every PR | Seconds to minutes |
+| `task test:e2e` | Against the real binary, via testcontainers | Minutes |
+| `task cover` | Everything, with merged Rust + web coverage | Minutes |
+
+The **`critical` suite** is never skipped and only grows: every bug fix adds its
+regression scenario. It gates pull requests and is replayed by the release pipeline —
+a tag never exempts anything from the gates a pull request had to pass.
+
+Coverage is measured honestly. Generated code is excluded, and the gate applies to
+`notify-domain` and `notify-app` — the pure, in-memory-testable logic, held to ≥ 90 %.
+There is no global percentage target: a single number is easy to game with
+assertion-free tests and unfairly punishes adapter code. Instead, a pull request
+fails if the lines it touched fall below 80 % or if domain coverage *drops*.
+
+## Commits and releases
+
+Commits follow Conventional Commits, verified by cocogitto's `commit-msg` hook. That
+is not ceremony — it is what lets `cog bump --auto` compute the next version and
+write the changelog.
+
+**Pushing the tag is the only human action in a release.** `task release` computes
+the version, generates the changelog, synchronises every version in the product, and
+creates the tag. Pushing it triggers the gates, the artefact builds, the signatures
+and an atomic publication.
+
+A tag never moves. A failed release means a fix and a *new* tag.
+
+## Adding a decision
+
+```bash
+task adr -- "sealed box per device"
+```
+
+Write one when the decision is expensive to reverse or was actually debated. See
+[the records](/docs/adr).

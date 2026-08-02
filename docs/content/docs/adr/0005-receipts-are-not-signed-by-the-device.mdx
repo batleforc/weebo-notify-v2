@@ -1,0 +1,39 @@
+---
+title: ADR-0005 — Receipts are not signed by the device
+description: Receipt authenticity rests on device authentication, not on a per-receipt signature.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+"Seen by 3/5" is only worth showing if it is true. An early design had each device
+sign its own receipts so the record would be verifiable independently of the server.
+Implementation trials showed that was not viable: it requires a signing key on every
+client — including the ones [ADR-0003](/docs/adr/0003-sealed-box-per-device-rather-than-mls)
+deliberately keeps key-free — and it moves key rotation into a path that must never
+fail.
+
+## Decision
+
+**Devices do not sign receipts.** Authenticity comes from device authentication: a
+principal can only post a receipt for its own devices, and the trusted server
+timestamps it.
+
+## Consequences
+
+**Positive**
+
+- Web, desktop and CLI clients stay entirely free of application cryptography.
+- Receipts work identically on every client instead of only on those holding a key.
+
+**Negative**
+
+- Forging a receipt is possible for whoever compromises a device session. That is
+  outside the threat model, and worth stating plainly rather than implying a
+  guarantee we do not provide.
+
+**Accepted debt**
+
+- If receipts ever need to be evidence rather than a convenience, this has to be
+  revisited together with the trust model, not on its own.

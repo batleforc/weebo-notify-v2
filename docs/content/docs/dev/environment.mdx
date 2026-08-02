@@ -1,0 +1,93 @@
+---
+title: Development environment
+description: One command to a full stack, identical under Docker Compose and Eclipse Che.
+---
+
+The goal is a complete environment in **one command**, behaving the same whether you
+work locally with a container engine or in an Eclipse Che workspace. Both worlds
+expose **the same services, on the same ports, with the same credentials** — which is
+why a single `config/dev.toml` serves both and no `if env == che` ever reaches the
+code.
+
+## Getting started
+
+```bash
+task init                     # toolchain (mise) + git hooks (cocogitto)
+task dev:up                   # Postgres + RustFS + oidc-server-mock, ~20 s
+task dev:seed                 # migrations, attachment bucket, IdP identities
+task dev:run                  # the server, on :8080
+task dev:web                  # the frontend, on :5173
+```
+
+Log in as `alice`, `bob` or `carol`, password `weebo-dev`.
+
+## Three tiers of authentication
+
+Running a full identity provider all day to write domain logic is a poor trade. There
+are three tiers, and you pick the cheapest one that still tests what you are changing.
+
+| Tier | Command | Cost | Use it when |
+| --- | --- | --- | --- |
+| In-memory `TokenVerifier` | `task dev:core` | no IdP container | Working on the domain or use cases |
+| oidc-server-mock | `task dev:up` | ~256 MiB, seconds to boot | Everyday work — the default |
+| Authentik | `task dev:auth` | ~1.5 GiB with worker and Redis | Touching the OIDC flow itself |
+
+The mock and Authentik describe the **same identities** — `alice` in `infra-admins`,
+`bob` in `dev-team`, `carol` in no group at all. That is what lets the `oidc-compat`
+CI matrix replay one auth suite against mock, Dex and Authentik, and what lets you
+switch provider with a single environment override:
+
+```bash
+task dev:auth
+WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/ task dev:run
+```
+
+Never a second configuration file. Every configuration key is overridable through a
+`WNK_` variable, and [a CI test walks the whole schema to prove it](/docs/ops/configuration).
+
+<Callout type="info">
+  `carol` has no `groups` claim on purpose. She exercises the degradation path for an
+  identity provider that does not emit groups — she must reach her individual
+  bindings and nothing else, never a default grant.
+</Callout>
+
+## Services
+
+| Service | Role | Endpoint |
+| --- | --- | --- |
+| PostgreSQL 17 | Server database, plus Authentik's | `localhost:5432` |
+| RustFS | S3-compatible attachment store | S3 `:9000`, console `:9001` |
+| oidc-server-mock | Everyday identity provider | `http://localhost:9110` |
+| Authentik | Fidelity identity provider (profile `authentik`) | `http://localhost:9100` |
+| Valkey | Authentik's broker; also exercises `eventbus-redis` | `localhost:6379` |
+| Mailpit | SMTP sink for the email channel sink (profile `sinks`) | UI `:8025`, SMTP `:1025` |
+
+## Eclipse Che
+
+The workspace starts the same services as pod sidecars, so everything is reachable on
+`localhost` exactly as under Compose. `task dev:up` and `task dev:down` detect
+`$DEVWORKSPACE_ID` and no-op cleanly — there is no container engine inside the
+workspace, and none is needed.
+
+Two deliberate differences:
+
+- **Authentik is not in the devfile.** The workspace runs on the mock; fidelity is
+  covered by local Compose and by CI. That trade is the point of the three tiers.
+- **Anything the browser touches gets a public route.** OIDC redirects travel through
+  *your* browser, which cannot reach the pod's `localhost`. The devfile exposes
+  `oidc-mock` publicly and exports `WNK_OIDC__ISSUER` accordingly.
+
+Che cannot mount host files, so the mock's configuration travels as an environment
+variable instead of a volume. That copy is **generated** by `task gen:devfile` from
+`dev/oidc-mock/*.yaml`, and the `contract` CI job regenerates and diffs it — a
+hand-edited copy fails the build rather than silently drifting from Compose.
+
+## Credentials
+
+Everything under `dev/` is committed on purpose: the stack is disposable, holds no
+production value, and `dev/` is allowlisted in the gitleaks configuration. That is
+what makes "clone and log in" work with no setup step.
+
+The one exception is `dev/.env.local`, where `task dev:env` generates the Authentik
+admin bootstrap credentials. It is gitignored, printed exactly once, and never
+committed.

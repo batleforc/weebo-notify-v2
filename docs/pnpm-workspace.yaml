@@ -1,0 +1,26 @@
+# pnpm blocks dependency build scripts unless they are explicitly approved — a
+# supply-chain guard, since a postinstall script runs arbitrary code from a
+# transitive dependency. Both entries below are needed by the Fumadocs toolchain
+# and are approved deliberately:
+#
+#   esbuild — downloads and links its platform binary; the MDX pipeline needs it.
+#   sharp   — native image codecs, used by Next.js for the OG image route.
+#
+# Anything new appearing here should be a conscious decision, not a reflex.
+allowBuilds:
+  esbuild: true
+  sharp: true
+
+# Transitive versions forced up because `task audit` flagged them. Both are pinned
+# by Next.js rather than by us, so an override is the only way to reach the fix
+# without waiting for an upstream release.
+#
+# Each entry is a liability: it makes us responsible for a compatibility we did not
+# test upstream. Re-run `task audit` after removing one to check whether it is still
+# needed — they should not outlive the advisory.
+overrides:
+  # GHSA-r28c-9q8g-f849 — path traversal via sourceMappingURL auto-loading;
+  # CVE-2026-45623 — information disclosure and denial of service on crafted CSS.
+  postcss: ^8.5.18
+  # GHSA-f88m-g3jw-g9cj — inherited libvips vulnerabilities.
+  sharp: ^0.35.0

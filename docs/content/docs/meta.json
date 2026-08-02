@@ -1,0 +1,12 @@
+{
+  "title": "weebo-notify",
+  "pages": [
+    "index",
+    "---Reference---",
+    "architecture",
+    "dev",
+    "ops",
+    "api",
+    "adr"
+  ]
+}

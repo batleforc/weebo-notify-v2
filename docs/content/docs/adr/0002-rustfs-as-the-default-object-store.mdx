@@ -1,0 +1,36 @@
+---
+title: ADR-0002 — RustFS as the default object store
+description: RustFS ships in dev and self-hosted defaults, but the adapter targets the S3 contract, not RustFS.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+Attachments need an object store. Self-hosters should get something that works out
+of the box without an AWS account, and the development environment should start in
+seconds without a heavyweight service.
+
+## Decision
+
+**RustFS is the default in development and in the self-hosted stack**, and the
+`attachments-s3` adapter is written against **standard S3 operations only** —
+presign, put, get, head, delete. The contract we depend on is "S3-compatible", not
+"RustFS".
+
+## Consequences
+
+**Positive**
+
+- One small container in dev; no cloud account needed to run the whole product.
+- MinIO, Garage, Ceph RGW or real S3 drop in by changing configuration alone.
+
+**Negative**
+
+- RustFS is young. A gap in its S3 surface is discovered by us, not by a large
+  ecosystem ahead of us.
+
+**Accepted debt**
+
+- Any non-standard S3 extension is off-limits, even when it would be convenient —
+  that restraint is the whole point, and it needs enforcing in review.

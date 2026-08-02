@@ -1,0 +1,72 @@
+version: "3"
+
+# Everything here is deterministic and its output is COMMITTED (design §3.2).
+# The CI `contract` job runs `task recu` then `git diff --exit-code`: the OpenAPI
+# spec and the clients derived from it can therefore never drift from the server.
+
+vars:
+  OPENAPI: docs/content/docs/api/openapi.json
+
+tasks:
+  default:
+    desc: "Regenerate everything derived from the code: OpenAPI spec, Rust + TS clients, sqlx offline data"
+    cmds:
+      - task: openapi
+      - task: client:rust
+      - task: client:ts
+      - task: sqlx
+      - task: devfile
+
+  openapi:
+    desc: "Export the OpenAPI spec from the utoipa annotations (no server boot required)"
+    cmds:
+      - mkdir -p $(dirname {{.OPENAPI}})
+      - cargo run --quiet -p notify-server -- dump-openapi --output {{.OPENAPI}}
+
+  client:rust:
+    desc: "Regenerate the Rust client crate notify-client-api from the OpenAPI spec (progenitor, ADR-0009)"
+    cmds:
+      # xtask lowers the 3.1 document utoipa emits to the 3.0 subset progenitor
+      # parses. The committed spec itself stays 3.1 — only the generator sees 3.0.
+      - cargo run --quiet -p xtask -- client-rust --spec {{.OPENAPI}}
+
+  client:ts:
+    desc: "Regenerate the TypeScript client consumed by the web frontend (HeyApi + axios, ADR-0009)"
+    cmds:
+      - cmd: |
+          if [ ! -f web/package.json ]; then
+            echo "web/ not bootstrapped yet — skipping"
+            exit 0
+          fi
+          pnpm -C web run generate:client
+
+  devfile:
+    desc: "Inline dev/oidc-mock/*.yaml into devfile.yaml — Eclipse Che cannot mount host files (§12.4)"
+    cmds:
+      # Compose mounts ./oidc-mock as a volume; in Che every component shares one
+      # pod with no host filesystem, so the same configuration has to travel as an
+      # environment variable. Generating it here (rather than copy-pasting) is what
+      # keeps the two worlds describing the SAME test identities — the parity rule
+      # the whole dev environment rests on.
+      - cmd: |
+          set -eu
+          for pair in "USERS_CONFIGURATION_INLINE:users" "CLIENTS_CONFIGURATION_INLINE:clients"; do
+            var=${pair%%:*}
+            file="dev/oidc-mock/${pair##*:}.yaml"
+            yq -i "
+              (.components[] | select(.name == \"oidc-mock\")
+               | .container.env[] | select(.name == \"$var\") | .value)
+              = load_str(\"$file\")
+            " devfile.yaml
+          done
+          echo "devfile.yaml: inlined dev/oidc-mock/{users,clients}.yaml"
+
+  sqlx:
+    desc: "Refresh the committed sqlx offline data so the workspace builds without a live database"
+    cmds:
+      - cmd: |
+          if [ ! -d crates/notify-adapters/persistence-pg/migrations ]; then
+            echo "persistence-pg not bootstrapped yet — skipping"
+            exit 0
+          fi
+          cargo sqlx prepare --workspace -- --all-targets

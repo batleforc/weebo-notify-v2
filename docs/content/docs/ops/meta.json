@@ -1,0 +1,4 @@
+{
+  "title": "Operations",
+  "pages": ["configuration", "high-availability", "hardening"]
+}

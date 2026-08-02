@@ -1,0 +1,62 @@
+version: "3"
+
+vars:
+  # Honest coverage scope (design §3.2): generated code is excluded from the
+  # measurement — it is not ours to test, and counting it would inflate the number
+  # in exactly the direction that hides gaps in the code we do write.
+  COVERAGE_EXCLUDE: 'crates/notify-client-api/src/generated\.rs'
+
+tasks:
+  default:
+    desc: "Run the fast test suite: domain/app unit tests (no containers) + web unit tests"
+    cmds:
+      - task: unit
+      - task: web
+
+  unit:
+    desc: "Rust unit tests — pure domain and use cases, no I/O, sub-second (scenarios T1-T6)"
+    cmds:
+      - cargo nextest run --workspace -E 'not test(/^e2e::/)'
+
+  critical:
+    desc: "The `critical` suite (design §3.4) — blocking on PR and in the release gate, never skipped"
+    cmds:
+      - cargo nextest run --workspace -P critical
+
+  e2e:
+    desc: "End-to-end tests against the real binary via testcontainers (Postgres + RustFS + oidc-mock)"
+    cmds:
+      - cargo nextest run --workspace -E 'test(/^e2e::/)' --no-fail-fast
+
+  web:
+    desc: "Web unit tests (vitest) — skipped while web/ does not exist yet"
+    cmds:
+      - cmd: |
+          if [ ! -f web/package.json ]; then
+            echo "web/ not bootstrapped yet — skipping"
+            exit 0
+          fi
+          pnpm -C web test:run
+
+  cover:
+    desc: "Full suite with coverage; emits Rust + web LCOV and a merged HTML report in target/coverage"
+    cmds:
+      - mkdir -p target/coverage
+      # One single run of the suite produces both the test results and the coverage (design §3.2).
+      - cargo llvm-cov nextest --workspace --ignore-filename-regex '{{.COVERAGE_EXCLUDE}}' --lcov --output-path target/coverage/rust.lcov
+      - cmd: |
+          if [ -f web/package.json ]; then
+            pnpm -C web test:coverage
+            cp web/coverage/lcov.info target/coverage/web.lcov
+          fi
+      - cargo llvm-cov report --ignore-filename-regex '{{.COVERAGE_EXCLUDE}}' --html --output-dir target/coverage/html
+
+  cover:gate:
+    desc: "Enforce the coverage gates on an existing LCOV report — usage: task test:cover:gate -- origin/main"
+    cmds:
+      - cargo run --quiet -p xtask -- coverage-gate --lcov target/coverage/rust.lcov {{if .CLI_ARGS}}--base {{.CLI_ARGS}}{{end}}
+
+  cover:domain:
+    desc: "Coverage of notify-domain + notify-app only — the scope the CI gate actually enforces (>=90%)"
+    cmds:
+      - cargo llvm-cov nextest -p notify-domain -p notify-app --summary-only

@@ -1,0 +1,42 @@
+# cargo-nextest configuration.
+
+[profile.default]
+# A notification server is I/O-heavy; a slow test is usually a hung one.
+slow-timeout = { period = "30s", terminate-after = 4 }
+failure-output = "immediate-final"
+fail-fast = false
+
+[profile.default.junit]
+path = "junit.xml"
+
+# ---------------------------------------------------------------------------
+# The `critical` suite (design §3.4).
+#
+# Blocking on every PR and replayed by the release gate, never skipped. Each bug
+# fix adds its regression scenario here, so the suite only ever grows.
+#
+# Scenarios are tagged by naming convention: a test that covers T-something lives
+# in a module or has a name containing `critical`. Domain scenarios T1-T6 are pure
+# unit tests; everything else is integration or E2E under `e2e::`.
+# ---------------------------------------------------------------------------
+[profile.critical]
+# E2E scenarios wait on containers: give them room without hiding a real hang.
+slow-timeout = { period = "120s", terminate-after = 3 }
+failure-output = "immediate-final"
+# Never let a flaky-looking critical scenario pass by retrying it. If it is flaky,
+# that is the bug.
+retries = 0
+fail-fast = false
+
+[profile.critical.junit]
+path = "junit-critical.xml"
+
+# CI wants the whole picture in one run, not the first failure.
+[profile.ci]
+retries = 0
+fail-fast = false
+failure-output = "immediate-final"
+status-level = "retry"
+
+[profile.ci.junit]
+path = "junit.xml"

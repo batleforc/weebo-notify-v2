@@ -1,0 +1,116 @@
+# Development configuration (design §12.5).
+#
+# ONE file for both worlds. Configuration is layered defaults < this file <
+# `WNK_*` environment (§11), and every key without exception is env-overridable —
+# `[oidc] issuer` becomes `WNK_OIDC__ISSUER`, a rule a generated CI test enforces
+# across the whole schema (T23).
+#
+# That is why there is no dev.che.toml and no dev.authentik.toml:
+#   * Eclipse Che  -> the devfile exports WNK_OIDC__ISSUER pointing at the
+#                     workspace's public route, because browser redirects cannot
+#                     reach `localhost` from outside the pod (§12.1);
+#   * Authentik    -> `task dev:auth` prints the WNK_OIDC__ISSUER to export.
+# In both cases the file below stays untouched.
+
+[server]
+bind = "0.0.0.0:8080"
+# Closed by default; the dev origins are listed explicitly (§5.1).
+cors_origins = ["http://localhost:5173", "http://localhost:8080"]
+
+[database]
+url = "postgres://weebo:weebo@localhost:5432/weebo_notify"
+
+[oidc]
+# oidc-server-mock, the everyday IdP (§12.1).
+# Authentik: WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/
+issuer = "http://localhost:9110"
+client_id = "weebo-notify"
+
+[admin]
+# Platform role (§5.4) — GitOps only, no API path can grant it.
+oidc_groups = ["platform-admins"]
+
+[attachments]
+endpoint = "http://localhost:9000"
+bucket = "weebo-notify-attachments"
+access_key = "weebo-dev"
+secret_key = "weebo-dev-secret"
+
+[retention]
+default_ttl = "7d"
+max_ttl = "90d"
+
+[ha]
+# Advisory lock in Postgres: zero extra infrastructure, and the dev instance is
+# always its own leader.
+leader_election = "postgres"
+
+[eventbus]
+# LISTEN/NOTIFY. Switch to redis with `task dev:up --profile eventbus` plus
+# WNK_EVENTBUS__BACKEND=redis to exercise the scale-out path (§11).
+backend = "postgres"
+
+# ---------------------------------------------------------------------------
+# Declarative channels (§11). These mirror the design's examples so the dev
+# environment exercises reconciliation, group access and per-channel policy from
+# the first boot.
+# ---------------------------------------------------------------------------
+
+[channels]
+on_removed = "archive"
+reload = "sighup"
+
+[[channels.managed]]
+id = "cluster-ovh-1"
+name = "Cluster OVH 1 — incidents"
+default_ttl = "30d"
+max_ttl = "90d"
+default_priority = "high"
+receipts = true
+limits = { publish_per_min = 120 }
+
+  [[channels.managed.access]]
+  oidc_group = "infra-admins"
+  scopes = ["publish", "subscribe", "manage"]
+
+  [[channels.managed.access]]
+  oidc_group = "dev-team"
+  scopes = ["subscribe"]
+
+  # Individual binding: the only access path an IdP without a `groups` claim can
+  # offer, and the reason carol is group-less in the test identities (T29).
+  [[channels.managed.access]]
+  email = "carol@weebo.local"
+  scopes = ["subscribe"]
+
+[[channels.managed]]
+id = "ci-infra"
+name = "CI infra"
+default_ttl = "48h"
+receipts = false
+
+  [[channels.managed.access]]
+  oidc_group = "dev-team"
+  scopes = ["subscribe"]
+
+  [[channels.managed.access]]
+  oidc_group = "infra-admins"
+  scopes = ["publish", "subscribe", "manage"]
+
+  [[channels.managed.access]]
+  service_account = "bot-argocd"
+  scopes = ["publish", "subscribe"]
+
+# Machine publishers: channel-scoped trust policies, which take priority over the
+# global [[trust_policy]] blocks (§11).
+  [[channels.managed.publishers]]
+  issuer = "https://forgejo.weebo.poc"
+  subject = "repo:weebo/*"
+  scopes = ["publish"]
+
+# Managed service accounts (§5.2bis) — reconciled like channels. Their API keys
+# are created through the API or the UI, where the secret is shown exactly once.
+[[service_accounts]]
+id = "bot-argocd"
+display_name = "ArgoCD"
+description = "Publishes the state of ArgoCD syncs"

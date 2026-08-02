@@ -1,0 +1,37 @@
+---
+title: ADR-0007 — No application-level encryption at rest
+description: Confidentiality at rest is an infrastructure duty — encrypted disks and encrypted backups.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+The server is trusted and must read content to compact, search and apply policy.
+Encrypting rows or objects at the application layer would therefore protect against
+one thing only: someone reading a disk or a dump. It would also cost us key
+management, key rotation, a runbook, and searchable-encryption gymnastics.
+
+## Decision
+
+**No application-level encryption at rest.** Postgres and the bucket sit inside the
+trust boundary. Confidentiality at rest is delivered by **encrypted disks and
+encrypted backups**, which is an operational prerequisite, not an option.
+
+## Consequences
+
+**Positive**
+
+- Queries, compaction, search and purge need no crypto layer.
+- Zero application key management: no KEK/DEK, no rotation, no recovery runbook.
+
+**Negative**
+
+- A leaked `pg_dump` is plaintext. Logical backups leave the encrypted disk, so the
+  backup tooling — not the disk — is what protects them.
+
+**Accepted debt**
+
+- This must be documented in bold for anyone self-hosting; it is a promise we are
+  *not* making. If compliance ever demands otherwise, it returns behind a
+  `KeyProvider` port without touching the domain.

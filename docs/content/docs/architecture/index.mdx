@@ -1,0 +1,54 @@
+---
+title: Architecture
+description: A pure domain, explicit ports, interchangeable adapters, one composition root.
+---
+
+Same philosophy as `weebo-runner`: the domain owes nothing to any framework, every
+outside interaction crosses an explicit port, and a single composition root wires
+the whole thing together.
+
+```
+crates/
+├── notify-domain/       Entities, invariants, the notification state machine. Zero I/O.
+├── notify-ports/        Async traits — plus in-memory doubles for testing.
+├── notify-app/          Use cases: one struct, one execute().
+├── notify-adapters/     http-actix, persistence-pg, eventbus-pg, oidc, attachments-s3,
+│                        push-webpush, push-unifiedpush, push-apns, eventbus-redis
+├── notify-server/       Composition root. One binary.
+├── notify-client-api/   Generated from the OpenAPI document. Committed.
+├── notify-client-core/  Shared client logic: cache, sync, SSE resume.
+└── notify-cli/          The `notify` binary: CLI and, from M2, the TUI.
+```
+
+## The rules that matter
+
+**`notify-domain` has no I/O dependencies.** Not "should not" — its dependency list
+is short and enforced in review: serde, thiserror, time, url, ulid. If a rule needs a
+clock or a database to be tested, it is in the wrong crate.
+
+**`notify-domain` and `notify-app` are testable without any infrastructure.** That is
+why the coverage gate applies to exactly those two, at ≥ 90 %: they are pure, so
+there is no excuse.
+
+**No framework type crosses into the application layer.** An Actix extractor stops at
+the HTTP adapter's edge.
+
+**The server is stateless.** All state lives in Postgres and the object store, so any
+replica can serve any request — including the first one from a client that has never
+spoken to it. Fan-out between replicas goes through the event bus, which carries
+[pokes only, never payloads](/docs/adr/0008-postgres-listen-notify-as-the-default-eventbus).
+
+## Where to look next
+
+<Cards>
+  <Card
+    title="Decisions"
+    href="/docs/adr"
+    description="Why these boundaries are drawn where they are, and what each costs."
+  />
+  <Card
+    title="High availability"
+    href="/docs/ops/high-availability"
+    description="What statelessness buys operationally, and the failure modes that remain."
+  />
+</Cards>

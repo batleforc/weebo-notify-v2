@@ -1,0 +1,73 @@
+name: mirror-check
+
+# GitHub is a MIRROR. Forgejo is the primary forge and runs the full pipeline —
+# check, contract, e2e, oidc-compat, release (see .forgejo/workflows/).
+#
+# This workflow exists so the mirror is not a repository of unknown quality: it
+# replays the two cheap, decisive gates. Anything needing a container engine or a
+# provider matrix stays on Forgejo, where the self-hosted runners live.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Lint
+        run: task lint:check
+
+      - name: Tests and coverage
+        run: task cover
+
+      - name: Coverage gates
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            task test:cover:gate -- "origin/${{ github.base_ref }}" | tee coverage.md
+          else
+            task test:cover:gate | tee coverage.md
+          fi
+
+      - name: Publish the coverage summary
+        if: always()
+        run: cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Regenerate everything derived from the code
+        run: task recu
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated artefacts are out of date. Run \`task recu\` and commit the result."
+            exit 1
+          fi

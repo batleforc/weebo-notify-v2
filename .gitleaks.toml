@@ -1,0 +1,38 @@
+# gitleaks configuration — runs in the cocogitto pre-commit hook.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+Development environment credentials are deliberately committed (design §12.1).
+
+`dev/` describes a disposable local stack: throwaway Postgres and RustFS keys, and
+test users alice/bob/carol with a fixed password. Committing them is what makes
+"clone, task dev:up, log in" work with no setup step — and none of these values
+exist anywhere but a developer's laptop or a CI job.
+
+The exception that is NOT allowlisted: dev/.env.local, where `task dev:env`
+generates the Authentik admin bootstrap credentials. It is gitignored, and if it
+ever reaches the index gitleaks must object.
+"""
+paths = [
+    '''^dev/\.env$''',
+    '''^dev/compose\.yaml$''',
+    '''^dev/oidc-mock/.*''',
+    '''^dev/authentik/blueprints/.*''',
+    '''^dev/postgres/init/.*''',
+    '''^dev/seed/.*''',
+    '''^config/dev\.toml$''',
+]
+
+[[allowlists]]
+description = "Generated code carries example values from the OpenAPI document, not secrets."
+paths = [
+    '''^crates/notify-client-api/src/generated\.rs$''',
+    '''^web/src/lib/api/.*''',
+]
+
+[[allowlists]]
+description = "The design document quotes example tokens and keys in prose."
+paths = ['''^docs/\.prompt/.*''']

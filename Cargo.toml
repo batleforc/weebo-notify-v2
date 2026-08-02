@@ -1,0 +1,134 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/notify-domain",
+    "crates/notify-ports",
+    "crates/notify-app",
+    "crates/notify-adapters/http-actix",
+    "crates/notify-adapters/persistence-pg",
+    "crates/notify-adapters/eventbus-pg",
+    "crates/notify-adapters/eventbus-redis",
+    "crates/notify-adapters/oidc",
+    "crates/notify-adapters/attachments-s3",
+    "crates/notify-adapters/push-webpush",
+    "crates/notify-adapters/push-unifiedpush",
+    "crates/notify-adapters/push-apns",
+    "crates/notify-server",
+    "crates/notify-client-api",
+    "crates/notify-client-core",
+    "crates/notify-cli",
+    # Not a product crate: repository chores that need real code (client codegen).
+    "crates/xtask",
+]
+
+[workspace.package]
+# ONE version for the whole product (design §3.2bis). Bumped by `cog bump`, which
+# propagates it to web/package.json and tauri.conf.json via .hooks/sync-version.sh.
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MPL-2.0"
+repository = "https://github.com/batleforc/weebo-notify-v2"
+authors = ["Maxime Leriche <maxleriche.60@gmail.com>"]
+
+[workspace.dependencies]
+# --- Internal crates ---
+notify-domain = { path = "crates/notify-domain" }
+notify-ports = { path = "crates/notify-ports" }
+notify-app = { path = "crates/notify-app" }
+notify-http-actix = { path = "crates/notify-adapters/http-actix" }
+notify-persistence-pg = { path = "crates/notify-adapters/persistence-pg" }
+notify-eventbus-pg = { path = "crates/notify-adapters/eventbus-pg" }
+notify-eventbus-redis = { path = "crates/notify-adapters/eventbus-redis" }
+notify-oidc = { path = "crates/notify-adapters/oidc" }
+notify-attachments-s3 = { path = "crates/notify-adapters/attachments-s3" }
+notify-push-webpush = { path = "crates/notify-adapters/push-webpush" }
+notify-push-unifiedpush = { path = "crates/notify-adapters/push-unifiedpush" }
+notify-push-apns = { path = "crates/notify-adapters/push-apns" }
+notify-client-api = { path = "crates/notify-client-api" }
+notify-client-core = { path = "crates/notify-client-core" }
+
+# --- Core (allowed in notify-domain) ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+ulid = { version = "1", features = ["serde"] }
+url = { version = "2", features = ["serde"] }
+
+# --- Async plumbing (adapters and above only) ---
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# --- HTTP / API ---
+actix-web = "4.14"
+actix-web-lab = "0.26"
+utoipa = { version = "5.5", features = ["actix_extras", "time", "ulid", "url"] }
+utoipa-actix-web = "0.1"
+utoipa-scalar = { version = "0.3", features = ["actix-web"] }
+
+# --- Persistence ---
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+    "time",
+    "json",
+    "uuid",
+] }
+
+# --- Auth ---
+jsonwebtoken = "11"
+argon2 = "0.5"
+
+# --- Config & observability ---
+figment = { version = "0.10", features = ["toml", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# --- CLI ---
+clap = { version = "4.6", features = ["derive", "env"] }
+clap_complete = "4.6"
+
+# --- Error handling (adapters, binaries — never notify-domain) ---
+anyhow = "1"
+
+# --- Client codegen (ADR-0009) ---
+progenitor = "0.14"
+progenitor-client = "0.14"
+# No default-tls: we link rustls only, so the binaries stay free of OpenSSL.
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+    "http2",
+    "charset",
+    "stream",
+] }
+
+# --- Test-only ---
+testcontainers = "0.27"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Panicking is a bug in a notification server: a malformed payload must become a
+# 4xx, never a downed replica. Enforced everywhere; tests opt out per-module.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# Noise from the pedantic group that fights the domain vocabulary.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

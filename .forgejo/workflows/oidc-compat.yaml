@@ -1,0 +1,94 @@
+name: oidc-compat
+
+# Identity-provider compatibility is a tested contract, not a promise (design §3.2).
+#
+# This is a self-hosted product: people will arrive with Keycloak, Authelia, Dex,
+# Authentik. Day-to-day development runs against oidc-server-mock, so a behavioural
+# difference between the mock and a real provider is invisible until someone else
+# hits it. This job is the safety net.
+#
+# One auth suite, parameterised by issuer, replayed against three providers:
+#   * oidc-server-mock — the everyday baseline
+#   * Dex              — strict, minimal OIDC, and notably emits NO `groups` claim,
+#                        which exercises the graceful-degradation path (T29)
+#   * Authentik        — real behaviour: refresh token rotation, logout, groups
+#
+# NEVER merge a change to the auth flow without this job green.
+
+on:
+  pull_request:
+    paths:
+      - "crates/notify-adapters/oidc/**"
+      - "crates/notify-app/src/auth/**"
+      - "crates/notify-adapters/http-actix/src/middleware/**"
+      - "tests/auth/**"
+      - ".forgejo/workflows/oidc-compat.yaml"
+  schedule:
+    # Nightly, so a provider's own update cannot break us silently.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: oidc-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  compat:
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+
+    strategy:
+      # Every provider reports independently: knowing it passes on two of three is
+      # far more useful than a single red cross.
+      fail-fast: false
+      matrix:
+        provider: [mock, dex, authentik]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Restore caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.local/share/mise
+            target
+          key: oidc-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock') }}
+          restore-keys: oidc-${{ runner.os }}-
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Generate the Dex credentials
+        if: matrix.provider == 'dex'
+        # Dex is CI-only, so nothing justifies a fixed password the way local
+        # ergonomics justifies alice/bob's (design §12.5). These are generated per
+        # run, rendered into the config from a committed template, and never
+        # committed themselves.
+        run: |
+          password=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
+          echo "::add-mask::$password"
+          echo "DEX_TEST_PASSWORD=$password" >> "$GITHUB_ENV"
+
+      - name: Run the auth suite against ${{ matrix.provider }}
+        env:
+          WNK_TEST_OIDC_PROVIDER: ${{ matrix.provider }}
+        # The suite is one body of tests; the provider fixture selects the issuer,
+        # the credentials and the expected claims. That is what makes "it behaves
+        # the same everywhere" a fact rather than a hope.
+        run: mise exec -- task test:e2e -- -E 'test(/auth::/)'

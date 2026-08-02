@@ -1,0 +1,37 @@
+---
+title: ADR-0011 — pnpm as the JavaScript package manager
+description: One package manager for web/ and docs/, with dependency build scripts blocked by default.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+Two JavaScript projects live in the repository: the Vue frontend and the Fumadocs
+site. The design document's dev workflow originally wrote `npm --prefix web`, while
+the audit task assumed `pnpm audit`.
+
+## Decision
+
+**pnpm everywhere.** `web/` and `docs/` stay independent projects driven by
+`pnpm -C <dir>`; there is no root workspace, because nothing is shared between them.
+
+## Consequences
+
+**Positive**
+
+- One package manager, one lockfile format, one audit command.
+- Content-addressed store: two projects with overlapping dependencies cost disk once.
+- pnpm blocks dependency build scripts unless explicitly approved, which turns a
+  supply-chain risk into a visible, reviewed list.
+
+**Negative**
+
+- Contributors must have pnpm; it is pinned in `mise.toml`, so this is a non-issue
+  in practice.
+- Amends the dev workflow written in the design document.
+
+**Accepted debt**
+
+- Two independent projects means two lockfiles to keep current. A root workspace
+  becomes worthwhile only if they ever share code.

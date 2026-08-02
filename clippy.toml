@@ -1,0 +1,34 @@
+# `clippy::doc_markdown` (from the pedantic group) flags any CamelCase word in docs
+# as a missing code span. Most of our vocabulary is product and protocol names that
+# read as prose, not as code — list them here rather than backtick-quoting English.
+#
+# ".." keeps clippy's own default list and appends to it.
+doc-valid-idents = [
+    "..",
+    "APNs",
+    "AppImage",
+    "ArgoCD",
+    "Authentik",
+    "CloudNativePG",
+    "Fumadocs",
+    "GitOps",
+    "Forgejo",
+    "JWKS",
+    "Keychain",
+    "Keystore",
+    "MinIO",
+    "OpenAPI",
+    "OpenTelemetry",
+    "PostgreSQL",
+    "PKCE",
+    "RustFS",
+    "SQLite",
+    "StrongBox",
+    "Tauri",
+    "TestFlight",
+    "UnifiedPush",
+    "Valkey",
+    "WebPush",
+    "X25519",
+    "XChaCha20",
+]

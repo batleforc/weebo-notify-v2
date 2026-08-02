@@ -1,0 +1,14 @@
+[package]
+name = "notify-ports"
+description = "weebo-notify ports: the async traits the domain is driven through, plus in-memory test doubles."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

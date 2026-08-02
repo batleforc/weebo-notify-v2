@@ -1,0 +1,173 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "weebo-notify",
+    "description": "Rich, multi-channel, multi-device notification platform. Notifications are lifecycle objects: they carry state, accumulate revisions, expose actions and collect receipts.",
+    "contact": {
+      "name": "Maxime Leriche",
+      "email": "maxleriche.60@gmail.com"
+    },
+    "license": {
+      "name": "MPL-2.0",
+      "url": "https://www.mozilla.org/en-US/MPL/2.0/"
+    },
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "Versioned API root"
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Liveness probe.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "The process is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Readiness probe — gates entry into the service during rolling updates.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "description": "Every dependency is reachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one dependency is down",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DependencyCheck": {
+        "type": "object",
+        "description": "The state of a single dependency.",
+        "required": [
+          "name",
+          "healthy"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Failure detail, omitted when healthy — never contains credentials."
+          },
+          "healthy": {
+            "type": "boolean",
+            "description": "Whether the last probe succeeded."
+          },
+          "name": {
+            "type": "string",
+            "description": "Dependency name, e.g. `postgres`, `attachments`, `jwks`, `eventbus`.",
+            "example": "postgres"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "description": "Liveness answer.",
+        "required": [
+          "status",
+          "version"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always `\"ok\"` — the process answered, which is the whole question.",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version of the running binary, so an operator can tell replicas apart\nduring a rolling update.",
+            "example": "0.1.0"
+          }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "description": "Readiness answer: the overall verdict plus the per-dependency detail an\noperator needs to know *which* dependency is holding the replica back.",
+        "required": [
+          "ready",
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DependencyCheck"
+            },
+            "description": "One entry per dependency actually configured on this replica."
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "`true` only when every checked dependency is reachable."
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "channels",
+      "description": "Channels, their members and their policy"
+    },
+    {
+      "name": "notifications",
+      "description": "Publishing, revisions, interactions"
+    },
+    {
+      "name": "sync",
+      "description": "Offline backlog and real-time streams"
+    },
+    {
+      "name": "devices",
+      "description": "Device enrolment and revocation"
+    },
+    {
+      "name": "auth",
+      "description": "API keys, service accounts, CI federation"
+    },
+    {
+      "name": "admin",
+      "description": "Platform console — metadata and operations only"
+    }
+  ]
+}

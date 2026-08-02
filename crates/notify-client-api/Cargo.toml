@@ -1,0 +1,18 @@
+[package]
+name = "notify-client-api"
+description = "Rust API client generated from the committed OpenAPI spec (progenitor)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+progenitor-client.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true

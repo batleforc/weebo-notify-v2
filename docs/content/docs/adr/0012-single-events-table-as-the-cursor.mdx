@@ -1,0 +1,43 @@
+---
+title: ADR-0012 — A single append-only events table is the cursor
+description: One monotonic sequence backs GET /sync, the SSE id field and Last-Event-ID alike.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+Three things need a total order over everything a client may have missed: the
+offline backlog (`GET /sync?cursor=`), the live stream's `id:` field, and reconnect
+via `Last-Event-ID`. [ADR-0001](/docs/adr/0001-sse-as-the-reference-realtime-transport)
+promises they are *the same* cursor. Deriving that order from timestamps, or from
+per-notification revision numbers, gives duplicates and gaps under concurrency —
+exactly when it matters.
+
+## Decision
+
+**One append-only `events` table, with a `bigserial` as the opaque cursor.** Every
+`revision`, `receipt`, `interaction`, `tombstone` and `preference` gets a row, and
+that sequence value *is* the cursor everywhere.
+
+## Consequences
+
+**Positive**
+
+- "Zero gaps, zero duplicates" becomes a property of the schema rather than
+  something each transport has to re-implement correctly.
+- A client can reconnect to *any* replica: the order is global, not per-connection.
+- Compaction and the "N expired while you were away" counter both read from one place.
+
+**Negative**
+
+- A single hot insert point, and a table that grows with every event. Purge and
+  partitioning are operational requirements, not optimisations.
+- The sequence is instance-global, so it leaks a rough activity volume to anyone
+  holding a cursor.
+
+**Accepted debt**
+
+- Retention on this table is its own job, separate from notification TTL: the events
+  of an expired notification must outlive it long enough for a slow client to catch
+  up, then go.

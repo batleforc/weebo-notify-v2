@@ -1,0 +1,26 @@
+version: "3"
+
+tasks:
+  default:
+    desc: "Check every dependency and the container image for known CVEs"
+    cmds:
+      - task: cargo
+      - task: web
+      - task: container
+
+  cargo:
+    desc: "Rust dependencies: RustSec advisories (cargo-audit) + licence/ban policy (cargo-deny)"
+    cmds:
+      - cargo audit
+      - cargo deny check
+
+  web:
+    desc: "JS/TS dependencies of web/ and docs/ (pnpm audit)"
+    cmds:
+      - cmd: '[ -f web/package.json ] && pnpm -C web audit --audit-level moderate || true'
+      - cmd: '[ -f docs/package.json ] && pnpm -C docs audit --audit-level moderate || true'
+
+  container:
+    desc: "Scan the repository and the Containerfile for CVEs, misconfigurations and secrets (trivy)"
+    cmds:
+      - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity HIGH,CRITICAL .

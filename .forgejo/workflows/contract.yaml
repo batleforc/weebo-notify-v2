@@ -1,0 +1,63 @@
+name: contract
+
+# The OpenAPI document and everything derived from it are committed. This job
+# regenerates them and fails on any difference (design §3.2).
+#
+# What that buys: the Rust client, the TypeScript client, the sqlx offline data and
+# the devfile's inlined OIDC configuration cannot drift from the code they come
+# from. Forgetting to run `task recu` breaks the pull request instead of shipping a
+# client that disagrees with the server.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: contract-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  contract:
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Restore caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.local/share/mise
+            target
+            web/node_modules
+          key: contract-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock') }}
+          restore-keys: contract-${{ runner.os }}-
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Regenerate everything derived from the code
+        run: mise exec -- task recu
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated artefacts are out of date. Run \`task recu\` and commit the result."
+            exit 1
+          fi

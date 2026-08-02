@@ -1,0 +1,38 @@
+---
+title: API
+description: REST plus SSE, described by an OpenAPI document generated from the handlers themselves.
+---
+
+The API is documented by an OpenAPI document **generated from the utoipa annotations
+on the handlers**. The specification is written as the API is written, not maintained
+next to it — and both derived clients are generated from that same document and
+committed, so [nothing can drift](/docs/adr/0009-progenitor-and-heyapi-for-generated-clients).
+
+- **Interactive reference**: `/api/docs` on a running server (Scalar).
+- **The document itself**: [`openapi.json`](https://github.com/batleforc/weebo-notify-v2/blob/main/docs/content/docs/api/openapi.json), committed in this repository.
+
+## Cross-cutting conventions
+
+**Cursor-based pagination everywhere** (`?cursor=…&limit=…`), using the same opaque
+cursor format as the sync endpoint.
+
+**Errors are RFC 9457** `application/problem+json`, each carrying a **stable `code`**
+field. Clients branch on `code`, never on the human-readable message — which means
+error text can be improved without breaking anyone.
+
+**Idempotency is built in where it matters.** `PUT /channels/{id}/notifications/{external_id}`
+is idempotent by construction, which is exactly what a CI job needs on retry;
+`POST /notifications` accepts an `Idempotency-Key` header, replayed for 24 hours.
+
+## Two ingestion endpoints, several identities
+
+Every way of triggering a notification converges on the same two endpoints. What
+varies is the producer and the identity it presents — a human's OIDC token, a CI
+job's federated token, a service account's API key, a channel key. There is no
+parallel ingestion protocol; the CLI and the TUI's `:` command mode are wrappers
+around these same calls.
+
+Which of the two shapes you get is decided by one thing: **whether the payload
+carries a `state` field**. With it, the notification has a lifecycle and cannot
+expire while it is open. Without it, the notification is simple, born closed, and its
+TTL starts immediately.

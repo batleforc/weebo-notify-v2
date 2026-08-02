@@ -1,0 +1,97 @@
+name: release
+
+# Pushing the tag is the only human action (design §3.2bis).
+#
+# `task release` runs `cog bump --auto`: the version comes from the conventional
+# commits, the changelog is generated, and every version in the product is
+# synchronised. Pushing the resulting tag triggers everything below with no further
+# intervention.
+#
+# Two invariants:
+#   * A tag NEVER moves. A failed release means a fix and a new tag, never a re-tag.
+#   * Every job is idempotent. Re-running a failed run resumes without duplicating
+#     or corrupting what was already published.
+#
+# SCOPE: this file currently implements the gate and the server image. The full
+# artefact matrix — desktop packages, CLI archives, the signed updater manifest,
+# the Android APK — lands with milestone M5, when there is something to package.
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    # A tag never exempts anything from the gates a pull request had to pass.
+    name: Replay the pull-request gates
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Lint
+        run: mise exec -- task lint:check
+
+      - name: Contract
+        run: |
+          mise exec -- task recu
+          git diff --exit-code
+
+      - name: Critical suite
+        run: mise exec -- task test:critical
+
+  publish:
+    name: Build and publish
+    needs: gate
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine the release kind
+        id: kind
+        # A SemVer pre-release tag (v1.2.3-rc.1) gets the same pipeline, the same
+        # artefacts and the same signatures — an RC is a complete product, which is
+        # what makes promoting it possible without re-validating. It is marked as a
+        # pre-release and `latest` does not move.
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$tag" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the server image
+        # TODO(M1): multi-arch build (amd64/arm64), cosign signature and Rekor
+        # provenance, per §3.2bis. Needs the Containerfile, which arrives with the
+        # deployable server.
+        run: |
+          echo "::warning::Image build is not wired yet — it lands with the Containerfile in M1."
+
+      - name: Publish the release
+        # Created as a draft, filled with artefacts and the changelog notes, then
+        # published in one move — never a half-empty release visible to anyone.
+        run: |
+          echo "::warning::Release publication lands with the artefact matrix in M5."
+          echo "Would publish ${{ steps.kind.outputs.tag }} (prerelease=${{ steps.kind.outputs.prerelease }})"

@@ -2,25 +2,31 @@ version: "3"
 
 includes:
   mise: ./.tasks/mise.yaml
+  dev: ./.tasks/dev.yaml
+  gen: ./.tasks/gen.yaml
+  lint: ./.tasks/lint.yaml
+  test: ./.tasks/test.yaml
+  audit: ./.tasks/audit.yaml
+  adr: ./.tasks/adr.yaml
+  release: ./.tasks/release.yaml
 
 tasks:
   init:
-    desc: "Init folder"
+    desc: "Install the toolchain and the git hooks — run once after cloning"
     cmds:
       - mise install
       - cog install-hook -a -o
+      - cmd: '[ -f docs/package.json ] && pnpm -C docs install || true'
+        silent: true
+      - cmd: '[ -f web/package.json ] && pnpm -C web install || true'
+        silent: true
 
   recu:
-    desc: "Recuring job like regenerating Swagger spec"
+    desc: "Recurring job: export the OpenAPI spec, regenerate the derived clients and the sqlx offline data"
     cmds:
-      - echo "Your future spec generating cmd"
+      - task: gen
 
-  lint:
-    desc: "Linting your project to apply good practice"
+  cover:
+    desc: "Run the whole test suite with coverage and merge the Rust + web LCOV reports"
     cmds:
-      - echo "Something like cargo fmt && cargo clippy"
-
-  audit:
-    desc: "Check dependencies and Containerfile for CVE"
-    cmds:
-      - echo "Something like cargo audit, pnpm audit or trivy fs ."
+      - task: test:cover

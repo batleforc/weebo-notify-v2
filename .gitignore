@@ -8,7 +8,18 @@
 node_modules/
 target/
 dist/
+.next/
+web/coverage/
 
 # Local env files
 .env
 .env.local
+
+# ...except the shared development credentials, which are committed on purpose
+# (design §12.1): the stack is disposable and this is what makes `task dev:up`
+# work with zero setup. dev/.env.local stays ignored — `task dev:env` generates
+# the Authentik admin bootstrap there, and that one is never committed.
+!dev/.env
+
+# nextest JUnit output
+junit*.xml

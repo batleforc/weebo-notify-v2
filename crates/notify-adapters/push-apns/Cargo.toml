@@ -1,0 +1,14 @@
+[package]
+name = "notify-push-apns"
+description = "APNs transport for iOS (token-based .p8 authentication)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
