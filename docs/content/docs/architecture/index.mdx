@@ -28,10 +28,34 @@ clock or a database to be tested, it is in the wrong crate.
 
 **`notify-domain` and `notify-app` are testable without any infrastructure.** That is
 why the coverage gate applies to exactly those two, at ≥ 90 %: they are pure, so
-there is no excuse.
+there is no excuse. `notify-ports` ships in-memory implementations of every trait
+behind its `test-utils` feature, which is what makes that true in practice — a
+use-case test that needs Postgres is a use-case test that gets skipped.
 
 **No framework type crosses into the application layer.** An Actix extractor stops at
 the HTTP adapter's edge.
+
+## Writing against a port
+
+Four conventions, worth knowing before adding a use case or an adapter.
+
+**Two error types, on purpose.** `PortError` means the world was wrong — a 5xx and a
+page. `DomainError` means the request was wrong — a 4xx with a
+[stable code](/docs/architecture/domain-model#errors). A layer that can only return
+one of them ends up reporting a dropped database connection as a validation failure,
+which turns a 3am page into an hour of reading the wrong logs.
+
+**Expected outcomes are values, not errors.** A push relay refusing, a webhook
+consumer returning 500, a token failing to verify: those happen all day and belong in
+a metric. `Err` is reserved for "this port cannot do its job at all".
+
+**Writes return their cursor.** Recording a change and appending its event row are one
+transaction, so the write is the only place that knows where it landed. That cursor is
+what a client resumes from and what a fan-out poke carries instead of a payload.
+
+**Ports do not authorise.** They answer "who could", never "who may". Membership and
+scope checks live in the use cases, in one place, so a new adapter cannot quietly
+become a second policy engine.
 
 **The server is stateless.** All state lives in Postgres and the object store, so any
 replica can serve any request — including the first one from a client that has never
@@ -41,6 +65,11 @@ spoken to it. Fan-out between replicas goes through the event bus, which carries
 ## Where to look next
 
 <Cards>
+  <Card
+    title="Domain model"
+    href="/docs/architecture/domain-model"
+    description="Lifecycle, revisions, retention, hygiene — and the error codes clients match on."
+  />
   <Card
     title="Decisions"
     href="/docs/adr"

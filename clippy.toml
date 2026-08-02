@@ -13,6 +13,7 @@ doc-valid-idents = [
     "Fumadocs",
     "GitOps",
     "Forgejo",
+    "IdP",
     "JWKS",
     "Keychain",
     "Keystore",

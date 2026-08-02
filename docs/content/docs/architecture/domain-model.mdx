@@ -1,0 +1,144 @@
+---
+title: Domain model
+description: A notification is a lifecycle object — how it is born, revised, closed, reopened and eventually forgotten.
+---
+
+Everything on this page lives in `notify-domain`: no database, no clock, no
+network. It is the layer that decides what a notification *is*, and it is the only
+one you have to understand to predict what the API will do with what you publish.
+
+## A notification is an object with a life
+
+```
+open ⇄ working ──▶ closed(status) ──▶ reopenable
+```
+
+`status` is orthogonal to the lifecycle: `success`, `failure`, `warning`, `info`,
+`cancelled`. A notification can be `open` *and* `failure` — an incident that is
+known bad and still running.
+
+### Two publishing shapes, and one field decides which
+
+Whether you send a `state` field is the entire distinction, and it changes when the
+notification is allowed to expire.
+
+| You publish | You get | Retention starts |
+| --- | --- | --- |
+| with `state` | a **lifecycle** notification, born in that state | at closure |
+| without `state` | a **simple** notification, born `closed(info)` | at creation |
+
+The consequence worth remembering: **a notification that is still open cannot
+expire.** A two-day incident stays visible for two days without anybody configuring
+anything. A fire-and-forget `curl` ages from the moment it lands, which is what you
+want from a message.
+
+### Revisions, and who wins
+
+Each write is an immutable revision. The server stamps a monotonic `seq` on arrival
+and the current state is whatever the **highest `seq`** says — last write wins.
+Concurrent publishers (CI retries, parallel jobs) therefore need no coordination
+and there is no `If-Match` to get wrong. Nothing is discarded: the full history is
+kept and doubles as the audit trail.
+
+Absent fields on a revision inherit from the current head, so an update can be as
+small as:
+
+```json
+{ "state": "closed", "status": "success" }
+```
+
+Actions are the exception — they are **replaced wholesale** on every revision, never
+merged. Interactions already recorded stay attached to the notification, not to the
+revision that offered the button.
+
+### Reopening
+
+A closed notification stays writable. A revision on it either amends the closure
+(new `status`) or **reopens** it — the CI re-run pushing onto the same
+`external_id`. Reopening suspends the retention clock again, and it restarts from
+zero at the next closure. Amending a closure does *not* push the deadline back.
+
+## Retention
+
+The channel owns the policy: a default, an optional forced ceiling, and whether
+unbounded retention is allowed at all.
+
+- A `ttl` longer than the channel ceiling is **clamped and reported** in the
+  response, not refused. A CI job should not fail because it wanted its build log
+  kept a week longer than the operator allows.
+- `ttl: "0"` means "keep forever" and is refused unless the channel opted in.
+  A publisher cannot pin a channel's storage on its own.
+- Durations are written the way people write them: `30s`, `5m`, `4h`, `7d`, `2w`.
+  One unit per value; `1h30m` is not a thing. Values come back in the largest unit
+  that divides evenly, so `7d` reads back as `1w`.
+
+## Content hygiene
+
+Every piece of publisher-supplied text is sanitised **at ingestion**, so every
+surface — terminal, toast, browser — is protected once rather than each having to
+remember.
+
+Stripped from every text field:
+
+- **ANSI escape sequences** (`CSI`, `OSC`, `DCS`/`SOS`/`PM`/`APC`, and the
+  two-character forms), including their arguments. A title that clears your screen
+  or repaints your prompt is the classic terminal injection.
+- **Control characters** — C0, `DEL`, C1 — minus the whitespace a markdown body
+  legitimately contains.
+- **Bidirectional overrides and zero-width characters**, the "trojan source" family.
+
+Not stripped: **raw HTML**. The body is markdown and HTML in it is inert by
+contract, escaped at render time under a strict CSP. Stripping it here would eat
+legitimate text like `3 < 4`.
+
+`view` actions accept `http` and `https` **only**. `javascript:`, `file:` and custom
+schemes are refused at ingestion, so they never reach a client at all — and clients
+check again before opening.
+
+## Interactions
+
+`ack`, `reply` and `choice` are recorded on the server and read back by whichever
+service is waiting on them. No device ever calls out to a third party on a
+notification's behalf.
+
+| Kind | Deduplication |
+| --- | --- |
+| `ack` | idempotent per (user, key) — clicking twice records once |
+| `choice` | exclusive per (user, key), last pick wins |
+| `reply` | none; replies are comments and accumulate |
+
+## Errors
+
+Rejections carry a **stable `code`** in the `application/problem+json` body. Match
+on the code, not on the message — the message is for humans and may be reworded.
+
+| Code | Means |
+| --- | --- |
+| `field.missing` | a required field was absent |
+| `field.empty` | present, but empty once sanitised |
+| `field.too_long` | over the character ceiling for that field |
+| `field.malformed` | right size, wrong shape |
+| `collection.too_many` | too many actions, tags or options |
+| `payload.too_large` | over a byte ceiling |
+| `notification.revision_limit_reached` | 1 000 revisions; publish a new notification |
+| `ttl.infinite_not_allowed` | this channel does not allow `ttl: "0"` |
+| `action.duplicate_key` | two actions share a key |
+| `action.unknown_key` | no such action — usually a revision replaced it |
+| `action.kind_mismatch` | interaction kind does not match the action |
+| `action.unknown_option` | that `choice` does not offer that option |
+| `action.url_scheme_not_allowed` | `view` links are `http(s)` only |
+| `silence.duration_required` | a group-scoped silence must be time-boxed |
+| `notification.gone` | deleted or expired; it accepts no further writes |
+
+Adding a code is not a breaking change. Renaming one is.
+
+## Two habits in the code
+
+**Validation is a constructor, not a step.** There is no way to hold a `Content` or
+an `Action` that has not been sanitised and bounds-checked — including one that came
+back out of Postgres, because deserialisation runs the same validation as ingestion.
+Storage is not a trust boundary we get to skip: a row written by last month's build
+must still satisfy this month's invariants.
+
+**Nothing in the domain panics.** `unwrap`, `expect` and `panic!` are denied
+workspace-wide. A malformed payload has to become a 4xx, never a downed replica.

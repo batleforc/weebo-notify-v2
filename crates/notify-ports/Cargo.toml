@@ -8,7 +8,29 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# The in-memory doubles. Off by default so no production binary can link them by
+# accident; turned on as a dev-dependency by every crate that tests against ports.
+test-utils = []
+
 [lints]
 workspace = true
 
 [dependencies]
+notify-domain = { workspace = true }
+
+async-trait = { workspace = true }
+# Only for `BoxStream`: the event bus hands back a stream of pokes, and naming that
+# type is the whole extent of the dependency.
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+# The doubles are exercised by this crate's own tests — see `test_utils`, which is
+# compiled under `cfg(test)` too. A broken double would quietly pass the use-case
+# tests of every crate above this one.
+tokio = { workspace = true }

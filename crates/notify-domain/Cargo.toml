@@ -12,3 +12,11 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+# Deliberately limited to pure-data crates: no async runtime, no HTTP client, no I/O.
+# Anything that reaches outside the process belongs behind a port (design §4).
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+ulid = { workspace = true }
+url = { workspace = true }

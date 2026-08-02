@@ -1,0 +1,79 @@
+//! Every ceiling the domain enforces, in one place.
+//!
+//! Two provenances, kept visually distinct because they age differently:
+//!
+//! * **Contract** — published in design §8.2 and quoted in the docs site. Changing
+//!   one of these is a product decision and needs the design document updated.
+//! * **Guard rail** — not in the design, chosen here so that no text field is
+//!   unbounded. These exist to stop a publisher from turning an inbox into a
+//!   denial of service, and can be adjusted without touching the contract.
+//!
+//! Text ceilings count **characters, not bytes** — a limit a user is told about
+//! should be one they can count, and it is measured *after* sanitisation (design
+//! §2.3) so escape sequences never eat someone's title budget.
+
+use core::time::Duration;
+
+// --- Contract (design §8.2) ------------------------------------------------
+
+/// Serialised payload ceiling, attachments excluded. Enforced where the bytes
+/// actually exist (the HTTP adapter); exposed here so there is a single source.
+pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// Inline `data:` image ceiling (design §2.3). Past this, publishers upload an
+/// attachment and reference it instead.
+pub const MAX_DATA_URI_BYTES: usize = 48 * 1024;
+
+/// Actions per notification. The array order is display priority: mobile push
+/// transports only surface the first two or three (design §2.3).
+pub const MAX_ACTIONS: usize = 5;
+
+/// Revisions per notification. The 1 001st is refused and the notification is
+/// left intact (design §8.2, scenario T6).
+pub const MAX_REVISIONS: u32 = 1_000;
+
+/// Action label ceiling (design §2.3).
+pub const MAX_LABEL_CHARS: usize = 40;
+
+// --- Guard rails (chosen here, not in the design) --------------------------
+
+/// Title ceiling. Long enough for `cluster-ovh-1 · etcd degraded` and a bit more;
+/// anything longer belongs in the body.
+pub const MAX_TITLE_CHARS: usize = 256;
+
+/// Body ceiling. Sits well under [`MAX_PAYLOAD_BYTES`] so a body alone can never
+/// be the reason a payload is refused.
+pub const MAX_BODY_CHARS: usize = 16 * 1024;
+
+/// Icon name ceiling — an identifier, not prose.
+pub const MAX_ICON_CHARS: usize = 64;
+
+/// Tags per notification.
+pub const MAX_TAGS: usize = 16;
+
+/// Length of a single tag.
+pub const MAX_TAG_CHARS: usize = 32;
+
+/// Length of a `group_key` (design §2.3) — clients group on it, they do not read it.
+pub const MAX_GROUP_KEY_CHARS: usize = 128;
+
+/// Options offered by one `choice` action. Past this it is a form, not a
+/// notification button.
+pub const MAX_CHOICE_OPTIONS: usize = 10;
+
+/// Placeholder text of a `reply` action — a hint, not instructions.
+pub const MAX_PLACEHOLDER_CHARS: usize = 120;
+
+/// Free text a user can send back through a `reply` interaction.
+pub const MAX_REPLY_CHARS: usize = 4_096;
+
+/// Length of a machine-facing key: action keys, choice option keys, channel ids.
+pub const MAX_KEY_CHARS: usize = 64;
+
+/// Length of a publisher-supplied `external_id` — CI run ids, job names.
+pub const MAX_EXTERNAL_ID_CHARS: usize = 128;
+
+/// Ceiling on any duration a publisher can name (TTL, silence): ten years. Not a
+/// policy, just the point past which a value is a unit mistake rather than an
+/// intent.
+pub const MAX_DURATION: Duration = Duration::from_secs(10 * 365 * 24 * 3_600);

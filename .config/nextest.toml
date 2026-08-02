@@ -20,6 +20,11 @@ path = "junit.xml"
 # unit tests; everything else is integration or E2E under `e2e::`.
 # ---------------------------------------------------------------------------
 [profile.critical]
+# The convention, made executable: a scenario opts into the suite by carrying
+# `critical` in its test name. Without this filter the profile would quietly run
+# the whole workspace, and "the critical suite is green" would mean nothing more
+# than "the tests are green".
+default-filter = 'test(critical)'
 # E2E scenarios wait on containers: give them room without hiding a real hang.
 slow-timeout = { period = "120s", terminate-after = 3 }
 failure-output = "immediate-final"
