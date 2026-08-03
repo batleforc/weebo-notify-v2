@@ -197,11 +197,16 @@ impl InMemory {
     }
 
     /// The channels a principal may read with `scope`.
-    fn channel_ids_for(state: &State, principal: &Principal, scope: Scope) -> Vec<ChannelId> {
+    fn channel_ids_for(
+        state: &State,
+        principal: &Principal,
+        groups: &[String],
+        scope: Scope,
+    ) -> Vec<ChannelId> {
         state
             .channels
             .iter()
-            .filter(|row| row.value.grants(principal, scope))
+            .filter(|row| row.value.allows(principal, groups, scope))
             .map(|row| row.value.id.clone())
             .collect()
     }
@@ -553,6 +558,7 @@ impl ChannelRepository for InMemory {
     async fn list_for(
         &self,
         principal: &Principal,
+        groups: &[String],
         scope: Scope,
         page: PageRequest,
     ) -> PortResult<Page<Channel>> {
@@ -561,7 +567,7 @@ impl ChannelRepository for InMemory {
         let mut matched: Vec<&Row<Channel>> = state
             .channels
             .iter()
-            .filter(|row| row.value.grants(principal, scope))
+            .filter(|row| row.value.allows(principal, groups, scope))
             .collect();
 
         matched.sort_by_key(|row| row.cursor);
@@ -572,11 +578,16 @@ impl ChannelRepository for InMemory {
         Ok(paginate(&matched, page.effective_limit()))
     }
 
-    async fn subscribed_ids(&self, principal: &Principal) -> PortResult<Vec<ChannelId>> {
+    async fn subscribed_ids(
+        &self,
+        principal: &Principal,
+        groups: &[String],
+    ) -> PortResult<Vec<ChannelId>> {
         let state = self.state();
         Ok(InMemory::channel_ids_for(
             &state,
             principal,
+            groups,
             Scope::Subscribe,
         ))
     }
@@ -1083,7 +1094,8 @@ impl EventStore for InMemory {
         let state = self.state();
         let principal = Principal::User { id: user };
 
-        let subscribed = InMemory::channel_ids_for(&state, &principal, Scope::Subscribe);
+        let subscribed =
+            InMemory::channel_ids_for(&state, &principal, &query.groups, Scope::Subscribe);
         // An explicit `?channels=` narrows what the caller may already see; it can
         // never widen it.
         let visible: Vec<ChannelId> = if query.channels.is_empty() {
@@ -1442,6 +1454,7 @@ mod tests {
         SyncQuery {
             after,
             channels: Vec::new(),
+            groups: Vec::new(),
             page: PageRequest::of_size(100),
         }
     }
@@ -2379,12 +2392,12 @@ mod tests {
         store.seed_channel(channel("ci-infra", &alice));
 
         let publishable =
-            ChannelRepository::list_for(&store, &alice, Scope::Publish, PageRequest::first())
+            ChannelRepository::list_for(&store, &alice, &[], Scope::Publish, PageRequest::first())
                 .await
                 .unwrap();
         assert_eq!(publishable.len(), 1);
 
-        let readable = ChannelRepository::subscribed_ids(&store, &alice)
+        let readable = ChannelRepository::subscribed_ids(&store, &alice, &[])
             .await
             .unwrap();
         assert_eq!(readable.len(), 2);

@@ -13,6 +13,11 @@ authors.workspace = true
 # accident; turned on as a dev-dependency by every crate that tests against ports.
 test-utils = []
 
+# Schema annotations for the types that reach the wire — pages, events, sync
+# results (ADR-0013). Same bargain as in the domain: a derive over the serde
+# representation, nothing this crate calls.
+openapi = ["dep:utoipa", "notify-domain/openapi"]
+
 [lints]
 workspace = true
 
@@ -28,6 +33,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 url = { workspace = true }
+utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The doubles are exercised by this crate's own tests — see `test_utils`, which is

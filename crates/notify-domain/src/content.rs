@@ -23,6 +23,7 @@ use crate::limits::{
 
 /// How far along a long-running thing is. Rendered as a bar; the units are the
 /// publisher's own (steps, files, percent).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "ProgressDraft")]
 pub struct Progress {
@@ -33,6 +34,7 @@ pub struct Progress {
 }
 
 /// An unvalidated [`Progress`].
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProgressDraft {
@@ -69,6 +71,7 @@ impl TryFrom<ProgressDraft> for Progress {
 ///
 /// Anything of real size goes to the object store and is referenced, so the
 /// payload stays small enough to ride inside a push transport (design §2.3, §6.1).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Image {
@@ -87,6 +90,7 @@ pub enum Image {
 }
 
 /// An unvalidated [`Image`].
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageDraft {
@@ -153,6 +157,7 @@ impl<'de> Deserialize<'de> for Image {
 }
 
 /// The validated body of a revision.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Content {
     /// One line, always present. What a push notification shows when there is room
@@ -192,9 +197,15 @@ pub struct Content {
 /// The nested drafts keep the check, which is where it earns its keep — a
 /// misspelled `url` in a `view` action would otherwise silently produce a button
 /// that goes nowhere.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ContentDraft {
     /// See [`Content::title`].
+    ///
+    /// Optional on the wire, and absent means "leave it alone" on a revision — see
+    /// [`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
+    /// an absent title is the same refusal an empty one gets.
+    #[serde(default)]
     pub title: String,
     /// See [`Content::body`].
     #[serde(default)]
@@ -227,6 +238,48 @@ impl ContentDraft {
             title: title.to_owned(),
             ..Self::default()
         }
+    }
+
+    /// Fill the gaps from the revision this one supersedes (design §2.2).
+    ///
+    /// This is what lets a CI job close a pipeline with
+    /// `{"state": "closed", "status": "success"}` and keep its title, its tags and
+    /// its body. Without it every revision would have to restate the whole payload,
+    /// and the second half of every publish/close pair would be a copy-paste of the
+    /// first — which is where they drift.
+    ///
+    /// **Actions are never inherited.** They are replaced wholesale on every
+    /// revision (design §2.3, scenario T4): a closed pipeline should not still be
+    /// offering "Cancel", and the only way to be sure of that is for silence to
+    /// mean "no buttons" rather than "the previous buttons".
+    ///
+    /// The limitation worth knowing: absent and explicitly `null` are the same
+    /// thing here, so this revision shape cannot *clear* a body. Publishing an
+    /// empty string does.
+    #[must_use]
+    pub fn inheriting(mut self, head: &Content) -> Self {
+        if self.title.trim().is_empty() {
+            self.title.clone_from(&head.title);
+        }
+        if self.body.is_none() {
+            self.body.clone_from(&head.body);
+        }
+        if self.progress.is_none() {
+            self.progress = head.progress;
+        }
+        if self.image.is_none() {
+            self.image.clone_from(&head.image);
+        }
+        if self.icon.is_none() {
+            self.icon.clone_from(&head.icon);
+        }
+        if self.tags.is_empty() {
+            self.tags.clone_from(&head.tags);
+        }
+        if self.group_key.is_none() {
+            self.group_key.clone_from(&head.group_key);
+        }
+        self
     }
 }
 
@@ -317,6 +370,8 @@ fn validate_tags(raw: &[String]) -> Result<Vec<String>> {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
+    use crate::action::Action;
+
     use super::*;
 
     fn content(draft: ContentDraft) -> Result<Content> {
@@ -337,6 +392,69 @@ mod tests {
                 field: "payload.title"
             }
         );
+    }
+
+    #[test]
+    fn a_revision_that_says_nothing_keeps_what_the_head_said() {
+        // The second half of the design's CI example: close the pipeline without
+        // restating its title, its body or its tags.
+        let head = content(ContentDraft {
+            body: Some("build log attached".to_owned()),
+            icon: Some("rocket".to_owned()),
+            tags: vec!["ci".to_owned(), "infra".to_owned()],
+            group_key: Some("run-4521".to_owned()),
+            ..ContentDraft::titled("Pipeline infra #4521")
+        })
+        .unwrap();
+
+        let revised = content(ContentDraft::default().inheriting(&head)).unwrap();
+
+        assert_eq!(revised.title, "Pipeline infra #4521");
+        assert_eq!(revised.body.as_deref(), Some("build log attached"));
+        assert_eq!(revised.icon.as_deref(), Some("rocket"));
+        assert_eq!(revised.tags, ["ci", "infra"]);
+        assert_eq!(revised.group_key.as_deref(), Some("run-4521"));
+    }
+
+    #[test]
+    fn what_a_revision_does_say_wins_over_the_head() {
+        let head = content(ContentDraft {
+            body: Some("running".to_owned()),
+            ..ContentDraft::titled("Pipeline infra #4521")
+        })
+        .unwrap();
+
+        let revised = content(
+            ContentDraft {
+                body: Some("failed on step 4".to_owned()),
+                ..ContentDraft::titled("Pipeline infra #4521 — failed")
+            }
+            .inheriting(&head),
+        )
+        .unwrap();
+
+        assert_eq!(revised.title, "Pipeline infra #4521 — failed");
+        assert_eq!(revised.body.as_deref(), Some("failed on step 4"));
+    }
+
+    #[test]
+    fn actions_are_replaced_wholesale_and_never_inherited() {
+        // Scenario T4. A closed pipeline must not still be offering "Cancel", and
+        // the only way to be sure is for silence to mean "no buttons".
+        let head = content(ContentDraft {
+            actions: Actions::new(vec![Action::View {
+                label: "Logs".to_owned(),
+                url: "https://forge.example/run/4521".parse().unwrap(),
+            }])
+            .unwrap(),
+            ..ContentDraft::titled("Pipeline infra #4521")
+        })
+        .unwrap();
+        assert_eq!(head.actions.len(), 1);
+
+        let revised = content(ContentDraft::default().inheriting(&head)).unwrap();
+
+        assert!(revised.actions.is_empty());
     }
 
     #[test]

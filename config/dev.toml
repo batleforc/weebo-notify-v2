@@ -21,7 +21,7 @@ cors_origins = ["http://localhost:5173", "http://localhost:8080"]
 url = "postgres://weebo:weebo@localhost:5432/weebo_notify"
 
 [oidc]
-# oidc-server-mock, the everyday IdP (§12.1).
+# The built-in development provider, started by `task dev:oidc` (§12.1, ADR-0014).
 # Authentik: WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/
 issuer = "http://localhost:9110"
 client_id = "weebo-notify"

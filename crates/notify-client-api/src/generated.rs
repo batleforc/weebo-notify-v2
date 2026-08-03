@@ -43,6 +43,1691 @@ pub mod types {
             }
         }
     }
+    ///A validated call to action.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A validated call to action.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "Open a link. Client-side only, produces no interaction.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "label",
+    ///        "type",
+    ///        "url"
+    ///      ],
+    ///      "properties": {
+    ///        "label": {
+    ///          "description": "Button text.",
+    ///          "type": "string"
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "view"
+    ///          ]
+    ///        },
+    ///        "url": {
+    ///          "description": "Where to go. `http(s)` only, checked here and again before opening.",
+    ///          "type": "string",
+    ///          "format": "uri"
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "Acknowledge. Idempotent per user and per key: clicking twice is a no-op\n(design §2.3, scenario T4).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "key",
+    ///        "label",
+    ///        "type"
+    ///      ],
+    ///      "properties": {
+    ///        "key": {
+    ///          "$ref": "#/components/schemas/ActionKey"
+    ///        },
+    ///        "label": {
+    ///          "description": "Button text.",
+    ///          "type": "string"
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "ack"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "Answer in free text.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "label",
+    ///        "type"
+    ///      ],
+    ///      "properties": {
+    ///        "label": {
+    ///          "description": "Button text.",
+    ///          "type": "string"
+    ///        },
+    ///        "placeholder": {
+    ///          "description": "Hint shown in the empty input.",
+    ///          "type": [
+    ///            "string",
+    ///            "null"
+    ///          ]
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "reply"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "Pick exactly one option. Last pick wins, consistently with the rest of the\nmodel (design §2.2).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "key",
+    ///        "label",
+    ///        "options",
+    ///        "type"
+    ///      ],
+    ///      "properties": {
+    ///        "key": {
+    ///          "$ref": "#/components/schemas/ActionKey"
+    ///        },
+    ///        "label": {
+    ///          "description": "Button text.",
+    ///          "type": "string"
+    ///        },
+    ///        "options": {
+    ///          "description": "The options offered, in display order.",
+    ///          "type": "array",
+    ///          "items": {
+    ///            "$ref": "#/components/schemas/ChoiceOption"
+    ///          }
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "choice"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "Stop being notified about this, for the acting user only.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "label",
+    ///        "scope",
+    ///        "type"
+    ///      ],
+    ///      "properties": {
+    ///        "duration": {
+    ///          "$ref": "#/components/schemas/HumanDuration"
+    ///        },
+    ///        "label": {
+    ///          "description": "Button text.",
+    ///          "type": "string"
+    ///        },
+    ///        "scope": {
+    ///          "$ref": "#/components/schemas/SilenceScope"
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "silence"
+    ///          ]
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "type")]
+    pub enum Action {
+        ///Open a link. Client-side only, produces no interaction.
+        #[serde(rename = "view")]
+        View {
+            ///Button text.
+            label: ::std::string::String,
+            ///Where to go. `http(s)` only, checked here and again before opening.
+            url: ::std::string::String,
+        },
+        /**Acknowledge. Idempotent per user and per key: clicking twice is a no-op
+(design §2.3, scenario T4).*/
+        #[serde(rename = "ack")]
+        Ack {
+            key: ActionKey,
+            ///Button text.
+            label: ::std::string::String,
+        },
+        ///Answer in free text.
+        #[serde(rename = "reply")]
+        Reply {
+            ///Button text.
+            label: ::std::string::String,
+            ///Hint shown in the empty input.
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            placeholder: ::std::option::Option<::std::string::String>,
+        },
+        /**Pick exactly one option. Last pick wins, consistently with the rest of the
+model (design §2.2).*/
+        #[serde(rename = "choice")]
+        Choice {
+            key: ActionKey,
+            ///Button text.
+            label: ::std::string::String,
+            ///The options offered, in display order.
+            options: ::std::vec::Vec<ChoiceOption>,
+        },
+        ///Stop being notified about this, for the acting user only.
+        #[serde(rename = "silence")]
+        Silence {
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            duration: ::std::option::Option<HumanDuration>,
+            ///Button text.
+            label: ::std::string::String,
+            scope: SilenceScope,
+        },
+    }
+    /**The key an `ack` or `choice` action is addressed by. Interactions are
+deduplicated per user *and* per key (design §2.3), so it has to be stable
+across revisions — which is why the publisher chooses it.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The key an `ack` or `choice` action is addressed by. Interactions are\ndeduplicated per user *and* per key (design §2.3), so it has to be stable\nacross revisions — which is why the publisher chooses it.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ActionKey(pub ::std::string::String);
+    impl ::std::ops::Deref for ActionKey {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ActionKey> for ::std::string::String {
+        fn from(value: ActionKey) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ActionKey {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ActionKey {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ActionKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    /**The action set of one revision: at most [`MAX_ACTIONS`], with unique keys.
+
+Order is meaningful — it is display priority. Mobile push transports only
+surface the first two or three, the rest are reachable by opening the client
+(design §2.3).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The action set of one revision: at most [`MAX_ACTIONS`], with unique keys.\n\nOrder is meaningful — it is display priority. Mobile push transports only\nsurface the first two or three, the rest are reachable by opening the client\n(design §2.3).",
+    ///  "type": "array",
+    ///  "items": {
+    ///    "$ref": "#/components/schemas/Action"
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(transparent)]
+    pub struct Actions(pub ::std::vec::Vec<Action>);
+    impl ::std::ops::Deref for Actions {
+        type Target = ::std::vec::Vec<Action>;
+        fn deref(&self) -> &::std::vec::Vec<Action> {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<Actions> for ::std::vec::Vec<Action> {
+        fn from(value: Actions) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::vec::Vec<Action>> for Actions {
+        fn from(value: ::std::vec::Vec<Action>) -> Self {
+            Self(value)
+        }
+    }
+    ///Add somebody to a channel.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Add somebody to a channel.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "principal",
+    ///    "scopes"
+    ///  ],
+    ///  "properties": {
+    ///    "principal": {
+    ///      "$ref": "#/components/schemas/Principal"
+    ///    },
+    ///    "scopes": {
+    ///      "description": "What they may do there.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Scope"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AddMemberBody {
+        pub principal: Principal,
+        ///What they may do there.
+        pub scopes: ::std::vec::Vec<Scope>,
+    }
+    /**The public half of an API key: everything `GET /apikeys` may show (design §5.2).
+
+The secret is returned exactly once, at creation, and is not reconstructible
+from this — by design and by test (scenario T12).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The public half of an API key: everything `GET /apikeys` may show (design §5.2).\n\nThe secret is returned exactly once, at creation, and is not reconstructible\nfrom this — by design and by test (scenario T12).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channels",
+    ///    "created_at",
+    ///    "id",
+    ///    "owner",
+    ///    "prefix",
+    ///    "scopes"
+    ///  ],
+    ///  "properties": {
+    ///    "channels": {
+    ///      "description": "Which channels it may do it in. Empty means none: a key with no channel\nlist is inert, never universal.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ChannelId"
+    ///      }
+    ///    },
+    ///    "created_at": {
+    ///      "description": "When it was created.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "expires_at": {
+    ///      "description": "Optional expiry. Absent is allowed on purpose: rotation is a policy an\noperator may want, not one the product imposes (design §5.2).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/ApiKeyId"
+    ///    },
+    ///    "label": {
+    ///      "description": "A label so a human can tell two keys apart before revoking one.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "last_used_at": {
+    ///      "description": "Last successful authentication. What makes \"is anything still using this?\"\nanswerable before a revocation.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "owner": {
+    ///      "$ref": "#/components/schemas/ApiKeyOwner"
+    ///    },
+    ///    "prefix": {
+    ///      "$ref": "#/components/schemas/ApiKeyPrefix"
+    ///    },
+    ///    "revoked_at": {
+    ///      "description": "Set on revocation, which takes effect immediately.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "scopes": {
+    ///      "description": "What it may do.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Scope"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ApiKey {
+        /**Which channels it may do it in. Empty means none: a key with no channel
+list is inert, never universal.*/
+        pub channels: ::std::vec::Vec<ChannelId>,
+        ///When it was created.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Optional expiry. Absent is allowed on purpose: rotation is a policy an
+operator may want, not one the product imposes (design §5.2).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        pub id: ApiKeyId,
+        ///A label so a human can tell two keys apart before revoking one.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub label: ::std::option::Option<::std::string::String>,
+        /**Last successful authentication. What makes "is anything still using this?"
+answerable before a revocation.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub last_used_at: ::std::option::Option<
+            ::chrono::DateTime<::chrono::offset::Utc>,
+        >,
+        pub owner: ApiKeyOwner,
+        pub prefix: ApiKeyPrefix,
+        ///Set on revocation, which takes effect immediately.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        ///What it may do.
+        pub scopes: ::std::vec::Vec<Scope>,
+    }
+    ///An API key. Identifies the key, never its secret (design §5.2).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An API key. Identifies the key, never its secret (design §5.2).",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ApiKeyId(pub ::std::string::String);
+    impl ::std::ops::Deref for ApiKeyId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ApiKeyId> for ::std::string::String {
+        fn from(value: ApiKeyId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ApiKeyId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ApiKeyId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ApiKeyId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    /**The owner of an API key, which is what decides who a publish is attributed to
+(design §5.2).
+
+Modelled as its own type rather than as a bare [`Principal`] so that the
+authentication adapter cannot accidentally mint a `CiJob` principal out of a
+long-lived key: federation and keys are different doors.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The owner of an API key, which is what decides who a publish is attributed to\n(design §5.2).\n\nModelled as its own type rather than as a bare [`Principal`] so that the\nauthentication adapter cannot accidentally mint a `CiJob` principal out of a\nlong-lived key: federation and keys are different doors.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "A personal key. Scripting for one human; never the identity a team bot runs\non, or offboarding that human kills the bot (design §5.2).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "id",
+    ///        "owner"
+    ///      ],
+    ///      "properties": {
+    ///        "id": {
+    ///          "$ref": "#/components/schemas/UserId"
+    ///        },
+    ///        "owner": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "user"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "A service account key — the recommended shape for anything durable.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "id",
+    ///        "owner"
+    ///      ],
+    ///      "properties": {
+    ///        "id": {
+    ///          "$ref": "#/components/schemas/ServiceAccountId"
+    ///        },
+    ///        "owner": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "service_account"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "A channel key: owned by the channel, attributable to nothing finer.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "id",
+    ///        "owner"
+    ///      ],
+    ///      "properties": {
+    ///        "id": {
+    ///          "$ref": "#/components/schemas/ChannelId"
+    ///        },
+    ///        "owner": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "channel"
+    ///          ]
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "owner", content = "id")]
+    pub enum ApiKeyOwner {
+        /**A personal key. Scripting for one human; never the identity a team bot runs
+on, or offboarding that human kills the bot (design §5.2).*/
+        #[serde(rename = "user")]
+        User(UserId),
+        ///A service account key — the recommended shape for anything durable.
+        #[serde(rename = "service_account")]
+        ServiceAccount(ServiceAccountId),
+        ///A channel key: owned by the channel, attributable to nothing finer.
+        #[serde(rename = "channel")]
+        Channel(ChannelId),
+    }
+    impl ::std::convert::From<UserId> for ApiKeyOwner {
+        fn from(value: UserId) -> Self {
+            Self::User(value)
+        }
+    }
+    impl ::std::convert::From<ServiceAccountId> for ApiKeyOwner {
+        fn from(value: ServiceAccountId) -> Self {
+            Self::ServiceAccount(value)
+        }
+    }
+    impl ::std::convert::From<ChannelId> for ApiKeyOwner {
+        fn from(value: ChannelId) -> Self {
+            Self::Channel(value)
+        }
+    }
+    ///The indexed lookup prefix of a key: the `<prefix>` of `wnk_<prefix>_<secret>`.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The indexed lookup prefix of a key: the `<prefix>` of `wnk_<prefix>_<secret>`.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ApiKeyPrefix(pub ::std::string::String);
+    impl ::std::ops::Deref for ApiKeyPrefix {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ApiKeyPrefix> for ::std::string::String {
+        fn from(value: ApiKeyPrefix) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ApiKeyPrefix {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ApiKeyPrefix {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ApiKeyPrefix {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    /**An uploaded attachment, referenced by a payload rather than embedded in it
+(design §2.3).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An uploaded attachment, referenced by a payload rather than embedded in it\n(design §2.3).",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct AttachmentId(pub ::std::string::String);
+    impl ::std::ops::Deref for AttachmentId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<AttachmentId> for ::std::string::String {
+        fn from(value: AttachmentId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for AttachmentId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for AttachmentId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for AttachmentId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    /**Who an event is for.
+
+The wire names are `channel_id` and `user_id` rather than a shared `id`,
+because an [`Event`] flattens this next to its payload and a `receipt` payload
+already owns an `id` — see [`Event`]'s own note.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Who an event is for.\n\nThe wire names are `channel_id` and `user_id` rather than a shared `id`,\nbecause an [`Event`] flattens this next to its payload and a `receipt` payload\nalready owns an `id` — see [`Event`]'s own note.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "Every principal with `subscribe` on the channel.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "audience",
+    ///        "channel_id"
+    ///      ],
+    ///      "properties": {
+    ///        "audience": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "channel"
+    ///          ]
+    ///        },
+    ///        "channel_id": {
+    ///          "$ref": "#/components/schemas/ChannelId"
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "One user's own connections, wherever they are. Never anybody else's.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "audience",
+    ///        "user_id"
+    ///      ],
+    ///      "properties": {
+    ///        "audience": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "user"
+    ///          ]
+    ///        },
+    ///        "user_id": {
+    ///          "$ref": "#/components/schemas/UserId"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "audience")]
+    pub enum Audience {
+        ///Every principal with `subscribe` on the channel.
+        #[serde(rename = "channel")]
+        Channel { channel_id: ChannelId },
+        ///One user's own connections, wherever they are. Never anybody else's.
+        #[serde(rename = "user")]
+        User { user_id: UserId },
+    }
+    /**A principal as it is *rendered*: the identity plus the label a client shows
+next to a revision, an interaction or a receipt (design §2.4, §8.1).
+
+Carried alongside events rather than fetched, because there is deliberately no
+endpoint that reads someone else's profile: embedding it where it is legitimate
+is what mechanically enforces "visible only through a shared channel"
+(design §2.4). Profile *management* arrives with M2; M1 only needs to be able
+to say who published.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A principal as it is *rendered*: the identity plus the label a client shows\nnext to a revision, an interaction or a receipt (design §2.4, §8.1).\n\nCarried alongside events rather than fetched, because there is deliberately no\nendpoint that reads someone else's profile: embedding it where it is legitimate\nis what mechanically enforces \"visible only through a shared channel\"\n(design §2.4). Profile *management* arrives with M2; M1 only needs to be able\nto say who published.",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/Principal"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "properties": {
+    ///        "display_name": {
+    ///          "description": "The name to show. Absent for a principal that has no profile — an anonymous\nchannel key — in which case clients fall back to the reference.",
+    ///          "type": [
+    ///            "string",
+    ///            "null"
+    ///          ]
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged)]
+    pub enum Author {
+        Variant0 {
+            /**The name to show. Absent for a principal that has no profile — an anonymous
+channel key — in which case clients fall back to the reference.*/
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            display_name: ::std::option::Option<::std::string::String>,
+            id: UserId,
+            kind: AuthorVariant0Kind,
+        },
+        Variant1 {
+            /**The name to show. Absent for a principal that has no profile — an anonymous
+channel key — in which case clients fall back to the reference.*/
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            display_name: ::std::option::Option<::std::string::String>,
+            id: ServiceAccountId,
+            kind: AuthorVariant1Kind,
+        },
+        Variant2 {
+            channel: ChannelId,
+            /**The name to show. Absent for a principal that has no profile — an anonymous
+channel key — in which case clients fall back to the reference.*/
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            display_name: ::std::option::Option<::std::string::String>,
+            key: ApiKeyId,
+            kind: AuthorVariant2Kind,
+        },
+        Variant3 {
+            /**The name to show. Absent for a principal that has no profile — an anonymous
+channel key — in which case clients fall back to the reference.*/
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            display_name: ::std::option::Option<::std::string::String>,
+            ///The OIDC issuer that vouched for the job.
+            issuer: ::std::string::String,
+            kind: AuthorVariant3Kind,
+            ///The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.
+            subject: ::std::string::String,
+        },
+    }
+    ///`AuthorVariant0Kind`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "user"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum AuthorVariant0Kind {
+        #[serde(rename = "user")]
+        User,
+    }
+    impl ::std::fmt::Display for AuthorVariant0Kind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::User => f.write_str("user"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for AuthorVariant0Kind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "user" => Ok(Self::User),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for AuthorVariant0Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant0Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant0Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`AuthorVariant1Kind`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "service_account"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum AuthorVariant1Kind {
+        #[serde(rename = "service_account")]
+        ServiceAccount,
+    }
+    impl ::std::fmt::Display for AuthorVariant1Kind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::ServiceAccount => f.write_str("service_account"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for AuthorVariant1Kind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "service_account" => Ok(Self::ServiceAccount),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for AuthorVariant1Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant1Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant1Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`AuthorVariant2Kind`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "channel_key"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum AuthorVariant2Kind {
+        #[serde(rename = "channel_key")]
+        ChannelKey,
+    }
+    impl ::std::fmt::Display for AuthorVariant2Kind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::ChannelKey => f.write_str("channel_key"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for AuthorVariant2Kind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "channel_key" => Ok(Self::ChannelKey),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for AuthorVariant2Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant2Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant2Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`AuthorVariant3Kind`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "ci_job"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum AuthorVariant3Kind {
+        #[serde(rename = "ci_job")]
+        CiJob,
+    }
+    impl ::std::fmt::Display for AuthorVariant3Kind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::CiJob => f.write_str("ci_job"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for AuthorVariant3Kind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "ci_job" => Ok(Self::CiJob),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for AuthorVariant3Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant3Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant3Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///A channel.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A channel.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "members",
+    ///    "origin",
+    ///    "policy"
+    ///  ],
+    ///  "properties": {
+    ///    "display_name": {
+    ///      "description": "Human label. Falls back to the id when unset.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "group_access": {
+    ///      "description": "Access granted to whole identity-provider groups (design §11).\n\nResolved against the `groups` claim of the caller's token rather than stored\nper user — see [`GroupBinding`]. Defaulted on the wire so a client written\nagainst an older build still parses a channel.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/GroupBinding"
+    ///      }
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "members": {
+    ///      "description": "Its members, users and service accounts alike.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Membership"
+    ///      }
+    ///    },
+    ///    "origin": {
+    ///      "$ref": "#/components/schemas/Origin"
+    ///    },
+    ///    "policy": {
+    ///      "$ref": "#/components/schemas/ChannelPolicy"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Channel {
+        ///Human label. Falls back to the id when unset.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        /**Access granted to whole identity-provider groups (design §11).
+
+Resolved against the `groups` claim of the caller's token rather than stored
+per user — see [`GroupBinding`]. Defaulted on the wire so a client written
+against an older build still parses a channel.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub group_access: ::std::vec::Vec<GroupBinding>,
+        pub id: ChannelId,
+        ///Its members, users and service accounts alike.
+        pub members: ::std::vec::Vec<Membership>,
+        pub origin: Origin,
+        pub policy: ChannelPolicy,
+    }
+    ///A channel, named by the operator: `ci-infra`, `cluster-ovh-1`.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A channel, named by the operator: `ci-infra`, `cluster-ovh-1`.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ChannelId(pub ::std::string::String);
+    impl ::std::ops::Deref for ChannelId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ChannelId> for ::std::string::String {
+        fn from(value: ChannelId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ChannelId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ChannelId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ChannelId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///The knobs that apply to everything published in a channel.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The knobs that apply to everything published in a channel.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "default_priority",
+    ///    "receipts_enabled",
+    ///    "ttl"
+    ///  ],
+    ///  "properties": {
+    ///    "default_priority": {
+    ///      "$ref": "#/components/schemas/Priority"
+    ///    },
+    ///    "receipts_enabled": {
+    ///      "description": "Whether delivery and read receipts are collected and shown as \"seen by\n3/5\" (design §7.3). Opt-in: a channel that tells publishers who read what\nis a product decision, not a default.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "ttl": {
+    ///      "$ref": "#/components/schemas/TtlPolicy"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ChannelPolicy {
+        pub default_priority: Priority,
+        /**Whether delivery and read receipts are collected and shown as "seen by
+3/5" (design §7.3). Opt-in: a channel that tells publishers who read what
+is a product decision, not a default.*/
+        pub receipts_enabled: bool,
+        pub ttl: TtlPolicy,
+    }
+    ///One option of a `choice` action.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One option of a `choice` action.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "key",
+    ///    "label"
+    ///  ],
+    ///  "properties": {
+    ///    "key": {
+    ///      "$ref": "#/components/schemas/ChoiceOptionKey"
+    ///    },
+    ///    "label": {
+    ///      "description": "What the user reads.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ChoiceOption {
+        pub key: ChoiceOptionKey,
+        ///What the user reads.
+        pub label: ::std::string::String,
+    }
+    ///One option of a `choice` action.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One option of a `choice` action.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ChoiceOptionKey(pub ::std::string::String);
+    impl ::std::ops::Deref for ChoiceOptionKey {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ChoiceOptionKey> for ::std::string::String {
+        fn from(value: ChoiceOptionKey) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ChoiceOptionKey {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ChoiceOptionKey {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ChoiceOptionKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///The validated body of a revision.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The validated body of a revision.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "title"
+    ///  ],
+    ///  "properties": {
+    ///    "actions": {
+    ///      "$ref": "#/components/schemas/Actions"
+    ///    },
+    ///    "body": {
+    ///      "description": "Markdown. Raw HTML in it is inert by contract, escaped at render time under\na strict CSP (design §2.3, §10.3).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "group_key": {
+    ///      "description": "Client-side grouping key, and the unit a group-scoped silence acts on\n(design §2.3).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "icon": {
+    ///      "description": "Name of a client-side icon, e.g. `cluster`. Clients that do not know it\nfall back to their default.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "image": {
+    ///      "$ref": "#/components/schemas/Image"
+    ///    },
+    ///    "progress": {
+    ///      "$ref": "#/components/schemas/Progress"
+    ///    },
+    ///    "tags": {
+    ///      "description": "Free-form labels, normalised to lowercase and deduplicated.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "title": {
+    ///      "description": "One line, always present. What a push notification shows when there is room\nfor nothing else.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Content {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub actions: ::std::option::Option<Actions>,
+        /**Markdown. Raw HTML in it is inert by contract, escaped at render time under
+a strict CSP (design §2.3, §10.3).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub body: ::std::option::Option<::std::string::String>,
+        /**Client-side grouping key, and the unit a group-scoped silence acts on
+(design §2.3).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub group_key: ::std::option::Option<::std::string::String>,
+        /**Name of a client-side icon, e.g. `cluster`. Clients that do not know it
+fall back to their default.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub icon: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub image: ::std::option::Option<Image>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub progress: ::std::option::Option<Progress>,
+        ///Free-form labels, normalised to lowercase and deduplicated.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub tags: ::std::vec::Vec<::std::string::String>,
+        /**One line, always present. What a push notification shows when there is room
+for nothing else.*/
+        pub title: ::std::string::String,
+    }
+    /**What a publisher sends, before validation.
+
+Unknown fields are tolerated here, unlike in the nested drafts: this struct is
+flattened into the publish request alongside the lifecycle fields (`state`,
+`status`, `ttl`…), and serde cannot reject unknown fields across a flatten.
+The nested drafts keep the check, which is where it earns its keep — a
+misspelled `url` in a `view` action would otherwise silently produce a button
+that goes nowhere.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a publisher sends, before validation.\n\nUnknown fields are tolerated here, unlike in the nested drafts: this struct is\nflattened into the publish request alongside the lifecycle fields (`state`,\n`status`, `ttl`…), and serde cannot reject unknown fields across a flatten.\nThe nested drafts keep the check, which is where it earns its keep — a\nmisspelled `url` in a `view` action would otherwise silently produce a button\nthat goes nowhere.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "actions": {
+    ///      "$ref": "#/components/schemas/Actions"
+    ///    },
+    ///    "body": {
+    ///      "description": "See [`Content::body`].",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "group_key": {
+    ///      "description": "See [`Content::group_key`].",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "icon": {
+    ///      "description": "See [`Content::icon`].",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "image": {
+    ///      "$ref": "#/components/schemas/Image"
+    ///    },
+    ///    "progress": {
+    ///      "$ref": "#/components/schemas/Progress"
+    ///    },
+    ///    "tags": {
+    ///      "description": "See [`Content::tags`].",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "title": {
+    ///      "description": "See [`Content::title`].\n\nOptional on the wire, and absent means \"leave it alone\" on a revision — see\n[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so\nan absent title is the same refusal an empty one gets.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ContentDraft {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub actions: ::std::option::Option<Actions>,
+        ///See [`Content::body`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub body: ::std::option::Option<::std::string::String>,
+        ///See [`Content::group_key`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub group_key: ::std::option::Option<::std::string::String>,
+        ///See [`Content::icon`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub icon: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub image: ::std::option::Option<Image>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub progress: ::std::option::Option<Progress>,
+        ///See [`Content::tags`].
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub tags: ::std::vec::Vec<::std::string::String>,
+        /**See [`Content::title`].
+
+Optional on the wire, and absent means "leave it alone" on a revision — see
+[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
+an absent title is the same refusal an empty one gets.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub title: ::std::option::Option<::std::string::String>,
+    }
+    impl ::std::default::Default for ContentDraft {
+        fn default() -> Self {
+            Self {
+                actions: Default::default(),
+                body: Default::default(),
+                group_key: Default::default(),
+                icon: Default::default(),
+                image: Default::default(),
+                progress: Default::default(),
+                tags: Default::default(),
+                title: Default::default(),
+            }
+        }
+    }
+    ///Create a channel through the API. GitOps-managed ones come from config instead.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Create a channel through the API. GitOps-managed ones come from config instead.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id"
+    ///  ],
+    ///  "properties": {
+    ///    "display_name": {
+    ///      "description": "A human label, when the id is not one.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateChannelBody {
+        ///A human label, when the id is not one.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        pub id: ChannelId,
+    }
+    ///Mint an API key.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Mint an API key.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channels",
+    ///    "owner",
+    ///    "scopes"
+    ///  ],
+    ///  "properties": {
+    ///    "channels": {
+    ///      "description": "Where it may do it.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ChannelId"
+    ///      }
+    ///    },
+    ///    "expires_at": {
+    ///      "description": "When it stops working. Absent means never, which is a policy choice rather\nthan a default anybody should reach for.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "label": {
+    ///      "description": "A label, so a key list is readable a year later.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "owner": {
+    ///      "$ref": "#/components/schemas/ApiKeyOwner"
+    ///    },
+    ///    "scopes": {
+    ///      "description": "What it may do.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Scope"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateKeyBody {
+        ///Where it may do it.
+        pub channels: ::std::vec::Vec<ChannelId>,
+        /**When it stops working. Absent means never, which is a policy choice rather
+than a default anybody should reach for.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        ///A label, so a key list is readable a year later.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub label: ::std::option::Option<::std::string::String>,
+        pub owner: ApiKeyOwner,
+        ///What it may do.
+        pub scopes: ::std::vec::Vec<Scope>,
+    }
+    ///A position in the global event sequence.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A position in the global event sequence.",
+    ///  "examples": [
+    ///    "evt_00000000000042"
+    ///  ],
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct Cursor(pub ::std::string::String);
+    impl ::std::ops::Deref for Cursor {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<Cursor> for ::std::string::String {
+        fn from(value: Cursor) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for Cursor {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for Cursor {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for Cursor {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     ///The state of a single dependency.
     ///
     /// <details><summary>JSON schema</summary>
@@ -88,6 +1773,3316 @@ pub mod types {
         ///Dependency name, e.g. `postgres`, `attachments`, `jwks`, `eventbus`.
         pub name: ::std::string::String,
     }
+    ///An enrolled device.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An enrolled device.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "enrolled_at",
+    ///    "id",
+    ///    "label",
+    ///    "owner",
+    ///    "transport"
+    ///  ],
+    ///  "properties": {
+    ///    "cursor": {
+    ///      "$ref": "#/components/schemas/Cursor"
+    ///    },
+    ///    "enrolled_at": {
+    ///      "description": "When it was enrolled.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/DeviceId"
+    ///    },
+    ///    "label": {
+    ///      "description": "What the owner calls it in the device list, so revoking the right one does\nnot require guessing.",
+    ///      "type": "string"
+    ///    },
+    ///    "last_seen_at": {
+    ///      "description": "Last time it was seen, for the device list.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "owner": {
+    ///      "$ref": "#/components/schemas/Principal"
+    ///    },
+    ///    "public_key": {
+    ///      "$ref": "#/components/schemas/DevicePublicKey"
+    ///    },
+    ///    "revoked_at": {
+    ///      "description": "Set on revocation.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "transport": {
+    ///      "$ref": "#/components/schemas/PushTransport"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Device {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub cursor: ::std::option::Option<Cursor>,
+        ///When it was enrolled.
+        pub enrolled_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        pub id: DeviceId,
+        /**What the owner calls it in the device list, so revoking the right one does
+not require guessing.*/
+        pub label: ::std::string::String,
+        ///Last time it was seen, for the device list.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub last_seen_at: ::std::option::Option<
+            ::chrono::DateTime<::chrono::offset::Utc>,
+        >,
+        pub owner: Principal,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub public_key: ::std::option::Option<DevicePublicKey>,
+        ///Set on revocation.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        pub transport: PushTransport,
+    }
+    ///An enrolled device: a browser, a desktop app, a phone (design §6.2).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An enrolled device: a browser, a desktop app, a phone (design §6.2).",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct DeviceId(pub ::std::string::String);
+    impl ::std::ops::Deref for DeviceId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<DeviceId> for ::std::string::String {
+        fn from(value: DeviceId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for DeviceId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for DeviceId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for DeviceId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///Base64url, 32 bytes
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Base64url, 32 bytes",
+    ///  "type": "string",
+    ///  "format": "byte"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct DevicePublicKey(pub ::std::string::String);
+    impl ::std::ops::Deref for DevicePublicKey {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<DevicePublicKey> for ::std::string::String {
+        fn from(value: DevicePublicKey) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for DevicePublicKey {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for DevicePublicKey {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for DevicePublicKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///Enrol a device.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Enrol a device.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "label",
+    ///    "transport"
+    ///  ],
+    ///  "properties": {
+    ///    "label": {
+    ///      "description": "What to call it in the device list.",
+    ///      "type": "string"
+    ///    },
+    ///    "public_key": {
+    ///      "$ref": "#/components/schemas/DevicePublicKey"
+    ///    },
+    ///    "transport": {
+    ///      "$ref": "#/components/schemas/PushTransport"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EnrolBody {
+        ///What to call it in the device list.
+        pub label: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub public_key: ::std::option::Option<DevicePublicKey>,
+        pub transport: PushTransport,
+    }
+    /**One row of the event log.
+
+# One flat object, therefore no name may be claimed twice
+
+The audience and the payload are both flattened, because the wire shape §8.1
+documents is flat: `channel_id`, `notification_id`, `seq` and the rest sit side
+by side in one object, and a client renders a row without unwrapping anything.
+
+Flattening means the envelope and the payload share one namespace, and serde
+resolves a clash by emitting the key twice — a document that no longer reads
+back. Two names are therefore reserved by this struct and by nothing else:
+
+* the audience's is `channel_id` / `user_id`, never `id`, because `receipt` and
+  `interaction` payloads carry their own `id`;
+* the envelope's timestamp is `logged_at`, never `recorded_at`, because an
+  `interaction` payload carries its own `recorded_at`.
+
+Both are covered by tests below. A new payload field colliding with one of
+these is a wire break, not a detail.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One row of the event log.\n\n# One flat object, therefore no name may be claimed twice\n\nThe audience and the payload are both flattened, because the wire shape §8.1\ndocuments is flat: `channel_id`, `notification_id`, `seq` and the rest sit side\nby side in one object, and a client renders a row without unwrapping anything.\n\nFlattening means the envelope and the payload share one namespace, and serde\nresolves a clash by emitting the key twice — a document that no longer reads\nback. Two names are therefore reserved by this struct and by nothing else:\n\n* the audience's is `channel_id` / `user_id`, never `id`, because `receipt` and\n  `interaction` payloads carry their own `id`;\n* the envelope's timestamp is `logged_at`, never `recorded_at`, because an\n  `interaction` payload carries its own `recorded_at`.\n\nBoth are covered by tests below. A new payload field colliding with one of\nthese is a wire break, not a detail.",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/Audience"
+    ///    },
+    ///    {
+    ///      "$ref": "#/components/schemas/EventPayload"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "cursor",
+    ///        "logged_at"
+    ///      ],
+    ///      "properties": {
+    ///        "cursor": {
+    ///          "$ref": "#/components/schemas/Cursor"
+    ///        },
+    ///        "logged_at": {
+    ///          "description": "When it was appended, by the server's clock.",
+    ///          "type": "string",
+    ///          "format": "date-time"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged)]
+    pub enum Event {
+        Variant0(EventVariant0),
+        Variant1(EventVariant1),
+    }
+    impl ::std::convert::From<EventVariant0> for Event {
+        fn from(value: EventVariant0) -> Self {
+            Self::Variant0(value)
+        }
+    }
+    impl ::std::convert::From<EventVariant1> for Event {
+        fn from(value: EventVariant1) -> Self {
+            Self::Variant1(value)
+        }
+    }
+    ///What actually happened.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What actually happened.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///      "allOf": [
+    ///        {
+    ///          "$ref": "#/components/schemas/RevisionEvent"
+    ///        },
+    ///        {
+    ///          "type": "object",
+    ///          "required": [
+    ///            "event"
+    ///          ],
+    ///          "properties": {
+    ///            "event": {
+    ///              "type": "string",
+    ///              "enum": [
+    ///                "revision"
+    ///              ]
+    ///            }
+    ///          }
+    ///        }
+    ///      ]
+    ///    },
+    ///    {
+    ///      "description": "A receipt was posted.",
+    ///      "allOf": [
+    ///        {
+    ///          "$ref": "#/components/schemas/Receipt"
+    ///        },
+    ///        {
+    ///          "type": "object",
+    ///          "required": [
+    ///            "event"
+    ///          ],
+    ///          "properties": {
+    ///            "event": {
+    ///              "type": "string",
+    ///              "enum": [
+    ///                "receipt"
+    ///              ]
+    ///            }
+    ///          }
+    ///        }
+    ///      ]
+    ///    },
+    ///    {
+    ///      "description": "An interaction was recorded.",
+    ///      "allOf": [
+    ///        {
+    ///          "$ref": "#/components/schemas/InteractionRecord"
+    ///        },
+    ///        {
+    ///          "type": "object",
+    ///          "required": [
+    ///            "event"
+    ///          ],
+    ///          "properties": {
+    ///            "event": {
+    ///              "type": "string",
+    ///              "enum": [
+    ///                "interaction"
+    ///              ]
+    ///            }
+    ///          }
+    ///        }
+    ///      ]
+    ///    },
+    ///    {
+    ///      "description": "A notification is gone.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "event",
+    ///        "notification_id",
+    ///        "reason"
+    ///      ],
+    ///      "properties": {
+    ///        "event": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "tombstone"
+    ///          ]
+    ///        },
+    ///        "notification_id": {
+    ///          "$ref": "#/components/schemas/NotificationId"
+    ///        },
+    ///        "reason": {
+    ///          "$ref": "#/components/schemas/TombstoneReason"
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "See [`PreferenceEvent`].",
+    ///      "allOf": [
+    ///        {
+    ///          "$ref": "#/components/schemas/PreferenceEvent"
+    ///        },
+    ///        {
+    ///          "type": "object",
+    ///          "required": [
+    ///            "event"
+    ///          ],
+    ///          "properties": {
+    ///            "event": {
+    ///              "type": "string",
+    ///              "enum": [
+    ///                "preference"
+    ///              ]
+    ///            }
+    ///          }
+    ///        }
+    ///      ]
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged)]
+    pub enum EventPayload {
+        Variant0 {
+            author: Author,
+            ///When the notification was first created.
+            created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            event: EventPayloadVariant0Event,
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            external_id: ::std::option::Option<ExternalId>,
+            notification_id: NotificationId,
+            payload: Content,
+            priority: Priority,
+            ///When this revision landed.
+            revised_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            /**Server-assigned sequence within the notification — the arbiter of
+last-write-wins (design §2.2).*/
+            seq: i32,
+            state: State,
+            status: Status,
+        },
+        Variant1 {
+            ///Server time.
+            at: ::chrono::DateTime<::chrono::offset::Utc>,
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            device: ::std::option::Option<DeviceId>,
+            event: EventPayloadVariant1Event,
+            id: ReceiptId,
+            kind: ReceiptKind,
+            notification_id: NotificationId,
+            principal: Principal,
+        },
+        Variant2 {
+            author: Author,
+            event: EventPayloadVariant2Event,
+            id: InteractionId,
+            interaction: Interaction,
+            notification_id: NotificationId,
+            ///When the server recorded it.
+            recorded_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        },
+        Variant3 {
+            event: EventPayloadVariant3Event,
+            notification_id: NotificationId,
+            reason: TombstoneReason,
+        },
+        Variant4 {
+            event: EventPayloadVariant4Event,
+            ///Every silence currently in force for them.
+            silences: ::std::vec::Vec<Silence>,
+            user: UserId,
+        },
+    }
+    ///`EventPayloadVariant0Event`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "revision"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum EventPayloadVariant0Event {
+        #[serde(rename = "revision")]
+        Revision,
+    }
+    impl ::std::fmt::Display for EventPayloadVariant0Event {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Revision => f.write_str("revision"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for EventPayloadVariant0Event {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "revision" => Ok(Self::Revision),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for EventPayloadVariant0Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for EventPayloadVariant0Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for EventPayloadVariant0Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`EventPayloadVariant1Event`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "receipt"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum EventPayloadVariant1Event {
+        #[serde(rename = "receipt")]
+        Receipt,
+    }
+    impl ::std::fmt::Display for EventPayloadVariant1Event {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Receipt => f.write_str("receipt"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for EventPayloadVariant1Event {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "receipt" => Ok(Self::Receipt),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for EventPayloadVariant1Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for EventPayloadVariant1Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for EventPayloadVariant1Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`EventPayloadVariant2Event`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "interaction"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum EventPayloadVariant2Event {
+        #[serde(rename = "interaction")]
+        Interaction,
+    }
+    impl ::std::fmt::Display for EventPayloadVariant2Event {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Interaction => f.write_str("interaction"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for EventPayloadVariant2Event {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "interaction" => Ok(Self::Interaction),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for EventPayloadVariant2Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for EventPayloadVariant2Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for EventPayloadVariant2Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`EventPayloadVariant3Event`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "tombstone"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum EventPayloadVariant3Event {
+        #[serde(rename = "tombstone")]
+        Tombstone,
+    }
+    impl ::std::fmt::Display for EventPayloadVariant3Event {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Tombstone => f.write_str("tombstone"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for EventPayloadVariant3Event {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "tombstone" => Ok(Self::Tombstone),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for EventPayloadVariant3Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for EventPayloadVariant3Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for EventPayloadVariant3Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`EventPayloadVariant4Event`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "preference"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum EventPayloadVariant4Event {
+        #[serde(rename = "preference")]
+        Preference,
+    }
+    impl ::std::fmt::Display for EventPayloadVariant4Event {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Preference => f.write_str("preference"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for EventPayloadVariant4Event {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "preference" => Ok(Self::Preference),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for EventPayloadVariant4Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for EventPayloadVariant4Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for EventPayloadVariant4Event {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`EventVariant0`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "allOf": [
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "cursor",
+    ///        "logged_at"
+    ///      ],
+    ///      "properties": {
+    ///        "cursor": {
+    ///          "$ref": "#/components/schemas/Cursor"
+    ///        },
+    ///        "logged_at": {
+    ///          "description": "When it was appended, by the server's clock.",
+    ///          "type": "string",
+    ///          "format": "date-time"
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "allOf": [
+    ///        {
+    ///          "oneOf": [
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/RevisionEvent"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "revision"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                }
+    ///              ]
+    ///            },
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "A receipt was posted.",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/Receipt"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "receipt"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                }
+    ///              ]
+    ///            },
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "An interaction was recorded.",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/InteractionRecord"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "interaction"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                }
+    ///              ]
+    ///            },
+    ///            {
+    ///              "description": "A notification is gone.",
+    ///              "type": "object",
+    ///              "required": [
+    ///                "event",
+    ///                "notification_id",
+    ///                "reason"
+    ///              ],
+    ///              "properties": {
+    ///                "event": {
+    ///                  "type": "string",
+    ///                  "enum": [
+    ///                    "tombstone"
+    ///                  ]
+    ///                },
+    ///                "notification_id": {
+    ///                  "$ref": "#/components/schemas/NotificationId"
+    ///                },
+    ///                "reason": {
+    ///                  "$ref": "#/components/schemas/TombstoneReason"
+    ///                }
+    ///              }
+    ///            },
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "See [`PreferenceEvent`].",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/PreferenceEvent"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "preference"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                }
+    ///              ]
+    ///            }
+    ///          ]
+    ///        },
+    ///        {
+    ///          "description": "Every principal with `subscribe` on the channel.",
+    ///          "type": "object",
+    ///          "required": [
+    ///            "audience",
+    ///            "channel_id"
+    ///          ],
+    ///          "properties": {
+    ///            "audience": {
+    ///              "type": "string",
+    ///              "enum": [
+    ///                "channel"
+    ///              ]
+    ///            },
+    ///            "channel_id": {
+    ///              "$ref": "#/components/schemas/ChannelId"
+    ///            }
+    ///          }
+    ///        },
+    ///        {
+    ///          "not": {
+    ///            "description": "One user's own connections, wherever they are. Never anybody else's.",
+    ///            "type": "object",
+    ///            "required": [
+    ///              "audience",
+    ///              "user_id"
+    ///            ],
+    ///            "properties": {
+    ///              "audience": {
+    ///                "type": "string",
+    ///                "enum": [
+    ///                  "user"
+    ///                ]
+    ///              },
+    ///              "user_id": {
+    ///                "$ref": "#/components/schemas/UserId"
+    ///              }
+    ///            }
+    ///          }
+    ///        }
+    ///      ]
+    ///    },
+    ///    {
+    ///      "not": {
+    ///        "allOf": [
+    ///          {
+    ///            "oneOf": [
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A receipt was posted.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/Receipt"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "receipt"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "An interaction was recorded.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/InteractionRecord"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "interaction"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`PreferenceEvent`].",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/PreferenceEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "preference"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              },
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/RevisionEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "revision"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "An interaction was recorded.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/InteractionRecord"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "interaction"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`PreferenceEvent`].",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/PreferenceEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "preference"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              },
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/RevisionEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "revision"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A receipt was posted.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/Receipt"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "receipt"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`PreferenceEvent`].",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/PreferenceEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "preference"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              },
+    ///              {
+    ///                "description": "A notification is gone.",
+    ///                "type": "object",
+    ///                "required": [
+    ///                  "event",
+    ///                  "notification_id",
+    ///                  "reason"
+    ///                ],
+    ///                "properties": {
+    ///                  "event": {
+    ///                    "type": "string",
+    ///                    "enum": [
+    ///                      "tombstone"
+    ///                    ]
+    ///                  },
+    ///                  "notification_id": {
+    ///                    "$ref": "#/components/schemas/NotificationId"
+    ///                  },
+    ///                  "reason": {
+    ///                    "$ref": "#/components/schemas/TombstoneReason"
+    ///                  }
+    ///                }
+    ///              },
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/RevisionEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "revision"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A receipt was posted.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/Receipt"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "receipt"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "An interaction was recorded.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/InteractionRecord"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "interaction"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              }
+    ///            ]
+    ///          },
+    ///          {
+    ///            "description": "One user's own connections, wherever they are. Never anybody else's.",
+    ///            "type": "object",
+    ///            "required": [
+    ///              "audience",
+    ///              "user_id"
+    ///            ],
+    ///            "properties": {
+    ///              "audience": {
+    ///                "type": "string",
+    ///                "enum": [
+    ///                  "user"
+    ///                ]
+    ///              },
+    ///              "user_id": {
+    ///                "$ref": "#/components/schemas/UserId"
+    ///              }
+    ///            }
+    ///          },
+    ///          {
+    ///            "not": {
+    ///              "description": "Every principal with `subscribe` on the channel.",
+    ///              "type": "object",
+    ///              "required": [
+    ///                "audience",
+    ///                "channel_id"
+    ///              ],
+    ///              "properties": {
+    ///                "audience": {
+    ///                  "type": "string",
+    ///                  "enum": [
+    ///                    "channel"
+    ///                  ]
+    ///                },
+    ///                "channel_id": {
+    ///                  "$ref": "#/components/schemas/ChannelId"
+    ///                }
+    ///              }
+    ///            }
+    ///          }
+    ///        ]
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(deny_unknown_fields)]
+    pub enum EventVariant0 {}
+    ///`EventVariant1`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "allOf": [
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "cursor",
+    ///        "logged_at"
+    ///      ],
+    ///      "properties": {
+    ///        "cursor": {
+    ///          "$ref": "#/components/schemas/Cursor"
+    ///        },
+    ///        "logged_at": {
+    ///          "description": "When it was appended, by the server's clock.",
+    ///          "type": "string",
+    ///          "format": "date-time"
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "allOf": [
+    ///        {
+    ///          "oneOf": [
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/RevisionEvent"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "revision"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                }
+    ///              ]
+    ///            },
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "A receipt was posted.",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/Receipt"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "receipt"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                }
+    ///              ]
+    ///            },
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "An interaction was recorded.",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/InteractionRecord"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "interaction"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                }
+    ///              ]
+    ///            },
+    ///            {
+    ///              "description": "A notification is gone.",
+    ///              "type": "object",
+    ///              "required": [
+    ///                "event",
+    ///                "notification_id",
+    ///                "reason"
+    ///              ],
+    ///              "properties": {
+    ///                "event": {
+    ///                  "type": "string",
+    ///                  "enum": [
+    ///                    "tombstone"
+    ///                  ]
+    ///                },
+    ///                "notification_id": {
+    ///                  "$ref": "#/components/schemas/NotificationId"
+    ///                },
+    ///                "reason": {
+    ///                  "$ref": "#/components/schemas/TombstoneReason"
+    ///                }
+    ///              }
+    ///            },
+    ///            {
+    ///              "allOf": [
+    ///                {},
+    ///                {
+    ///                  "description": "See [`PreferenceEvent`].",
+    ///                  "allOf": [
+    ///                    {
+    ///                      "$ref": "#/components/schemas/PreferenceEvent"
+    ///                    },
+    ///                    {
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "preference"
+    ///                          ]
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  ]
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  }
+    ///                },
+    ///                {
+    ///                  "not": {
+    ///                    "description": "A notification is gone.",
+    ///                    "type": "object",
+    ///                    "required": [
+    ///                      "event",
+    ///                      "notification_id",
+    ///                      "reason"
+    ///                    ],
+    ///                    "properties": {
+    ///                      "event": {
+    ///                        "type": "string",
+    ///                        "enum": [
+    ///                          "tombstone"
+    ///                        ]
+    ///                      },
+    ///                      "notification_id": {
+    ///                        "$ref": "#/components/schemas/NotificationId"
+    ///                      },
+    ///                      "reason": {
+    ///                        "$ref": "#/components/schemas/TombstoneReason"
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                }
+    ///              ]
+    ///            }
+    ///          ]
+    ///        },
+    ///        {
+    ///          "description": "One user's own connections, wherever they are. Never anybody else's.",
+    ///          "type": "object",
+    ///          "required": [
+    ///            "audience",
+    ///            "user_id"
+    ///          ],
+    ///          "properties": {
+    ///            "audience": {
+    ///              "type": "string",
+    ///              "enum": [
+    ///                "user"
+    ///              ]
+    ///            },
+    ///            "user_id": {
+    ///              "$ref": "#/components/schemas/UserId"
+    ///            }
+    ///          }
+    ///        },
+    ///        {
+    ///          "not": {
+    ///            "description": "Every principal with `subscribe` on the channel.",
+    ///            "type": "object",
+    ///            "required": [
+    ///              "audience",
+    ///              "channel_id"
+    ///            ],
+    ///            "properties": {
+    ///              "audience": {
+    ///                "type": "string",
+    ///                "enum": [
+    ///                  "channel"
+    ///                ]
+    ///              },
+    ///              "channel_id": {
+    ///                "$ref": "#/components/schemas/ChannelId"
+    ///              }
+    ///            }
+    ///          }
+    ///        }
+    ///      ]
+    ///    },
+    ///    {
+    ///      "not": {
+    ///        "allOf": [
+    ///          {
+    ///            "oneOf": [
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/RevisionEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "revision"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A receipt was posted.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/Receipt"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "receipt"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "An interaction was recorded.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/InteractionRecord"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "interaction"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`PreferenceEvent`].",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/PreferenceEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "preference"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              },
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "A receipt was posted.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/Receipt"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "receipt"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/RevisionEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "revision"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "An interaction was recorded.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/InteractionRecord"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "interaction"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`PreferenceEvent`].",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/PreferenceEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "preference"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              },
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "An interaction was recorded.",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/InteractionRecord"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "interaction"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/RevisionEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "revision"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A receipt was posted.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/Receipt"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "receipt"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`PreferenceEvent`].",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/PreferenceEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "preference"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              },
+    ///              {
+    ///                "description": "A notification is gone.",
+    ///                "type": "object",
+    ///                "required": [
+    ///                  "event",
+    ///                  "notification_id",
+    ///                  "reason"
+    ///                ],
+    ///                "properties": {
+    ///                  "event": {
+    ///                    "type": "string",
+    ///                    "enum": [
+    ///                      "tombstone"
+    ///                    ]
+    ///                  },
+    ///                  "notification_id": {
+    ///                    "$ref": "#/components/schemas/NotificationId"
+    ///                  },
+    ///                  "reason": {
+    ///                    "$ref": "#/components/schemas/TombstoneReason"
+    ///                  }
+    ///                }
+    ///              },
+    ///              {
+    ///                "allOf": [
+    ///                  {},
+    ///                  {
+    ///                    "description": "See [`PreferenceEvent`].",
+    ///                    "allOf": [
+    ///                      {
+    ///                        "$ref": "#/components/schemas/PreferenceEvent"
+    ///                      },
+    ///                      {
+    ///                        "type": "object",
+    ///                        "required": [
+    ///                          "event"
+    ///                        ],
+    ///                        "properties": {
+    ///                          "event": {
+    ///                            "type": "string",
+    ///                            "enum": [
+    ///                              "preference"
+    ///                            ]
+    ///                          }
+    ///                        }
+    ///                      }
+    ///                    ]
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/RevisionEvent"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "revision"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A receipt was posted.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/Receipt"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "receipt"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "An interaction was recorded.",
+    ///                      "allOf": [
+    ///                        {
+    ///                          "$ref": "#/components/schemas/InteractionRecord"
+    ///                        },
+    ///                        {
+    ///                          "type": "object",
+    ///                          "required": [
+    ///                            "event"
+    ///                          ],
+    ///                          "properties": {
+    ///                            "event": {
+    ///                              "type": "string",
+    ///                              "enum": [
+    ///                                "interaction"
+    ///                              ]
+    ///                            }
+    ///                          }
+    ///                        }
+    ///                      ]
+    ///                    }
+    ///                  },
+    ///                  {
+    ///                    "not": {
+    ///                      "description": "A notification is gone.",
+    ///                      "type": "object",
+    ///                      "required": [
+    ///                        "event",
+    ///                        "notification_id",
+    ///                        "reason"
+    ///                      ],
+    ///                      "properties": {
+    ///                        "event": {
+    ///                          "type": "string",
+    ///                          "enum": [
+    ///                            "tombstone"
+    ///                          ]
+    ///                        },
+    ///                        "notification_id": {
+    ///                          "$ref": "#/components/schemas/NotificationId"
+    ///                        },
+    ///                        "reason": {
+    ///                          "$ref": "#/components/schemas/TombstoneReason"
+    ///                        }
+    ///                      }
+    ///                    }
+    ///                  }
+    ///                ]
+    ///              }
+    ///            ]
+    ///          },
+    ///          {
+    ///            "description": "Every principal with `subscribe` on the channel.",
+    ///            "type": "object",
+    ///            "required": [
+    ///              "audience",
+    ///              "channel_id"
+    ///            ],
+    ///            "properties": {
+    ///              "audience": {
+    ///                "type": "string",
+    ///                "enum": [
+    ///                  "channel"
+    ///                ]
+    ///              },
+    ///              "channel_id": {
+    ///                "$ref": "#/components/schemas/ChannelId"
+    ///              }
+    ///            }
+    ///          },
+    ///          {
+    ///            "not": {
+    ///              "description": "One user's own connections, wherever they are. Never anybody else's.",
+    ///              "type": "object",
+    ///              "required": [
+    ///                "audience",
+    ///                "user_id"
+    ///              ],
+    ///              "properties": {
+    ///                "audience": {
+    ///                  "type": "string",
+    ///                  "enum": [
+    ///                    "user"
+    ///                  ]
+    ///                },
+    ///                "user_id": {
+    ///                  "$ref": "#/components/schemas/UserId"
+    ///                }
+    ///              }
+    ///            }
+    ///          }
+    ///        ]
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(deny_unknown_fields)]
+    pub enum EventVariant1 {}
+    ///"3 notifications expired in `ci-infra` while you were away."
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "\"3 notifications expired in `ci-infra` while you were away.\"",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channel",
+    ///    "count"
+    ///  ],
+    ///  "properties": {
+    ///    "channel": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "count": {
+    ///      "description": "How many.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ExpiredWhileAway {
+        pub channel: ChannelId,
+        ///How many.
+        pub count: i32,
+    }
+    /**A publisher-supplied identifier used for idempotent upserts: the CI run id,
+the job name, the incident reference (design §2.2).
+
+Looser than a [`Slug`] on purpose — publishers paste values that already exist
+in their system (`run-4521`, `deploy/prod#88`) and rewriting those would break
+the idempotency they are reaching for. Only the hygiene rules apply, plus the
+requirement that nothing was rewritten: an id that changes under sanitisation
+would silently address a different notification than the caller believes.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A publisher-supplied identifier used for idempotent upserts: the CI run id,\nthe job name, the incident reference (design §2.2).\n\nLooser than a [`Slug`] on purpose — publishers paste values that already exist\nin their system (`run-4521`, `deploy/prod#88`) and rewriting those would break\nthe idempotency they are reaching for. Only the hygiene rules apply, plus the\nrequirement that nothing was rewritten: an id that changes under sanitisation\nwould silently address a different notification than the caller believes.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ExternalId(pub ::std::string::String);
+    impl ::std::ops::Deref for ExternalId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ExternalId> for ::std::string::String {
+        fn from(value: ExternalId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ExternalId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ExternalId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ExternalId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    /**The scopes everyone in an identity-provider group holds in one channel
+(design §11, `[[channels.managed.access]] oidc_group`).
+
+Deliberately *not* a [`Membership`]: there is no principal to name. Who is in
+`infra-admins` is a fact the identity provider owns and the token carries, and
+it changes without anyone telling us. Resolving it at authorisation time is what
+keeps design §5.1's promise — pure JWKS validation, zero server session — and it
+is why somebody removed from a group loses access on their next token rather
+than whenever a reconciler next runs.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The scopes everyone in an identity-provider group holds in one channel\n(design §11, `[[channels.managed.access]] oidc_group`).\n\nDeliberately *not* a [`Membership`]: there is no principal to name. Who is in\n`infra-admins` is a fact the identity provider owns and the token carries, and\nit changes without anyone telling us. Resolving it at authorisation time is what\nkeeps design §5.1's promise — pure JWKS validation, zero server session — and it\nis why somebody removed from a group loses access on their next token rather\nthan whenever a reconciler next runs.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "group",
+    ///    "scopes"
+    ///  ],
+    ///  "properties": {
+    ///    "group": {
+    ///      "description": "The group as the `groups` claim spells it.",
+    ///      "type": "string"
+    ///    },
+    ///    "scopes": {
+    ///      "description": "What its members may do here.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Scope"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GroupBinding {
+        ///The group as the `groups` claim spells it.
+        pub group: ::std::string::String,
+        ///What its members may do here.
+        pub scopes: ::std::vec::Vec<Scope>,
+    }
     ///Liveness answer.
     ///
     /// <details><summary>JSON schema</summary>
@@ -127,6 +5122,1879 @@ pub mod types {
 during a rolling update.*/
         pub version: ::std::string::String,
     }
+    /**A duration written the way people write them.
+
+Deliberately whole-second and single-unit: `"90m"` is fine, `"1h30m"` is not.
+A notification TTL is a rough intent, not a schedule, and one unit per value
+keeps the config, the payload and the client display identical.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A duration written the way people write them.\n\nDeliberately whole-second and single-unit: `\"90m\"` is fine, `\"1h30m\"` is not.\nA notification TTL is a rough intent, not a schedule, and one unit per value\nkeeps the config, the payload and the client display identical.",
+    ///  "examples": [
+    ///    "48h"
+    ///  ],
+    ///  "type": "string",
+    ///  "pattern": "^\\d+[smhdw]$"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    #[serde(transparent)]
+    pub struct HumanDuration(::std::string::String);
+    impl ::std::ops::Deref for HumanDuration {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<HumanDuration> for ::std::string::String {
+        fn from(value: HumanDuration) -> Self {
+            value.0
+        }
+    }
+    impl ::std::str::FromStr for HumanDuration {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            static PATTERN: ::std::sync::LazyLock<::regress::Regex> = ::std::sync::LazyLock::new(||
+            { ::regress::Regex::new("^\\d+[smhdw]$").unwrap() });
+            if PATTERN.find(value).is_none() {
+                return Err("doesn't match pattern \"^\\d+[smhdw]$\"".into());
+            }
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for HumanDuration {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for HumanDuration {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for HumanDuration {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl<'de> ::serde::Deserialize<'de> for HumanDuration {
+        fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+        where
+            D: ::serde::Deserializer<'de>,
+        {
+            ::std::string::String::deserialize(deserializer)?
+                .parse()
+                .map_err(|e: self::error::ConversionError| {
+                    <D::Error as ::serde::de::Error>::custom(e.to_string())
+                })
+        }
+    }
+    /**The image shown with a notification.
+
+Anything of real size goes to the object store and is referenced, so the
+payload stays small enough to ride inside a push transport (design §2.3, §6.1).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The image shown with a notification.\n\nAnything of real size goes to the object store and is referenced, so the\npayload stays small enough to ride inside a push transport (design §2.3, §6.1).",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "A file already uploaded to the bucket through a presigned URL.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "kind",
+    ///        "ref"
+    ///      ],
+    ///      "properties": {
+    ///        "kind": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "attachment"
+    ///          ]
+    ///        },
+    ///        "ref": {
+    ///          "$ref": "#/components/schemas/AttachmentId"
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "A small image inlined in the payload. Capped at [`MAX_DATA_URI_BYTES`];\npast that, publishers upload an attachment instead.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "kind",
+    ///        "uri"
+    ///      ],
+    ///      "properties": {
+    ///        "kind": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "data_uri"
+    ///          ]
+    ///        },
+    ///        "uri": {
+    ///          "description": "The `data:` URI, already checked for type and size.",
+    ///          "type": "string"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "kind")]
+    pub enum Image {
+        ///A file already uploaded to the bucket through a presigned URL.
+        #[serde(rename = "attachment")]
+        Attachment { #[serde(rename = "ref")] ref_: AttachmentId },
+        /**A small image inlined in the payload. Capped at [`MAX_DATA_URI_BYTES`];
+past that, publishers upload an attachment instead.*/
+        #[serde(rename = "data_uri")]
+        DataUri {
+            ///The `data:` URI, already checked for type and size.
+            uri: ::std::string::String,
+        },
+    }
+    ///What a user sent back.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a user sent back.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "Acknowledgement of the action registered under `key`.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "key",
+    ///        "type"
+    ///      ],
+    ///      "properties": {
+    ///        "key": {
+    ///          "$ref": "#/components/schemas/ActionKey"
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "ack"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "Free text. Unkeyed, because the design gives `reply` actions no key.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "text",
+    ///        "type"
+    ///      ],
+    ///      "properties": {
+    ///        "text": {
+    ///          "description": "The text, sanitised like any other user content.",
+    ///          "type": "string"
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "reply"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "One option of the `choice` action registered under `key`.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "key",
+    ///        "option",
+    ///        "type"
+    ///      ],
+    ///      "properties": {
+    ///        "key": {
+    ///          "$ref": "#/components/schemas/ActionKey"
+    ///        },
+    ///        "option": {
+    ///          "$ref": "#/components/schemas/ChoiceOptionKey"
+    ///        },
+    ///        "type": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "choice"
+    ///          ]
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "type")]
+    pub enum Interaction {
+        ///Acknowledgement of the action registered under `key`.
+        #[serde(rename = "ack")]
+        Ack { key: ActionKey },
+        ///Free text. Unkeyed, because the design gives `reply` actions no key.
+        #[serde(rename = "reply")]
+        Reply {
+            ///The text, sanitised like any other user content.
+            text: ::std::string::String,
+        },
+        ///One option of the `choice` action registered under `key`.
+        #[serde(rename = "choice")]
+        Choice { key: ActionKey, option: ChoiceOptionKey },
+    }
+    ///One recorded interaction: an acknowledgement, a reply, a pick (design §2.3).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One recorded interaction: an acknowledgement, a reply, a pick (design §2.3).",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct InteractionId(pub ::std::string::String);
+    impl ::std::ops::Deref for InteractionId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<InteractionId> for ::std::string::String {
+        fn from(value: InteractionId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for InteractionId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for InteractionId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for InteractionId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///A stored interaction.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A stored interaction.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "author",
+    ///    "id",
+    ///    "interaction",
+    ///    "notification_id",
+    ///    "recorded_at"
+    ///  ],
+    ///  "properties": {
+    ///    "author": {
+    ///      "$ref": "#/components/schemas/Author"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/InteractionId"
+    ///    },
+    ///    "interaction": {
+    ///      "$ref": "#/components/schemas/Interaction"
+    ///    },
+    ///    "notification_id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    },
+    ///    "recorded_at": {
+    ///      "description": "When the server recorded it.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct InteractionRecord {
+        pub author: Author,
+        pub id: InteractionId,
+        pub interaction: Interaction,
+        pub notification_id: NotificationId,
+        ///When the server recorded it.
+        pub recorded_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    }
+    ///The scopes one principal holds in one channel.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The scopes one principal holds in one channel.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "principal",
+    ///    "scopes"
+    ///  ],
+    ///  "properties": {
+    ///    "principal": {
+    ///      "$ref": "#/components/schemas/Principal"
+    ///    },
+    ///    "scopes": {
+    ///      "description": "What they may do. Empty means a member with no rights, which is a\nconfiguration mistake rather than a state the domain needs to model — so it\nis refused at construction.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Scope"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Membership {
+        pub principal: Principal,
+        /**What they may do. Empty means a member with no rights, which is a
+configuration mistake rather than a state the domain needs to model — so it
+is refused at construction.*/
+        pub scopes: ::std::vec::Vec<Scope>,
+    }
+    /**A newly minted key — the only time its secret exists outside the caller.
+
+A DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no
+field that could carry a secret, and that is the property worth keeping
+(scenario T12). The secret lives here, in the one response that returns it, and
+nowhere else.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A newly minted key — the only time its secret exists outside the caller.\n\nA DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no\nfield that could carry a secret, and that is the property worth keeping\n(scenario T12). The secret lives here, in the one response that returns it, and\nnowhere else.",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/ApiKey"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "secret"
+    ///      ],
+    ///      "properties": {
+    ///        "secret": {
+    ///          "description": "`wnk_<prefix>_<secret>`. Store it now; no endpoint can show it again.",
+    ///          "examples": [
+    ///            "wnk_a1b2c3d4_…"
+    ///          ],
+    ///          "type": "string"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MintedKey {
+        /**Which channels it may do it in. Empty means none: a key with no channel
+list is inert, never universal.*/
+        pub channels: ::std::vec::Vec<ChannelId>,
+        ///When it was created.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Optional expiry. Absent is allowed on purpose: rotation is a policy an
+operator may want, not one the product imposes (design §5.2).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        pub id: ApiKeyId,
+        ///A label so a human can tell two keys apart before revoking one.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub label: ::std::option::Option<::std::string::String>,
+        /**Last successful authentication. What makes "is anything still using this?"
+answerable before a revocation.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub last_used_at: ::std::option::Option<
+            ::chrono::DateTime<::chrono::offset::Utc>,
+        >,
+        pub owner: ApiKeyOwner,
+        pub prefix: ApiKeyPrefix,
+        ///Set on revocation, which takes effect immediately.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        ///What it may do.
+        pub scopes: ::std::vec::Vec<Scope>,
+        ///`wnk_<prefix>_<secret>`. Store it now; no endpoint can show it again.
+        pub secret: ::std::string::String,
+    }
+    ///A notification and its current state.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A notification and its current state.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channel",
+    ///    "created_at",
+    ///    "head",
+    ///    "id",
+    ///    "kind",
+    ///    "last_seq",
+    ///    "revision_count",
+    ///    "ttl"
+    ///  ],
+    ///  "properties": {
+    ///    "channel": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "closed_at": {
+    ///      "description": "When it last closed, and therefore when its retention clock started.\n`None` while it is live — which is exactly why a running incident cannot\nexpire (design §7.2bis).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "created_at": {
+    ///      "description": "When the first revision landed.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "deleted_at": {
+    ///      "description": "Set on deletion; the row survives long enough to broadcast a tombstone and\nto keep sync cursors honest (design §7.2bis).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "external_id": {
+    ///      "$ref": "#/components/schemas/ExternalId"
+    ///    },
+    ///    "head": {
+    ///      "$ref": "#/components/schemas/Revision"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    },
+    ///    "kind": {
+    ///      "$ref": "#/components/schemas/NotificationKind"
+    ///    },
+    ///    "last_seq": {
+    ///      "description": "Highest `seq` assigned. The next revision gets `last_seq + 1`.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "revision_count": {
+    ///      "description": "How many revisions have been recorded. Equal to `last_seq` unless the\naggregate was rehydrated from a partial history.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "ttl": {
+    ///      "$ref": "#/components/schemas/Ttl"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Notification {
+        pub channel: ChannelId,
+        /**When it last closed, and therefore when its retention clock started.
+`None` while it is live — which is exactly why a running incident cannot
+expire (design §7.2bis).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub closed_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        ///When the first revision landed.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Set on deletion; the row survives long enough to broadcast a tombstone and
+to keep sync cursors honest (design §7.2bis).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deleted_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub external_id: ::std::option::Option<ExternalId>,
+        pub head: Revision,
+        pub id: NotificationId,
+        pub kind: NotificationKind,
+        ///Highest `seq` assigned. The next revision gets `last_seq + 1`.
+        pub last_seq: i32,
+        /**How many revisions have been recorded. Equal to `last_seq` unless the
+aggregate was rehydrated from a partial history.*/
+        pub revision_count: i32,
+        pub ttl: Ttl,
+    }
+    ///A notification, stable across every revision it accumulates (design §2.2).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A notification, stable across every revision it accumulates (design §2.2).",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct NotificationId(pub ::std::string::String);
+    impl ::std::ops::Deref for NotificationId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<NotificationId> for ::std::string::String {
+        fn from(value: NotificationId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for NotificationId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for NotificationId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for NotificationId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///Which of the two publishing shapes produced this notification (design §2.2).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Which of the two publishing shapes produced this notification (design §2.2).",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "lifecycle",
+    ///    "simple"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum NotificationKind {
+        #[serde(rename = "lifecycle")]
+        Lifecycle,
+        #[serde(rename = "simple")]
+        Simple,
+    }
+    impl ::std::fmt::Display for NotificationKind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Lifecycle => f.write_str("lifecycle"),
+                Self::Simple => f.write_str("simple"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for NotificationKind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "lifecycle" => Ok(Self::Lifecycle),
+                "simple" => Ok(Self::Simple),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for NotificationKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for NotificationKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for NotificationKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///Where an object came from, and therefore who may change it.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Where an object came from, and therefore who may change it.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "managed",
+    ///    "dynamic"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum Origin {
+        #[serde(rename = "managed")]
+        Managed,
+        #[serde(rename = "dynamic")]
+        Dynamic,
+    }
+    impl ::std::fmt::Display for Origin {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Managed => f.write_str("managed"),
+                Self::Dynamic => f.write_str("dynamic"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for Origin {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "managed" => Ok(Self::Managed),
+                "dynamic" => Ok(Self::Dynamic),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for Origin {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for Origin {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for Origin {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///What a caller gets.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a caller gets.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "items"
+    ///  ],
+    ///  "properties": {
+    ///    "items": {
+    ///      "description": "The rows, in the ordering of the endpoint.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "description": "A channel.",
+    ///        "type": "object",
+    ///        "required": [
+    ///          "id",
+    ///          "members",
+    ///          "origin",
+    ///          "policy"
+    ///        ],
+    ///        "properties": {
+    ///          "display_name": {
+    ///            "description": "Human label. Falls back to the id when unset.",
+    ///            "type": [
+    ///              "string",
+    ///              "null"
+    ///            ]
+    ///          },
+    ///          "group_access": {
+    ///            "description": "Access granted to whole identity-provider groups (design §11).\n\nResolved against the `groups` claim of the caller's token rather than stored\nper user — see [`GroupBinding`]. Defaulted on the wire so a client written\nagainst an older build still parses a channel.",
+    ///            "type": "array",
+    ///            "items": {
+    ///              "$ref": "#/components/schemas/GroupBinding"
+    ///            }
+    ///          },
+    ///          "id": {
+    ///            "$ref": "#/components/schemas/ChannelId"
+    ///          },
+    ///          "members": {
+    ///            "description": "Its members, users and service accounts alike.",
+    ///            "type": "array",
+    ///            "items": {
+    ///              "$ref": "#/components/schemas/Membership"
+    ///            }
+    ///          },
+    ///          "origin": {
+    ///            "$ref": "#/components/schemas/Origin"
+    ///          },
+    ///          "policy": {
+    ///            "$ref": "#/components/schemas/ChannelPolicy"
+    ///          }
+    ///        }
+    ///      }
+    ///    },
+    ///    "next": {
+    ///      "$ref": "#/components/schemas/Cursor"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageChannel {
+        ///The rows, in the ordering of the endpoint.
+        pub items: ::std::vec::Vec<PageChannelItemsItem>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub next: ::std::option::Option<Cursor>,
+    }
+    ///A channel.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A channel.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "members",
+    ///    "origin",
+    ///    "policy"
+    ///  ],
+    ///  "properties": {
+    ///    "display_name": {
+    ///      "description": "Human label. Falls back to the id when unset.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "group_access": {
+    ///      "description": "Access granted to whole identity-provider groups (design §11).\n\nResolved against the `groups` claim of the caller's token rather than stored\nper user — see [`GroupBinding`]. Defaulted on the wire so a client written\nagainst an older build still parses a channel.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/GroupBinding"
+    ///      }
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "members": {
+    ///      "description": "Its members, users and service accounts alike.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Membership"
+    ///      }
+    ///    },
+    ///    "origin": {
+    ///      "$ref": "#/components/schemas/Origin"
+    ///    },
+    ///    "policy": {
+    ///      "$ref": "#/components/schemas/ChannelPolicy"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageChannelItemsItem {
+        ///Human label. Falls back to the id when unset.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        /**Access granted to whole identity-provider groups (design §11).
+
+Resolved against the `groups` claim of the caller's token rather than stored
+per user — see [`GroupBinding`]. Defaulted on the wire so a client written
+against an older build still parses a channel.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub group_access: ::std::vec::Vec<GroupBinding>,
+        pub id: ChannelId,
+        ///Its members, users and service accounts alike.
+        pub members: ::std::vec::Vec<Membership>,
+        pub origin: Origin,
+        pub policy: ChannelPolicy,
+    }
+    ///What a caller gets.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a caller gets.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "items"
+    ///  ],
+    ///  "properties": {
+    ///    "items": {
+    ///      "description": "The rows, in the ordering of the endpoint.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "description": "A notification and its current state.",
+    ///        "type": "object",
+    ///        "required": [
+    ///          "channel",
+    ///          "created_at",
+    ///          "head",
+    ///          "id",
+    ///          "kind",
+    ///          "last_seq",
+    ///          "revision_count",
+    ///          "ttl"
+    ///        ],
+    ///        "properties": {
+    ///          "channel": {
+    ///            "$ref": "#/components/schemas/ChannelId"
+    ///          },
+    ///          "closed_at": {
+    ///            "description": "When it last closed, and therefore when its retention clock started.\n`None` while it is live — which is exactly why a running incident cannot\nexpire (design §7.2bis).",
+    ///            "type": [
+    ///              "string",
+    ///              "null"
+    ///            ],
+    ///            "format": "date-time"
+    ///          },
+    ///          "created_at": {
+    ///            "description": "When the first revision landed.",
+    ///            "type": "string",
+    ///            "format": "date-time"
+    ///          },
+    ///          "deleted_at": {
+    ///            "description": "Set on deletion; the row survives long enough to broadcast a tombstone and\nto keep sync cursors honest (design §7.2bis).",
+    ///            "type": [
+    ///              "string",
+    ///              "null"
+    ///            ],
+    ///            "format": "date-time"
+    ///          },
+    ///          "external_id": {
+    ///            "$ref": "#/components/schemas/ExternalId"
+    ///          },
+    ///          "head": {
+    ///            "$ref": "#/components/schemas/Revision"
+    ///          },
+    ///          "id": {
+    ///            "$ref": "#/components/schemas/NotificationId"
+    ///          },
+    ///          "kind": {
+    ///            "$ref": "#/components/schemas/NotificationKind"
+    ///          },
+    ///          "last_seq": {
+    ///            "description": "Highest `seq` assigned. The next revision gets `last_seq + 1`.",
+    ///            "type": "integer",
+    ///            "format": "int32",
+    ///            "minimum": 0.0
+    ///          },
+    ///          "revision_count": {
+    ///            "description": "How many revisions have been recorded. Equal to `last_seq` unless the\naggregate was rehydrated from a partial history.",
+    ///            "type": "integer",
+    ///            "format": "int32",
+    ///            "minimum": 0.0
+    ///          },
+    ///          "ttl": {
+    ///            "$ref": "#/components/schemas/Ttl"
+    ///          }
+    ///        }
+    ///      }
+    ///    },
+    ///    "next": {
+    ///      "$ref": "#/components/schemas/Cursor"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageNotification {
+        ///The rows, in the ordering of the endpoint.
+        pub items: ::std::vec::Vec<PageNotificationItemsItem>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub next: ::std::option::Option<Cursor>,
+    }
+    ///A notification and its current state.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A notification and its current state.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channel",
+    ///    "created_at",
+    ///    "head",
+    ///    "id",
+    ///    "kind",
+    ///    "last_seq",
+    ///    "revision_count",
+    ///    "ttl"
+    ///  ],
+    ///  "properties": {
+    ///    "channel": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "closed_at": {
+    ///      "description": "When it last closed, and therefore when its retention clock started.\n`None` while it is live — which is exactly why a running incident cannot\nexpire (design §7.2bis).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "created_at": {
+    ///      "description": "When the first revision landed.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "deleted_at": {
+    ///      "description": "Set on deletion; the row survives long enough to broadcast a tombstone and\nto keep sync cursors honest (design §7.2bis).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "external_id": {
+    ///      "$ref": "#/components/schemas/ExternalId"
+    ///    },
+    ///    "head": {
+    ///      "$ref": "#/components/schemas/Revision"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    },
+    ///    "kind": {
+    ///      "$ref": "#/components/schemas/NotificationKind"
+    ///    },
+    ///    "last_seq": {
+    ///      "description": "Highest `seq` assigned. The next revision gets `last_seq + 1`.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "revision_count": {
+    ///      "description": "How many revisions have been recorded. Equal to `last_seq` unless the\naggregate was rehydrated from a partial history.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "ttl": {
+    ///      "$ref": "#/components/schemas/Ttl"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageNotificationItemsItem {
+        pub channel: ChannelId,
+        /**When it last closed, and therefore when its retention clock started.
+`None` while it is live — which is exactly why a running incident cannot
+expire (design §7.2bis).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub closed_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        ///When the first revision landed.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Set on deletion; the row survives long enough to broadcast a tombstone and
+to keep sync cursors honest (design §7.2bis).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deleted_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub external_id: ::std::option::Option<ExternalId>,
+        pub head: Revision,
+        pub id: NotificationId,
+        pub kind: NotificationKind,
+        ///Highest `seq` assigned. The next revision gets `last_seq + 1`.
+        pub last_seq: i32,
+        /**How many revisions have been recorded. Equal to `last_seq` unless the
+aggregate was rehydrated from a partial history.*/
+        pub revision_count: i32,
+        pub ttl: Ttl,
+    }
+    ///What a caller gets.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a caller gets.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "items"
+    ///  ],
+    ///  "properties": {
+    ///    "items": {
+    ///      "description": "The rows, in the ordering of the endpoint.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "description": "One immutable step of a notification's life.",
+    ///        "type": "object",
+    ///        "required": [
+    ///          "author",
+    ///          "content",
+    ///          "id",
+    ///          "notification_id",
+    ///          "priority",
+    ///          "received_at",
+    ///          "seq",
+    ///          "state",
+    ///          "status"
+    ///        ],
+    ///        "properties": {
+    ///          "author": {
+    ///            "$ref": "#/components/schemas/Author"
+    ///          },
+    ///          "content": {
+    ///            "$ref": "#/components/schemas/Content"
+    ///          },
+    ///          "id": {
+    ///            "$ref": "#/components/schemas/RevisionId"
+    ///          },
+    ///          "notification_id": {
+    ///            "$ref": "#/components/schemas/NotificationId"
+    ///          },
+    ///          "priority": {
+    ///            "$ref": "#/components/schemas/Priority"
+    ///          },
+    ///          "received_at": {
+    ///            "description": "When the server received it — the server's clock, not the publisher's.",
+    ///            "type": "string",
+    ///            "format": "date-time"
+    ///          },
+    ///          "seq": {
+    ///            "description": "Server-assigned, monotonic within the notification, starting at 1. The\narbiter of last-write-wins.",
+    ///            "type": "integer",
+    ///            "format": "int32",
+    ///            "minimum": 0.0
+    ///          },
+    ///          "state": {
+    ///            "$ref": "#/components/schemas/State"
+    ///          },
+    ///          "status": {
+    ///            "$ref": "#/components/schemas/Status"
+    ///          }
+    ///        }
+    ///      }
+    ///    },
+    ///    "next": {
+    ///      "$ref": "#/components/schemas/Cursor"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageRevision {
+        ///The rows, in the ordering of the endpoint.
+        pub items: ::std::vec::Vec<PageRevisionItemsItem>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub next: ::std::option::Option<Cursor>,
+    }
+    ///One immutable step of a notification's life.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One immutable step of a notification's life.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "author",
+    ///    "content",
+    ///    "id",
+    ///    "notification_id",
+    ///    "priority",
+    ///    "received_at",
+    ///    "seq",
+    ///    "state",
+    ///    "status"
+    ///  ],
+    ///  "properties": {
+    ///    "author": {
+    ///      "$ref": "#/components/schemas/Author"
+    ///    },
+    ///    "content": {
+    ///      "$ref": "#/components/schemas/Content"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/RevisionId"
+    ///    },
+    ///    "notification_id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    },
+    ///    "priority": {
+    ///      "$ref": "#/components/schemas/Priority"
+    ///    },
+    ///    "received_at": {
+    ///      "description": "When the server received it — the server's clock, not the publisher's.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "seq": {
+    ///      "description": "Server-assigned, monotonic within the notification, starting at 1. The\narbiter of last-write-wins.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "state": {
+    ///      "$ref": "#/components/schemas/State"
+    ///    },
+    ///    "status": {
+    ///      "$ref": "#/components/schemas/Status"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageRevisionItemsItem {
+        pub author: Author,
+        pub content: Content,
+        pub id: RevisionId,
+        pub notification_id: NotificationId,
+        pub priority: Priority,
+        ///When the server received it — the server's clock, not the publisher's.
+        pub received_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Server-assigned, monotonic within the notification, starting at 1. The
+arbiter of last-write-wins.*/
+        pub seq: i32,
+        pub state: State,
+        pub status: Status,
+    }
+    /**This user's delivery preferences changed (design §7.4, §8.1).
+
+Carries the whole state rather than a delta: a client that missed one of these
+would otherwise apply the next one to the wrong baseline, and "my phone kept
+buzzing after I turned on do-not-disturb" is not a bug anybody enjoys chasing.
+Do-not-disturb schedules join this in M3; M1 carries the silences.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "This user's delivery preferences changed (design §7.4, §8.1).\n\nCarries the whole state rather than a delta: a client that missed one of these\nwould otherwise apply the next one to the wrong baseline, and \"my phone kept\nbuzzing after I turned on do-not-disturb\" is not a bug anybody enjoys chasing.\nDo-not-disturb schedules join this in M3; M1 carries the silences.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "silences",
+    ///    "user"
+    ///  ],
+    ///  "properties": {
+    ///    "silences": {
+    ///      "description": "Every silence currently in force for them.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Silence"
+    ///      }
+    ///    },
+    ///    "user": {
+    ///      "$ref": "#/components/schemas/UserId"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PreferenceEvent {
+        ///Every silence currently in force for them.
+        pub silences: ::std::vec::Vec<Silence>,
+        pub user: UserId,
+    }
+    ///The identity behind a request, after authentication.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The identity behind a request, after authentication.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "A human, whether they arrived with an OIDC token or with a personal API key.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "id",
+    ///        "kind"
+    ///      ],
+    ///      "properties": {
+    ///        "id": {
+    ///          "$ref": "#/components/schemas/UserId"
+    ///        },
+    ///        "kind": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "user"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "A bot with a name of its own.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "id",
+    ///        "kind"
+    ///      ],
+    ///      "properties": {
+    ///        "id": {
+    ///          "$ref": "#/components/schemas/ServiceAccountId"
+    ///        },
+    ///        "kind": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "service_account"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "A key attached to a channel and to nobody else. Publishes show as \"via key\n`key_…` of channel `ci-infra`\" — when attribution matters, the operator is\nmeant to reach for a service account instead (design §5.2).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "channel",
+    ///        "key",
+    ///        "kind"
+    ///      ],
+    ///      "properties": {
+    ///        "channel": {
+    ///          "$ref": "#/components/schemas/ChannelId"
+    ///        },
+    ///        "key": {
+    ///          "$ref": "#/components/schemas/ApiKeyId"
+    ///        },
+    ///        "kind": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "channel_key"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "A CI job, identified by the claims of the token it exchanged (design §5.3).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "issuer",
+    ///        "kind",
+    ///        "subject"
+    ///      ],
+    ///      "properties": {
+    ///        "issuer": {
+    ///          "description": "The OIDC issuer that vouched for the job.",
+    ///          "type": "string",
+    ///          "format": "uri"
+    ///        },
+    ///        "kind": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "ci_job"
+    ///          ]
+    ///        },
+    ///        "subject": {
+    ///          "description": "The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.",
+    ///          "type": "string"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "kind")]
+    pub enum Principal {
+        ///A human, whether they arrived with an OIDC token or with a personal API key.
+        #[serde(rename = "user")]
+        User { id: UserId },
+        ///A bot with a name of its own.
+        #[serde(rename = "service_account")]
+        ServiceAccount { id: ServiceAccountId },
+        /**A key attached to a channel and to nobody else. Publishes show as "via key
+`key_…` of channel `ci-infra`" — when attribution matters, the operator is
+meant to reach for a service account instead (design §5.2).*/
+        #[serde(rename = "channel_key")]
+        ChannelKey { channel: ChannelId, key: ApiKeyId },
+        ///A CI job, identified by the claims of the token it exchanged (design §5.3).
+        #[serde(rename = "ci_job")]
+        CiJob {
+            ///The OIDC issuer that vouched for the job.
+            issuer: ::std::string::String,
+            ///The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.
+            subject: ::std::string::String,
+        },
+    }
+    /**How loudly a notification asks for attention (design §2.2).
+
+`Urgent` does not bypass a user's do-not-disturb unless that user opted in:
+the recipient decides what may wake them, never the publisher (design §7.4).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How loudly a notification asks for attention (design §2.2).\n\n`Urgent` does not bypass a user's do-not-disturb unless that user opted in:\nthe recipient decides what may wake them, never the publisher (design §7.4).",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "min",
+    ///    "low",
+    ///    "default",
+    ///    "high",
+    ///    "urgent"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum Priority {
+        #[serde(rename = "min")]
+        Min,
+        #[serde(rename = "low")]
+        Low,
+        #[serde(rename = "default")]
+        Default,
+        #[serde(rename = "high")]
+        High,
+        #[serde(rename = "urgent")]
+        Urgent,
+    }
+    impl ::std::fmt::Display for Priority {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Min => f.write_str("min"),
+                Self::Low => f.write_str("low"),
+                Self::Default => f.write_str("default"),
+                Self::High => f.write_str("high"),
+                Self::Urgent => f.write_str("urgent"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for Priority {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "min" => Ok(Self::Min),
+                "low" => Ok(Self::Low),
+                "default" => Ok(Self::Default),
+                "high" => Ok(Self::High),
+                "urgent" => Ok(Self::Urgent),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for Priority {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for Priority {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for Priority {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**The `application/problem+json` body every refusal carries.
+
+The field clients are told to match on is `code`, not `status` and certainly not
+`title` — statuses are coarse and titles are prose that gets reworded. A code is
+a promise (design §8, `notify-domain`'s error table).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The `application/problem+json` body every refusal carries.\n\nThe field clients are told to match on is `code`, not `status` and certainly not\n`title` — statuses are coarse and titles are prose that gets reworded. A code is\na promise (design §8, `notify-domain`'s error table).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "status",
+    ///    "title",
+    ///    "type"
+    ///  ],
+    ///  "properties": {
+    ///    "code": {
+    ///      "description": "The stable code. Absent only when the failure is ours rather than the\ncaller's — there is nothing useful to branch on when a database is down.",
+    ///      "examples": [
+    ///        "field.missing"
+    ///      ],
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "retry_after_seconds": {
+    ///      "description": "When to come back, on a `429`. Mirrors the `Retry-After` header.",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "status": {
+    ///      "description": "The HTTP status, repeated in the body as RFC 9457 asks.",
+    ///      "examples": [
+    ///        422
+    ///      ],
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "title": {
+    ///      "description": "A short, human-readable summary. Prose, and subject to change.",
+    ///      "type": "string"
+    ///    },
+    ///    "type": {
+    ///      "description": "Always `about:blank` for now: the `code` field carries the specificity a\n`type` URI usually would, and inventing URIs nobody dereferences is\nceremony.",
+    ///      "examples": [
+    ///        "about:blank"
+    ///      ],
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Problem {
+        /**The stable code. Absent only when the failure is ours rather than the
+caller's — there is nothing useful to branch on when a database is down.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub code: ::std::option::Option<::std::string::String>,
+        ///When to come back, on a `429`. Mirrors the `Retry-After` header.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub retry_after_seconds: ::std::option::Option<i32>,
+        ///The HTTP status, repeated in the body as RFC 9457 asks.
+        pub status: i32,
+        ///A short, human-readable summary. Prose, and subject to change.
+        pub title: ::std::string::String,
+        /**Always `about:blank` for now: the `code` field carries the specificity a
+`type` URI usually would, and inventing URIs nobody dereferences is
+ceremony.*/
+        #[serde(rename = "type")]
+        pub type_: ::std::string::String,
+    }
+    /**How far along a long-running thing is. Rendered as a bar; the units are the
+publisher's own (steps, files, percent).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How far along a long-running thing is. Rendered as a bar; the units are the\npublisher's own (steps, files, percent).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "current",
+    ///    "total"
+    ///  ],
+    ///  "properties": {
+    ///    "current": {
+    ///      "description": "Where it is now.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "total": {
+    ///      "description": "Where it finishes.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Progress {
+        ///Where it is now.
+        pub current: i32,
+        ///Where it finishes.
+        pub total: i32,
+    }
+    /**`POST /notifications`: a revision, plus the channel it belongs to.
+
+The channel is the only thing this shape adds to the upsert body — everything
+else is the same revision draft, because there is exactly one ingestion shape
+(design §8.3).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "`POST /notifications`: a revision, plus the channel it belongs to.\n\nThe channel is the only thing this shape adds to the upsert body — everything\nelse is the same revision draft, because there is exactly one ingestion shape\n(design §8.3).",
+    ///  "allOf": [
+    ///    {
+    ///      "description": "The revision itself, flattened into the same object.",
+    ///      "oneOf": [
+    ///        {
+    ///          "description": "A revision as a publisher submits it: everything optional except the content.\n\nAn absent field means \"leave it as it is\" on an update, and takes the channel\ndefault on a creation. That is what lets a CI job push `state=closed,\nstatus=success` without restating the title, the tags and the buttons.",
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/ContentDraft"
+    ///            },
+    ///            {
+    ///              "type": "object",
+    ///              "properties": {
+    ///                "priority": {
+    ///                  "$ref": "#/components/schemas/Priority"
+    ///                },
+    ///                "state": {
+    ///                  "$ref": "#/components/schemas/State"
+    ///                },
+    ///                "status": {
+    ///                  "$ref": "#/components/schemas/Status"
+    ///                },
+    ///                "ttl": {
+    ///                  "$ref": "#/components/schemas/Ttl"
+    ///                }
+    ///              }
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "channel"
+    ///      ],
+    ///      "properties": {
+    ///        "channel": {
+    ///          "$ref": "#/components/schemas/ChannelId"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PublishBody {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub actions: ::std::option::Option<Actions>,
+        ///See [`Content::body`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub body: ::std::option::Option<::std::string::String>,
+        pub channel: ChannelId,
+        ///See [`Content::group_key`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub group_key: ::std::option::Option<::std::string::String>,
+        ///See [`Content::icon`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub icon: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub image: ::std::option::Option<Image>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub priority: ::std::option::Option<Priority>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub progress: ::std::option::Option<Progress>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub state: ::std::option::Option<State>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub status: ::std::option::Option<Status>,
+        ///See [`Content::tags`].
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub tags: ::std::vec::Vec<::std::string::String>,
+        /**See [`Content::title`].
+
+Optional on the wire, and absent means "leave it alone" on a revision — see
+[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
+an absent title is the same refusal an empty one gets.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub title: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub ttl: ::std::option::Option<Ttl>,
+    }
+    /**What a publish produced.
+
+Serialisable because it *is* the stored idempotency response: replaying a key
+has to give back the same answer, and the only way to be sure of that is to
+return the same value rather than recompute it.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a publish produced.\n\nSerialisable because it *is* the stored idempotency response: replaying a key\nhas to give back the same answer, and the only way to be sure of that is to\nreturn the same value rather than recompute it.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "cursor",
+    ///    "notification",
+    ///    "replayed",
+    ///    "retention",
+    ///    "revision"
+    ///  ],
+    ///  "properties": {
+    ///    "cursor": {
+    ///      "$ref": "#/components/schemas/Cursor"
+    ///    },
+    ///    "notification": {
+    ///      "$ref": "#/components/schemas/Notification"
+    ///    },
+    ///    "replayed": {
+    ///      "description": "Whether this is a replay of an earlier identical request.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "retention": {
+    ///      "$ref": "#/components/schemas/TtlResolution"
+    ///    },
+    ///    "revision": {
+    ///      "$ref": "#/components/schemas/Revision"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Published {
+        pub cursor: Cursor,
+        pub notification: Notification,
+        ///Whether this is a replay of an earlier identical request.
+        pub replayed: bool,
+        pub retention: TtlResolution,
+        pub revision: Revision,
+    }
+    ///How the server reaches a device when its client is not connected.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How the server reaches a device when its client is not connected.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "None. The device is reachable only while it holds a stream — a CLI, a TUI,\na service account's logical subscription.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "transport"
+    ///      ],
+    ///      "properties": {
+    ///        "transport": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "stream"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "Web Push (RFC 8030/8291), for browsers and installed PWAs. The browser\nholds the decryption keys; we never see one (design §6.2).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "auth",
+    ///        "endpoint",
+    ///        "p256dh",
+    ///        "transport"
+    ///      ],
+    ///      "properties": {
+    ///        "auth": {
+    ///          "description": "The subscription's `auth` secret, as given by the browser.",
+    ///          "type": "string"
+    ///        },
+    ///        "endpoint": {
+    ///          "description": "The push service endpoint the browser handed us.",
+    ///          "type": "string",
+    ///          "format": "uri"
+    ///        },
+    ///        "p256dh": {
+    ///          "description": "The subscription's `p256dh` key, as given by the browser.",
+    ///          "type": "string"
+    ///        },
+    ///        "transport": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "web_push"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "UnifiedPush, self-hosted end to end: we expose the push endpoint ourselves\nand the distributor lives on the device (design §7.1bis).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "endpoint",
+    ///        "transport"
+    ///      ],
+    ///      "properties": {
+    ///        "endpoint": {
+    ///          "description": "The distributor endpoint to POST to.",
+    ///          "type": "string",
+    ///          "format": "uri"
+    ///        },
+    ///        "transport": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "unified_push"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "APNs — the one part of the stack that cannot be self-hosted (design §15).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "token",
+    ///        "transport"
+    ///      ],
+    ///      "properties": {
+    ///        "token": {
+    ///          "description": "The APNs device token.",
+    ///          "type": "string"
+    ///        },
+    ///        "transport": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "apns"
+    ///          ]
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "transport")]
+    pub enum PushTransport {
+        #[serde(rename = "stream")]
+        Stream,
+        /**Web Push (RFC 8030/8291), for browsers and installed PWAs. The browser
+holds the decryption keys; we never see one (design §6.2).*/
+        #[serde(rename = "web_push")]
+        WebPush {
+            ///The subscription's `auth` secret, as given by the browser.
+            auth: ::std::string::String,
+            ///The push service endpoint the browser handed us.
+            endpoint: ::std::string::String,
+            ///The subscription's `p256dh` key, as given by the browser.
+            p256dh: ::std::string::String,
+        },
+        /**UnifiedPush, self-hosted end to end: we expose the push endpoint ourselves
+and the distributor lives on the device (design §7.1bis).*/
+        #[serde(rename = "unified_push")]
+        UnifiedPush {
+            ///The distributor endpoint to POST to.
+            endpoint: ::std::string::String,
+        },
+        ///APNs — the one part of the stack that cannot be self-hosted (design §15).
+        #[serde(rename = "apns")]
+        Apns {
+            ///The APNs device token.
+            token: ::std::string::String,
+        },
+    }
     /**Readiness answer: the overall verdict plus the per-dependency detail an
 operator needs to know *which* dependency is holding the replica back.*/
     ///
@@ -162,6 +7030,1387 @@ operator needs to know *which* dependency is holding the replica back.*/
         pub checks: ::std::vec::Vec<DependencyCheck>,
         ///`true` only when every checked dependency is reachable.
         pub ready: bool,
+    }
+    ///One receipt.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One receipt.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "at",
+    ///    "id",
+    ///    "kind",
+    ///    "notification_id",
+    ///    "principal"
+    ///  ],
+    ///  "properties": {
+    ///    "at": {
+    ///      "description": "Server time.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "device": {
+    ///      "$ref": "#/components/schemas/DeviceId"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/ReceiptId"
+    ///    },
+    ///    "kind": {
+    ///      "$ref": "#/components/schemas/ReceiptKind"
+    ///    },
+    ///    "notification_id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    },
+    ///    "principal": {
+    ///      "$ref": "#/components/schemas/Principal"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Receipt {
+        ///Server time.
+        pub at: ::chrono::DateTime<::chrono::offset::Utc>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub device: ::std::option::Option<DeviceId>,
+        pub id: ReceiptId,
+        pub kind: ReceiptKind,
+        pub notification_id: NotificationId,
+        pub principal: Principal,
+    }
+    ///Delivered, or seen.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Delivered, or seen.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "kind",
+    ///    "notification_id"
+    ///  ],
+    ///  "properties": {
+    ///    "device": {
+    ///      "$ref": "#/components/schemas/DeviceId"
+    ///    },
+    ///    "kind": {
+    ///      "$ref": "#/components/schemas/ReceiptKind"
+    ///    },
+    ///    "notification_id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ReceiptBody {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub device: ::std::option::Option<DeviceId>,
+        pub kind: ReceiptKind,
+        pub notification_id: NotificationId,
+    }
+    ///One delivery or read receipt (design §7.3).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One delivery or read receipt (design §7.3).",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ReceiptId(pub ::std::string::String);
+    impl ::std::ops::Deref for ReceiptId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ReceiptId> for ::std::string::String {
+        fn from(value: ReceiptId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ReceiptId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ReceiptId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ReceiptId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///How far a notification got.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How far a notification got.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "delivered",
+    ///    "seen"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum ReceiptKind {
+        #[serde(rename = "delivered")]
+        Delivered,
+        #[serde(rename = "seen")]
+        Seen,
+    }
+    impl ::std::fmt::Display for ReceiptKind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Delivered => f.write_str("delivered"),
+                Self::Seen => f.write_str("seen"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for ReceiptKind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "delivered" => Ok(Self::Delivered),
+                "seen" => Ok(Self::Seen),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for ReceiptKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for ReceiptKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for ReceiptKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**What recording an interaction did.
+
+A DTO rather than the domain's [`Recorded`], because the distinction the domain
+draws — did this change anything worth broadcasting — is exactly what a client
+needs to hear, and the enum's shape (a tuple variant, a bare id) is not a good
+JSON contract.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What recording an interaction did.\n\nA DTO rather than the domain's [`Recorded`], because the distinction the domain\ndraws — did this change anything worth broadcasting — is exactly what a client\nneeds to hear, and the enum's shape (a tuple variant, a bare id) is not a good\nJSON contract.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "outcome"
+    ///  ],
+    ///  "properties": {
+    ///    "outcome": {
+    ///      "description": "`created`, `unchanged` or `replaced`.",
+    ///      "examples": [
+    ///        "created"
+    ///      ],
+    ///      "type": "string"
+    ///    },
+    ///    "record": {
+    ///      "$ref": "#/components/schemas/InteractionRecord"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct RecordedInteraction {
+        ///`created`, `unchanged` or `replaced`.
+        pub outcome: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub record: ::std::option::Option<InteractionRecord>,
+    }
+    ///One immutable step of a notification's life.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One immutable step of a notification's life.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "author",
+    ///    "content",
+    ///    "id",
+    ///    "notification_id",
+    ///    "priority",
+    ///    "received_at",
+    ///    "seq",
+    ///    "state",
+    ///    "status"
+    ///  ],
+    ///  "properties": {
+    ///    "author": {
+    ///      "$ref": "#/components/schemas/Author"
+    ///    },
+    ///    "content": {
+    ///      "$ref": "#/components/schemas/Content"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/RevisionId"
+    ///    },
+    ///    "notification_id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    },
+    ///    "priority": {
+    ///      "$ref": "#/components/schemas/Priority"
+    ///    },
+    ///    "received_at": {
+    ///      "description": "When the server received it — the server's clock, not the publisher's.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "seq": {
+    ///      "description": "Server-assigned, monotonic within the notification, starting at 1. The\narbiter of last-write-wins.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "state": {
+    ///      "$ref": "#/components/schemas/State"
+    ///    },
+    ///    "status": {
+    ///      "$ref": "#/components/schemas/Status"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Revision {
+        pub author: Author,
+        pub content: Content,
+        pub id: RevisionId,
+        pub notification_id: NotificationId,
+        pub priority: Priority,
+        ///When the server received it — the server's clock, not the publisher's.
+        pub received_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Server-assigned, monotonic within the notification, starting at 1. The
+arbiter of last-write-wins.*/
+        pub seq: i32,
+        pub state: State,
+        pub status: Status,
+    }
+    /**A revision as a publisher submits it: everything optional except the content.
+
+An absent field means "leave it as it is" on an update, and takes the channel
+default on a creation. That is what lets a CI job push `state=closed,
+status=success` without restating the title, the tags and the buttons.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A revision as a publisher submits it: everything optional except the content.\n\nAn absent field means \"leave it as it is\" on an update, and takes the channel\ndefault on a creation. That is what lets a CI job push `state=closed,\nstatus=success` without restating the title, the tags and the buttons.",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/ContentDraft"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "properties": {
+    ///        "priority": {
+    ///          "$ref": "#/components/schemas/Priority"
+    ///        },
+    ///        "state": {
+    ///          "$ref": "#/components/schemas/State"
+    ///        },
+    ///        "status": {
+    ///          "$ref": "#/components/schemas/Status"
+    ///        },
+    ///        "ttl": {
+    ///          "$ref": "#/components/schemas/Ttl"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct RevisionDraft {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub actions: ::std::option::Option<Actions>,
+        ///See [`Content::body`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub body: ::std::option::Option<::std::string::String>,
+        ///See [`Content::group_key`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub group_key: ::std::option::Option<::std::string::String>,
+        ///See [`Content::icon`].
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub icon: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub image: ::std::option::Option<Image>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub priority: ::std::option::Option<Priority>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub progress: ::std::option::Option<Progress>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub state: ::std::option::Option<State>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub status: ::std::option::Option<Status>,
+        ///See [`Content::tags`].
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub tags: ::std::vec::Vec<::std::string::String>,
+        /**See [`Content::title`].
+
+Optional on the wire, and absent means "leave it alone" on a revision — see
+[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
+an absent title is the same refusal an empty one gets.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub title: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub ttl: ::std::option::Option<Ttl>,
+    }
+    impl ::std::default::Default for RevisionDraft {
+        fn default() -> Self {
+            Self {
+                actions: Default::default(),
+                body: Default::default(),
+                group_key: Default::default(),
+                icon: Default::default(),
+                image: Default::default(),
+                priority: Default::default(),
+                progress: Default::default(),
+                state: Default::default(),
+                status: Default::default(),
+                tags: Default::default(),
+                title: Default::default(),
+                ttl: Default::default(),
+            }
+        }
+    }
+    /**A revision, flattened into the shape the stream publishes (design §8.1).
+
+Denormalised on purpose: a client that just reconnected must be able to render
+a timeline row from one event, without a follow-up request per notification.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A revision, flattened into the shape the stream publishes (design §8.1).\n\nDenormalised on purpose: a client that just reconnected must be able to render\na timeline row from one event, without a follow-up request per notification.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "author",
+    ///    "created_at",
+    ///    "notification_id",
+    ///    "payload",
+    ///    "priority",
+    ///    "revised_at",
+    ///    "seq",
+    ///    "state",
+    ///    "status"
+    ///  ],
+    ///  "properties": {
+    ///    "author": {
+    ///      "$ref": "#/components/schemas/Author"
+    ///    },
+    ///    "created_at": {
+    ///      "description": "When the notification was first created.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "external_id": {
+    ///      "$ref": "#/components/schemas/ExternalId"
+    ///    },
+    ///    "notification_id": {
+    ///      "$ref": "#/components/schemas/NotificationId"
+    ///    },
+    ///    "payload": {
+    ///      "$ref": "#/components/schemas/Content"
+    ///    },
+    ///    "priority": {
+    ///      "$ref": "#/components/schemas/Priority"
+    ///    },
+    ///    "revised_at": {
+    ///      "description": "When this revision landed.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "seq": {
+    ///      "description": "Server-assigned sequence within the notification — the arbiter of\nlast-write-wins (design §2.2).",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "state": {
+    ///      "$ref": "#/components/schemas/State"
+    ///    },
+    ///    "status": {
+    ///      "$ref": "#/components/schemas/Status"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct RevisionEvent {
+        pub author: Author,
+        ///When the notification was first created.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub external_id: ::std::option::Option<ExternalId>,
+        pub notification_id: NotificationId,
+        pub payload: Content,
+        pub priority: Priority,
+        ///When this revision landed.
+        pub revised_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Server-assigned sequence within the notification — the arbiter of
+last-write-wins (design §2.2).*/
+        pub seq: i32,
+        pub state: State,
+        pub status: Status,
+    }
+    ///One immutable revision of a notification.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One immutable revision of a notification.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct RevisionId(pub ::std::string::String);
+    impl ::std::ops::Deref for RevisionId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<RevisionId> for ::std::string::String {
+        fn from(value: RevisionId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for RevisionId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for RevisionId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for RevisionId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///What a principal may do in a channel (design §5.2).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a principal may do in a channel (design §5.2).",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "publish",
+    ///    "subscribe",
+    ///    "manage"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum Scope {
+        #[serde(rename = "publish")]
+        Publish,
+        #[serde(rename = "subscribe")]
+        Subscribe,
+        #[serde(rename = "manage")]
+        Manage,
+    }
+    impl ::std::fmt::Display for Scope {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Publish => f.write_str("publish"),
+                Self::Subscribe => f.write_str("subscribe"),
+                Self::Manage => f.write_str("manage"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for Scope {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "publish" => Ok(Self::Publish),
+                "subscribe" => Ok(Self::Subscribe),
+                "manage" => Ok(Self::Manage),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for Scope {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for Scope {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for Scope {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**A service account, named so a timeline can say "published by `bot-argocd`"
+rather than "published by a key" (design §5.2bis).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A service account, named so a timeline can say \"published by `bot-argocd`\"\nrather than \"published by a key\" (design §5.2bis).",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct ServiceAccountId(pub ::std::string::String);
+    impl ::std::ops::Deref for ServiceAccountId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<ServiceAccountId> for ::std::string::String {
+        fn from(value: ServiceAccountId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for ServiceAccountId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for ServiceAccountId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for ServiceAccountId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///An active silence, held per user.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An active silence, held per user.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "since",
+    ///    "target",
+    ///    "user"
+    ///  ],
+    ///  "properties": {
+    ///    "since": {
+    ///      "description": "When it was set.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "target": {
+    ///      "$ref": "#/components/schemas/SilenceTarget"
+    ///    },
+    ///    "until": {
+    ///      "description": "When it lifts. `None` only for a notification-scoped silence, which ends\nwhen the notification does.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "user": {
+    ///      "$ref": "#/components/schemas/UserId"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Silence {
+        ///When it was set.
+        pub since: ::chrono::DateTime<::chrono::offset::Utc>,
+        pub target: SilenceTarget,
+        /**When it lifts. `None` only for a notification-scoped silence, which ends
+when the notification does.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub until: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        pub user: UserId,
+    }
+    ///Stop notifying *me* about this.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Stop notifying *me* about this.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "duration": {
+    ///      "$ref": "#/components/schemas/HumanDuration"
+    ///    },
+    ///    "scope": {
+    ///      "$ref": "#/components/schemas/SilenceScope"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SilenceBody {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub duration: ::std::option::Option<HumanDuration>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub scope: ::std::option::Option<SilenceScope>,
+    }
+    impl ::std::default::Default for SilenceBody {
+        fn default() -> Self {
+            Self {
+                duration: Default::default(),
+                scope: Default::default(),
+            }
+        }
+    }
+    ///How far a `silence` reaches (design §2.3).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How far a `silence` reaches (design §2.3).",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "notification",
+    ///    "group"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum SilenceScope {
+        #[serde(rename = "notification")]
+        Notification,
+        #[serde(rename = "group")]
+        Group,
+    }
+    impl ::std::fmt::Display for SilenceScope {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Notification => f.write_str("notification"),
+                Self::Group => f.write_str("group"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for SilenceScope {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "notification" => Ok(Self::Notification),
+                "group" => Ok(Self::Group),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for SilenceScope {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for SilenceScope {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for SilenceScope {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///What a silence covers.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a silence covers.",
+    ///  "oneOf": [
+    ///    {
+    ///      "description": "One notification.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "id",
+    ///        "scope"
+    ///      ],
+    ///      "properties": {
+    ///        "id": {
+    ///          "$ref": "#/components/schemas/NotificationId"
+    ///        },
+    ///        "scope": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "notification"
+    ///          ]
+    ///        }
+    ///      }
+    ///    },
+    ///    {
+    ///      "description": "Everything sharing a `group_key` (design §2.3).",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "key",
+    ///        "scope"
+    ///      ],
+    ///      "properties": {
+    ///        "key": {
+    ///          "description": "The group key silenced.",
+    ///          "type": "string"
+    ///        },
+    ///        "scope": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "group"
+    ///          ]
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "scope")]
+    pub enum SilenceTarget {
+        ///One notification.
+        #[serde(rename = "notification")]
+        Notification { id: NotificationId },
+        ///Everything sharing a `group_key` (design §2.3).
+        #[serde(rename = "group")]
+        Group {
+            ///The group key silenced.
+            key: ::std::string::String,
+        },
+    }
+    ///Where a notification is in its lifecycle.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Where a notification is in its lifecycle.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "open",
+    ///    "working",
+    ///    "closed"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum State {
+        #[serde(rename = "open")]
+        Open,
+        #[serde(rename = "working")]
+        Working,
+        #[serde(rename = "closed")]
+        Closed,
+    }
+    impl ::std::fmt::Display for State {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Open => f.write_str("open"),
+                Self::Working => f.write_str("working"),
+                Self::Closed => f.write_str("closed"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for State {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "open" => Ok(Self::Open),
+                "working" => Ok(Self::Working),
+                "closed" => Ok(Self::Closed),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for State {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for State {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for State {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///What the notification is saying, orthogonally to where it is in its lifecycle.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What the notification is saying, orthogonally to where it is in its lifecycle.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "success",
+    ///    "failure",
+    ///    "warning",
+    ///    "info",
+    ///    "cancelled"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum Status {
+        #[serde(rename = "success")]
+        Success,
+        #[serde(rename = "failure")]
+        Failure,
+        #[serde(rename = "warning")]
+        Warning,
+        #[serde(rename = "info")]
+        Info,
+        #[serde(rename = "cancelled")]
+        Cancelled,
+    }
+    impl ::std::fmt::Display for Status {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Success => f.write_str("success"),
+                Self::Failure => f.write_str("failure"),
+                Self::Warning => f.write_str("warning"),
+                Self::Info => f.write_str("info"),
+                Self::Cancelled => f.write_str("cancelled"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for Status {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "success" => Ok(Self::Success),
+                "failure" => Ok(Self::Failure),
+                "warning" => Ok(Self::Warning),
+                "info" => Ok(Self::Info),
+                "cancelled" => Ok(Self::Cancelled),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for Status {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for Status {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for Status {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**The answer to a catch-up, which is more than a list of events.
+
+Two extras carry real product meaning:
+
+* `expired` is the "N notifications expired while you were away" counter
+  (design §7.2bis). A message that expired undelivered is deliberately *not* in
+  the backlog — but silently dropping it would leave a user wondering, so the
+  count is reported per channel instead.
+* `compacted` records how many revisions were folded away (design §7.2). Forty
+  revisions of one deploy become one entry; the number is what lets a client say
+  "38 updates" instead of pretending nothing happened.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The answer to a catch-up, which is more than a list of events.\n\nTwo extras carry real product meaning:\n\n* `expired` is the \"N notifications expired while you were away\" counter\n  (design §7.2bis). A message that expired undelivered is deliberately *not* in\n  the backlog — but silently dropping it would leave a user wondering, so the\n  count is reported per channel instead.\n* `compacted` records how many revisions were folded away (design §7.2). Forty\n  revisions of one deploy become one entry; the number is what lets a client say\n  \"38 updates\" instead of pretending nothing happened.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "compacted",
+    ///    "events"
+    ///  ],
+    ///  "properties": {
+    ///    "compacted": {
+    ///      "description": "How many revisions the compaction folded away.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "events": {
+    ///      "description": "The events, oldest first.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Event"
+    ///      }
+    ///    },
+    ///    "expired": {
+    ///      "description": "Per channel, how many notifications expired unseen during the absence.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ExpiredWhileAway"
+    ///      }
+    ///    },
+    ///    "next": {
+    ///      "$ref": "#/components/schemas/Cursor"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SyncPage {
+        ///How many revisions the compaction folded away.
+        pub compacted: i32,
+        ///The events, oldest first.
+        pub events: ::std::vec::Vec<Event>,
+        ///Per channel, how many notifications expired unseen during the absence.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub expired: ::std::vec::Vec<ExpiredWhileAway>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub next: ::std::option::Option<Cursor>,
+    }
+    /**Why a notification stopped existing, as broadcast in a `tombstone` event
+(design §8.1).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Why a notification stopped existing, as broadcast in a `tombstone` event\n(design §8.1).",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "deleted",
+    ///    "expired"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum TombstoneReason {
+        #[serde(rename = "deleted")]
+        Deleted,
+        #[serde(rename = "expired")]
+        Expired,
+    }
+    impl ::std::fmt::Display for TombstoneReason {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Deleted => f.write_str("deleted"),
+                Self::Expired => f.write_str("expired"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for TombstoneReason {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "deleted" => Ok(Self::Deleted),
+                "expired" => Ok(Self::Expired),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for TombstoneReason {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for TombstoneReason {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for TombstoneReason {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///How long to keep it: a single-unit duration such as `48h`, or `0` for forever.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How long to keep it: a single-unit duration such as `48h`, or `0` for forever.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct Ttl(pub ::std::string::String);
+    impl ::std::ops::Deref for Ttl {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<Ttl> for ::std::string::String {
+        fn from(value: Ttl) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for Ttl {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for Ttl {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for Ttl {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///What a channel allows (design §7.2bis, configured per channel in §11).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a channel allows (design §7.2bis, configured per channel in §11).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "allow_forever",
+    ///    "default"
+    ///  ],
+    ///  "properties": {
+    ///    "allow_forever": {
+    ///      "description": "Whether `\"0\"` is accepted. Off by default: unbounded retention is a\ndeliberate operator decision, not something a publisher can opt into.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "default": {
+    ///      "$ref": "#/components/schemas/Ttl"
+    ///    },
+    ///    "max": {
+    ///      "$ref": "#/components/schemas/HumanDuration"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TtlPolicy {
+        /**Whether `"0"` is accepted. Off by default: unbounded retention is a
+deliberate operator decision, not something a publisher can opt into.*/
+        pub allow_forever: bool,
+        pub default: Ttl,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub max: ::std::option::Option<HumanDuration>,
+    }
+    ///The outcome of applying a [`TtlPolicy`] to a request.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The outcome of applying a [`TtlPolicy`] to a request.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "ttl"
+    ///  ],
+    ///  "properties": {
+    ///    "clamped_from": {
+    ///      "$ref": "#/components/schemas/HumanDuration"
+    ///    },
+    ///    "ttl": {
+    ///      "$ref": "#/components/schemas/Ttl"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TtlResolution {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub clamped_from: ::std::option::Option<HumanDuration>,
+        pub ttl: Ttl,
+    }
+    ///A human, created on first OIDC login.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A human, created on first OIDC login.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct UserId(pub ::std::string::String);
+    impl ::std::ops::Deref for UserId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<UserId> for ::std::string::String {
+        fn from(value: UserId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for UserId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for UserId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for UserId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -220,6 +8469,1371 @@ impl ClientInfo<()> for Client {
 impl ClientHooks<()> for &Client {}
 #[allow(clippy::all)]
 impl Client {
+    /**The caller's keys — metadata only, never a secret
+
+Sends a `GET` request to `/api/v1/apikeys`
+
+*/
+    pub async fn list_keys<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<::std::vec::Vec<types::ApiKey>>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/apikeys", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_keys",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Mint an API key. The secret comes back once
+
+Sends a `POST` request to `/api/v1/apikeys`
+
+*/
+    pub async fn create_key<'a>(
+        &'a self,
+        body: &'a types::CreateKeyBody,
+    ) -> Result<ResponseValue<types::MintedKey>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/apikeys", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "create_key",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            201u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Revoke a key, effective on the next request that presents it
+
+Sends a `DELETE` request to `/api/v1/apikeys/{id}`
+
+Arguments:
+- `id`: API key id
+*/
+    pub async fn revoke_key<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/apikeys/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "revoke_key",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The channels the caller can see
+
+Sends a `GET` request to `/api/v1/channels`
+
+Arguments:
+- `cursor`: Opaque page cursor.
+- `limit`: Page size, clamped server-side.
+*/
+    pub async fn list_channels<'a>(
+        &'a self,
+        cursor: Option<&'a str>,
+        limit: Option<i32>,
+    ) -> Result<ResponseValue<types::PageChannel>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/channels", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_channels",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Create a channel
+
+Sends a `POST` request to `/api/v1/channels`
+
+*/
+    pub async fn create_channel<'a>(
+        &'a self,
+        body: &'a types::CreateChannelBody,
+    ) -> Result<ResponseValue<types::Channel>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/channels", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "create_channel",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            201u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Delete a channel. Refused on a GitOps-managed one
+
+Sends a `DELETE` request to `/api/v1/channels/{channel}`
+
+Arguments:
+- `channel`: Channel id
+*/
+    pub async fn delete_channel<'a>(
+        &'a self,
+        channel: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/channels/{}", self.baseurl, encode_path(& channel.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "delete_channel",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Add a member
+
+Sends a `POST` request to `/api/v1/channels/{channel}/members`
+
+Arguments:
+- `channel`: Channel id
+- `body`
+*/
+    pub async fn add_member<'a>(
+        &'a self,
+        channel: &'a str,
+        body: &'a types::AddMemberBody,
+    ) -> Result<ResponseValue<types::Channel>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/channels/{}/members", self.baseurl, encode_path(& channel
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "add_member",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Remove a member, or leave
+
+Sends a `DELETE` request to `/api/v1/channels/{channel}/members/{principal}`
+
+Arguments:
+- `channel`: Channel id
+- `principal`: Principal reference, e.g. `user:usr_01J…` or `service_account:bot-argocd`
+*/
+    pub async fn remove_member<'a>(
+        &'a self,
+        channel: &'a str,
+        principal: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/channels/{}/members/{}", self.baseurl, encode_path(& channel
+            .to_string()), encode_path(& principal.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "remove_member",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**One channel's inbox
+
+Sends a `GET` request to `/api/v1/channels/{channel}/notifications`
+
+Arguments:
+- `channel`: Channel id
+- `channels`: Comma-separated channel ids. Narrows what the caller may already read; it
+can never widen it.
+- `cursor`: Opaque page cursor, from the previous page's `next`.
+- `group_key`: Restrict to one client-side group.
+- `limit`: Page size. Clamped server-side.
+- `min_priority`: Floor on priority: `min`, `low`, `default`, `high`, `urgent`.
+- `state`: Comma-separated lifecycle states: `open`, `working`, `closed`.
+- `status`: Comma-separated statuses: `success`, `failure`, `warning`, `info`,
+`cancelled`.
+- `tag`: Comma-separated tags. All of them must be present.
+*/
+    pub async fn channel_inbox<'a>(
+        &'a self,
+        channel: &'a str,
+        channels: Option<&'a str>,
+        cursor: Option<&'a str>,
+        group_key: Option<&'a str>,
+        limit: Option<i32>,
+        min_priority: Option<&'a str>,
+        state: Option<&'a str>,
+        status: Option<&'a str>,
+        tag: Option<&'a str>,
+    ) -> Result<ResponseValue<types::PageNotification>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/channels/{}/notifications", self.baseurl, encode_path(& channel
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("channels", &channels))
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("group_key", &group_key))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .query(&progenitor_client::QueryParam::new("min_priority", &min_priority))
+            .query(&progenitor_client::QueryParam::new("state", &state))
+            .query(&progenitor_client::QueryParam::new("status", &status))
+            .query(&progenitor_client::QueryParam::new("tag", &tag))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "channel_inbox",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Create or revise a notification by the publisher's own identifier
+
+Sends a `PUT` request to `/api/v1/channels/{channel}/notifications/{external_id}`
+
+Arguments:
+- `channel`: Channel id
+- `external_id`: The publisher's identifier, e.g. a CI run id
+- `body`
+*/
+    pub async fn upsert<'a>(
+        &'a self,
+        channel: &'a str,
+        external_id: &'a str,
+        body: &'a types::RevisionDraft,
+    ) -> Result<ResponseValue<types::Published>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/channels/{}/notifications/{}", self.baseurl, encode_path(& channel
+            .to_string()), encode_path(& external_id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "upsert",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The caller's devices
+
+Sends a `GET` request to `/api/v1/devices`
+
+*/
+    pub async fn list_devices<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<::std::vec::Vec<types::Device>>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/devices", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_devices",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Enrol a device
+
+Sends a `POST` request to `/api/v1/devices`
+
+*/
+    pub async fn enrol_device<'a>(
+        &'a self,
+        body: &'a types::EnrolBody,
+    ) -> Result<ResponseValue<types::Device>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/devices", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "enrol_device",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            201u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Revoke a device: its push subscription and its sync cursor go with it
+
+Sends a `DELETE` request to `/api/v1/devices/{id}`
+
+Arguments:
+- `id`: Device id
+*/
+    pub async fn revoke_device<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/devices/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "revoke_device",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The unified inbox: everything the caller may read
+
+Sends a `GET` request to `/api/v1/notifications`
+
+Arguments:
+- `channels`: Comma-separated channel ids. Narrows what the caller may already read; it
+can never widen it.
+- `cursor`: Opaque page cursor, from the previous page's `next`.
+- `group_key`: Restrict to one client-side group.
+- `limit`: Page size. Clamped server-side.
+- `min_priority`: Floor on priority: `min`, `low`, `default`, `high`, `urgent`.
+- `state`: Comma-separated lifecycle states: `open`, `working`, `closed`.
+- `status`: Comma-separated statuses: `success`, `failure`, `warning`, `info`,
+`cancelled`.
+- `tag`: Comma-separated tags. All of them must be present.
+*/
+    pub async fn inbox<'a>(
+        &'a self,
+        channels: Option<&'a str>,
+        cursor: Option<&'a str>,
+        group_key: Option<&'a str>,
+        limit: Option<i32>,
+        min_priority: Option<&'a str>,
+        state: Option<&'a str>,
+        status: Option<&'a str>,
+        tag: Option<&'a str>,
+    ) -> Result<ResponseValue<types::PageNotification>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/notifications", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("channels", &channels))
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("group_key", &group_key))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .query(&progenitor_client::QueryParam::new("min_priority", &min_priority))
+            .query(&progenitor_client::QueryParam::new("state", &state))
+            .query(&progenitor_client::QueryParam::new("status", &status))
+            .query(&progenitor_client::QueryParam::new("tag", &tag))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "inbox",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Publish a notification
+
+Sends a `POST` request to `/api/v1/notifications`
+
+Arguments:
+- `idempotency_key`: Replayed for 24 hours: the same key returns the same response rather than publishing twice.
+- `body`
+*/
+    pub async fn publish<'a>(
+        &'a self,
+        idempotency_key: Option<&'a str>,
+        body: &'a types::PublishBody,
+    ) -> Result<ResponseValue<types::Published>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/notifications", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "publish",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            201u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**One notification
+
+Sends a `GET` request to `/api/v1/notifications/{id}`
+
+Arguments:
+- `id`: Notification id
+*/
+    pub async fn get_one<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<types::Notification>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/notifications/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "get_one",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Delete a notification and broadcast its tombstone
+
+Sends a `DELETE` request to `/api/v1/notifications/{id}`
+
+Arguments:
+- `id`: Notification id
+*/
+    pub async fn delete_one<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/notifications/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "delete_one",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Everything recorded against a notification
+
+Sends a `GET` request to `/api/v1/notifications/{id}/interactions`
+
+Arguments:
+- `id`: Notification id
+*/
+    pub async fn list_interactions<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::InteractionRecord>>,
+        Error<types::Problem>,
+    > {
+        let url = format!(
+            "{}/api/v1/notifications/{}/interactions", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_interactions",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Record an interaction: an acknowledgement, a reply, a choice
+
+Sends a `POST` request to `/api/v1/notifications/{id}/interactions`
+
+Arguments:
+- `id`: Notification id
+- `body`
+*/
+    pub async fn record<'a>(
+        &'a self,
+        id: &'a str,
+        body: &'a types::Interaction,
+    ) -> Result<ResponseValue<types::RecordedInteraction>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/notifications/{}/interactions", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "record",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The revision history
+
+Sends a `GET` request to `/api/v1/notifications/{id}/revisions`
+
+Arguments:
+- `id`: Notification id
+- `cursor`: Opaque page cursor.
+- `limit`: Page size, clamped server-side.
+*/
+    pub async fn revisions<'a>(
+        &'a self,
+        id: &'a str,
+        cursor: Option<&'a str>,
+        limit: Option<i32>,
+    ) -> Result<ResponseValue<types::PageRevision>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/notifications/{}/revisions", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "revisions",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Silence a notification, or its whole group, for the calling user
+
+Sends a `POST` request to `/api/v1/notifications/{id}/silence`
+
+Arguments:
+- `id`: Notification id
+- `body`
+*/
+    pub async fn silence<'a>(
+        &'a self,
+        id: &'a str,
+        body: &'a types::SilenceBody,
+    ) -> Result<ResponseValue<types::Silence>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/notifications/{}/silence", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "silence",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Post a delivery or read receipt
+
+Sends a `POST` request to `/api/v1/receipts`
+
+*/
+    pub async fn receipt<'a>(
+        &'a self,
+        body: &'a types::ReceiptBody,
+    ) -> Result<ResponseValue<types::Receipt>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/receipts", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "receipt",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Search within the caller's channels
+
+Sends a `GET` request to `/api/v1/search`
+
+Arguments:
+- `cursor`: Opaque page cursor.
+- `limit`: Page size, clamped server-side.
+- `q`: What to look for, in titles, bodies and tags.
+*/
+    pub async fn search<'a>(
+        &'a self,
+        cursor: Option<&'a str>,
+        limit: Option<i32>,
+        q: &'a str,
+    ) -> Result<ResponseValue<types::PageNotification>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/search", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .query(&progenitor_client::QueryParam::new("q", &q))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "search",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The live stream
+
+Sends a `GET` request to `/api/v1/stream`
+
+Arguments:
+- `channels`: Comma-separated channel ids; absent means every channel the caller may read.
+- `cursor`: Resume after this cursor. `Last-Event-ID` wins over it when both are sent,
+because that one is the browser reconnecting rather than the page asking.
+- `device`: Which device is connected, so its cursor advances as it reads.
+- `last_event_id`: The cursor of the last event received. Sent automatically by browsers on reconnect; replays exactly what was missed.
+*/
+    pub async fn stream<'a>(
+        &'a self,
+        channels: Option<&'a str>,
+        cursor: Option<&'a str>,
+        device: Option<&'a str>,
+        last_event_id: Option<&'a str>,
+    ) -> Result<ResponseValue<ByteStream>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/stream", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        if let Some(value) = last_event_id {
+            header_map.append("Last-Event-ID", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .query(&progenitor_client::QueryParam::new("channels", &channels))
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("device", &device))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "stream",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => Ok(ResponseValue::stream(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Replay everything the caller missed
+
+The same cursor the live stream stamps on each event, so a client that was
+offline for a week and one whose connection blipped take this identical path
+(ADR-0001, ADR-0012).
+
+Sends a `GET` request to `/api/v1/sync`
+
+Arguments:
+- `channels`: Comma-separated channel ids; absent means every channel the caller may read.
+- `cursor`: Resume after this cursor. Absent replays everything still retained.
+- `device`: Which device is catching up, so its cursor is advanced. Absent for a one-off
+caller — `curl /sync` from a shell has no cursor to keep.
+- `limit`: Page size, clamped server-side.
+*/
+    pub async fn sync<'a>(
+        &'a self,
+        channels: Option<&'a str>,
+        cursor: Option<&'a str>,
+        device: Option<&'a str>,
+        limit: Option<i32>,
+    ) -> Result<ResponseValue<types::SyncPage>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/sync", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("channels", &channels))
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("device", &device))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "sync",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The same events, as WebSocket frames
+
+Sends a `GET` request to `/api/v1/ws`
+
+Arguments:
+- `channels`: Comma-separated channel ids; absent means every channel the caller may read.
+- `cursor`: Resume after this cursor. `Last-Event-ID` wins over it when both are sent,
+because that one is the browser reconnecting rather than the page asking.
+- `device`: Which device is connected, so its cursor advances as it reads.
+*/
+    pub async fn websocket<'a>(
+        &'a self,
+        channels: Option<&'a str>,
+        cursor: Option<&'a str>,
+        device: Option<&'a str>,
+    ) -> Result<ResponseValue<reqwest::Upgraded>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/ws", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .query(&progenitor_client::QueryParam::new("channels", &channels))
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("device", &device))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "websocket",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            101u16 => ResponseValue::upgrade(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /**Liveness probe
 
 Sends a `GET` request to `/healthz`

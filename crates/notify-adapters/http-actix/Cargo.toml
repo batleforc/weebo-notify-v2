@@ -12,3 +12,27 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+# The `openapi` feature is what lets the spec describe the types the server
+# actually serialises, rather than a mirror of them (ADR-0013).
+notify-app = { workspace = true, features = ["openapi"] }
+notify-domain = { workspace = true, features = ["openapi"] }
+notify-ports = { workspace = true, features = ["openapi"] }
+
+actix-web = { workspace = true }
+actix-web-lab = { workspace = true }
+actix-ws = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+# Only for the bounded channel behind an SSE response: no runtime is started here,
+# actix brings its own.
+tokio = { workspace = true }
+tracing = { workspace = true }
+utoipa = { workspace = true }
+utoipa-actix-web = { workspace = true }
+
+[dev-dependencies]
+notify-ports = { workspace = true, features = ["openapi", "test-utils"] }
+tokio = { workspace = true }
+url = { workspace = true }

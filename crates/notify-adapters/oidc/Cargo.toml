@@ -1,6 +1,6 @@
 [package]
 name = "notify-oidc"
-description = "OIDC adapter: discovery, JWKS cache with key rotation, token validation, groups mapping."
+description = "Credential verification: OIDC discovery, JWKS cache with key rotation, token validation and groups mapping — plus the Argon2id hashing API-key secrets are stored with."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,36 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+argon2 = { workspace = true }
+async-trait = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+# A real ES256 keypair, derived from the test's key id rather than committed: a
+# private key in the repository is a gitleaks finding waiting to happen, and the
+# tokens under test have to be signed the way the IdP signs them.
+base64 = { workspace = true }
+notify-ports = { workspace = true, features = ["test-utils"] }
+p256 = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+# tests/against_the_mock.rs boots the development identity provider on a real
+# socket and drives a real flow through it: the rest of this crate's tests sign
+# their own tokens, which proves the logic and nothing about the provider anyone
+# actually logs into.
+actix-web = { workspace = true }
+notify-oidc-mock = { path = "../../oidc-mock" }
+# What drives an OAuth flow: query strings on /authorize, form bodies on /token.
+# The adapter itself only ever GETs JSON, so both stay test-only features.
+reqwest = { workspace = true, features = ["form", "query"] }

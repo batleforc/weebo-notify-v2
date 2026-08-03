@@ -42,12 +42,15 @@ tasks:
           echo "This is the only time these are printed."
 
   up:
-    desc: "Start the everyday dev stack: Postgres + RustFS + oidc-server-mock (~20s, no Authentik)"
+    desc: "Start the everyday dev stack: Postgres + RustFS (~20s, no Authentik)"
     deps: [env]
     cmds:
       - cmd: |
           {{.CHE_GUARD}}
           {{.COMPOSE}} up -d --wait
+          echo
+          echo "Containers are up. The identity provider is a process, not a container:"
+          echo "  task dev:oidc    # in another terminal, on :9110"
 
   core:
     desc: "Start Postgres + RustFS only — for domain work with the in-memory TokenVerifier (no OIDC)"
@@ -56,6 +59,16 @@ tasks:
       - cmd: |
           {{.CHE_GUARD}}
           {{.COMPOSE}} up -d --wait postgres rustfs
+
+  oidc:
+    desc: "Run the development identity provider on :9110 — alice/bob/carol, password weebo-dev"
+    # A binary in this workspace rather than a container (ADR-0014): one provider
+    # for compose, Che and CI, with no image to pull and nothing to keep in sync.
+    # In Che, export WNK_OIDC_MOCK_ISSUER (and WNK_OIDC__ISSUER for the server) to
+    # the workspace's public route first — browser redirects cannot reach the pod's
+    # localhost (§12.1).
+    cmds:
+      - cargo run -p notify-oidc-mock -- --identities dev/oidc-mock/identities.toml
 
   auth:
     desc: "Add real Authentik on top (profile `authentik`) — for work touching the OIDC flow itself"

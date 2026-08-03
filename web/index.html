@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>weebo-notify</title>
+    <!--
+      The theme is applied before the first paint rather than by the app, because
+      a reload that flashes white on a dark theme is a bug you ship exactly once.
+      `dark` is on the element above already: it is the default (design §10.2) and
+      this script only ever removes it.
+    -->
+    <script>
+      (() => {
+        const saved = localStorage.getItem("weebo-notify:theme");
+        const system = window.matchMedia("(prefers-color-scheme: light)").matches;
+        if (saved === "light" || (saved !== "dark" && system)) {
+          document.documentElement.classList.remove("dark");
+        }
+        if (localStorage.getItem("weebo-notify:density") === "comfortable") {
+          document.documentElement.classList.add("density-comfortable");
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

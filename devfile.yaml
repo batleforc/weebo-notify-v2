@@ -8,14 +8,17 @@ metadata:
 # `localhost` exactly as it is under compose — which is why one config/dev.toml
 # serves both worlds with no `if env == che` anywhere in the code.
 #
-# Authentik is deliberately NOT here: the workspace runs on oidc-server-mock
-# (~256 MiB instead of ~1.5 GiB for Authentik + worker + redis). IdP fidelity is
-# exercised in local compose (`task dev:auth`) and in the `oidc-compat` CI matrix
-# (§3.2) — that trade is the whole point of the three-tier auth strategy (§12.1).
+# Two services are deliberately absent, for opposite reasons:
 #
-# The oidc-mock inline configuration below is GENERATED from dev/oidc-mock/*.yaml
-# by `task gen:devfile` (Che cannot mount host files). Do not hand-edit it: the CI
-# `contract` job regenerates and diffs, so a drifted copy fails the build.
+#   * Authentik — too heavy (~1.5 GiB with worker and Redis). Fidelity is exercised
+#     in local compose (`task dev:auth`) and in the `oidc-compat` CI matrix (§3.2);
+#     that trade is the whole point of the three-tier auth strategy (§12.1).
+#
+#   * The identity provider — not a container at all any more. `task dev:oidc` runs
+#     the `oidc-mock` binary from this workspace inside the `tools` container, next
+#     to the server and the web dev server (ADR-0014). No image to pull, no sidecar
+#     to schedule, and the inline-YAML generator this file used to carry is gone
+#     with it.
 parent:
   uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml
 components:
@@ -53,21 +56,6 @@ components:
       memoryLimit: 128Mi
       endpoints:
         - {name: redis, targetPort: 6379, exposure: internal}
-  - name: oidc-mock
-    container:
-      image: ghcr.io/soluto/oidc-server-mock:latest
-      memoryLimit: 256Mi
-      env:
-        - {name: ASPNETCORE_URLS, value: "http://0.0.0.0:9110"}
-        - name: USERS_CONFIGURATION_INLINE
-          value: "# Test identities for oidc-server-mock (design §12.5).\n#\n# These MUST mirror dev/authentik/blueprints/weebo-notify.yaml: the E2E suite and\n# any manual click-through have to behave identically whichever IdP is running,\n# and the `oidc-compat` CI matrix replays the same auth suite against both (T29).\n#\n# The password is fixed and committed on purpose — these are throwaway accounts\n# with no IdP privileges, and typing a known password is the whole point of a local\n# environment. Dex is the exception (CI-only, generated passwords, §3.2).\n\n- SubjectId: alice\n  Username: alice\n  Password: weebo-dev\n  Claims:\n    - Type: name\n      Value: Alice Martin\n      ValueType: string\n    - Type: email\n      Value: alice@weebo.local\n      ValueType: string\n    - Type: email_verified\n      Value: \"true\"\n      ValueType: boolean\n    # Mapped to channel access by [[channels.managed.access]] oidc_group (§11).\n    - Type: groups\n      Value: infra-admins\n      ValueType: string\n    - Type: groups\n      Value: platform-admins\n      ValueType: string\n\n- SubjectId: bob\n  Username: bob\n  Password: weebo-dev\n  Claims:\n    - Type: name\n      Value: Bob Dupont\n      ValueType: string\n    - Type: email\n      Value: bob@weebo.local\n      ValueType: string\n    - Type: email_verified\n      Value: \"true\"\n      ValueType: boolean\n    - Type: groups\n      Value: dev-team\n      ValueType: string\n\n# Deliberately group-less: exercises the \"IdP emits no groups\" degradation path\n# (T29, the Dex case) — this user must reach only its individual oidc_sub/email\n# bindings, never a default grant.\n- SubjectId: carol\n  Username: carol\n  Password: weebo-dev\n  Claims:\n    - Type: name\n      Value: Carol Nguyen\n      ValueType: string\n    - Type: email\n      Value: carol@weebo.local\n      ValueType: string\n    - Type: email_verified\n      Value: \"true\"\n      ValueType: boolean\n"
-        - name: CLIENTS_CONFIGURATION_INLINE
-          value: "# OIDC client for oidc-server-mock (design §12.5).\n#\n# Public client + Authorization Code + PKCE, exactly like the Authentik blueprint\n# and exactly like production: the SPA holds the tokens, the server validates them\n# against JWKS and keeps no session at all (§5.1).\n\n- ClientId: weebo-notify\n  Description: weebo-notify web, desktop and mobile clients\n  # Public client: no secret to leak into a SPA or a mobile bundle.\n  RequireClientSecret: false\n  RequirePkce: true\n  AllowedGrantTypes:\n    - authorization_code\n    - refresh_token\n  AllowedScopes:\n    - openid\n    - profile\n    - email\n    - groups\n    - offline_access\n  RedirectUris:\n    # Vite dev server and the server's own callback.\n    - http://localhost:5173/auth/callback\n    - http://localhost:8080/auth/callback\n    # Tauri desktop, from M5: loopback (RFC 8252) is the primary path — a custom\n    # scheme can be registered by any application, a loopback port cannot be\n    # hijacked the same way (§10bis.2). The custom scheme stays as fallback.\n    - http://127.0.0.1:1420/auth/callback\n    - weebo-notify://oauth/callback\n  PostLogoutRedirectUris:\n    - http://localhost:5173/\n    - http://localhost:8080/\n  AllowOfflineAccess: true\n  # Groups must land in the ACCESS token, not just the id token: the API authorises\n  # on the access token alone (§5.1).\n  AlwaysIncludeUserClaimsInIdToken: true\n  IdentityTokenLifetime: 300\n  AccessTokenLifetime: 900\n"
-      endpoints:
-        # Public, unlike compose's localhost mapping: OIDC redirects travel through
-        # the user's browser, which cannot reach the pod's localhost. The devfile
-        # exports WNK_OIDC__ISSUER pointing here, and env beats the TOML file (§12.1).
-        - {name: oidc-mock, targetPort: 9110, exposure: public, protocol: https}
   - name: pg-data
     volume: {size: 2Gi}
   - name: rustfs-data
@@ -79,6 +67,18 @@ commands:
       commandLine: "task dev:seed"
       workingDir: "${PROJECT_SOURCE}"
       group: {kind: build}
+  - id: run-oidc
+    exec:
+      component: tools
+      # Che routes ports it sees a process listening on, exactly as it does for the
+      # server (:8080) and Vite (:5173). OIDC redirects travel through the
+      # developer's browser, which cannot reach this pod's localhost — so export
+      # the route Che offers before running the server (§12.1):
+      #   WNK_OIDC_MOCK_ISSUER=https://<route>  (what the provider calls itself)
+      #   WNK_OIDC__ISSUER=https://<route>      (what the server expects; beats dev.toml)
+      commandLine: "task dev:oidc"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: run}
   - id: run-server
     exec:
       component: tools

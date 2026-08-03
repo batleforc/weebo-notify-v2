@@ -1,0 +1,39 @@
+[package]
+name = "notify-oidc-mock"
+description = "Dev-only OIDC provider: the everyday identity provider for the local stack, Che and CI."
+# Never published: this is development infrastructure, and an identity provider
+# that accepts a committed password has no business on a registry.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "oidc-mock"
+path = "src/main.rs"
+
+[dependencies]
+actix-cors.workspace = true
+actix-web.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+figment.workspace = true
+jsonwebtoken.workspace = true
+p256.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ulid.workspace = true
+url.workspace = true

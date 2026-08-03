@@ -27,6 +27,7 @@ use crate::error::PortResult;
 /// Not the whole token: a verifier hands back what authorisation needs and drops
 /// the rest, so no downstream code can start depending on a claim a different IdP
 /// will not send.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedClaims {
     /// The `iss` claim.
@@ -99,6 +100,7 @@ impl TokenRejection {
 }
 
 /// A trust policy: which CI jobs may act, and as what (design §5.3, §11).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustPolicy {
     /// The forge that vouches for the job.
@@ -116,6 +118,7 @@ pub struct TrustPolicy {
 }
 
 /// A minted CI token.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintedToken {
     /// The token itself, Ed25519-signed by us.

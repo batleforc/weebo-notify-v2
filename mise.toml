@@ -18,8 +18,10 @@ cargo-binstall = "latest"        # lets the cargo: backend below fetch prebuilt 
 "aqua:rustsec/rustsec/cargo-audit" = "latest"       # RustSec advisories (task audit)
 trivy = "latest"                 # Containerfile/image + filesystem CVE scan (task audit)
 awscli = "latest"                # seeds the RustFS bucket in dev/seed/seed.sh
-yq = "latest"                    # regenerates the devfile's inline OIDC config (task gen:devfile)
-"cargo:sqlx-cli" = "latest"      # migrations + `cargo sqlx prepare` (not in the mise registry)
+"cargo:sqlx-cli" = "latest"      # `sqlx migrate` in dev/seed/seed.sh (not in the mise registry)
+# `yq` used to live here for `task gen:devfile`, which inlined the identity
+# provider's configuration into devfile.yaml. The provider reads the committed file
+# directly now (ADR-0014), so both the step and the tool are gone.
 
 [settings]
 # `cargo:` tools are fetched as prebuilt binaries via cargo-binstall instead of

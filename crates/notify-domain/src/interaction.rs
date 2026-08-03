@@ -29,6 +29,7 @@ use crate::limits::MAX_REPLY_CHARS;
 use crate::principal::{Author, Principal};
 
 /// What a user sent back.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Interaction {
@@ -145,6 +146,7 @@ fn expect_kind<'a>(
 }
 
 /// A stored interaction.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InteractionRecord {
     /// Identity.
@@ -196,6 +198,7 @@ impl Recorded {
 /// database; the persistence adapter enforces the same uniqueness with an index,
 /// because two concurrent acknowledgements must not both win a race the domain
 /// cannot see.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct InteractionLog {

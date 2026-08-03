@@ -26,6 +26,13 @@ use crate::error::{DomainError, Result};
 
 /// A position in the global event sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+// Documented as the opaque string it is on the wire, not as the integer it happens
+// to wrap: a client that sees `integer` in the spec will do arithmetic on it.
+#[cfg_attr(
+    feature = "openapi",
+    schema(value_type = String, example = "evt_00000000000042")
+)]
 pub struct Cursor(u64);
 
 impl Cursor {

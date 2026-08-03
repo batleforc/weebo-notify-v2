@@ -29,6 +29,7 @@ use crate::error::PortResult;
 use crate::event::Event;
 
 /// Where a channel's events go, besides devices.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SinkTarget {
@@ -112,6 +113,7 @@ pub trait SinkDispatcher: Send + Sync {
 }
 
 /// A delivery that ran out of retries (design §7.1bis).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeadLetter {
     /// Its id, for `POST /admin/dlq/{id}/requeue`.

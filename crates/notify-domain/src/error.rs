@@ -160,6 +160,16 @@ pub enum DomainError {
     #[error("this notification no longer exists")]
     NotificationGone,
 
+    /// The credential presented is not valid: a bad signature, an unknown key, a
+    /// wrong secret, a malformed header.
+    ///
+    /// One variant for all of them on purpose. Telling a caller *which* turns the
+    /// endpoint into an oracle — "unknown prefix" versus "wrong secret" says which
+    /// guesses landed on a real key. The log records the detail; the response does
+    /// not.
+    #[error("the credential presented is not valid")]
+    InvalidCredential,
+
     /// The API key presented has passed its `expires_at`.
     ///
     /// Distinct from [`Self::ApiKeyRevoked`] so a client can say "your key expired,
@@ -207,6 +217,7 @@ impl DomainError {
             Self::UrlSchemeNotAllowed { .. } => "action.url_scheme_not_allowed",
             Self::SilenceGroupNeedsDuration => "silence.duration_required",
             Self::NotificationGone => "notification.gone",
+            Self::InvalidCredential => "auth.invalid_credential",
             Self::ApiKeyExpired => "apikey.expired",
             Self::ApiKeyRevoked => "apikey.revoked",
             Self::ServiceAccountDisabled => "service_account.disabled",
@@ -233,9 +244,10 @@ impl DomainError {
             | Self::InfiniteTtlNotAllowed => ErrorKind::LimitExceeded,
             Self::TooLarge { .. } => ErrorKind::TooLarge,
             Self::NotificationGone => ErrorKind::Conflict,
-            Self::ApiKeyExpired | Self::ApiKeyRevoked | Self::ServiceAccountDisabled => {
-                ErrorKind::Unauthenticated
-            }
+            Self::InvalidCredential
+            | Self::ApiKeyExpired
+            | Self::ApiKeyRevoked
+            | Self::ServiceAccountDisabled => ErrorKind::Unauthenticated,
             Self::ScopeMissing { .. } => ErrorKind::Forbidden,
         }
     }
@@ -293,6 +305,7 @@ mod tests {
             },
             DomainError::SilenceGroupNeedsDuration,
             DomainError::NotificationGone,
+            DomainError::InvalidCredential,
             DomainError::ApiKeyExpired,
             DomainError::ApiKeyRevoked,
             DomainError::ServiceAccountDisabled,
@@ -325,6 +338,7 @@ mod tests {
                 "action.url_scheme_not_allowed",
                 "silence.duration_required",
                 "notification.gone",
+                "auth.invalid_credential",
                 "apikey.expired",
                 "apikey.revoked",
                 "service_account.disabled",
@@ -354,9 +368,10 @@ mod tests {
                 | "ttl.infinite_not_allowed" => ErrorKind::LimitExceeded,
                 "payload.too_large" => ErrorKind::TooLarge,
                 "notification.gone" => ErrorKind::Conflict,
-                "apikey.expired" | "apikey.revoked" | "service_account.disabled" => {
-                    ErrorKind::Unauthenticated
-                }
+                "auth.invalid_credential"
+                | "apikey.expired"
+                | "apikey.revoked"
+                | "service_account.disabled" => ErrorKind::Unauthenticated,
                 "scope.missing" => ErrorKind::Forbidden,
                 _ => ErrorKind::Validation,
             };

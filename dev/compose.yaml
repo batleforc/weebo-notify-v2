@@ -7,9 +7,13 @@ name: weebo-notify-dev
 # ever reaches the code.
 #
 # Three tiers of authentication (design §12.1), cheapest first:
-#   1. in-memory TokenVerifier  -> `task dev:core`  (no OIDC container at all)
-#   2. oidc-server-mock         -> `task dev:up`    (the everyday default, ~128 MiB)
+#   1. in-memory TokenVerifier  -> `task dev:core`  (no identity provider at all)
+#   2. the built-in OIDC mock   -> `task dev:oidc`  (the everyday default)
 #   3. Authentik                -> `task dev:auth`  (fidelity: refresh rotation, logout)
+#
+# Tier 2 is NOT a service here. It is `cargo run -p notify-oidc-mock`, a binary in
+# this workspace (ADR-0014), run like the server and the web dev server are — which
+# is what lets Compose, Eclipse Che and CI share one provider with no image to pull.
 #
 # Credentials here are deliberately committed: this environment is disposable and
 # holds no production value (dev/ is allowlisted in .gitleaks.toml). The single
@@ -61,25 +65,6 @@ services:
       RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
       - rustfs-data:/data
-
-  oidc-mock:
-    # The everyday IdP. No profile: it starts with `task dev:up`.
-    # Port 9110 because 9000 is RustFS and 9100 is Authentik — all three can run
-    # at once, and in Che every component shares one pod's port space.
-    image: ghcr.io/soluto/oidc-server-mock:latest
-    ports: ["9110:9110"]
-    environment:
-      ASPNETCORE_URLS: http://0.0.0.0:9110
-      SERVER_OPTIONS_INLINE: |
-        {
-          "AccessTokenJwtType": "JWT",
-          "Discovery": { "ShowKeySet": true },
-          "Authentication": { "CookieSameSiteMode": "Lax" }
-        }
-      USERS_CONFIGURATION_PATH: /config/users.yaml
-      CLIENTS_CONFIGURATION_PATH: /config/clients.yaml
-    volumes:
-      - ./oidc-mock:/config:ro
 
   redis:
     # Authentik's broker; on its own it also backs the eventbus-redis adapter (§11).

@@ -24,7 +24,10 @@ tasks:
       - cargo nextest run --workspace -P critical
 
   e2e:
-    desc: "End-to-end tests against the real binary via testcontainers (Postgres + RustFS + oidc-mock)"
+    desc: "End-to-end and adapter tests: needs WNK_TEST_DATABASE_URL (or DATABASE_URL) for Postgres"
+    # The adapter suites skip cleanly with no database rather than failing, so this
+    # is green on a laptop that has not started the stack — and the `e2e` CI job
+    # always sets the variable, so nothing is silently skipped where it matters.
     cmds:
       - cargo nextest run --workspace -E 'test(/^e2e::/)' --no-fail-fast
 

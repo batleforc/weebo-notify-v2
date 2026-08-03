@@ -3,14 +3,16 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use notify_domain::{AttachmentId, ChannelId, Scope};
+use notify_domain::{ApiKeyPrefix, AttachmentId, ChannelId, Scope};
 use time::{Duration, OffsetDateTime};
 use url::Url;
 
 use crate::attachments::{AttachmentStore, PresignedDownload, PresignedUpload, UploadRequest};
+use crate::clock::Clock;
 use crate::error::{PortError, PortResult};
-use crate::identities::SecretHasher;
+use crate::identities::{KeyGenerator, SecretHasher};
 use crate::leader::{LeaderElection, LeaderGuard};
+use crate::quota::{Allowance, Quota, RateLimiter};
 use crate::sinks::{SinkDelivery, SinkDispatcher, SinkOutcome};
 use crate::tokens::{MintedToken, TokenRejection, TokenVerifier, VerifiedClaims};
 
@@ -50,18 +52,28 @@ impl SecretHasher for StubSecretHasher {
 /// Anything not in the table is [`TokenRejection::BadSignature`], so a test that
 /// forgets to register a token fails as an unauthenticated request rather than
 /// silently authenticating as somebody.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct StaticTokenVerifier {
     tokens: Arc<Mutex<Vec<(String, VerifiedClaims)>>>,
     healthy: Arc<Mutex<bool>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl StaticTokenVerifier {
-    /// An empty verifier: every token is refused.
+    /// An empty verifier reading the real clock: every token is refused.
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(crate::clock::SystemClock))
+    }
+
+    /// An empty verifier reading the clock a test controls.
+    ///
+    /// Expiry is checked against it, so "this token is stale" is a statement the
+    /// test can make rather than one that depends on what year it is run in.
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
             tokens: Arc::new(Mutex::new(Vec::new())),
             healthy: Arc::new(Mutex::new(true)),
+            clock,
         }
     }
 
@@ -77,6 +89,12 @@ impl StaticTokenVerifier {
     }
 }
 
+impl Default for StaticTokenVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait::async_trait]
 impl TokenVerifier for StaticTokenVerifier {
     async fn verify(&self, token: &str) -> PortResult<Result<VerifiedClaims, TokenRejection>> {
@@ -88,9 +106,7 @@ impl TokenVerifier for StaticTokenVerifier {
         Ok(match found {
             // Expiry is checked against the claims rather than assumed valid: an
             // expired token in the table must still be refused.
-            Some(claims) if claims.expires_at <= OffsetDateTime::now_utc() => {
-                Err(TokenRejection::Expired)
-            }
+            Some(claims) if claims.expires_at <= self.clock.now() => Err(TokenRejection::Expired),
             Some(claims) => Ok(claims),
             None => Err(TokenRejection::BadSignature),
         })
@@ -387,5 +403,85 @@ mod tests {
         store.delete(signed.id).await.unwrap();
         assert!(!store.exists(signed.id).await.unwrap());
         assert!(store.uploaded().is_empty());
+    }
+}
+
+// --- Key generation --------------------------------------------------------
+
+/// A key generator that counts instead of rolling dice.
+///
+/// Randomness is exactly what a test cannot assert against, so this hands out
+/// `k0000000`, `k0000001`… and a matching secret. Every key it makes is worthless,
+/// which is the point.
+#[derive(Debug, Clone, Default)]
+pub struct CountingKeyGenerator {
+    next: Arc<Mutex<u32>>,
+}
+
+impl CountingKeyGenerator {
+    /// A generator starting from zero.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl KeyGenerator for CountingKeyGenerator {
+    fn generate(&self) -> (ApiKeyPrefix, String) {
+        let mut next = lock(&self.next);
+        let index = *next;
+        *next += 1;
+
+        // Wraps rather than overflowing the eight-character prefix; a test that
+        // mints ten million keys has other problems.
+        let index = index % 10_000_000;
+        let prefix = ApiKeyPrefix::parse(&format!("k{index:07}"))
+            .expect("a counter under 10^7 always renders as eight alphanumerics");
+        (prefix, format!("test-secret-{index}"))
+    }
+}
+
+// --- Rate limiting ---------------------------------------------------------
+
+/// A rate limiter a test sets the verdict of.
+///
+/// Fixed-window counting would make every quota test a question of what time it is;
+/// this one simply allows everything until told otherwise, and then refuses
+/// everything. Enough to assert that a `429` is produced and that the *other*
+/// publishers of a channel are untouched (scenario T14).
+#[derive(Debug, Clone, Default)]
+pub struct TestRateLimiter {
+    limited: Arc<Mutex<Vec<Quota>>>,
+    seen: Arc<Mutex<Vec<Quota>>>,
+}
+
+impl TestRateLimiter {
+    /// A limiter that allows everything.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Start refusing this exact quota subject.
+    pub fn limit(&self, quota: Quota) -> &Self {
+        lock(&self.limited).push(quota);
+        self
+    }
+
+    /// Every quota that was checked, in order.
+    pub fn seen(&self) -> Vec<Quota> {
+        lock(&self.seen).clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl RateLimiter for TestRateLimiter {
+    async fn check(&self, quota: &Quota, _now: OffsetDateTime) -> PortResult<Allowance> {
+        lock(&self.seen).push(quota.clone());
+        Ok(if lock(&self.limited).contains(quota) {
+            Allowance::Limited {
+                retry_after_seconds: 60,
+            }
+        } else {
+            Allowance::Allowed { remaining: 59 }
+        })
     }
 }

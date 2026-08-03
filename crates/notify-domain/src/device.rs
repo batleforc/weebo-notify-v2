@@ -42,6 +42,11 @@ use crate::principal::Principal;
 /// The private half never leaves the device's hardware keystore — Android Keystore
 /// or the iOS Keychain (design §6.2). This type only ever holds the public half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(value_type = String, format = Byte, description = "Base64url, 32 bytes")
+)]
 pub struct DevicePublicKey([u8; 32]);
 
 impl DevicePublicKey {
@@ -114,6 +119,7 @@ impl<'de> Deserialize<'de> for DevicePublicKey {
 }
 
 /// How the server reaches a device when its client is not connected.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum PushTransport {
@@ -168,6 +174,7 @@ impl PushTransport {
 }
 
 /// An enrolled device.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     /// Identity.

@@ -1,0 +1,14 @@
+# deps
+/node_modules
+
+# build & test output
+/dist
+/coverage
+*.tsbuildinfo
+
+# local overrides of .env.development (endpoints, never secrets — see .env.example)
+.env.local
+.env.*.local
+
+# misc
+.DS_Store

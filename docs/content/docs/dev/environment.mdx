@@ -13,13 +13,19 @@ code.
 
 ```bash
 task init                     # toolchain (mise) + git hooks (cocogitto)
-task dev:up                   # Postgres + RustFS + oidc-server-mock, ~20 s
+task dev:up                   # Postgres + RustFS, ~20 s
 task dev:seed                 # migrations, attachment bucket, IdP identities
+task dev:oidc                 # the identity provider, on :9110
 task dev:run                  # the server, on :8080
 task dev:web                  # the frontend, on :5173
 ```
 
 Log in as `alice`, `bob` or `carol`, password `weebo-dev`.
+
+The last three are long-running processes, so they each want their own terminal.
+The identity provider is one of them: it is a binary in this workspace
+([ADR-0014](/docs/adr/0014-a-first-party-oidc-mock)), not a container, which is why
+`task dev:up` no longer starts it for you.
 
 ## Three tiers of authentication
 
@@ -28,8 +34,8 @@ are three tiers, and you pick the cheapest one that still tests what you are cha
 
 | Tier | Command | Cost | Use it when |
 | --- | --- | --- | --- |
-| In-memory `TokenVerifier` | `task dev:core` | no IdP container | Working on the domain or use cases |
-| oidc-server-mock | `task dev:up` | ~256 MiB, seconds to boot | Everyday work — the default |
+| In-memory `TokenVerifier` | `task dev:core` | no provider at all | Working on the domain or use cases |
+| The built-in mock | `task dev:oidc` | a `cargo run`, no image | Everyday work — the default |
 | Authentik | `task dev:auth` | ~1.5 GiB with worker and Redis | Touching the OIDC flow itself |
 
 The mock and Authentik describe the **same identities** — `alice` in `infra-admins`,
@@ -51,13 +57,36 @@ Never a second configuration file. Every configuration key is overridable throug
   bindings and nothing else, never a default grant.
 </Callout>
 
+## The development identity provider
+
+`crates/oidc-mock` is ours. It implements discovery, a JWKS, Authorization Code with
+PKCE, refresh with rotation, userinfo and logout, and it signs with a real ES256 key —
+so the server verifies its tokens through exactly the code path it uses against
+Authentik. A test in `notify-oidc` boots it on a real socket and walks a real flow
+through the real verifier, which means a broken provider fails `task test` rather
+than your morning.
+
+Its accounts live in `dev/oidc-mock/identities.toml`, read directly under Compose, in
+Che and in CI. There is nothing to generate and nothing to keep in sync.
+
+It also answers `POST /admin/rotate-keys`, which retires the signing key and publishes
+a new one alongside it. That is not part of OIDC; it exists so the auth suite can test
+key rotation on demand instead of waiting for a provider to feel like rotating.
+
+<Callout type="warn">
+  Because the provider is ours, it cannot surprise us — and that is its one real
+  weakness. Dex and Authentik in the `oidc-compat` matrix are now the only
+  independent readings of OIDC this project meets before a user does. Never merge a
+  change to the auth flow without that matrix green.
+</Callout>
+
 ## Services
 
 | Service | Role | Endpoint |
 | --- | --- | --- |
 | PostgreSQL 17 | Server database, plus Authentik's | `localhost:5432` |
 | RustFS | S3-compatible attachment store | S3 `:9000`, console `:9001` |
-| oidc-server-mock | Everyday identity provider | `http://localhost:9110` |
+| `oidc-mock` | Everyday identity provider (a process, not a container) | `http://localhost:9110` |
 | Authentik | Fidelity identity provider (profile `authentik`) | `http://localhost:9100` |
 | Valkey | Authentik's broker; also exercises `eventbus-redis` | `localhost:6379` |
 | Mailpit | SMTP sink for the email channel sink (profile `sinks`) | UI `:8025`, SMTP `:1025` |
@@ -74,13 +103,17 @@ Two deliberate differences:
 - **Authentik is not in the devfile.** The workspace runs on the mock; fidelity is
   covered by local Compose and by CI. That trade is the point of the three tiers.
 - **Anything the browser touches gets a public route.** OIDC redirects travel through
-  *your* browser, which cannot reach the pod's `localhost`. The devfile exposes
-  `oidc-mock` publicly and exports `WNK_OIDC__ISSUER` accordingly.
+  *your* browser, which cannot reach the pod's `localhost`. The provider runs in the
+  `tools` container like the server and Vite do, so Che routes it the same way — take
+  the route it offers for `:9110` and export it before starting either process:
 
-Che cannot mount host files, so the mock's configuration travels as an environment
-variable instead of a volume. That copy is **generated** by `task gen:devfile` from
-`dev/oidc-mock/*.yaml`, and the `contract` CI job regenerates and diffs it — a
-hand-edited copy fails the build rather than silently drifting from Compose.
+```bash
+export WNK_OIDC_MOCK_ISSUER=https://<the-route-che-gave-you>   # what the provider calls itself
+export WNK_OIDC__ISSUER=$WNK_OIDC_MOCK_ISSUER                  # what the server expects
+```
+
+Every configuration key is env-overridable, so this needs no second file — the
+`WNK_OIDC__ISSUER` above simply beats `config/dev.toml`.
 
 ## Credentials
 

@@ -40,6 +40,7 @@ use crate::principal::Author;
 use crate::ttl::{Ttl, TtlResolution};
 
 /// Where a notification is in its lifecycle.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -60,6 +61,7 @@ impl State {
 }
 
 /// What the notification is saying, orthogonally to where it is in its lifecycle.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -79,6 +81,7 @@ pub enum Status {
 ///
 /// `Urgent` does not bypass a user's do-not-disturb unless that user opted in:
 /// the recipient decides what may wake them, never the publisher (design §7.4).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
@@ -95,6 +98,7 @@ pub enum Priority {
 }
 
 /// Which of the two publishing shapes produced this notification (design §2.2).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
@@ -106,6 +110,7 @@ pub enum NotificationKind {
 
 /// Why a notification stopped existing, as broadcast in a `tombstone` event
 /// (design §8.1).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TombstoneReason {
@@ -116,6 +121,7 @@ pub enum TombstoneReason {
 }
 
 /// One immutable step of a notification's life.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
     /// Identity of this revision.
@@ -145,6 +151,7 @@ pub struct Revision {
 /// An absent field means "leave it as it is" on an update, and takes the channel
 /// default on a creation. That is what lets a CI job push `state=closed,
 /// status=success` without restating the title, the tags and the buttons.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Deserialize)]
 pub struct RevisionDraft {
     /// Lifecycle position. Its presence at creation is what makes the notification
@@ -202,6 +209,7 @@ pub struct Written {
 }
 
 /// A notification and its current state.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
     /// Stable across every revision.
@@ -328,7 +336,9 @@ impl Notification {
                 clamped_from: None,
             },
         };
-        let content: Content = draft.content.try_into()?;
+        // Absent content keeps what the head says (design §2.2), which is what makes
+        // `{"state": "closed", "status": "success"}` a complete revision.
+        let content: Content = draft.content.inheriting(&self.head.content).try_into()?;
 
         let revision = Revision {
             id: RevisionId::generate(),

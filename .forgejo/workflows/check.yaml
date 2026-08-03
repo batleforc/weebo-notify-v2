@@ -51,11 +51,20 @@ jobs:
             ~/.local/share/mise
             target
             docs/node_modules
-          key: check-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock', 'docs/pnpm-lock.yaml') }}
+            web/node_modules
+          key: check-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock', 'docs/pnpm-lock.yaml', 'web/pnpm-lock.yaml') }}
           restore-keys: check-${{ runner.os }}-
 
       - name: Install pinned tools
         run: mise install --yes
+
+      - name: Install the JavaScript dependencies
+        # `task lint:check` and `task cover` both reach into web/ and docs/, and
+        # neither pnpm nor a restored cache guarantees a complete tree — a cache
+        # restored across a lockfile change is stale by definition.
+        run: |
+          mise exec -- pnpm -C docs install --frozen-lockfile
+          mise exec -- pnpm -C web install --frozen-lockfile
 
       - name: Lint
         # The read-only flavour: a pull request must not be green on code that was

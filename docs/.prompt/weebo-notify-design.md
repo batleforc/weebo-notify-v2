@@ -1,5 +1,7 @@
 # weebo-notify — Design Document
 
+claude --resume 6faba325-494f-4b57-a3ee-012d9475a0f4
+
 > Plateforme de notifications riches, chiffrées (serveur de confiance, re-chiffrement ciblé vers les transports push tiers), multi-canaux et multi-appareils.
 > Remplaçant de Gotify / ntfy pour la stack `weebo-si`.
 
@@ -139,8 +141,8 @@ task init          # mise upgrade + cog install-hook -a -o
 
 - `check` : `task lint` + `cargo llvm-cov nextest` (tests **et** coverage en un seul run — pas de double exécution de la suite) + tests web — sur chaque push/PR.
 - `contract` : `task recu` puis `git diff --exit-code` — la spec OpenAPI et les clients générés (TS + Rust) étant commités, ils ne peuvent pas dériver du code serveur ; un oubli de régénération casse la PR.
-- `e2e` : testcontainers (Postgres + RustFS + **oidc-server-mock**) contre le binaire réel — sur PR vers `main` ; inclut la suite `critical` (§3.4), bloquante. Le flow OIDC complet (code + PKCE, JWKS) est donc joué sur chaque PR, contre le mock.
-- `oidc-compat` : **la compat IdP est un contrat testé, pas une promesse** (produit self-hosted — les utilisateurs viendront avec Keycloak, Authelia, Dex…). La même suite `auth`, **paramétrée par issuer** (fixture par provider : issuer, credentials, attentes de claims — sélection par env, cohérent §11), est rejouée contre **Dex** (OIDC minimal strict — couvre aussi le cas « IdP sans claim `groups` », T29) et **Authentik** (blueprint §12.5 — comportements réels : rotation du refresh token, logout, groupes). Les **mots de passe Dex sont générés au boot du job** (aléatoires, hashés bcrypt dans une config rendue à l'exécution depuis un template commité, transmis à la suite par env — jamais commités) : Dex est CI-only, aucun besoin d'ergonomie locale ne justifie un mot de passe fixe, contrairement à `alice`/`bob` du mock (§12.5). Déclenchée sur les PR qui touchent l'auth (paths : adapter `oidc/`, middleware principal, use cases auth), en nightly, et dans le gate de release (§3.2bis) — pas sur chaque PR de front (Authentik ≈ 1 min de boot).
+- `e2e` : testcontainers (Postgres + RustFS) contre le binaire réel, **le provider OIDC étant in-process** (crate `oidc-mock` du workspace, ADR-0014 — aucune image à puller, aucun registry qui puisse être down) — sur PR vers `main` ; inclut la suite `critical` (§3.4), bloquante. Le flow OIDC complet (code + PKCE, JWKS) est donc joué sur chaque PR, contre le mock.
+- `oidc-compat` : **la compat IdP est un contrat testé, pas une promesse** (produit self-hosted — les utilisateurs viendront avec Keycloak, Authelia, Dex…). Depuis ADR-0014 ce job est **le seul endroit où le projet rencontre une lecture d'OIDC qui n'est pas la sienne** : le mock du quotidien est écrit ici, donc il ne peut pas nous surprendre — c'est précisément sa faiblesse. La même suite `auth`, **paramétrée par issuer** (fixture par provider : issuer, credentials, attentes de claims — sélection par env, cohérent §11), est rejouée contre **Dex** (OIDC minimal strict — couvre aussi le cas « IdP sans claim `groups` », T29) et **Authentik** (blueprint §12.5 — comportements réels : rotation du refresh token, logout, groupes). Les **mots de passe Dex sont générés au boot du job** (aléatoires, hashés bcrypt dans une config rendue à l'exécution depuis un template commité, transmis à la suite par env — jamais commités) : Dex est CI-only, aucun besoin d'ergonomie locale ne justifie un mot de passe fixe, contrairement à `alice`/`bob` du mock (§12.5). Déclenchée sur les PR qui touchent l'auth (paths : adapter `oidc/`, mock `oidc-mock/`, middleware principal, use cases auth), en nightly, et dans le gate de release (§3.2bis) — pas sur chaque PR de front (Authentik ≈ 1 min de boot).
 - `release` : déclenchée par le push d'un tag `v*`, entièrement automatique, pre-releases comprises — section dédiée §3.2bis.
 - La CI publie elle-même ses statuts vers weebo-notify via la fédération JWT (§5.3) dès M4 — dogfooding.
 
@@ -244,7 +246,7 @@ Suite taggée `critical` : bloquante sur PR, jamais skippée, et chaque bugfix y
 - **T28 · Store partagé** : deux frontales sur le même profil (§9.3bis) → une seule tient le SSE (lock) ; kill -9 du détenteur → l'autre reprend le flux sans trou ni doublon de curseur ; suppression du store → re-sync complet, état final identique.
 
 **Compat IdP (matrice `oidc-compat`, §3.2)**
-- **T29 · Matrice OIDC** : la suite auth — code + PKCE headless, validation JWKS + **rotation des clés de signature**, mapping `groups` → canaux managés, token expiré/mal signé/mauvais issuer → `401` — passe à l'identique sur oidc-server-mock, Dex et Authentik. Cas propre à Dex (pas de claim `groups`) : **dégradation propre** — l'user n'accède qu'à ses bindings individuels `oidc_sub`/`email` (§11), jamais d'accès par défaut ni de crash.
+- **T29 · Matrice OIDC** : la suite auth — code + PKCE headless, validation JWKS + **rotation des clés de signature** (le mock maison expose `POST /admin/rotate-keys` pour la déclencher à la demande, ADR-0014), mapping `groups` → canaux managés, token expiré/mal signé/mauvais issuer → `401` — passe à l'identique sur le mock maison, Dex et Authentik. Cas propre à Dex (pas de claim `groups`) : **dégradation propre** — l'user n'accède qu'à ses bindings individuels `oidc_sub`/`email` (§11), jamais d'accès par défaut ni de crash.
 
 **Rôle plateforme**
 - **T30 · Frontière admin** (§5.4) : un `platform-admin` **non membre** d'un canal — inventaire et quotas accessibles, mais `GET /channels/{id}/notifications` → `403` et aucun événement de ce canal dans son SSE ; ses opérations (requeue DLQ, révocation, self-join) apparaissent dans l'audit log ; un user sans le rôle → `403` sur tout `/admin/*` ; aucun chemin API ne permet de s'accorder le rôle (GitOps only).
@@ -1016,7 +1018,7 @@ Objectif : **un env complet en une commande**, identique qu'on développe en loc
 |---|---|---|---|---|
 | PostgreSQL 17 | DB serveur **+** DB Authentik (2 bases, 1 instance) | service `postgres` | component `postgres` | `localhost:5432` |
 | RustFS | Object store S3-compatible (attachments) | service `rustfs` | component `rustfs` | S3 `localhost:9000`, console `localhost:9001` |
-| oidc-server-mock | **OIDC du quotidien** (§12.5 — alice/bob/groupes en YAML commité) | service `oidc-mock` (défaut, sans profile) | component `oidc-mock` | `http://localhost:9110` |
+| `oidc-mock` (crate maison) | **OIDC du quotidien** (§12.5 — alice/bob/groupes en TOML commité) | **pas un service** : `task dev:oidc` | **pas un component** : `task dev:oidc` dans `tools` | `http://localhost:9110` |
 | Authentik server | OIDC **de fidélité** (flow réel : rotation refresh, logout — §3.2 `oidc-compat`) | service `authentik-server` (profile `authentik`) | — (compose/CI uniquement) | `http://localhost:9100` |
 | Authentik worker | Tâches asynchrones Authentik (blueprints, mails) | service `authentik-worker` (profile `authentik`) | — | — |
 | Redis/Valkey | Broker requis par Authentik ; sert aussi à tester `eventbus-redis` (§11) | service `redis` (profiles `authentik`, `eventbus`) | component `redis` | interne `localhost:6379` |
@@ -1024,9 +1026,10 @@ Objectif : **un env complet en une commande**, identique qu'on développe en loc
 | weebo-notify | Le serveur, lancé **hors conteneur** (`cargo run` / hot-reload) | — | container `tools` du parent WeeboDevImage | `localhost:8080` (web `localhost:5173`) |
 
 Points de parité importants :
-- **Trois étages d'auth** (rationale §3.2 `oidc-compat`) : `TokenVerifier` in-memory (zéro service, travail domaine) < **oidc-server-mock** (défaut — un conteneur ~100 Mi, boot en secondes, remplace authentik-server + worker + redis au quotidien) < **Authentik** (profile `authentik`, monté quand on touche au flow OIDC réel). Le mock et Authentik décrivent les **mêmes identités de test** (§12.5).
+- **Trois étages d'auth** (rationale §3.2 `oidc-compat`) : `TokenVerifier` in-memory (zéro service, travail domaine) < **le mock maison** (défaut — `cargo run -p notify-oidc-mock`, aucune image, remplace authentik-server + worker + redis au quotidien) < **Authentik** (profile `authentik`, monté quand on touche au flow OIDC réel). Le mock et Authentik décrivent les **mêmes identités de test** (§12.5).
+- **Le provider du quotidien n'est pas un conteneur** (ADR-0014) : c'est un binaire du workspace, lancé comme le serveur et le front. C'est ce qui fait que compose, Che et la CI partagent *un seul* provider, lisant *un seul* fichier commité (`dev/oidc-mock/identities.toml`) — plus d'image tierce à puller, plus de configuration à dupliquer dans le devfile, plus d'étape de génération à differ en CI.
 - **Ports** : le mock écoute sur `9110`, Authentik garde `9100` (`AUTHENTIK_LISTEN__HTTP=0.0.0.0:9100` — 9000 est pris par RustFS, et en devfile tous les composants partagent le pod) — les deux peuvent tourner en même temps. `dev.toml` pointe sur le mock ; cibler Authentik = surcharger `WNK_OIDC__ISSUER` (§11), pas de variante de fichier.
-- **Limite de parité assumée — ce qui transite par le navigateur** : en Che, le flow OIDC (redirects) atteint l'IdP via la **route publique du workspace**, pas via `localhost`. Comme toute clé de config est surchargeable par env (§11), pas de fichier dédié : le devfile exporte `WNK_OIDC__ISSUER=https://<route-che-oidc-mock>/` (endpoint `oidc-mock` exposé public), qui prime sur `dev.toml`. Même mécanique pour tout autre endpoint browser-facing.
+- **Limite de parité assumée — ce qui transite par le navigateur** : en Che, le flow OIDC (redirects) atteint l'IdP via la **route publique du workspace**, pas via `localhost`. Le mock tournant dans le container `tools` comme le serveur (`:8080`) et Vite (`:5173`), Che lui ouvre une route de la même façon. Comme toute clé de config est surchargeable par env (§11), pas de fichier dédié : on exporte `WNK_OIDC_MOCK_ISSUER` (ce que le provider dit être) **et** `WNK_OIDC__ISSUER` (ce que le serveur attend) sur cette route, qui prime sur `dev.toml`. Même mécanique pour tout autre endpoint browser-facing.
 - Les credentials dev sont **volontairement commités** (env de dev jetable, aucune valeur prod) — `dev/` est allowlisté dans la config gitleaks. **Exception : les credentials admin Authentik**, générés au boot et jamais commités (§12.5).
 
 ### 12.2 Arborescence
@@ -1039,8 +1042,8 @@ dev/
 ├── postgres/
 │   └── init/01-databases.sql    # crée weebo_notify + authentik (user/db dédiés)
 ├── oidc-mock/
-│   ├── clients.yaml             # client public weebo-notify : PKCE, redirect URIs — miroir du blueprint
-│   └── users.yaml               # alice/bob + claims groups — miroir du blueprint (§12.5)
+│   └── identities.toml          # client public weebo-notify (PKCE, redirect URIs) + alice/bob/carol
+│                                # et leurs groupes — miroir du blueprint (§12.5), lu par crates/oidc-mock
 ├── authentik/
 │   └── blueprints/
 │       └── weebo-notify.yaml    # provider OIDC + app + groupes + users de test (auto-appliqué)
@@ -1096,15 +1099,8 @@ services:
     volumes:
       - rustfs-data:/data
 
-  oidc-mock:                            # OIDC du quotidien (§12.1) — aucun profile : démarre avec dev:up
-    image: ghcr.io/soluto/oidc-server-mock:latest
-    ports: ["9110:9110"]
-    environment:
-      ASPNETCORE_URLS: http://0.0.0.0:9110
-      USERS_CONFIGURATION_PATH: /config/users.yaml
-      CLIENTS_CONFIGURATION_PATH: /config/clients.yaml
-    volumes:
-      - ./oidc-mock:/config:ro
+  # Pas de service OIDC ici : depuis ADR-0014 le provider du quotidien est un binaire
+  # du workspace (`task dev:oidc`, port 9110), lancé comme le serveur et le front.
 
   redis:
     image: valkey/valkey:8-alpine
@@ -1143,7 +1139,7 @@ volumes:
   rustfs-data:
 ```
 
-> Versions d'images (RustFS, oidc-server-mock, Authentik 2025.x, Valkey) à figer lors de la mise en place réelle — le compose ci-dessus fixe le contrat, pas les digests. Même chose pour l'image Dex utilisée par le job `oidc-compat` (§3.2), qui vit côté CI et non dans ce compose.
+> Versions d'images (RustFS, Authentik 2025.x, Valkey) à figer lors de la mise en place réelle — le compose ci-dessus fixe le contrat, pas les digests. Même chose pour l'image Dex utilisée par le job `oidc-compat` (§3.2), qui vit côté CI et non dans ce compose.
 
 ### 12.4 `devfile.yaml` (Eclipse Che)
 
@@ -1191,16 +1187,11 @@ components:
       endpoints:
         - { name: redis, targetPort: 6379, exposure: internal }
 
-  - name: oidc-mock
-    container:
-      image: ghcr.io/soluto/oidc-server-mock:latest
-      memoryLimit: 128Mi
-      env:
-        - { name: ASPNETCORE_URLS,               value: "http://0.0.0.0:9110" }
-        - { name: USERS_CONFIGURATION_INLINE,    value: "…" }   # contenu de dev/oidc-mock/users.yaml — pas de montage host en Che (même contrainte que les blueprints), injecté inline par task dev:seed ou dupliqué ici
-        - { name: CLIENTS_CONFIGURATION_INLINE,  value: "…" }   # idem clients.yaml
-      endpoints:
-        - { name: oidc-mock, targetPort: 9110, exposure: public, protocol: https }  # route publique — les redirects OIDC du navigateur passent par elle (§12.1)
+  # Pas de component OIDC (ADR-0014) : le provider tourne dans `tools` via la commande
+  # run-oidc, comme le serveur et Vite — Che lui ouvre une route de la même façon, et
+  # `dev/oidc-mock/identities.toml` est lu depuis les sources du projet. C'est ce qui
+  # supprime aussi l'ancienne étape `gen:devfile` (Che ne monte pas de fichiers hôte,
+  # il fallait donc inliner cette config en variable d'env et la differ en CI).
 
   - name: pg-data
     volume: { size: 2Gi }
@@ -1210,6 +1201,8 @@ components:
 commands:
   - id: dev-seed
     exec: { component: tools, commandLine: "task dev:seed", workingDir: "${PROJECT_SOURCE}" }
+  - id: run-oidc
+    exec: { component: tools, commandLine: "task dev:oidc", workingDir: "${PROJECT_SOURCE}" }
   - id: run-server
     exec: { component: tools, commandLine: "task dev:run", workingDir: "${PROJECT_SOURCE}" }
   - id: run-web
@@ -1218,18 +1211,20 @@ commands:
 
 Notes Che :
 - Tous les composants partagent le pod → tout est joignable en `localhost`, exactement comme le mapping de ports du compose.
-- **Authentik n'est plus embarqué dans le devfile** : le workspace tourne sur le mock (~128 Mi au lieu de ~1,5 Gi Authentik + worker) ; la fidélité IdP se joue en compose local (profile `authentik`) ou en CI (`oidc-compat`, §3.2) — c'est le principal gain de la stratégie à trois étages (§12.1).
+- **Authentik n'est plus embarqué dans le devfile** : le workspace tourne sur le mock (un process, zéro Mi de sidecar, au lieu de ~1,5 Gi Authentik + worker) ; la fidélité IdP se joue en compose local (profile `authentik`) ou en CI (`oidc-compat`, §3.2) — c'est le principal gain de la stratégie à trois étages (§12.1).
+- **Le provider OIDC n'est plus un sidecar non plus** (ADR-0014) : `run-oidc` le lance dans `tools`, donc Che lui ouvre une route comme il le fait pour `:8080` et `:5173`.
 - Redis reste en sidecar léger pour tester `eventbus-redis` (§11).
 - Mailpit n'est pas embarqué dans le devfile (rarement utile en Che) ; le sink email se teste côté compose (profile `sinks`).
-- L'export `WNK_OIDC__ISSUER` (§12.1) se fait sur le container `tools` hérité du parent — la fusion d'env par nom de composant (mécanique de merge devfile v2) est **à valider en conditions réelles** au bootstrap ; fallback trivial : exporter la variable dans le profil shell du workspace.
+- Les exports `WNK_OIDC_MOCK_ISSUER` / `WNK_OIDC__ISSUER` (§12.1) se font dans le terminal du workspace, sur la route que Che propose pour `:9110` — plus besoin de faire fusionner un env par le devfile.
 
 ### 12.5 Identités de test — mock OIDC & blueprint Authentik
 
 Règle : le mock et Authentik décrivent les **mêmes identités** (users, groupes, client) — tests E2E et manipulations manuelles sont indifférents au provider, et la matrice `oidc-compat` (§3.2, T29) rejoue la même suite sur les deux.
 
-**Mock (`dev/oidc-mock/`, commité)** — la source du quotidien :
-- `clients.yaml` : client **public** `weebo-notify`, Authorization Code + PKCE, mêmes redirect URIs que le blueprint (dont les callbacks Tauri dès M5) ; issuer `http://localhost:9110`.
-- `users.yaml` : `alice` (groups `["infra-admins"]`), `bob` (groups `["dev-team"]`), mot de passe `weebo-dev` — claims `groups` émis dans l'access token, comme Authentik.
+**Mock (`dev/oidc-mock/identities.toml`, commité)** — la source du quotidien, lue par le crate `oidc-mock` (ADR-0014) :
+- `[client]` : client **public** `weebo-notify`, Authorization Code + PKCE, mêmes redirect URIs que le blueprint (dont les callbacks Tauri dès M5) ; issuer `http://localhost:9110`, surchargeable par `--issuer` / `WNK_OIDC_MOCK_ISSUER` (Che, §12.1).
+- `[[users]]` : `alice` (groups `["infra-admins", "platform-admins"]`), `bob` (groups `["dev-team"]`), `carol` (**aucun groupe** — le cas T29), mot de passe `weebo-dev` — claims `groups` émis dans l'access token, comme Authentik, et **claim absent** plutôt que tableau vide quand il n'y a pas de groupe.
+- Un fichier, un format (TOML, celui du reste du projet), lu à l'identique en compose, en Che et en CI — c'est ce que le format YAML propre au mock tiers empêchait.
 
 **Blueprint Authentik (`dev/authentik/blueprints/weebo-notify.yaml`)** — la référence de fidélité, versionnée :
 
@@ -1246,7 +1241,7 @@ Le `config/dev.toml` correspondant — il pointe sur le **mock** ; cibler Authen
 
 ```toml
 [oidc]
-issuer    = "http://localhost:9110"    # oidc-server-mock (défaut dev)
+issuer    = "http://localhost:9110"    # mock maison, `task dev:oidc` (défaut dev)
                                        # Authentik (task dev:auth) : WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/
 client_id = "weebo-notify"
 
@@ -1261,12 +1256,13 @@ secret_key = "weebo-dev-secret"
 
 ```
 
-> En Che, le devfile exporte `WNK_OIDC__ISSUER` (route publique du workspace), qui prime sur ce fichier — cf. §12.1. Le fichier reste identique dans les deux mondes.
+> En Che, on exporte `WNK_OIDC__ISSUER` (route publique du workspace), qui prime sur ce fichier — cf. §12.1. Le fichier reste identique dans les deux mondes.
 
 ### 12.6 Workflow quotidien (Taskfile, namespace `dev:`)
 
 ```yaml
-dev:up:      docker compose -f dev/compose.yaml --env-file dev/.env.local up -d --wait   # défaut : pg + rustfs + oidc-mock (léger)
+dev:up:      docker compose -f dev/compose.yaml --env-file dev/.env.local up -d --wait   # pg + rustfs
+dev:oidc:    cargo run -p notify-oidc-mock -- --identities dev/oidc-mock/identities.toml  # :9110, provider du quotidien (ADR-0014)
 dev:auth:    # génère dev/.env.local si absent (bootstrap Authentik, §12.5) puis :
              docker compose -f dev/compose.yaml --env-file dev/.env.local --profile authentik up -d --wait
              # puis : WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/ task dev:run
@@ -1279,8 +1275,8 @@ dev:web:     npm --prefix web run dev
 dev:logs:    docker compose -f dev/compose.yaml --env-file dev/.env.local logs -f
 ```
 
-- **Local** : `task dev:up && task dev:seed && task dev:run` → env complet (mock OIDC + RustFS + PG) en **~20 s** ; `task dev:auth` monte Authentik quand on touche au flow OIDC réel (§3.2 `oidc-compat` reste le filet en CI).
-- **Che** : le workspace démarre les sidecars tout seul ; `task dev:seed` puis la commande `run-server` du devfile. `dev:up`/`dev:down` détectent `$DEVWORKSPACE_ID` et no-opent proprement.
+- **Local** : `task dev:up && task dev:seed` (conteneurs, **~20 s**) puis `task dev:oidc` et `task dev:run` dans deux terminaux — le provider est un process long, comme le serveur et le front. `task dev:auth` monte Authentik quand on touche au flow OIDC réel (§3.2 `oidc-compat` reste le filet en CI).
+- **Che** : le workspace démarre les sidecars tout seul ; `task dev:seed` puis les commandes `run-oidc` et `run-server` du devfile. `dev:up`/`dev:down` détectent `$DEVWORKSPACE_ID` et no-opent proprement.
 - `dev:seed` est **idempotent** (rejouable après `dev:reset` ou sur un workspace recréé).
 - Les tests E2E (testcontainers) restent autonomes : ils ne dépendent pas de cet env, qui sert au run interactif.
 
@@ -1309,6 +1305,103 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 6. **M6 — Tauri Android** (§10bis.4) : premier besoin de re-chiffrement — enrôlement X25519 (Android Keystore), sealed box à la livraison, endpoint push UnifiedPush côté serveur + distributeur embarqué dans l'app.
 7. **M7 — Tauri iOS** (§10bis.5) : APNs + Notification Service Extension de déchiffrement (dépendance compte Apple Developer, §15).
 
+### 14.1 État d'avancement
+
+> Mis à jour au fil de l'eau. « écrit » veut dire *dans l'arbre de travail et testé* ;
+> « commité » veut dire *dans l'historique*. La distinction compte : un incrément non
+> commité n'a pas passé les hooks (`cog verify`, `task recu`, `task lint`, gitleaks).
+
+| Milestone | État |
+|---|---|
+| **M0 — Socle** | ✅ commité (`240ff36`) |
+| **M1 — Cœur + web v0** | 🟡 en cours — détail ci-dessous |
+| M2 → M7 | ⬜ non commencés |
+
+**Découpage de M1** :
+
+| # | Livrable | État |
+|---|---|---|
+| M1.1 | `notify-domain` — entités, invariants, machine à états | ✅ commité (`240ff36`) |
+| M1.2 | `notify-ports` — traits async + doubles in-memory | ✅ commité (`9cd9414`) |
+| M1.3 | `notify-app` — 12 use cases, `Caller`/`Grant` | ✅ écrit |
+| M1.4 | `notify-oidc` — découverte, JWKS + rotation, Argon2id | ✅ écrit |
+| M1.5 | `notify-http-actix` — 22 routes REST, `problem+json`, OpenAPI | ✅ écrit |
+| M1.6 | SSE + WebSocket, `Last-Event-ID` | ✅ écrit |
+| M1.7 | `notify-persistence-pg` + `notify-eventbus-pg` | ✅ écrit |
+| M1.8 | Composition root `notify-server` | ✅ écrit — voir ci-dessous |
+| M1.9 | Spec OpenAPI + client Rust généré + `notify publish`/`update` | ✅ écrit |
+| M1.10 | Web v0 — shell shadcn-vue, login PKCE, inbox SSE, panneau détail | ✅ écrit — voir ci-dessous |
+| — | `crates/oidc-mock` — provider OIDC de dev (ADR-0014) | ✅ écrit |
+| — | Accès par groupe OIDC (§14.2) | ✅ écrit |
+
+**M1.8 en détail.** Configuration figment en couches (schéma §11 complet, validée au démarrage — un backend non implémenté est **refusé** et non rétrogradé en silence, et `Config::unhonoured` liste ce que ce build parse sans l'honorer) ; câblage des adapters et des use cases ; réconciliation déclarative ; boucle de purge leader-only ; `/healthz` et `/readyz` réels ; arrêt gracieux ; UI Scalar sur `/api/docs`.
+
+Vérifié en le lançant : login OIDC → accès dérivé du groupe → publish → inbox → SSE avec deux révisions d'un même `external_id`, contre un vrai Postgres. **Deux bugs que seul le fait de le lancer pouvait révéler** :
+
+- **Une connexion Postgres par client SSE.** `EventBus::subscribe` est appelé par *connexion*, et §8.2 autorise 20 flux par user — cent personnes avec un navigateur et un téléphone épuisaient le pool de l'instance, et la panne ressemblait à « la base refuse des connexions » plutôt qu'à « le transport de flux les retient ». Corrigé par un `SharedBus` dans la composition root : un `LISTEN` par replica, rediffusé en process. C'est d'ailleurs ce que §11 dit déjà — le poke est *par replica*.
+- **`SIGTERM` finissait en abort.** Un connecteur sqlx détruit après la fin du runtime Tokio panique dans son destructeur, et une panique dans un destructeur abort au lieu de dérouler. La séquence d'arrêt draine donc les tâches et ferme le pool **pendant que le runtime vit encore**.
+
+Deux limites assumées, écrites là où elles se voient :
+
+- un binding `[[channels.managed.access]]` par `email` ou `oidc_sub` ne devient un membership qu'une fois cette personne connectée au moins une fois (un membership exige un `UserId`, créé au premier login). Le réconciliateur le **signale** et tourne aussi sur timer, donc l'accès arrive dans la minute qui suit ce premier login plutôt qu'au prochain redémarrage. Les bindings par groupe n'ont pas ce problème : ils se résolvent depuis le token ;
+- `reload = "sighup"` (§11) n'est pas câblé sur le signal ; le timer couvre le besoin en attendant.
+
+**M1.10 en détail.** `web/` : Vue 3 + Vite + Tailwind v4, composants shadcn-vue vendorés (ADR-0004), tokens sémantiques dans un seul fichier (§10.2 — aucune couleur brute ailleurs, c'est la règle bloquante de §10.6), client TS généré par HeyApi depuis la spec commitée (ADR-0009). Login Authorization Code + PKCE porté par la SPA (§5.1, ADR-0016), shell 3 zones (§10.4), inbox groupée par `group_key` alimentée par SSE (ADR-0015), panneau détail avec timeline des révisions, actions (§2.3) et receipts, permaliens `/n/<id>` et `/c/<id>`.
+
+Vérifié en le lançant, contre un vrai Postgres et le provider de dev : découverte OIDC → authorize → token (PKCE S256, refresh + `groups`) → préflight CORS → canaux → publish → flux SSE live. **Trois bugs que seul le fait de câbler un client pouvait révéler**, tous les trois côté serveur :
+
+- **Le flux ne livrait rien en direct.** `SharedBus::subscribe` transformait le récepteur `broadcast` en flux avec un `poll_fn` qui reconstruisait `recv()` à chaque poll et le jetait ensuite — or ce futur *désenregistre son waker en étant droppé*. Aucun poke ne réveillait plus personne : la connexion restait ouverte, le keep-alive coulait sur son propre timer, le backlog se rejouait correctement à la connexion, et seuls les événements *live* n'arrivaient jamais. Le test unitaire passait avec une deadline de 2 s, c'est-à-dire sur le réveil du timer de `timeout` et non sur le poke ; il est passé à 200 ms, ce qui le rend incapable de repasser par accident.
+- **`Event` sérialisait deux fois la même clé.** L'audience et le payload sont tous deux `flatten` — c'est ce qui donne la forme plate que §8.1 documente — mais `Audience::Channel { id }` et le `id` d'un `receipt` se disputaient le même nom, comme `recorded_at` entre l'enveloppe et un `interaction`. serde émettait la clé deux fois et le document ne se relisait plus : `GET /sync` et le WebSocket rendaient des événements `receipt`/`interaction` qu'aucun client ne pouvait désérialiser. L'audience s'écrit désormais `channel_id`/`user_id` et l'horodatage d'enveloppe `logged_at` ; deux tests verrouillent ces noms, et le doc de `Event` dit lesquels sont réservés.
+- **La trame SSE ne disait pas de quel canal elle venait.** Le `data:` ne portait que `event.payload`, alors que §8.1 montre `channel_id` dans la trame. Un client qui n'a jamais vu une notification ne pouvait pas la classer sans un `GET /notifications/{id}` par arrivée — exactement le suivi que `RevisionEvent` est dénormalisé pour éviter. Le `data:` est maintenant l'événement entier, ce qui rend SSE et WebSocket rigoureusement identiques comme §8.1 le promet.
+
+En marge : `task adr` numérotait en octal (`$(( 0014 + 1 ))` = 13), donc l'ADR suivant serait entré en collision avec un existant — et se serait cassé net à `0008`/`0009`, qui ne sont pas de l'octal valide.
+
+Trois limites assumées, écrites là où elles se voient :
+
+- le refresh token vit en `sessionStorage` jusqu'au service worker de M3 (ADR-0016) — l'access token, lui, ne quitte jamais la mémoire ;
+- le badge « reçue en retard » (§7.2) ne couvre que les arrivées rejouées après reconnexion : la version complète a besoin du curseur de sync par device, qui est M2 ;
+- la palette `Cmd+K` (§10.4) n'est pas là. Elle a besoin de `GET /search` **et** des écrans vers lesquels elle switche (Canaux, Devices, Admin), qui sont M2 — la livrer maintenant reviendrait à chercher dans un seul écran.
+
+### 14.2 Accès par groupe OIDC — le modèle dérivé
+
+Découvert en câblant M1.8 : `VerifiedClaims.groups` était extrait du token et **jeté**. `Authenticate::bearer` construisait `Caller::member(principal)` et `Authorizer` ne résolvait que par `Membership` stocké, donc tous les bindings `[[channels.managed.access]] oidc_group` de §11 n'accordaient rien — alice se connectait et ne voyait aucun canal.
+
+Deux lectures étaient possibles, et §5.1 tranche :
+
+- **Matérialiser** les groupes en memberships au login. Écarté : §5.1 impose « zéro session serveur » et l'auth par bearer se rejoue à *chaque requête*, donc ce serait une écriture par requête — et un membership matérialisé devient périmé dès que quelqu'un quitte un groupe.
+- **Dériver** : les groupes voyagent sur le `Caller`, le canal porte ses bindings de groupe, et l'`Authorizer` consulte les deux portes. C'est ce que dit §5.1 : « valide en pur JWKS, **mappe `groups` → rôles**, ne stocke aucune session ».
+
+Le modèle dérivé est implémenté, et il traverse cinq crates :
+
+| Couche | Changement |
+|---|---|
+| `notify-domain` | `GroupBinding` sur le `Channel` ; `Channel::allows` réunit les deux portes en un appel |
+| `notify-ports` | `subscribed_ids` et `list_for` prennent les groupes ; `SyncQuery` aussi |
+| `notify-persistence-pg` | table `channel_group_access` + un prédicat `EXISTS`/`EXISTS` partagé par les 3 requêtes de portée — un `JOIN` rendrait le canal deux fois à qui est à la fois membre et dans un groupe lié, et le curseur de pagination sauterait une ligne |
+| `notify-app` | `Caller` porte les groupes du token ; une API key n'en reçoit aucun (elle a ses propres scopes, §5.2) |
+| `notify-server` | le réconciliateur écrit les bindings depuis la config |
+
+Propriété conservée pour T29 : une liste de groupes vide n'accorde **rien**. Un émetteur sans claim `groups` dégrade vers les bindings individuels et jamais vers un accès par défaut.
+
+### 14.3 Ports sans adapter de production
+
+Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est un `Arc<dyn …>` que la composition root ne peut pas fournir.
+
+| Port | Double in-memory | Adapter de production | Conséquence |
+|---|---|---|---|
+| `AuditLog` | ✅ | ✅ `PgStore` (M1.8) | Vocabulaire d'actions fermé — une valeur inconnue en base est signalée, jamais renommée en silence. |
+| `PushDispatcher` | ✅ | ✅ `TransportRegistry` (M1.8) | Vide en M1, ce qui est le comportement correct : `Fanout` saute déjà les devices `stream`, donc le registre n'est atteint que par un device enrôlé sur un transport que cette instance ne sert pas — il répond `NotConfigured` en nommant la capacité. |
+| `AttachmentStore` | ✅ | ⬜ `attachments-s3` vide | Hors périmètre M1 (§6.1) — aucun use case M1 ne le réclame. |
+| `SinkDispatcher` / `SinkQueue` | ✅ | ⬜ | Hors périmètre M1 (§7.1bis). |
+| `FederationVerifier` | ❌ | ⬜ | M4 (§5.3). Pas encore de double non plus. |
+| `TokenVerifier` | ✅ | ✅ `notify-oidc` | |
+| `SecretHasher` | ✅ | ✅ `notify-oidc` (Argon2id) | |
+| `KeyGenerator` | ✅ | ✅ `UlidKeyGenerator` (`notify-app`) | Dérive préfixe et secret de ULID — 160 bits d'aléa CSPRNG. |
+| `Clock` | ✅ | ✅ `SystemClock` (`notify-ports`) | |
+| Tous les dépôts, `EventStore`, `IdempotencyStore`, `RateLimiter` | ✅ | ✅ `PgStore` | |
+| `LeaderElection` | ✅ | ✅ `PgLeaderElection` (advisory lock) | Backend `kubernetes` (Lease API, §11) non implémenté — c'est une option de config, pas un manque. |
+| `EventBus` | ✅ | ✅ `PgEventBus` | `eventbus-redis` vide — option d'échelle (§11), pas un manque. |
+
 ---
 
 ## 15. Points de vigilance
@@ -1316,7 +1409,7 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 - **Cluster = frontière de confiance** (§6) : le contenu est lisible par le serveur et circule en clair applicatif à l'intérieur du cluster (TLS terminé à l'ingress, trafic interne pod↔PG↔bucket, attachments non chiffrés applicativement §6.1) ; la sécurité repose sur le durcissement de l'infra (hardening plan : network policies, bucket privé, disques et backups chiffrés). À documenter explicitement pour les utilisateurs.
 - **Au repos = prérequis d'exploitation, pas une option** : aucun chiffrement applicatif (décision §6.1) — la confidentialité d'un dump, d'un backup ou d'un disque repose **entièrement** sur le chiffrement disque et le chiffrement des backups (Postgres **et** bucket, y compris les backups logiques type `pg_dump` qui sortent du disque chiffré). À vérifier dans le hardening plan et à documenter en gras pour qui self-host ; si une exigence de conformité impose du chiffrement applicatif un jour, il revient via le port `KeyProvider` (§6.1).
 - **RustFS est jeune** : API S3 suffisante pour presign + get/put, mais le contrat est « S3-compatible », pas « RustFS » — l'adapter `attachments-s3` ne doit utiliser que des opérations S3 standard pour pouvoir basculer sur MinIO/Garage/S3 sans code.
-- **La compat IdP est un contrat testé, pas une promesse** : le dev quotidien tourne sur oidc-server-mock (§12.1 — Authentik, ~1,5 Gi avec worker + redis, reste derrière `task dev:auth`), donc un écart de comportement entre mock et vrai IdP ne se voit pas au quotidien. Le filet est la matrice `oidc-compat` (§3.2, T29 — Dex + Authentik) : **ne jamais merger un changement du flow auth sans elle** ; `TokenVerifier` in-memory reste le niveau zéro pour le travail domaine (`task dev:core`).
+- **La compat IdP est un contrat testé, pas une promesse** : le dev quotidien tourne sur un mock que **nous écrivons** (§12.1, ADR-0014 — Authentik, ~1,5 Gi avec worker + redis, reste derrière `task dev:auth`), donc un écart de comportement entre mock et vrai IdP ne se voit pas au quotidien — et depuis ADR-0014 l'écart peut venir de nos propres hypothèses, pas seulement de celles d'un tiers. Le filet est la matrice `oidc-compat` (§3.2, T29 — Dex + Authentik), désormais la **seule** lecture indépendante d'OIDC que le projet rencontre : **ne jamais merger un changement du flow auth sans elle** ; `TokenVerifier` in-memory reste le niveau zéro pour le travail domaine (`task dev:core`).
 - **iOS** : APNs impose un compte Apple Developer et l'extension Swift ; c'est le seul point non 100 % self-hosted.
 - **Rotation device** : la révocation d'un device doit invalider ses subscriptions push et son curseur de sync (et sa clé publique X25519 pour les devices mobiles).
 - **Web Push = confiance dans le navigateur** : côté PWA la protection contre le push service repose sur RFC 8291, clés gérées en interne par le navigateur (décision §6.2 — aucune clé applicative côté web). C'est équivalent en pratique au niveau mobile, mais la garantie dépend de l'implémentation du navigateur, pas de nous — à documenter pour les canaux sensibles.

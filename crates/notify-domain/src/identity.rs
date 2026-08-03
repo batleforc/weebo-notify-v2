@@ -27,6 +27,7 @@ use crate::principal::{ApiKeyOwner, Principal};
 /// change, and the full profile — avatar, timezone, locale, and the rule that a
 /// locally edited field stops being overwritten by later syncs — arrives with M2
 /// (design §2.4).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     /// Our identifier for them.
@@ -88,6 +89,7 @@ impl User {
 /// The recommended shape for anything durable: a team bot running on a person's
 /// key dies the day that person is offboarded, which is a bad way to find out how
 /// the deploy notifications worked.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceAccount {
     /// Its name, and the id used everywhere it appears.
@@ -164,6 +166,7 @@ impl ServiceAccount {
 ///
 /// The secret is returned exactly once, at creation, and is not reconstructible
 /// from this — by design and by test (scenario T12).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKey {
     /// Identity of the key.
@@ -230,6 +233,7 @@ impl ApiKey {
 }
 
 /// The indexed lookup prefix of a key: the `<prefix>` of `wnk_<prefix>_<secret>`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ApiKeyPrefix(String);

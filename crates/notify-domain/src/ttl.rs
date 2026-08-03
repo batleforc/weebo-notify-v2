@@ -73,7 +73,26 @@ impl<'de> Deserialize<'de> for Ttl {
     }
 }
 
+// Hand-written rather than derived: `Ttl` is an enum in Rust and a plain string on
+// the wire, and utoipa's `value_type` shortcut is only available on structs.
+#[cfg(feature = "openapi")]
+impl utoipa::PartialSchema for Ttl {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .description(Some(
+                "How long to keep it: a single-unit duration such as `48h`, or `0` for forever.",
+            ))
+            .examples([serde_json::json!("7d")])
+            .into()
+    }
+}
+
+#[cfg(feature = "openapi")]
+impl utoipa::ToSchema for Ttl {}
+
 /// What a channel allows (design §7.2bis, configured per channel in §11).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TtlPolicy {
     /// Applied when the publisher says nothing.
@@ -98,6 +117,7 @@ impl Default for TtlPolicy {
 }
 
 /// The outcome of applying a [`TtlPolicy`] to a request.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TtlResolution {
     /// What will actually be applied.

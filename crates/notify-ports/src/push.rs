@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::PortResult;
 
 /// What actually goes out to a device.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "form", rename_all = "snake_case")]
 pub enum PushBody {
@@ -40,6 +41,7 @@ pub enum PushBody {
 }
 
 /// One delivery.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushMessage {
     /// Which channel it came from — enough for a client to route it before it has

@@ -26,17 +26,24 @@ use crate::error::PortResult;
 use crate::pagination::PageRequest;
 
 /// Who an event is for.
+///
+/// The wire names are `channel_id` and `user_id` rather than a shared `id`,
+/// because an [`Event`] flattens this next to its payload and a `receipt` payload
+/// already owns an `id` — see [`Event`]'s own note.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "audience", rename_all = "snake_case")]
 pub enum Audience {
     /// Every principal with `subscribe` on the channel.
     Channel {
         /// The channel.
+        #[serde(rename = "channel_id")]
         id: ChannelId,
     },
     /// One user's own connections, wherever they are. Never anybody else's.
     User {
         /// The user.
+        #[serde(rename = "user_id")]
         id: UserId,
     },
 }
@@ -62,6 +69,7 @@ impl Audience {
 }
 
 /// The `event:` names of the stream (design §8.1). Part of the wire contract.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
@@ -96,6 +104,7 @@ impl EventKind {
 ///
 /// Denormalised on purpose: a client that just reconnected must be able to render
 /// a timeline row from one event, without a follow-up request per notification.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevisionEvent {
     /// The notification this revises.
@@ -150,6 +159,7 @@ impl RevisionEvent {
 /// would otherwise apply the next one to the wrong baseline, and "my phone kept
 /// buzzing after I turned on do-not-disturb" is not a bug anybody enjoys chasing.
 /// Do-not-disturb schedules join this in M3; M1 carries the silences.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreferenceEvent {
     /// Whose preferences these are.
@@ -159,6 +169,7 @@ pub struct PreferenceEvent {
 }
 
 /// What actually happened.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventPayload {
@@ -209,6 +220,25 @@ impl EventPayload {
 }
 
 /// One row of the event log.
+///
+/// # One flat object, therefore no name may be claimed twice
+///
+/// The audience and the payload are both flattened, because the wire shape §8.1
+/// documents is flat: `channel_id`, `notification_id`, `seq` and the rest sit side
+/// by side in one object, and a client renders a row without unwrapping anything.
+///
+/// Flattening means the envelope and the payload share one namespace, and serde
+/// resolves a clash by emitting the key twice — a document that no longer reads
+/// back. Two names are therefore reserved by this struct and by nothing else:
+///
+/// * the audience's is `channel_id` / `user_id`, never `id`, because `receipt` and
+///   `interaction` payloads carry their own `id`;
+/// * the envelope's timestamp is `logged_at`, never `recorded_at`, because an
+///   `interaction` payload carries its own `recorded_at`.
+///
+/// Both are covered by tests below. A new payload field colliding with one of
+/// these is a wire break, not a detail.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// This row's position — the `id:` of the stream frame, and the cursor a client
@@ -218,7 +248,7 @@ pub struct Event {
     #[serde(flatten)]
     pub audience: Audience,
     /// When it was appended, by the server's clock.
-    #[serde(with = "time::serde::rfc3339")]
+    #[serde(rename = "logged_at", with = "time::serde::rfc3339")]
     pub recorded_at: OffsetDateTime,
     /// What happened.
     #[serde(flatten)]
@@ -255,6 +285,12 @@ pub struct SyncQuery {
     /// Restrict to these channels; empty means every channel the caller may read.
     /// Mirrors `?channels=a,b` on the stream (design §8.1).
     pub channels: Vec<ChannelId>,
+    /// The groups the caller's token carries, for channels whose access is granted
+    /// to a group rather than to them by name (design §11).
+    ///
+    /// Here rather than derived inside the store, because the store has no token:
+    /// group membership is a claim, and design §5.1 keeps it that way.
+    pub groups: Vec<String>,
     /// How much to return.
     pub page: PageRequest,
 }
@@ -270,6 +306,7 @@ pub struct SyncQuery {
 /// * `compacted` records how many revisions were folded away (design §7.2). Forty
 ///   revisions of one deploy become one entry; the number is what lets a client say
 ///   "38 updates" instead of pretending nothing happened.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncPage {
     /// The events, oldest first.
@@ -298,6 +335,7 @@ impl SyncPage {
 }
 
 /// "3 notifications expired in `ci-infra` while you were away."
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpiredWhileAway {
     /// The channel.
@@ -449,6 +487,69 @@ mod tests {
             silences: Vec::new(),
         }));
         assert_eq!(payload.notification_id(), None);
+    }
+
+    /// A `receipt` payload owns an `id`, so the audience may not also be called
+    /// `id`: flattened into one object, the two collide and the document stops
+    /// reading back at all.
+    #[test]
+    fn a_receipt_event_keeps_the_audience_and_the_receipt_apart() {
+        use notify_domain::{ReceiptId, ReceiptKind};
+
+        let receipt = Receipt {
+            id: ReceiptId::generate(),
+            notification_id: NotificationId::generate(),
+            principal: Principal::User { id: user() },
+            device: None,
+            kind: ReceiptKind::Seen,
+            at: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
+        };
+        let receipt_id = receipt.id.to_string();
+        let original = Event {
+            payload: EventPayload::Receipt(receipt),
+            ..event(Audience::Channel {
+                id: ChannelId::parse("ci-infra").unwrap(),
+            })
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"channel_id\":\"ci-infra\""), "{json}");
+        assert!(json.contains(&format!("\"id\":\"{receipt_id}\"")), "{json}");
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), original);
+    }
+
+    /// Same shape of trap, on the timestamp: an `interaction` payload carries its
+    /// own `recorded_at`, so the envelope's is `logged_at`.
+    #[test]
+    fn an_interaction_event_keeps_the_two_timestamps_apart() {
+        use notify_domain::{Author, Interaction, InteractionId, InteractionRecord};
+
+        let recorded_at = OffsetDateTime::from_unix_timestamp(1_785_000_042).unwrap();
+        let original = Event {
+            payload: EventPayload::Interaction(InteractionRecord {
+                id: InteractionId::generate(),
+                notification_id: NotificationId::generate(),
+                author: Author::anonymous(Principal::User { id: user() }),
+                interaction: Interaction::Reply {
+                    text: "on it".to_owned(),
+                },
+                recorded_at,
+            }),
+            ..event(Audience::Channel {
+                id: ChannelId::parse("ci-infra").unwrap(),
+            })
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(
+            json.contains("\"logged_at\":\"2026-07-25T17:20:00Z\""),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"recorded_at\":\"2026-07-25T17:20:42Z\""),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), original);
     }
 
     #[test]

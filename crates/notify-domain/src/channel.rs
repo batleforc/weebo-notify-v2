@@ -21,6 +21,7 @@ use crate::principal::Principal;
 use crate::ttl::TtlPolicy;
 
 /// What a principal may do in a channel (design §5.2).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
@@ -34,6 +35,7 @@ pub enum Scope {
 }
 
 /// The scopes one principal holds in one channel.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Membership {
     /// Who. Users and service accounts are members in exactly the same way
@@ -66,7 +68,55 @@ impl Membership {
     }
 }
 
+/// The scopes everyone in an identity-provider group holds in one channel
+/// (design §11, `[[channels.managed.access]] oidc_group`).
+///
+/// Deliberately *not* a [`Membership`]: there is no principal to name. Who is in
+/// `infra-admins` is a fact the identity provider owns and the token carries, and
+/// it changes without anyone telling us. Resolving it at authorisation time is what
+/// keeps design §5.1's promise — pure JWKS validation, zero server session — and it
+/// is why somebody removed from a group loses access on their next token rather
+/// than whenever a reconciler next runs.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupBinding {
+    /// The group as the `groups` claim spells it.
+    pub group: String,
+    /// What its members may do here.
+    pub scopes: Vec<Scope>,
+}
+
+impl GroupBinding {
+    /// Build a binding, refusing the rightless case for the same reason
+    /// [`Membership::new`] does.
+    pub fn new(group: impl Into<String>, scopes: Vec<Scope>) -> Result<Self> {
+        let group = group.into();
+        if group.trim().is_empty() {
+            return Err(DomainError::Empty {
+                field: "access.oidc_group",
+            });
+        }
+        if scopes.is_empty() {
+            return Err(DomainError::Empty {
+                field: "access.scopes",
+            });
+        }
+
+        let mut scopes = scopes;
+        scopes.sort_unstable();
+        scopes.dedup();
+        Ok(Self { group, scopes })
+    }
+
+    /// Whether this binding grants `scope`.
+    #[must_use]
+    pub fn grants(&self, scope: Scope) -> bool {
+        self.scopes.contains(&scope)
+    }
+}
+
 /// The knobs that apply to everything published in a channel.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelPolicy {
     /// Retention rules (design §7.2bis).
@@ -90,6 +140,7 @@ impl Default for ChannelPolicy {
 }
 
 /// A channel.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channel {
     /// Operator-chosen name, and the id used in URLs.
@@ -103,6 +154,13 @@ pub struct Channel {
     pub policy: ChannelPolicy,
     /// Its members, users and service accounts alike.
     pub members: Vec<Membership>,
+    /// Access granted to whole identity-provider groups (design §11).
+    ///
+    /// Resolved against the `groups` claim of the caller's token rather than stored
+    /// per user — see [`GroupBinding`]. Defaulted on the wire so a client written
+    /// against an older build still parses a channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_access: Vec<GroupBinding>,
 }
 
 impl Channel {
@@ -119,6 +177,7 @@ impl Channel {
             origin: Origin::Dynamic,
             policy: ChannelPolicy::default(),
             members: Vec::new(),
+            group_access: Vec::new(),
         })
     }
 
@@ -148,6 +207,42 @@ impl Channel {
     pub fn grants(&self, principal: &Principal, scope: Scope) -> bool {
         self.membership(principal)
             .is_some_and(|member| member.grants(scope))
+    }
+
+    /// Whether any of these groups holds `scope` here (design §11).
+    ///
+    /// The second door to a channel, and the one that needs no row per user: an
+    /// identity provider that stops putting somebody in `infra-admins` revokes
+    /// their access on their next token, with nothing to reconcile.
+    ///
+    /// An empty group list answers `false` for every scope, which is exactly the
+    /// degradation an issuer that emits no groups at all requires (scenario T29):
+    /// the caller falls back to their individual bindings and reaches nothing else.
+    #[must_use]
+    pub fn grants_group(&self, groups: &[String], scope: Scope) -> bool {
+        self.group_access
+            .iter()
+            .any(|binding| binding.grants(scope) && groups.contains(&binding.group))
+    }
+
+    /// Whether `principal`, holding `groups`, may do `scope` here.
+    ///
+    /// The two doors in one place, so no caller can check one and forget the other.
+    #[must_use]
+    pub fn allows(&self, principal: &Principal, groups: &[String], scope: Scope) -> bool {
+        self.grants(principal, scope) || self.grants_group(groups, scope)
+    }
+
+    /// Add or replace a group binding.
+    pub fn upsert_group(&mut self, binding: GroupBinding) {
+        match self
+            .group_access
+            .iter_mut()
+            .find(|existing| existing.group == binding.group)
+        {
+            Some(existing) => *existing = binding,
+            None => self.group_access.push(binding),
+        }
     }
 
     /// Add or replace a membership.
@@ -257,5 +352,106 @@ mod tests {
             managed.ensure_mutable_through_api().is_err(),
             "deleting it through the API would just have GitOps put it back"
         );
+    }
+}
+
+#[cfg(test)]
+mod group_access_tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
+    use super::*;
+    use crate::ids::UserId;
+
+    fn user() -> Principal {
+        Principal::User {
+            id: UserId::generate(),
+        }
+    }
+
+    fn bound(group: &str, scopes: Vec<Scope>) -> Channel {
+        let mut channel = Channel::dynamic(ChannelId::parse("ci-infra").unwrap(), None).unwrap();
+        channel.upsert_group(GroupBinding::new(group, scopes).unwrap());
+        channel
+    }
+
+    #[test]
+    fn a_group_binding_grants_without_a_membership() {
+        // The whole point: nobody wrote a row for this person, and they still get in.
+        let channel = bound("infra-admins", vec![Scope::Publish, Scope::Subscribe]);
+        let alice = user();
+        let groups = vec!["infra-admins".to_owned()];
+
+        assert!(
+            !channel.grants(&alice, Scope::Publish),
+            "she is not a member"
+        );
+        assert!(channel.allows(&alice, &groups, Scope::Publish));
+        assert!(channel.allows(&alice, &groups, Scope::Subscribe));
+        assert!(
+            !channel.allows(&alice, &groups, Scope::Manage),
+            "a binding grants its scopes and no others"
+        );
+    }
+
+    #[test]
+    fn leaving_a_group_revokes_access_with_nothing_to_reconcile() {
+        // The reason the model is derived rather than materialised: the next token
+        // simply carries fewer groups.
+        let channel = bound("infra-admins", vec![Scope::Subscribe]);
+        let alice = user();
+
+        assert!(channel.allows(&alice, &["infra-admins".to_owned()], Scope::Subscribe));
+        assert!(!channel.allows(&alice, &["dev-team".to_owned()], Scope::Subscribe));
+    }
+
+    #[test]
+    fn critical_t29_an_issuer_that_emits_no_groups_degrades_to_individual_bindings() {
+        // Dex sends no `groups` claim at all. The required behaviour is that the
+        // caller reaches their own bindings and nothing else — never a default grant.
+        let mut channel = bound("infra-admins", vec![Scope::Subscribe]);
+        let (alice, carol) = (user(), user());
+        channel.upsert_member(Membership::new(alice.clone(), vec![Scope::Subscribe]).unwrap());
+
+        assert!(
+            channel.allows(&alice, &[], Scope::Subscribe),
+            "her individual binding still works"
+        );
+        assert!(
+            !channel.allows(&carol, &[], Scope::Subscribe),
+            "and an empty group list is never a default grant"
+        );
+    }
+
+    #[test]
+    fn a_binding_is_replaced_rather_than_stacked() {
+        let mut channel = bound("infra-admins", vec![Scope::Subscribe]);
+        channel.upsert_group(GroupBinding::new("infra-admins", vec![Scope::Publish]).unwrap());
+
+        assert_eq!(channel.group_access.len(), 1);
+        assert!(channel.allows(&user(), &["infra-admins".to_owned()], Scope::Publish));
+        assert!(!channel.allows(&user(), &["infra-admins".to_owned()], Scope::Subscribe));
+    }
+
+    #[test]
+    fn a_rightless_or_nameless_binding_is_refused_at_construction() {
+        assert!(GroupBinding::new("infra-admins", Vec::new()).is_err());
+        assert!(GroupBinding::new("  ", vec![Scope::Subscribe]).is_err());
+        // Duplicates are normalised away, like a membership's.
+        let binding = GroupBinding::new(
+            "infra-admins",
+            vec![Scope::Subscribe, Scope::Subscribe, Scope::Publish],
+        )
+        .unwrap();
+        assert_eq!(binding.scopes, [Scope::Publish, Scope::Subscribe]);
+    }
+
+    #[test]
+    fn a_channel_without_group_access_keeps_it_off_the_wire() {
+        let channel = Channel::dynamic(ChannelId::parse("ci-infra").unwrap(), None).unwrap();
+        let json = serde_json::to_string(&channel).unwrap();
+
+        assert!(!json.contains("group_access"));
+        // And a payload written before this field existed still parses.
+        assert_eq!(serde_json::from_str::<Channel>(&json).unwrap(), channel);
     }
 }

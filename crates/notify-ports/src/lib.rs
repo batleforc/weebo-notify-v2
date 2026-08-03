@@ -61,6 +61,7 @@ pub mod leader;
 pub mod notifications;
 pub mod pagination;
 pub mod push;
+pub mod quota;
 pub mod receipts;
 pub mod sinks;
 pub mod tokens;
@@ -83,13 +84,15 @@ pub use event::{
 pub use eventbus::{EventBus, Poke};
 pub use idempotency::{Claim, IdempotencyStore};
 pub use identities::{
-    ApiKeyRepository, SecretHasher, ServiceAccountRepository, StoredApiKey, UserRepository,
+    ApiKeyRepository, KeyGenerator, SecretHasher, ServiceAccountRepository, StoredApiKey,
+    UserRepository,
 };
 pub use interactions::InteractionRepository;
 pub use leader::{LeaderElection, LeaderGuard};
 pub use notifications::{ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery};
 pub use pagination::{Page, PageRequest};
 pub use push::{PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport};
+pub use quota::{Allowance, Quota, RateLimiter};
 pub use receipts::ReceiptRepository;
 pub use sinks::{DeadLetter, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkTarget};
 pub use tokens::{

@@ -1,0 +1,88 @@
+---
+title: Frontend
+description: One page of REST, everything after it from the stream, and a token that never touches localStorage.
+---
+
+`web/` is a Vue 3 single-page application: Vite, Tailwind v4, shadcn-vue components
+vendored into the repository ([ADR-0004](/docs/adr/0004-shadcn-vue-over-a-component-library)),
+and a TypeScript client generated from the committed OpenAPI document
+([ADR-0009](/docs/adr/0009-progenitor-and-heyapi-for-generated-clients)).
+
+## One page of REST, then events
+
+A notification changes in exactly one way in this app: an event.
+
+The first page comes from `GET /notifications`. Everything after it — a new
+revision, an interaction, a receipt, a tombstone — arrives on `GET /stream`, and both
+carry the same shapes off the same cursor. That is the property §8.1 buys: "what I
+missed" and "what is arriving now" cannot disagree, because they are the same rows.
+
+Nothing in the UI mutates a row directly. Acknowledging posts an interaction and
+waits for the record; two open tabs therefore show the same thing without either of
+them knowing about the other.
+
+**Arrivals do not move the ground under the cursor.** An event about a notification
+already on screen updates it in place — a pipeline going from `working` to `failure`
+must not wait for a click. An event about one never seen goes to a buffer and is
+announced by a "N nouvelles" separator, the pattern every inbox uses, because a list
+that grows under a reader is a list that loses their place.
+
+The store also re-applies the active filters to arrivals. The stream is narrowed by
+channel and by nothing else, so without that a filtered inbox would quietly fill up
+with rows that do not match it.
+
+## The stream is read with `fetch`
+
+`EventSource` cannot send an `Authorization` header, and the alternatives — a token
+in the query string, or a cookie — either leak the credential into logs or hand the
+API the CSRF surface §5.1 exists to avoid. So the client decodes SSE itself
+([ADR-0015](/docs/adr/0015-the-browser-reads-the-stream-with-fetch)): incremental
+framing, `Last-Event-ID` on reconnect, backoff with jitter, and one forced token
+refresh on a `401`.
+
+One connection per tab, shared by every component. Twenty streams per user is the
+whole budget across every device (§8.2); a detail panel opening its own would spend
+it on one browser.
+
+## Authentication
+
+Authorization Code + PKCE, carried by the SPA (§5.1). The app never sees a
+credential: it sends the browser to the identity provider and comes back holding a
+token, which is what lets the server keep no session at all.
+
+The access token stays in memory. The refresh token sits in `sessionStorage` until
+the M3 service worker can hold it — a stated gap against §5.1, with its reasoning and
+its cost written down in
+[ADR-0016](/docs/adr/0016-where-the-web-client-keeps-its-tokens).
+
+Claims decoded from the id token decide what to *draw* — a display name, a
+group-gated menu item — and never what is allowed. The server re-validates against
+JWKS on every request; an authorisation decision made in a browser is a suggestion.
+
+## Colour is a token, never a value
+
+Two layers: the shadcn semantic tokens the vendored components speak, and the
+business tokens above them — `--status-*`, `--priority-*`, `--state-*`. A row never
+says "red", it says "failure", and what failure looks like is decided in
+`src/styles/theme.css` and nowhere else.
+
+That is the one blocking rule in a front-end review (§10.6). It is what keeps the
+`monofolio` swap a token file rather than a fork. Status is also never colour alone —
+every status carries an icon, because an incident feed that reads as "grey circle" to
+one reader in twelve is an incident that did not get reported.
+
+## Notification bodies are hostile input
+
+A channel's publishers can be less trustworthy than its readers: a CI job publishes
+whatever a branch name or a stack trace put in it, and the people reading hold an
+access token in memory.
+
+Markdown is rendered with raw HTML disabled, passed through DOMPurify anyway, and
+links are restricted to `http(s)` — a `mailto:` or a custom scheme is rendered inert
+rather than rewritten into something else. The strict CSP §10.3 asks for is the
+fourth gate and belongs to whatever serves the bundle.
+
+The tests for this run on jsdom rather than the faster happy-dom, deliberately:
+DOMPurify reports itself supported under happy-dom and sanitises differently there.
+A security test passing against a sanitiser that does not behave like the browser's
+proves nothing.

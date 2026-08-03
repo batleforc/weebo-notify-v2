@@ -17,7 +17,10 @@ members = [
     "crates/notify-client-api",
     "crates/notify-client-core",
     "crates/notify-cli",
-    # Not a product crate: repository chores that need real code (client codegen).
+    # Not product crates: development infrastructure. `oidc-mock` is the identity
+    # provider the local stack, Che and CI run against (ADR-0014); `xtask` holds the
+    # repository chores that need real code (client codegen, coverage gate).
+    "crates/oidc-mock",
     "crates/xtask",
 ]
 
@@ -63,7 +66,11 @@ futures = "0.3"
 
 # --- HTTP / API ---
 actix-web = "4.14"
+actix-cors = "0.7"
 actix-web-lab = "0.26"
+# WebSocket without the actor runtime: the SSE and WS handlers then share one plain
+# async loop instead of one loop and one actor saying the same thing (design §8.1).
+actix-ws = "0.4"
 utoipa = { version = "5.5", features = ["actix_extras", "time", "ulid", "url"] }
 utoipa-actix-web = "0.1"
 utoipa-scalar = { version = "0.3", features = ["actix-web"] }
@@ -81,8 +88,12 @@ sqlx = { version = "0.9", default-features = false, features = [
 ] }
 
 # --- Auth ---
-jsonwebtoken = "11"
-argon2 = "0.5"
+# `rust_crypto` rather than `aws_lc_rs`: a pure-Rust provider keeps the binary free
+# of a C toolchain, which is what makes the container image reproducible from a
+# plain `cargo build`.
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+# `std` is what reaches `OsRng` through password-hash: salts come from the OS.
+argon2 = { version = "0.5", features = ["std"] }
 
 # --- Config & observability ---
 figment = { version = "0.10", features = ["toml", "env"] }
@@ -99,6 +110,10 @@ anyhow = "1"
 # --- Client codegen (ADR-0009) ---
 progenitor = "0.14"
 progenitor-client = "0.14"
+# What progenitor's output needs: `chrono` for `date-time`, `regress` for `pattern`.
+# Confined to the generated crate.
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+regress = "0.10"
 # No default-tls: we link rustls only, so the binaries stay free of OpenSSL.
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
@@ -107,6 +122,14 @@ reqwest = { version = "0.13", default-features = false, features = [
     "charset",
     "stream",
 ] }
+
+# --- Cryptography outside the auth adapter ---
+# Real ES256 keys: the JWKS tests and the development identity provider both sign
+# with one, so they exercise the production verification path rather than a mock
+# of it. `sha2` is the PKCE S256 challenge, and nothing else.
+p256 = { version = "0.14", features = ["ecdsa", "pem"] }
+sha2 = "0.10"
+base64 = "0.22"
 
 # --- Test-only ---
 testcontainers = "0.27"

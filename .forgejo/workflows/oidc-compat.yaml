@@ -3,15 +3,16 @@ name: oidc-compat
 # Identity-provider compatibility is a tested contract, not a promise (design §3.2).
 #
 # This is a self-hosted product: people will arrive with Keycloak, Authelia, Dex,
-# Authentik. Day-to-day development runs against oidc-server-mock, so a behavioural
-# difference between the mock and a real provider is invisible until someone else
-# hits it. This job is the safety net.
+# Authentik. Day-to-day development runs against a provider we wrote ourselves
+# (ADR-0014), which makes this job *more* load-bearing, not less: our own mock
+# cannot surprise us, and a provider that never surprises you is a provider that
+# never tells you what real ones do.
 #
 # One auth suite, parameterised by issuer, replayed against three providers:
-#   * oidc-server-mock — the everyday baseline
-#   * Dex              — strict, minimal OIDC, and notably emits NO `groups` claim,
-#                        which exercises the graceful-degradation path (T29)
-#   * Authentik        — real behaviour: refresh token rotation, logout, groups
+#   * the built-in mock — the everyday baseline
+#   * Dex               — strict, minimal OIDC, and notably emits NO `groups` claim,
+#                         which exercises the graceful-degradation path (T29)
+#   * Authentik         — real behaviour: refresh token rotation, logout, groups
 #
 # NEVER merge a change to the auth flow without this job green.
 

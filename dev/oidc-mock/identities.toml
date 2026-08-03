@@ -1,0 +1,75 @@
+# Test identities for the built-in OIDC mock (design §12.5).
+#
+# These MUST mirror dev/authentik/blueprints/weebo-notify.yaml: the E2E suite and
+# any manual click-through have to behave identically whichever provider is
+# running, and the `oidc-compat` CI matrix replays the same auth suite against
+# both (T29).
+#
+# The passwords are fixed and committed on purpose — these are throwaway accounts
+# with no provider privileges, and typing a known password is the whole point of a
+# local environment. Dex is the exception (CI-only, generated passwords, §3.2).
+
+# What the mock calls itself in its discovery document, and therefore what the
+# server must have in `[oidc] issuer`. Overridable with --issuer, which is how
+# Eclipse Che points it at the workspace's public route (§12.1).
+issuer = "http://localhost:9110"
+
+[client]
+# Public client + Authorization Code + PKCE, exactly like the Authentik blueprint
+# and exactly like production: the SPA holds the tokens, the server validates them
+# against JWKS and keeps no session at all (§5.1). There is no client secret to
+# configure because a public client has none to leak.
+id = "weebo-notify"
+scopes = ["openid", "profile", "email", "groups", "offline_access"]
+
+redirect_uris = [
+  # Vite dev server and the server's own callback.
+  "http://localhost:5173/auth/callback",
+  "http://localhost:8080/auth/callback",
+  # Tauri desktop, from M5: loopback (RFC 8252) is the primary path — a custom
+  # scheme can be registered by any application, a loopback port cannot be
+  # hijacked the same way (§10bis.2). The custom scheme stays as fallback.
+  "http://127.0.0.1:1420/auth/callback",
+  "weebo-notify://oauth/callback",
+]
+
+post_logout_redirect_uris = [
+  "http://localhost:5173/",
+  "http://localhost:8080/",
+]
+
+# Short-lived access token, longer refresh: the same shape production has, so the
+# web client's refresh path is exercised in dev rather than discovered in staging.
+access_token_ttl_secs = 900
+id_token_ttl_secs = 300
+refresh_token_ttl_secs = 28800
+
+[[users]]
+sub = "alice"
+username = "alice"
+password = "weebo-dev"
+name = "Alice Martin"
+email = "alice@weebo.local"
+# Mapped to channel access by [[channels.managed.access]] oidc_group (§11).
+groups = ["infra-admins", "platform-admins"]
+
+[[users]]
+sub = "bob"
+username = "bob"
+password = "weebo-dev"
+name = "Bob Dupont"
+email = "bob@weebo.local"
+groups = ["dev-team"]
+
+# Deliberately group-less: exercises the "provider emits no groups" degradation
+# path (T29, the Dex case) — this user must reach only their individual
+# oidc_sub/email bindings, never a default grant. The mock omits the `groups`
+# claim entirely rather than sending an empty array, because that is what a
+# provider without a groups mapping actually does.
+[[users]]
+sub = "carol"
+username = "carol"
+password = "weebo-dev"
+name = "Carol Nguyen"
+email = "carol@weebo.local"
+groups = []

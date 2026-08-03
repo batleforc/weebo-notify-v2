@@ -9,9 +9,11 @@ nothing important is hidden in a shell history.
 ## The commands you will actually type
 
 ```bash
-task dev:up      # start the stack
+task dev:up      # start the containers
+task dev:oidc    # run the development identity provider
 task dev:run     # run the server
-task test        # fast tests: pure domain and use cases, no containers
+task dev:web     # run the frontend, on :5173
+task test        # fast tests: Rust domain and use cases + web unit tests
 task lint        # fmt + clippy + web/docs formatting
 task recu        # regenerate everything derived from the code
 ```
@@ -22,9 +24,7 @@ task recu        # regenerate everything derived from the code
 
 1. **The OpenAPI document** from the utoipa annotations, without booting a server.
 2. **The Rust client** (`notify-client-api`) with progenitor.
-3. **The TypeScript client** (`web/src/lib/api/`) with HeyApi.
-4. **The sqlx offline data**, so the workspace builds without a live database.
-5. **The devfile's inlined OIDC configuration**, from `dev/oidc-mock/`.
+3. **The TypeScript client** (`web/src/api/generated/`) with HeyApi.
 
 All of it is **committed**. The CI `contract` job runs `task recu` and then
 `git diff --exit-code`: forgetting to regenerate breaks the pull request instead of

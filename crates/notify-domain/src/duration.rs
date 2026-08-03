@@ -25,6 +25,11 @@ const WEEK: u64 = 7 * DAY;
 /// A notification TTL is a rough intent, not a schedule, and one unit per value
 /// keeps the config, the payload and the client display identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(value_type = String, pattern = r"^\d+[smhdw]$", example = "48h")
+)]
 pub struct HumanDuration(Duration);
 
 impl HumanDuration {

@@ -1,0 +1,59 @@
+---
+title: ADR-0016 — Where the web client keeps its tokens
+description: The access token stays in memory; the refresh token sits in sessionStorage until the M3 service worker takes it.
+---
+
+Status: accepted (2026-08-03) · Supersedes: — · Superseded by: —
+
+## Context
+
+§5.1 asks for tokens kept "out of localStorage — memory plus a refresh driven by the
+service worker". The service worker arrives with the PWA in M3, and M1.10 needs a
+web client that works before then.
+
+Three options, and each fails somewhere different:
+
+- **everything in memory** — the safest, and it forces a full redirect through the
+  identity provider on every reload. People respond to that by never reloading and
+  leaving a tab open for weeks, which is not obviously a security win;
+- **refresh token in `localStorage`** — survives reloads and browser restarts, and is
+  readable by any script on the origin for as long as the token lives;
+- **refresh token in `sessionStorage`** — survives reloads, dies with the tab.
+
+The access token is not in question: it stays in memory in all three.
+
+## Decision
+
+**The access token never leaves memory. The refresh token goes to `sessionStorage`
+until the M3 service worker can hold it instead.**
+
+`useSession()` (`web/src/auth/session.ts`) is the only thing that touches either.
+Every request asks it for a bearer token, and it refreshes on its own when the
+fifteen-minute access token is within a minute of expiring — one in-flight refresh
+at a time, so twenty concurrent calls do not mint twenty tokens.
+
+## Consequences
+
+**Positive**
+
+- Nothing XSS-readable ever holds a token that opens the API directly.
+- A reload lands back in the inbox rather than at the identity provider, so `/n/<id>`
+  in a CI log is a usable link.
+- Closing the tab ends the session, which is the behaviour a shared machine wants.
+- Refresh tokens rotate on every use (§5.1), so a stolen one is single-use and its
+  reuse is something the provider can detect.
+
+**Negative**
+
+- A script able to run on this origin can read `sessionStorage` and take a refresh
+  token that outlives the page. The same script could already call the API with the
+  in-memory token, so what this adds is duration, not access — but duration is
+  exactly what makes a stolen credential useful.
+- It is not what §5.1 describes, and the gap has to stay visible until it closes.
+
+**Accepted debt**
+
+- **M3 closes this**: the service worker takes the refresh token and the page can no
+  longer read it. This record gets superseded then, not amended.
+- The strict CSP §10.3 asks for is the other half and belongs to whatever serves the
+  bundle. Without it, this trade is being made on top of a weaker floor than assumed.

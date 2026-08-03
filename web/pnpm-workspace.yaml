@@ -1,0 +1,16 @@
+# pnpm blocks dependency build scripts unless they are explicitly approved — a
+# supply-chain guard, since a postinstall script runs arbitrary code from a
+# transitive dependency (ADR-0011). The entries below are approved deliberately:
+#
+#   esbuild — downloads and links its platform binary; Vite's dependency
+#             pre-bundling does not start without it.
+#   @biomejs/biome — same shape: fetches the native binary for this platform.
+#   vue-demi      — pulled in by @vueuse/core; its postinstall picks the Vue 2 or
+#                   Vue 3 entry points. Without it the package resolves to a stub
+#                   and every composable importing from it fails at runtime.
+#
+# Anything new appearing here should be a conscious decision, not a reflex.
+allowBuilds:
+  esbuild: true
+  "@biomejs/biome": true
+  vue-demi: true

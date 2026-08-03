@@ -1,0 +1,65 @@
+---
+title: ADR-0015 — The browser reads the stream with fetch, not EventSource
+description: The web client decodes SSE itself, so the stream can carry a bearer token and resume from its own cursor.
+---
+
+Status: accepted (2026-08-03) · Supersedes: — · Superseded by: —
+
+## Context
+
+ADR-0001 makes SSE the reference real-time transport and §8.1 defines a stream that
+resumes with `Last-Event-ID`. The obvious way to consume that in a browser is
+`EventSource`, which handles framing and reconnection for free.
+
+`EventSource` cannot send request headers. The API is bearer-only and keeps no
+session (§5.1), so a stream opened that way would have to carry its credential
+somewhere else:
+
+- **in the query string** — where it lands in access logs, in browser history and in
+  any proxy between the two;
+- **in a cookie** — which hands the API the CSRF surface §5.1 exists to avoid, and
+  gives the server a session to keep.
+
+An access token also lives fifteen minutes (§12.5), so a stream held open for an
+afternoon has to be re-established with a fresh one however it was opened.
+
+## Decision
+
+**The web client opens `GET /api/v1/stream` with `fetch` and decodes the frames
+itself** (`web/src/api/stream.ts`). The token rides in the `Authorization` header,
+like every other request.
+
+The decoder is incremental, because a frame split across two network chunks is
+ordinary rather than exceptional. Reconnection is ours: exponential backoff with
+jitter, `Last-Event-ID` set from the last cursor seen, and one forced token refresh
+on a `401` before retrying.
+
+Wiring this up also corrected the server side: the `data:` payload is now the whole
+event rather than only its payload half, so a frame names the channel it belongs to
+— which is what §8.1 always showed.
+
+## Consequences
+
+**Positive**
+
+- No credential in a URL and no cookie: the bearer-and-CORS model of §5.1 holds for
+  the stream exactly as it does for the rest of the API.
+- Reconnection is explicit and testable. The decoder is a pure function, unit-tested
+  on chunk boundaries, keep-alive comments and multi-line `data:`.
+- A reconnect can refresh the token first, which `EventSource` could never do.
+- The same code serves the Tauri shells (§10bis), where `EventSource` would be no
+  more available than it is useful.
+
+**Negative**
+
+- We own framing and reconnection — roughly two hundred lines the platform would
+  have provided, including the parts that only misbehave under load.
+- It needs a `ReadableStream` response body. Universal in the browsers this app
+  targets, but a floor `EventSource` did not have.
+
+**Accepted debt**
+
+- The backoff table is a constant, not configuration. A deployment that needs
+  another one turns it into config rather than a rewrite.
+- The WebSocket transport (§8.1) stays unused by the web client. It carries the
+  same events for clients that prefer it, and nothing here forecloses it.

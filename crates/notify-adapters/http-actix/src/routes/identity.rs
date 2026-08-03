@@ -1,0 +1,217 @@
+//! Devices and API keys (design §5.2, §8).
+
+use actix_web::{HttpResponse, delete, get, post, web};
+use notify_domain::{
+    ApiKey, ApiKeyId, ApiKeyOwner, ChannelId, Device, DeviceId, DevicePublicKey, PushTransport,
+    Scope,
+};
+use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use utoipa::ToSchema;
+
+use crate::extract::Authenticated;
+use crate::problem::{ApiError, Problem};
+use crate::state::ApiState;
+
+/// Enrol a device.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct EnrolBody {
+    /// What to call it in the device list.
+    pub label: String,
+    /// How it is reached. `stream` is a device that only holds a connection.
+    pub transport: PushTransport,
+    /// The X25519 public key. Required for the relayed transports, refused for the
+    /// others (design §6.2).
+    #[serde(default)]
+    pub public_key: Option<DevicePublicKey>,
+}
+
+/// Mint an API key.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateKeyBody {
+    /// Who the key acts as: a user, a service account, or the channel itself.
+    pub owner: ApiKeyOwner,
+    /// A label, so a key list is readable a year later.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// What it may do.
+    pub scopes: Vec<Scope>,
+    /// Where it may do it.
+    pub channels: Vec<ChannelId>,
+    /// When it stops working. Absent means never, which is a policy choice rather
+    /// than a default anybody should reach for.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+}
+
+/// A newly minted key — the only time its secret exists outside the caller.
+///
+/// A DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no
+/// field that could carry a secret, and that is the property worth keeping
+/// (scenario T12). The secret lives here, in the one response that returns it, and
+/// nowhere else.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MintedKey {
+    /// The key's metadata, exactly as `GET /apikeys` will show it from now on.
+    #[serde(flatten)]
+    pub key: ApiKey,
+    /// `wnk_<prefix>_<secret>`. Store it now; no endpoint can show it again.
+    #[schema(example = "wnk_a1b2c3d4_…")]
+    pub secret: String,
+}
+
+/// Enrol a device.
+#[utoipa::path(
+    post,
+    path = "/devices",
+    tag = "devices",
+    request_body = EnrolBody,
+    responses(
+        (status = 201, description = "Enrolled", body = Device),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 422, description = "A relayed transport with no key, or the reverse", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[post("/devices")]
+pub(crate) async fn enrol_device(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    body: web::Json<EnrolBody>,
+) -> Result<HttpResponse, ApiError> {
+    let body = body.into_inner();
+
+    let device = state
+        .enrol_device
+        .execute(&caller.0, &body.label, body.transport, body.public_key)
+        .await?;
+
+    Ok(HttpResponse::Created().json(device))
+}
+
+/// The caller's devices.
+#[utoipa::path(
+    get,
+    path = "/devices",
+    tag = "devices",
+    responses(
+        (status = 200, description = "Devices, newest first", body = Vec<Device>),
+        (status = 401, description = "No usable credential", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/devices")]
+pub(crate) async fn list_devices(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+) -> Result<web::Json<Vec<Device>>, ApiError> {
+    Ok(web::Json(state.devices.execute(&caller.0).await?))
+}
+
+/// Revoke a device: its push subscription and its sync cursor go with it.
+#[utoipa::path(
+    delete,
+    path = "/devices/{id}",
+    tag = "devices",
+    params(("id" = String, Path, description = "Device id")),
+    responses(
+        (status = 204, description = "Revoked, or was not there"),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not the caller's device", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[delete("/devices/{id}")]
+pub(crate) async fn revoke_device(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let id: DeviceId = path.into_inner().parse()?;
+    state.revoke_device.execute(&caller.0, id).await?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+/// Mint an API key. The secret comes back once.
+#[utoipa::path(
+    post,
+    path = "/apikeys",
+    tag = "auth",
+    request_body = CreateKeyBody,
+    responses(
+        (status = 201, description = "Minted — store the secret now", body = MintedKey),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not entitled to mint for that owner or channel", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[post("/apikeys")]
+pub(crate) async fn create_key(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    body: web::Json<CreateKeyBody>,
+) -> Result<HttpResponse, ApiError> {
+    let body = body.into_inner();
+
+    let minted = state
+        .create_key
+        .execute(
+            &caller.0,
+            notify_app::NewApiKey {
+                owner: body.owner,
+                label: body.label,
+                scopes: body.scopes,
+                channels: body.channels,
+                expires_at: body.expires_at,
+            },
+        )
+        .await?;
+
+    Ok(HttpResponse::Created().json(MintedKey {
+        key: minted.key,
+        secret: minted.secret,
+    }))
+}
+
+/// The caller's keys — metadata only, never a secret.
+#[utoipa::path(
+    get,
+    path = "/apikeys",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Keys, with prefix, scopes and last use", body = Vec<ApiKey>),
+        (status = 401, description = "No usable credential", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/apikeys")]
+pub(crate) async fn list_keys(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+) -> Result<web::Json<Vec<ApiKey>>, ApiError> {
+    Ok(web::Json(state.keys.execute(&caller.0).await?))
+}
+
+/// Revoke a key, effective on the next request that presents it.
+#[utoipa::path(
+    delete,
+    path = "/apikeys/{id}",
+    tag = "auth",
+    params(("id" = String, Path, description = "API key id")),
+    responses(
+        (status = 204, description = "Revoked, or was not there"),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not the caller's key", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[delete("/apikeys/{id}")]
+pub(crate) async fn revoke_key(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let id: ApiKeyId = path.into_inner().parse()?;
+    state.revoke_key.execute(&caller.0, id).await?;
+    Ok(HttpResponse::NoContent().finish())
+}

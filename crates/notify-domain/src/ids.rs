@@ -31,6 +31,9 @@ macro_rules! ulid_newtype {
     ($(#[$meta:meta])* $name:ident, $prefix:literal, $field:literal) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+        // A prefixed string on the wire, never the raw ULID the struct holds.
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         pub struct $name(Ulid);
 
         impl $name {
@@ -159,6 +162,7 @@ ulid_newtype!(
 /// `ci-infra` naming the same channel in a URL, in GitOps config and in a SQL
 /// unique index is a bug waiting for the day one of those three comparisons is
 /// done differently.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Slug(String);
@@ -222,6 +226,8 @@ impl fmt::Display for Slug {
 macro_rules! slug_newtype {
     ($(#[$meta:meta])* $name:ident, $field:literal) => {
         $(#[$meta])*
+        #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
         #[serde(transparent)]
         pub struct $name(Slug);
@@ -297,6 +303,7 @@ slug_newtype!(
 /// the idempotency they are reaching for. Only the hygiene rules apply, plus the
 /// requirement that nothing was rewritten: an id that changes under sanitisation
 /// would silently address a different notification than the caller believes.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct ExternalId(String);

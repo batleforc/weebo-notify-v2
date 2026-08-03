@@ -1,0 +1,123 @@
+---
+title: Persistence
+description: One events table is the cursor, columns for what is queried, and every query proven against a real Postgres.
+---
+
+`notify-persistence-pg` implements eleven ports over one connection pool, and
+`notify-eventbus-pg` tells the other replicas about it. Together they are the only
+infrastructure a default deployment needs.
+
+## The shape of the schema
+
+**Columns for what is queried, `jsonb` for what is only read back whole.** Filters,
+orderings and joins get real columns with real indexes; content, actions, policy and
+authors are stored in the domain's own serde representation.
+
+That representation is already the published wire contract
+([ADR-0013](/docs/adr/0013-openapi-schemas-on-the-domain-types)), so this introduces
+no second format to keep in step. The cost is the same one that ADR carries: a
+domain rename is a schema change and a spec change at once, caught by the `contract`
+job rather than by the compiler.
+
+Identifiers are stored as their prefixed text form — `ntf_01J…`, `ci-infra` — rather
+than as raw ULIDs. They are self-describing in a query someone runs at 3am, and the
+domain parses them strictly on the way back in anyway.
+
+## One events table is the cursor
+
+Every revision, receipt, interaction, tombstone and preference gets a row in
+`events`, and that `bigserial` **is** what a client sends back as `?cursor=` or
+`Last-Event-ID` ([ADR-0012](/docs/adr/0012-single-events-table-as-the-cursor)).
+
+A state change and its event row are written in the same transaction, always. That
+is what makes "the event log and the data disagree" unreachable rather than
+unlikely — and it is why every method that returns a cursor opens a transaction, and
+why appending is not a port of its own.
+
+Two details worth knowing:
+
+- **`head()` reads the sequence, not `max(seq)`.** Pruning the log must not move the
+  head backwards, or a client told to "start from now" would be handed a cursor that
+  replays what it already has.
+- **An expired notification nobody saw takes a sequence value but is never
+  replayed.** It becomes a per-channel count in `SyncPage.expired` instead of a
+  backlog entry there is nothing to do about (design §7.2bis). The row is there so
+  the cursor stays one unbroken order.
+
+## Compaction is over the window, not the page
+
+Forty revisions of one deploy become one entry, and `compacted` reports the
+thirty-nine that were folded. That count has to be computed over everything the
+client missed, not over the fifty rows it happens to be reading — so the candidate
+scan is unbounded even though the result is paged.
+
+A client that has been away for a month therefore pays for a month of rows once.
+Event retention is what keeps that bounded in practice, and it is deliberately its
+own job on its own schedule: the events of an expired notification have to outlive it
+long enough for a slow client to catch up, and then go.
+
+## Leadership is a connection, not a lease
+
+TTL purge, reconciliation, sink retries and digests run once per instance, not once
+per replica. `PgLeaderElection` takes a Postgres advisory lock and holds it on a
+connection checked out of the pool.
+
+That is the whole mechanism, and it is why nothing has to time out or be renewed: a
+session advisory lock lives exactly as long as its connection, so a replica that is
+partitioned, killed or stalled loses the lock with the socket. `is_held()` asks
+whether that connection still answers, and the jobs ask it **between batches** — a
+purge loop that took the lock, lost it during a partition and kept deleting is the
+failure this exists to prevent.
+
+The guard closes its connection rather than returning it to the pool. A pooled
+connection handed back would take the lock with it, and the next unrelated query
+would silently be leading.
+
+## Rate limits are shared, and fixed-window
+
+With several replicas an in-process counter enforces `n × 60/min` rather than
+`60/min`, so the counters live in the database. One statement consumes and decides,
+so a caller over the limit is refused before doing the work rather than after.
+
+The window is fixed rather than sliding: a sliding window costs a row per request,
+and the burst allowance in design §8.2 already covers the edge it would smooth.
+
+## Why the queries are not `sqlx::query!`
+
+The macros check SQL at compile time against a live database. They also make `.sqlx`
+metadata a build input that has to be regenerated whenever a query changes, and they
+fight the shapes this adapter is made of — `jsonb` round-trips, `text[]` filters, and
+reads whose `WHERE` clause is assembled from optional filters.
+
+The trade taken instead: **every query in the crate is exercised against a real
+Postgres** by `tests/conformance.rs`, which walks the whole port surface and checks
+the semantics against the in-memory double the use cases were written on. A typo
+fails a test rather than a build, and the workspace compiles with no database
+anywhere.
+
+That only holds while the suite stays complete, so a new method on the adapter comes
+with a case there. If it ever stops covering a query, this decision stops paying for
+itself.
+
+```bash
+task dev:up                                                  # Postgres on :5432
+DATABASE_URL=postgres://weebo:weebo@localhost:5432/weebo_notify task test:e2e
+```
+
+Without a database the adapter suites report that they were skipped rather than
+failing, so `task test` is green on a laptop that has not started the stack. The
+`e2e` CI job always sets the variable.
+
+## The event bus carries pokes, never payloads
+
+A poke is an identifier and a cursor. Partly because `NOTIFY` caps its payload at
+8 KB, and mostly because a bus that carried payloads would be a second source of
+truth to keep in step with the first. A replica that receives one reads the
+authoritative row at that cursor and fans it out to whichever of its connections
+should see it.
+
+Best-effort is the design and not a shortcut: a dropped poke costs latency, and the
+client's next reconnect or poll catches up from its cursor
+([ADR-0008](/docs/adr/0008-postgres-listen-notify-as-the-default-eventbus)). That is
+what makes it reasonable to run the default deployment on `LISTEN/NOTIFY` and to swap
+in Redis purely for scale without the domain noticing.

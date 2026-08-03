@@ -25,6 +25,7 @@ use crate::limits::MAX_TITLE_CHARS;
 
 /// The discriminant of a [`Principal`], as it appears on the wire in an `author`
 /// object (design §8.1).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrincipalKind {
@@ -50,6 +51,7 @@ impl fmt::Display for PrincipalKind {
 }
 
 /// The identity behind a request, after authentication.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Principal {
@@ -154,6 +156,7 @@ impl fmt::Display for Principal {
 /// is what mechanically enforces "visible only through a shared channel"
 /// (design §2.4). Profile *management* arrives with M2; M1 only needs to be able
 /// to say who published.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author {
     /// The identity itself.
@@ -205,6 +208,7 @@ impl Author {
 /// Modelled as its own type rather than as a bare [`Principal`] so that the
 /// authentication adapter cannot accidentally mint a `CiJob` principal out of a
 /// long-lived key: federation and keys are different doors.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub enum ApiKeyOwner {

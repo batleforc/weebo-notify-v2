@@ -45,7 +45,7 @@ wait_for() { # $1 = label, $2 = url, $3 = seconds
 step "Database migrations"
 # ---------------------------------------------------------------------------
 if [[ ! -d "$MIGRATIONS_DIR" ]]; then
-  skip "no migrations yet (persistence-pg lands in M1.4)"
+  skip "no migrations directory — persistence-pg is not bootstrapped in this checkout"
 elif ! command -v sqlx >/dev/null; then
   skip "sqlx-cli not on PATH — run \`mise install\`"
 else
@@ -104,6 +104,7 @@ else
 fi
 
 printf '\n\033[1mSeed complete.\033[0m\n'
+info "identity : task dev:oidc   -> http://localhost:9110"
 info "server   : task dev:run    -> http://localhost:8080"
 info "web      : task dev:web    -> http://localhost:5173"
 info "log in as: alice / bob / carol, password ${DEV_USER_PASSWORD:-weebo-dev}"

@@ -45,6 +45,12 @@
     reason = "test doubles are read in the test that uses them; #[must_use] on every \
               accessor is noise here"
 )]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "this module is feature-gated and never linked into the server; a panic \
+              here surfaces as a failed test, which is exactly what a double is for"
+)]
 
 pub mod clock;
 pub mod infra;
@@ -52,7 +58,7 @@ pub mod store;
 
 pub use clock::TestClock;
 pub use infra::{
-    InMemoryAttachments, RecordingSinkDispatcher, StaticTokenVerifier, StubSecretHasher,
-    TestLeaderElection,
+    CountingKeyGenerator, InMemoryAttachments, RecordingSinkDispatcher, StaticTokenVerifier,
+    StubSecretHasher, TestLeaderElection, TestRateLimiter,
 };
 pub use store::InMemory;

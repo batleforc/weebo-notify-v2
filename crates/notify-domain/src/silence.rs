@@ -17,6 +17,7 @@ use crate::error::{DomainError, Result};
 use crate::ids::{NotificationId, UserId};
 
 /// What a silence covers.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "scope", rename_all = "snake_case")]
 pub enum SilenceTarget {
@@ -33,6 +34,7 @@ pub enum SilenceTarget {
 }
 
 /// An active silence, held per user.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Silence {
     /// Whose it is. Silences never leak across users (scenario T20).

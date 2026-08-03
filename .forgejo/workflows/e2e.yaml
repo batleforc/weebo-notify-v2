@@ -1,7 +1,9 @@
 name: e2e
 
-# End-to-end tests against the real binary, with real dependencies started by
-# testcontainers: Postgres, RustFS and oidc-server-mock.
+# End-to-end tests against the real binary, with real dependencies: Postgres and
+# RustFS from testcontainers, and the identity provider in-process — it is a crate
+# in this workspace (ADR-0014), so there is no image to pull and no registry that
+# can be down when the suite runs.
 #
 # Includes the `critical` suite (design §3.4) — blocking, never skipped, and growing
 # by one regression scenario with every bug fix.
@@ -31,6 +33,22 @@ jobs:
       image: ghcr.io/catthehacker/ubuntu:act-24.04
       # testcontainers drives the host's container engine from inside the job.
       options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+
+    services:
+      # The persistence and event-bus suites talk to a plain database rather than a
+      # testcontainer: they are adapter conformance tests, and giving each of them
+      # its own container would spend more time starting Postgres than testing it.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: weebo
+          POSTGRES_PASSWORD: weebo
+          POSTGRES_DB: weebo_notify
+        options: >-
+          --health-cmd "pg_isready -U weebo -d weebo_notify"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -62,14 +80,17 @@ jobs:
         run: |
           docker pull postgres:17-alpine
           docker pull rustfs/rustfs:latest
-          docker pull ghcr.io/soluto/oidc-server-mock:latest
 
       - name: Critical suite
         # Runs first and separately: if a critical scenario is broken, that is the
         # headline, not something to find inside a long log.
+        env:
+          WNK_TEST_DATABASE_URL: postgres://weebo:weebo@postgres:5432/weebo_notify
         run: mise exec -- task test:critical
 
       - name: End-to-end suite
+        env:
+          WNK_TEST_DATABASE_URL: postgres://weebo:weebo@postgres:5432/weebo_notify
         run: mise exec -- task test:e2e
 
       - name: Upload test results

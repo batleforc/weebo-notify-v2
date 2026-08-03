@@ -26,6 +26,7 @@ use crate::ids::{ActionKey, ChoiceOptionKey};
 use crate::limits::{MAX_ACTIONS, MAX_CHOICE_OPTIONS, MAX_LABEL_CHARS, MAX_PLACEHOLDER_CHARS};
 
 /// How far a `silence` reaches (design §2.3).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SilenceScope {
@@ -39,6 +40,7 @@ pub enum SilenceScope {
 }
 
 /// The discriminant of an [`Action`], used to report a mismatched interaction.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
@@ -69,6 +71,7 @@ impl ActionKind {
 }
 
 /// One option of a `choice` action.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChoiceOption {
     /// The value recorded when this option is picked.
@@ -78,6 +81,7 @@ pub struct ChoiceOption {
 }
 
 /// A validated call to action.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
@@ -165,6 +169,7 @@ impl Action {
 }
 
 /// What a publisher sends, before validation.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionDraft {
@@ -213,6 +218,7 @@ pub enum ActionDraft {
 }
 
 /// An unvalidated [`ChoiceOption`].
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChoiceOptionDraft {
@@ -347,6 +353,7 @@ fn validate_options(drafts: Vec<ChoiceOptionDraft>) -> Result<Vec<ChoiceOption>>
 /// Order is meaningful — it is display priority. Mobile push transports only
 /// surface the first two or three, the rest are reachable by opening the client
 /// (design §2.3).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct Actions(Vec<Action>);

@@ -46,11 +46,17 @@ jobs:
             ~/.local/share/mise
             target
             web/node_modules
-          key: contract-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock') }}
+          key: contract-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock', 'web/pnpm-lock.yaml') }}
           restore-keys: contract-${{ runner.os }}-
 
       - name: Install pinned tools
         run: mise install --yes
+
+      - name: Install the JavaScript dependencies
+        # `task recu` regenerates the TypeScript client with HeyApi, which lives in
+        # web/. Without this the step would skip silently and the job would prove
+        # nothing about the client it is here to check.
+        run: mise exec -- pnpm -C web install --frozen-lockfile
 
       - name: Regenerate everything derived from the code
         run: mise exec -- task recu

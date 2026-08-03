@@ -1,0 +1,61 @@
+---
+title: ADR-0013 — OpenAPI schemas are derived on the domain types
+description: One wire format, annotated behind a feature flag, with the committed spec as the drift alarm.
+---
+
+Status: accepted (2026-08-02) · Supersedes: — · Superseded by: —
+
+## Context
+
+The API contract is generated: utoipa emits the OpenAPI document from the handlers,
+and [ADR-0009](/docs/adr/0009-progenitor-and-heyapi-for-generated-clients) derives a
+Rust client and a TypeScript client from it. utoipa can only produce a schema for a
+type that derives `ToSchema` — the derive has to sit on the type itself.
+
+The domain types already commit to a wire format. `Notification`, `Content`,
+`Action`, `Channel` and the rest carry deliberate serde representations: internally
+tagged enums, RFC 3339 timestamps, `skip_serializing_if` on everything optional.
+That format is what the CLI, the TUI and the web client read today.
+
+So either the HTTP adapter mirrors every entity into a DTO, or the domain types
+learn to describe themselves. `notify-domain` depends on serde, thiserror, time,
+url and ulid, and on nothing that reaches outside the process — a rule worth
+keeping.
+
+## Decision
+
+**An optional `openapi` feature on `notify-domain` and `notify-ports`, enabled only
+by the HTTP adapter.** Public types carry
+`#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]`. Nothing in either
+crate calls utoipa, and no build without the feature links it.
+
+Request bodies that are not domain types — filters, query parameters, the shapes
+that exist only because HTTP has a shape — stay in the adapter, where they belong.
+
+## Consequences
+
+**Positive**
+
+- One source of truth for the wire format. A DTO layer is a second copy of it, and
+  a second copy is a mapping that can rot while both halves still compile.
+- The spec describes what the server actually sends, because it is generated from
+  the type that serialises it.
+- No cost to a build that does not want it: `cargo tree -p notify-domain` is
+  unchanged without the feature.
+
+**Negative**
+
+- The public API is coupled to the domain model. Renaming a domain field is an API
+  change, and the compiler will not say so.
+- The mitigation is the `contract` CI job, not discipline: `task recu` regenerates
+  the committed spec and `git diff --exit-code` fails the build, so the rename
+  shows up as a spec diff in review. That check is now load-bearing.
+
+**Accepted debt**
+
+- When an endpoint genuinely needs to present something other than the domain shape
+  — a summary projection, a field the API keeps after the domain drops it — it gets
+  a DTO in the adapter. That is a per-endpoint decision, not a reason to mirror
+  everything up front.
+- `Ttl` and `Cursor` are hand-written schemas: they are enums or newtypes in Rust
+  and plain strings on the wire, and the derive cannot see that on its own.

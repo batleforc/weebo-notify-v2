@@ -18,6 +18,7 @@ use crate::ids::{DeviceId, NotificationId, ReceiptId};
 use crate::principal::Principal;
 
 /// How far a notification got.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReceiptKind {
@@ -28,6 +29,7 @@ pub enum ReceiptKind {
 }
 
 /// One receipt.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Receipt {
     /// Identity.
@@ -48,6 +50,7 @@ pub struct Receipt {
 }
 
 /// The "seen by 3/5" summary shown to authorised members (design §7.3).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeenTally {
     /// Distinct people who have seen it.

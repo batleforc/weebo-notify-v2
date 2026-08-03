@@ -122,3 +122,16 @@ pub trait SecretHasher: Send + Sync {
     /// outcome, not an error worth a stack trace on every scan attempt.
     async fn verify(&self, secret: &str, hash: &str) -> PortResult<bool>;
 }
+
+/// Minting the secret half of a new API key.
+///
+/// Randomness is I/O in the sense that matters here: it is non-deterministic, so it
+/// belongs behind a port rather than inside a use case that tests have to work
+/// around. A double returns a fixed value and the assertions stay readable.
+pub trait KeyGenerator: Send + Sync {
+    /// Produce a fresh `(prefix, secret)` pair.
+    ///
+    /// The prefix is the indexed lookup half and need only be unique; the secret
+    /// must come from a cryptographically secure source and never be logged.
+    fn generate(&self) -> (ApiKeyPrefix, String);
+}

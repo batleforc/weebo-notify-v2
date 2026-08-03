@@ -112,7 +112,7 @@ impl PortError {
 /// Shorthand for a port's fallible operations.
 pub type PortResult<T> = Result<T, PortError>;
 
-/// A failure that is either the caller's fault or the world's.
+/// A failure that is either the caller's fault, the world's, or neither.
 ///
 /// The one type a use case returns, so a handler has a single thing to map onto
 /// `application/problem+json` (design §8).
@@ -124,6 +124,15 @@ pub enum Failure {
     /// The world was wrong.
     #[error(transparent)]
     Port(#[from] PortError),
+    /// Neither: the request is fine and the world is fine, there has just been too
+    /// much of it (design §8.2). Its own variant because `429` is the one refusal a
+    /// client is expected to *retry*, and burying it in either of the other two
+    /// would lose that.
+    #[error("rate limit exceeded; retry in {retry_after_seconds}s")]
+    RateLimited {
+        /// What to put in `Retry-After`.
+        retry_after_seconds: u32,
+    },
 }
 
 impl Failure {
@@ -136,6 +145,7 @@ impl Failure {
     pub fn code(&self) -> Option<&'static str> {
         match self {
             Self::Domain(error) => Some(error.code()),
+            Self::RateLimited { .. } => Some("rate.limited"),
             Self::Port(_) => None,
         }
     }

@@ -9,13 +9,11 @@ vars:
 
 tasks:
   default:
-    desc: "Regenerate everything derived from the code: OpenAPI spec, Rust + TS clients, sqlx offline data"
+    desc: "Regenerate everything derived from the code: the OpenAPI spec and the Rust + TS clients"
     cmds:
       - task: openapi
       - task: client:rust
       - task: client:ts
-      - task: sqlx
-      - task: devfile
 
   openapi:
     desc: "Export the OpenAPI spec from the utoipa annotations (no server boot required)"
@@ -40,33 +38,17 @@ tasks:
           fi
           pnpm -C web run generate:client
 
-  devfile:
-    desc: "Inline dev/oidc-mock/*.yaml into devfile.yaml — Eclipse Che cannot mount host files (§12.4)"
-    cmds:
-      # Compose mounts ./oidc-mock as a volume; in Che every component shares one
-      # pod with no host filesystem, so the same configuration has to travel as an
-      # environment variable. Generating it here (rather than copy-pasting) is what
-      # keeps the two worlds describing the SAME test identities — the parity rule
-      # the whole dev environment rests on.
-      - cmd: |
-          set -eu
-          for pair in "USERS_CONFIGURATION_INLINE:users" "CLIENTS_CONFIGURATION_INLINE:clients"; do
-            var=${pair%%:*}
-            file="dev/oidc-mock/${pair##*:}.yaml"
-            yq -i "
-              (.components[] | select(.name == \"oidc-mock\")
-               | .container.env[] | select(.name == \"$var\") | .value)
-              = load_str(\"$file\")
-            " devfile.yaml
-          done
-          echo "devfile.yaml: inlined dev/oidc-mock/{users,clients}.yaml"
+  # There used to be a `devfile` step here, inlining the identity provider's
+  # configuration into devfile.yaml because Eclipse Che cannot mount host files.
+  # The provider is a workspace binary now (ADR-0014), so it reads
+  # dev/oidc-mock/identities.toml straight from the project source in both worlds
+  # and there is nothing left to generate.
 
-  sqlx:
-    desc: "Refresh the committed sqlx offline data so the workspace builds without a live database"
-    cmds:
-      - cmd: |
-          if [ ! -d crates/notify-adapters/persistence-pg/migrations ]; then
-            echo "persistence-pg not bootstrapped yet — skipping"
-            exit 0
-          fi
-          cargo sqlx prepare --workspace -- --all-targets
+  # There is no `sqlx` step either, and that is a decision rather than an omission.
+  # `cargo sqlx prepare` exists to let the `sqlx::query!` macros check SQL at
+  # compile time against committed metadata. notify-persistence-pg does not use
+  # them: its queries are jsonb round-trips, `text[]` filters and reads whose WHERE
+  # clause is assembled from optional filters, and every one of them is exercised
+  # against a real Postgres by `crates/notify-adapters/persistence-pg/tests/
+  # conformance.rs` (run by `task test:e2e`). The trade is stated in that crate's
+  # module documentation; the cost is that a typo fails a test rather than a build.

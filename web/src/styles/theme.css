@@ -1,0 +1,194 @@
+/*
+ * The one file that decides what weebo-notify looks like (design §10.2).
+ *
+ * Two layers of tokens, and the rule that makes the `monofolio` swap cheap
+ * (§10.6): a component may reference a SEMANTIC token and nothing else. No raw
+ * colour, no `oklch()` outside this file. That is the single blocking rule in a
+ * front-end review, because it is what keeps the design system a token file
+ * rather than a fork.
+ *
+ *   1. shadcn tokens — `--background`, `--primary`, `--muted`… the vocabulary the
+ *      vendored components in `components/ui/` speak.
+ *   2. business tokens — `--status-*`, `--priority-*`, `--state-*`. A notification
+ *      row never says "red", it says "failure", and what failure looks like is
+ *      decided here.
+ *
+ * Everything is OKLCH: it interpolates perceptually, so a theme can be re-toned by
+ * moving lightness and chroma without the hue drifting.
+ */
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Dark is a class on <html>, set before first paint by the inline script in
+ * index.html — a theme that flashes white on reload is a bug you ship once. */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.5rem;
+
+  /* Light theme — complete, not an afterthought (§10.2). */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.006 285.9);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.006 285.9);
+  --primary: oklch(0.21 0.006 285.9);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.967 0.001 286.4);
+  --secondary-foreground: oklch(0.21 0.006 285.9);
+  --muted: oklch(0.967 0.001 286.4);
+  --muted-foreground: oklch(0.552 0.016 285.9);
+  --accent: oklch(0.967 0.001 286.4);
+  --accent-foreground: oklch(0.21 0.006 285.9);
+  --destructive: oklch(0.577 0.245 27.3);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.92 0.004 286.3);
+  --input: oklch(0.92 0.004 286.3);
+  --ring: oklch(0.705 0.015 286.1);
+
+  /* Status: what the notification is saying (§2.2). Never used alone — every
+   * component pairs it with an icon, because colour alone excludes a portion of
+   * the people reading an incident feed (§10.3). */
+  --status-success: oklch(0.63 0.17 149);
+  --status-failure: oklch(0.58 0.22 27);
+  --status-warning: oklch(0.72 0.17 70);
+  --status-info: oklch(0.62 0.16 250);
+  --status-cancelled: oklch(0.6 0.02 286);
+
+  /* Priority: a discrete scale, not a gradient (§10.2). `min` and `low` are
+   * deliberately quiet enough to read as "not for you right now". */
+  --priority-min: oklch(0.72 0.01 286);
+  --priority-low: oklch(0.66 0.03 250);
+  --priority-default: oklch(0.62 0.16 250);
+  --priority-high: oklch(0.72 0.17 70);
+  --priority-urgent: oklch(0.58 0.22 27);
+
+  /* State: where it is in its lifecycle (§2.2). */
+  --state-open: oklch(0.62 0.16 250);
+  --state-working: oklch(0.72 0.17 70);
+  --state-closed: oklch(0.6 0.02 286);
+
+  /* Density (§10.2): compact is the desktop default because the inbox is a tool,
+   * comfortable is what a touch target needs. Set on <html> by the UI store. */
+  --density-row-y: 0.5rem;
+  --density-gap: 0.5rem;
+}
+
+.dark {
+  --background: oklch(0.16 0.005 285.9);
+  --foreground: oklch(0.96 0.001 286.4);
+  --card: oklch(0.196 0.006 285.9);
+  --card-foreground: oklch(0.96 0.001 286.4);
+  --popover: oklch(0.196 0.006 285.9);
+  --popover-foreground: oklch(0.96 0.001 286.4);
+  --primary: oklch(0.92 0.004 286.3);
+  --primary-foreground: oklch(0.21 0.006 285.9);
+  --secondary: oklch(0.26 0.006 286);
+  --secondary-foreground: oklch(0.96 0.001 286.4);
+  --muted: oklch(0.26 0.006 286);
+  --muted-foreground: oklch(0.68 0.015 286.1);
+  --accent: oklch(0.28 0.007 286);
+  --accent-foreground: oklch(0.96 0.001 286.4);
+  --destructive: oklch(0.65 0.2 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.29 0.007 286);
+  --input: oklch(0.31 0.008 286);
+  --ring: oklch(0.55 0.013 286.1);
+
+  /* Lifted for contrast against a dark surface — same hues, more lightness. */
+  --status-success: oklch(0.72 0.17 150);
+  --status-failure: oklch(0.68 0.2 25);
+  --status-warning: oklch(0.79 0.16 72);
+  --status-info: oklch(0.7 0.14 250);
+  --status-cancelled: oklch(0.62 0.02 286);
+
+  --priority-min: oklch(0.55 0.01 286);
+  --priority-low: oklch(0.62 0.03 250);
+  --priority-default: oklch(0.7 0.14 250);
+  --priority-high: oklch(0.79 0.16 72);
+  --priority-urgent: oklch(0.68 0.2 25);
+
+  --state-open: oklch(0.7 0.14 250);
+  --state-working: oklch(0.79 0.16 72);
+  --state-closed: oklch(0.62 0.02 286);
+}
+
+/* `comfortable` is the mobile and Tauri default; the same components read it. */
+.density-comfortable {
+  --density-row-y: 0.875rem;
+  --density-gap: 0.75rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-status-success: var(--status-success);
+  --color-status-failure: var(--status-failure);
+  --color-status-warning: var(--status-warning);
+  --color-status-info: var(--status-info);
+  --color-status-cancelled: var(--status-cancelled);
+
+  --color-priority-min: var(--priority-min);
+  --color-priority-low: var(--priority-low);
+  --color-priority-default: var(--priority-default);
+  --color-priority-high: var(--priority-high);
+  --color-priority-urgent: var(--priority-urgent);
+
+  --color-state-open: var(--state-open);
+  --color-state-working: var(--state-working);
+  --color-state-closed: var(--state-closed);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --spacing-row: var(--density-row-y);
+  --spacing-dense: var(--density-gap);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* §10.5: animations are utilitarian, and somebody who asked their system to
+   * stop moving things has already told us what they want. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

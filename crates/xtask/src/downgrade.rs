@@ -31,14 +31,56 @@ pub(crate) fn to_openapi_30(document: &mut Value) -> usize {
         }
     }
 
-    changes + walk(document)
+    changes + walk(document) + unnullify_parameters(document)
+}
+
+/// Drop `nullable` from parameter schemas.
+///
+/// A parameter is either sent or not sent; there is no wire form for "sent, and
+/// null". utoipa emits the flag anyway for an `Option<T>` parameter, and progenitor
+/// reads it literally — it generates `Option<Option<&str>>` and then calls
+/// `to_string` on the inner option, which does not compile. Optionality survives:
+/// it is what `required: false` already says.
+fn unnullify_parameters(document: &mut Value) -> usize {
+    let mut changes = 0;
+
+    let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
+        return 0;
+    };
+
+    for path in paths.values_mut() {
+        let Some(operations) = path.as_object_mut() else {
+            continue;
+        };
+        for operation in operations.values_mut() {
+            let Some(parameters) = operation
+                .get_mut("parameters")
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
+            for parameter in parameters {
+                let removed = parameter
+                    .get_mut("schema")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|schema| schema.remove("nullable"));
+                if removed.is_some() {
+                    changes += 1;
+                }
+            }
+        }
+    }
+
+    changes
 }
 
 fn walk(node: &mut Value) -> usize {
     match node {
         Value::Object(object) => {
-            let mut changes =
-                lower_nullable_type(object) + lower_const(object) + lower_exclusive_bounds(object);
+            let mut changes = lower_nullable_type(object)
+                + lower_nullable_composition(object)
+                + lower_const(object)
+                + lower_exclusive_bounds(object);
             for value in object.values_mut() {
                 changes += walk(value);
             }
@@ -74,6 +116,43 @@ fn lower_nullable_type(object: &mut Map<String, Value>) -> usize {
         object.insert("nullable".to_owned(), Value::Bool(true));
     }
     1
+}
+
+/// The same optionality, expressed the other way utoipa reaches for.
+///
+/// When the inner type is a `$ref` — `Option<HumanDuration>`, `Option<Progress>` —
+/// 3.1 cannot use a type union, so it emits `oneOf: [{"type": "null"}, {"$ref": …}]`.
+/// 3.0 has no null type at all: the null branch is dropped and the remainder is
+/// marked `nullable`. Only the two-branch shape is handled; a genuine union with a
+/// null in it is left for progenitor to reject.
+fn lower_nullable_composition(object: &mut Map<String, Value>) -> usize {
+    for keyword in ["oneOf", "anyOf"] {
+        let Some(Value::Array(branches)) = object.get(keyword) else {
+            continue;
+        };
+        if branches.len() != 2 {
+            continue;
+        }
+
+        let is_null = |branch: &Value| branch.get("type").is_some_and(|kind| kind == "null");
+        let Some(position) = branches.iter().position(is_null) else {
+            continue;
+        };
+
+        let survivor = branches[1 - position].clone();
+        object.remove(keyword);
+
+        // A sibling of `$ref` is ignored by most 3.0 tooling, so the surviving
+        // branch is inlined wholesale rather than wrapped.
+        if let Value::Object(fields) = survivor {
+            for (key, value) in fields {
+                object.insert(key, value);
+            }
+        }
+        object.insert("nullable".to_owned(), Value::Bool(true));
+        return 1;
+    }
+    0
 }
 
 /// 3.1's `const: X` is 3.0's single-valued `enum: [X]`.
@@ -143,6 +222,62 @@ mod tests {
         let mut document = serde_json::json!({ "type": ["string", "integer"] });
         to_openapi_30(&mut document);
         assert!(document["type"].is_array());
+    }
+
+    #[test]
+    fn an_optional_ref_loses_its_null_branch_and_gains_nullable() {
+        // What utoipa emits for `Option<HumanDuration>`: a type union is impossible
+        // across a `$ref`, so it composes instead.
+        let mut document = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/components/schemas/HumanDuration" }
+            ]
+        });
+
+        to_openapi_30(&mut document);
+
+        assert_eq!(document["$ref"], "#/components/schemas/HumanDuration");
+        assert_eq!(document["nullable"], true);
+        assert!(document.get("oneOf").is_none());
+    }
+
+    #[test]
+    fn a_composition_without_a_null_branch_is_left_alone() {
+        // A real sum type: dropping a branch here would change the API.
+        let mut document = serde_json::json!({
+            "oneOf": [{ "$ref": "#/a" }, { "$ref": "#/b" }]
+        });
+
+        to_openapi_30(&mut document);
+
+        assert_eq!(document["oneOf"].as_array().unwrap().len(), 2);
+        assert!(document.get("nullable").is_none());
+    }
+
+    #[test]
+    fn an_optional_parameter_is_optional_rather_than_nullable() {
+        let mut document = serde_json::json!({
+            "paths": { "/notifications": { "post": { "parameters": [{
+                "name": "Idempotency-Key",
+                "in": "header",
+                "required": false,
+                "schema": { "type": ["string", "null"] }
+            }]}}}
+        });
+
+        to_openapi_30(&mut document);
+
+        let schema = &document["paths"]["/notifications"]["post"]["parameters"][0]["schema"];
+        assert_eq!(schema["type"], "string");
+        assert!(
+            schema.get("nullable").is_none(),
+            "a header is sent or not sent; there is no null form of it"
+        );
+        assert_eq!(
+            document["paths"]["/notifications"]["post"]["parameters"][0]["required"], false,
+            "optionality is `required: false`, and it has to survive"
+        );
     }
 
     #[test]

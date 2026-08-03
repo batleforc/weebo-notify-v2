@@ -1,0 +1,181 @@
+---
+title: Use cases
+description: The application layer — where authorisation, quotas and the order of a write are decided, once.
+---
+
+Everything on this page lives in `notify-app`: one struct per use case, one
+`execute()`, and every collaborator arriving as an `Arc<dyn Port>` in the
+constructor. The composition root decides what is real, a test decides what is in
+memory, and the code in between cannot tell the difference.
+
+```rust
+let published = PublishNotification::new(/* ports */)
+    .execute(&caller, request)
+    .await?;
+```
+
+A use case takes domain values and returns domain values. No HTTP, no SQL, no
+framework types — an Actix extractor stops at the adapter's edge.
+
+## What lives here and nowhere else
+
+**Authorisation.** Ports answer "who could", never "who may", so every membership
+and scope check funnels through one module. That is what makes "membership is the
+only door to content" a property rather than a habit.
+
+**Orchestration across ports.** Publishing writes a notification, appends its event,
+pokes the bus and pushes to devices. The domain knows none of that and each adapter
+knows one piece; the use case is where the order is decided — including which steps
+may fail without failing the request.
+
+**Quotas.** Consumed on the way *in*, before any work, so a caller over its limit
+costs a counter increment rather than a transaction.
+
+## Who the caller is
+
+Authentication collapses four kinds of credential into one typed value, so no use
+case ever inspects a header or a token format:
+
+```rust
+struct Caller { principal: Principal, grant: Grant }
+```
+
+Identity and grant are separate on purpose — the same service account acts with full
+membership through the UI and with a publish-only key from a pipeline.
+
+| Grant | Rights come from | Wired in |
+| --- | --- | --- |
+| `Membership` | the channel's member list | M1 |
+| `ApiKey` | the key's own scopes and channel list | M1 |
+| `Federated` | a CI trust policy, same shape as a key | M4 |
+
+The two doors are deliberately not merged. Resolving a key through membership would
+hand it rights nobody granted it; resolving a member through key scopes would break
+the moment they hold no key.
+
+### What a refusal says
+
+A bad signature, an unknown key prefix, a wrong secret and an expired token all
+answer `401`, and every authorisation refusal is `scope.missing` — never "no such
+channel". Distinguishing them turns the endpoint into an oracle: "unknown prefix"
+versus "wrong secret" tells an attacker which guesses hit a real key, and "exists but
+is not yours" lets a caller map the whole instance. The log records which it was; the
+response does not.
+
+Expiry and revocation are the deliberate exceptions: a caller holding a key that was
+genuinely theirs is entitled to know why it stopped working.
+
+## The order of a publish
+
+1. **Authorise** — fetch the channel the caller holds `publish` in, or refuse. The
+   channel comes back with the authorisation, because a second round trip to fetch
+   what we just authorised against is a second chance to authorise against something
+   different.
+2. **Check quotas** — both of them, before any work.
+3. **Claim the idempotency key**, if the caller sent one.
+4. **Build the revision** — the domain validates, sanitises and clamps.
+5. **Write** — the row and its event line, one transaction, returning the cursor.
+6. **Fan out** — best effort, after the write.
+
+### Quotas
+
+Per subject, never global: a CI job in a retry loop must degrade its own publishing
+and nobody else's.
+
+| Quota | Limit | Protects |
+| --- | --- | --- |
+| publish per key | 60/min, burst 120 | everyone else from one publisher |
+| publish per channel | 600/min | the fan-out from several well-behaved ones |
+| token exchange | 10/min per `(issuer, subject)` | the federation endpoint |
+| search | 30/min per principal | full-text, the expensive read |
+
+A refusal is its own `Failure::RateLimited` rather than a generic error, because
+`429` is the one refusal a client is expected to *retry* — burying it would lose
+that.
+
+### Idempotency, twice over
+
+The upsert is idempotent **by construction**: the external id is the key, so a
+retried CI job produces one notification and two revisions. `POST` has no such
+handle, so it takes an `Idempotency-Key` and replays the stored response for 24
+hours.
+
+The upsert also has to survive *concurrency*, not just retries: two parallel jobs
+racing on the same external id both find nothing, both insert, and one loses. Losing
+is expected — the loser re-reads and revises, which is the same outcome it would have
+had a millisecond later.
+
+### Fan-out is best effort
+
+Poke the bus first — every replica holds its own stream connections, so every replica
+has to learn about the write, and the poke carries an id and a cursor rather than a
+payload. Then push to the devices that are not listening, filtered by the recipient's
+own silence state.
+
+Neither may fail the publish that caused it. A failed poke costs latency and the
+cursor catches up; a failed push is recorded and retried by the transport. A CI job
+must not see a `500` because somebody's phone is unreachable.
+
+## Reading, and the empty case
+
+Every read is scoped to the channels the caller may subscribe to, resolved once. A
+caller in no channels gets an **empty page, not an error** — "you are in no channels"
+is a valid state.
+
+`GET /sync?cursor=` and `Last-Event-ID` are the same token, so a client that was
+offline for a week and a client whose websocket blipped take the same code path.
+That is the whole reason there is one event log rather than a backlog table and a
+stream.
+
+## Background work
+
+The TTL purge is leader-only and re-checks that **between batches**. A replica that
+took the lock, lost it during a partition and kept deleting is the failure this
+exists to prevent — losing a lock is only useful if somebody looks.
+
+Two retentions, deliberately different. A notification's TTL is a product decision.
+The event log's retention is an operational one: the events of an expired
+notification have to outlive it long enough for a slow client to catch up, and only
+then go.
+
+## The M1 surface
+
+| Area | Use cases |
+| --- | --- |
+| Authentication | `Authenticate` |
+| Publishing | `PublishNotification`, `UpsertNotification`, `DeleteNotification` |
+| Reading | `ListInbox`, `GetNotification`, `ListRevisions`, `SearchNotifications` |
+| Interaction | `RecordInteraction`, `ListInteractions`, `SilenceNotification`, `PostReceipt` |
+| Real time | `SyncBacklog`, `ResolveStreamStart` |
+| Channels | `ListChannels`, `CreateChannel`, `ManageMembers`, `DeleteChannel` |
+| Keys and devices | `CreateApiKey`, `ListApiKeys`, `RevokeApiKey`, `EnrolDevice`, `ListDevices`, `RevokeDevice` |
+| Background | `PurgeExpired` |
+
+A GitOps-managed channel is read-only through the API, and the refusal happens here
+rather than letting the write through and having the reconciler undo it — the
+difference between an error message and an afternoon spent watching a channel
+resurrect.
+
+An API key's secret is returned **once**, at creation. No endpoint can show it again,
+and that is enforced by the shape of the types rather than by discipline:
+`ApiKey` has no field that could carry it.
+
+## Testing
+
+Every use case here is tested against the in-memory doubles in
+`notify-ports/test-utils` — no container, no clock, sub-second. That is what the
+≥ 90 % coverage gate on `notify-domain` + `notify-app` is buying: a use-case test
+that needs Postgres is a use-case test that gets skipped.
+
+<Cards>
+  <Card
+    title="Domain model"
+    href="/docs/architecture/domain-model"
+    description="What a notification is, before any use case gets to orchestrate it."
+  />
+  <Card
+    title="Architecture"
+    href="/docs/architecture"
+    description="The crate split, and the four conventions every port follows."
+  />
+</Cards>

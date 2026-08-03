@@ -13,6 +13,7 @@ use notify_domain::Cursor;
 use serde::{Deserialize, Serialize};
 
 /// What a caller asks for.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageRequest {
     /// Where to resume. `None` starts at the beginning of the ordering.
@@ -82,6 +83,7 @@ impl Default for PageRequest {
 }
 
 /// What a caller gets.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page<T> {
     /// The rows, in the ordering of the endpoint.

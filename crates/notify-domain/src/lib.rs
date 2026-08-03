@@ -56,7 +56,7 @@ pub mod ttl;
 pub use action::{
     Action, ActionDraft, ActionKind, Actions, ChoiceOption, ChoiceOptionDraft, SilenceScope,
 };
-pub use channel::{Channel, ChannelPolicy, Membership, Scope};
+pub use channel::{Channel, ChannelPolicy, GroupBinding, Membership, Scope};
 pub use content::{Content, ContentDraft, Image, Progress};
 pub use cursor::Cursor;
 pub use device::{Device, DevicePublicKey, PushTransport};

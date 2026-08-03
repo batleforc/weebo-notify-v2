@@ -13,8 +13,9 @@ noise.
 
 ```bash
 task init        # toolchain (mise) + git hooks (cocogitto)
-task dev:up      # Postgres + RustFS + oidc-server-mock, ~20 s
+task dev:up      # Postgres + RustFS, ~20 s
 task dev:seed    # migrations, attachment bucket, test identities
+task dev:oidc    # the development identity provider, on :9110
 task dev:run     # the server, on :8080
 ```
 
@@ -33,6 +34,7 @@ Log in as `alice`, `bob` or `carol`, password `weebo-dev`.
 | `crates/notify-adapters` | HTTP, Postgres, event bus, OIDC, object store, push transports |
 | `crates/notify-server` | Composition root — one binary |
 | `crates/notify-cli` | The `notify` binary: CLI, and the TUI from M2 |
+| `crates/oidc-mock` | The development identity provider — never published, never deployed |
 | `crates/xtask` | Repository chores that need real code (client codegen, coverage gate) |
 | `web/` | Vue 3 frontend (from M1) |
 | `docs/` | The documentation site (Fumadocs) |
