@@ -57,8 +57,13 @@ function lateness(receivedAt: string): number | undefined {
   return late > LATE_THRESHOLD_MS ? late : undefined;
 }
 
-function open(id: string): void {
-  void router.push({ name: "notification", params: { id } });
+function open(id: string, viaKeyboard = false): void {
+  const target = { name: "notification", params: { id } };
+  // Arrow keys REPLACE rather than push: holding a key through fifty rows would
+  // otherwise leave fifty history entries, and Back would walk the list backwards
+  // one row at a time instead of leaving it. A click is a real navigation and
+  // keeps its entry.
+  void (viaKeyboard ? router.replace(target) : router.push(target));
 }
 
 function move(delta: number): void {
@@ -68,7 +73,7 @@ function move(delta: number): void {
   }
   cursor.value = Math.min(Math.max(cursor.value + delta, 0), rows.length - 1);
   const row = rows[cursor.value];
-  open(row.head.id);
+  open(row.head.id, true);
 
   // Keep the focused row in view without yanking the whole list around.
   const element = list.value?.querySelector<HTMLElement>(

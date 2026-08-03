@@ -1,7 +1,5 @@
 # weebo-notify — Design Document
 
-claude --resume 6faba325-494f-4b57-a3ee-012d9475a0f4
-
 > Plateforme de notifications riches, chiffrées (serveur de confiance, re-chiffrement ciblé vers les transports push tiers), multi-canaux et multi-appareils.
 > Remplaçant de Gotify / ntfy pour la stack `weebo-si`.
 
@@ -459,6 +457,7 @@ Endpoints principaux (OpenAPI complète générée par Utoipa, servie sur `/api/
 GET    /api/v1/channels                       # canaux visibles par le principal (paginé)
 POST   /api/v1/channels                       # créer un canal (dynamic)
 GET    /api/v1/channels/{id}                  # détail : membres, TTL, sinks, badge managed
+PATCH  /api/v1/channels/{id}                  # policy : TTL, priorité par défaut, receipts — refusé si managed
 DELETE /api/v1/channels/{id}                  # refusé si managed (GitOps source de vérité)
 POST   /api/v1/channels/{id}/members          # inviter
 DELETE /api/v1/channels/{id}/members/{principalId} # retirer un membre (user ou service account) / quitter
@@ -512,10 +511,18 @@ event: revision | receipt | interaction | tombstone | preference
 data: <JSON>
 ```
 
+Le `data:` est l'**événement entier** — enveloppe comprise, pas seulement le payload. C'est ce qui rend SSE et WebSocket rigoureusement identiques (le WS n'a pas de ligne `id:`, il lui faut donc le curseur dans le JSON), et surtout ce qui permet à un client qui n'a jamais vu une notification de la classer sans un `GET /notifications/{id}` par arrivée — exactement le suivi que la dénormalisation de `revision` sert à éviter.
+
+L'objet est **plat** : l'enveloppe et le payload partagent un seul espace de noms. Deux noms sont donc réservés par l'enveloppe et par elle seule — `channel_id`/`user_id` (jamais `id`, qu'un `receipt` et une `interaction` portent déjà) et `logged_at` (jamais `recorded_at`, qu'une `interaction` porte déjà). Un champ de payload qui viendrait réclamer l'un des deux casse le fil, pas un détail : sérialisé deux fois, l'objet ne se relit plus.
+
 ```jsonc
 // event: revision — la création est incluse (créer = pousser la révision seq=1)
 {
+  "cursor": "evt_00000000000042",   // le même que la ligne `id:` ; le WS n'a que celui-ci
+  "audience": "channel",
   "channel_id": "ci-infra",
+  "logged_at": "2026-08-01T10:12:41Z",   // quand la ligne a été journalisée
+  "event": "revision",
   "notification_id": "ntf_01J...",
   "external_id": "run-4521",
   "seq": 3,
@@ -1314,8 +1321,9 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 | Milestone | État |
 |---|---|
 | **M0 — Socle** | ✅ commité (`240ff36`) |
-| **M1 — Cœur + web v0** | 🟡 en cours — détail ci-dessous |
-| M2 → M7 | ⬜ non commencés |
+| **M1 — Cœur + web v0** | 🟡 **écrit en entier**, pas encore commité — détail ci-dessous |
+| **M2 — Sync, offline & TUI** | 🟡 **écrit en entier**, pas encore commité — les huit incréments et les quatre manques soldés |
+| M3 → M7 | ⬜ non commencés |
 
 **Découpage de M1** :
 
@@ -1362,6 +1370,126 @@ Trois limites assumées, écrites là où elles se voient :
 - le badge « reçue en retard » (§7.2) ne couvre que les arrivées rejouées après reconnexion : la version complète a besoin du curseur de sync par device, qui est M2 ;
 - la palette `Cmd+K` (§10.4) n'est pas là. Elle a besoin de `GET /search` **et** des écrans vers lesquels elle switche (Canaux, Devices, Admin), qui sont M2 — la livrer maintenant reviendrait à chercher dans un seul écran.
 
+**Fermer M1 — ce que les portes ont révélé.** Les dix incréments étaient écrits ; passer les portes que le projet s'est lui-même données a sorti quatre choses, toutes hors du code produit et toutes du même genre : des garde-fous qui ne gardaient rien.
+
+- **`task audit` était rouge, et le serait resté.** RUSTSEC-2023-0071 (`rsa`, attaque Marvin, sans correctif amont) arrive par `jsonwebtoken`. L'attaque vise les opérations à **clé privée** RSA ; ce produit n'en fait aucune — `notify-oidc` ne fait que *vérifier* des RS256 avec les clés publiques du JWKS (§5.1), le mock signe en ES256, et les jetons fédérés sont Ed25519 (§5.3). L'alternative (backend `aws_lc_rs`) imposerait une toolchain C à toutes les cibles, y compris les cross-compilations Tauri de M5-M7. L'exception est donc documentée dans `.cargo/audit.toml` et `deny.toml`, avec sa condition de réexamen : le jour où une clé privée RSA entre dans ce workspace.
+- **`cargo deny` refusait nos propres crates.** `wildcards = "deny"` vise une dépendance crates.io en `*` ; il frappait les onze crates internes, déclarées par `path` donc sans version. `allow-wildcard-paths` ne s'applique qu'aux crates non publiables — elles ne l'étaient pas déclarées. Elles le sont maintenant (`publish = false` hérité du workspace), ce qui est vrai en soi : rien ici ne part sur crates.io, et publier `notify-client-api` un jour sera une ligne délibérée dans son propre manifeste.
+- **`task audit:web` avalait ses résultats.** Le `|| true` existait pour ne pas échouer tant que `web/` n'existait pas — et le jour où il a existé, il a masqué GHSA-52cp-r559-cp3m (`js-yaml`, via le générateur HeyApi). Un projet absent est sauté explicitement maintenant ; un projet présent avec une alerte fait échouer la tâche, seule raison de la lancer. L'avis est corrigé par un `override` pnpm.
+- **La matrice `oidc-compat` ne testait rien** — détaillé en §15. C'est le plus grave des quatre, parce que c'est celui sur lequel §15 s'appuie pour dire « ne jamais merger un changement d'auth sans elle ».
+
+Restait aussi la CI elle-même : les jobs `check` et `contract` n'installaient jamais les dépendances de `web/`, donc `task recu` y aurait sauté la génération du client TS **en silence** — un job `contract` vert sans avoir vérifié le contrat qu'il existe pour vérifier. Et le job `e2e` réclamait `--privileged` plus la socket Docker pour des testcontainers qui n'existent nulle part dans l'arbre.
+
+Portes au vert à la fin de M1 : `task lint:check`, `task test` (Rust + web), `task test:critical` (72), `task test:e2e` (43, contre un vrai Postgres), `task test:oidc-compat` (leg `mock`), `task audit` (cargo + deny + pnpm + trivy), couverture domaine+app à 96,4 % pour un plancher à 90 %, et `task recu` idempotent.
+
+**Découpage de M2** :
+
+| # | Livrable | État |
+|---|---|---|
+| M2.1 | Profils users (§2.4) — champs, règle d'override OIDC, `GET/PUT /users/me/profile` | ✅ écrit |
+| M2.2 | Avatars (§2.4) — adapter `attachments-s3`, décodage sûr, `PUT /users/me/avatar` | ✅ écrit |
+| M2.3 | Service accounts (§5.2bis) — `GET/POST/DELETE /serviceaccounts` + leur profil | ✅ écrit |
+| M2.4 | `notify-client-core` — store SQLite WAL, curseur, élection du flux (§9.3bis) | ✅ écrit — signal local compris |
+| M2.5 | CLI (§9.1) — `ls`, `channel`, `device`, complétions, `--output json\|table` | ✅ écrit — `set-ttl` compris ; `dnd` sans endpoint (M3) |
+| M2.6 | TUI ratatui (§9.2) — layout 3 zones, mode `:` sur le parseur clap | ✅ écrit — les commandes `:` s'exécutent |
+| M2.7 | Sync offline : compaction, compteur d'expirés et badge retard (§7.2) | ✅ écrit |
+| M2.8 | Web : Settings (profil, avatar), Devices, clés, service accounts, canaux (§10.4) | ✅ écrit |
+
+L'ordre n'est pas libre : M2.8 consomme les API de M2.1–M2.3, M2.6 consomme le store de M2.4, et le badge retard de M2.7 a besoin du curseur par device que M2.4 tient. M2.2 est le premier à réclamer un adapter `AttachmentStore` de production (§14.3), donc le premier à sortir du périmètre « aucun bucket » de M1.
+
+**M2.1 en détail.** Un `Profile` sur le `User` : `display_name`, `timezone`, `locale`, plus l'ensemble des champs que la personne a édités elle-même.
+
+Cet ensemble **est** la fonctionnalité. §2.4 dit « un champ modifié localement n'est plus écrasé par les syncs OIDC suivants », et sans mémoire de ce qui a été édité il n'y a que deux comportements possibles, tous les deux faux : ou l'IdP écrase le choix de la personne à chaque login, ou il ne met plus jamais rien à jour. Le domaine enregistre donc le champ, pas la valeur — « ce `display_name` est le sien » — et `PUT` avec `null` **rend** le champ à l'IdP plutôt que de le vider, ce qui est la seule façon de revenir en arrière sans support.
+
+Le piège est côté sérialisation, et il annule la fonctionnalité en silence : serde replie « absent » et « `null` explicite » sur la même valeur — `#[serde(default)]` produit `None` pour l'un, et `null` se désérialise en `None` pour l'autre. Rendre un champ à l'IdP devenait alors indistinguable de « ne touche à rien », c'est-à-dire l'inverse de ce que la requête demande. Le corps porte donc un `deserialize_with` qui n'est appelé que si la clé est présente, et le domaine dit les trois états par un enum (`FieldEdit::Follow` / `Set`) plutôt que par un `Option<Option<String>>` que personne ne relit correctement.
+
+Deux choses trouvées en câblant ça :
+
+- **Le login écrivait en base à chaque requête.** `Authenticate::bearer` rafraîchissait les claims puis appelait `upsert` inconditionnellement — et l'auth par bearer se rejoue à *chaque* appel (§5.1). C'est exactement l'écriture par requête que §14.2 refuse pour justifier le modèle dérivé des groupes, sur le chemin le plus chaud de l'API. La synchronisation renvoie maintenant si quelque chose a changé, et n'écrit que dans ce cas.
+- **Le fuseau est validé contre la base IANA**, pas contre une regex. Il sert de défaut aux quiet hours (§7.4, M3) : un `Europe/Pris` accepté aujourd'hui devient une notification qui ne part pas dans six mois, et le lien entre les deux serait introuvable.
+
+**M2.2 en détail.** Trois choses, et l'ordre entre elles est la sécurité.
+
+`notify-avatars` est **la seule surface de décodage média du serveur** (§15), donc elle est petite, sa liste de décodeurs est explicite — PNG, JPEG, WebP compilés, rien d'autre : un format qu'on n'accepte pas ne peut pas avoir de faille qui nous concerne — et l'ordre des vérifications n'est pas un détail d'implémentation : taille avant tout parsing ; format d'après les **octets** et non d'après le `Content-Type`, qui est une déclaration ; dimensions lues dans l'**en-tête** avant décodage complet, parce que 30 000 × 30 000 pixels font quelques kilo-octets de PNG et 3,6 Go de RGBA décodé ; puis décodage, recadrage carré et **ré-encodage**. C'est le ré-encodage qui strippe les métadonnées : « on a retiré les tags qu'on connaît » est une promesse plus faible que « on a écrit un fichier neuf depuis les pixels ».
+
+`attachments-s3` implémente enfin le port (§14.3) — opérations S3 standard uniquement, path-style, presign court — et sa conformité tourne contre un vrai RustFS, pas contre un mock : « HEAD sur une clé absente répond 404 » est une affirmation sur l'implémentation de quelqu'un d'autre.
+
+L'avatar est le seul upload qui **transite par le serveur** (§2.4), donc le port a gagné `put`/`get` à côté des presign. Il est servi par `GET /avatars/{id}` plutôt que par une URL signée : un avatar s'affiche à côté de chaque révision publiée par son propriétaire, donc une signature par rendu serait un aller-retour de signature par ligne d'inbox. Et par id d'objet, jamais par id d'utilisateur — un `/users/{id}/avatar` serait exactement la lecture de profil d'autrui que §2.4 refuse.
+
+Deux décisions écrites là où elles se voient :
+
+- **l'avatar n'est jamais synchronisé depuis l'IdP.** OIDC publie une claim `picture`, et la suivre voudrait dire que le serveur va chercher une URL arbitraire trouvée dans un jeton — une primitive de SSRF pointée sur tout ce que le cluster peut joindre. Un avatar arrive par upload ou pas du tout ;
+- **l'ancien objet n'est supprimé qu'après que le nouveau est stocké et référencé.** L'ordre inverse ouvre une fenêtre où le profil pointe sur des octets disparus, et un échec au milieu la rend définitive ; celui-ci laisse au pire un orphelin, que la purge sait retrouver.
+
+**M2.3 en détail.** `GET/POST/DELETE /serviceaccounts`. La seule vraie question était **qui administre un bot**, et §5.2bis ne la tranchait pas.
+
+La réponse suit deux précédents déjà dans le code plutôt que d'inventer un modèle :
+
+- un compte **managed** refuse l'API à tout le monde, exactement comme `DELETE /channels/{id}` refuse un canal managé (§11) — laisser un appel API gagner ne ferait que déplacer le problème à la prochaine réconciliation, qui l'annulerait ;
+- un compte **dynamic** appartient à son créateur, comme `CreateChannel` fait déjà du créateur le gestionnaire du canal, et pour la même raison écrite là-bas : un objet que personne ne peut administrer se répare en base.
+
+D'où un `created_by` sur le compte, `NULL` pour les managés — la config les administre, et celui qui l'a appliquée n'en est pas propriétaire.
+
+Ce que ça laisse ouvert est exactement la tension que §5.2bis nomme : **un bot dont le créateur est parti continue de tourner** — ses clés sont les siennes, c'est tout l'intérêt — mais plus personne ne peut l'éteindre. GitOps est la réponse pour tout ce qui est durable, et le rôle plateforme (§5.4, M4) ferme le cas des comptes déjà créés. Distribuer la désactivation à tout le monde aurait été pire que le trou.
+
+Trois refus valent d'être notés : un **service account ne peut pas créer de service account** (une escalade sans trace exploitable — la chaîne du « qui a demandé ça » doit finir sur quelqu'un à qui on peut poser la question) ; un **nom déjà pris est refusé, jamais adopté** (le nom *est* l'identité ici, et le renvoyer laisserait quelqu'un s'approprier le bot d'un autre) ; et **désactiver un compte inexistant réussit** plutôt que de dire lequel existe. La désactivation révoque les clés **dans le même appel** (T25) : une clé encore valide est un identifiant qui dort dans la CI de quelqu'un.
+
+**M2.4 en détail.** Un store SQLite par profil, le curseur et l'identité device dedans, et une élection par lock consultatif à côté.
+
+**SQLite parce que la contrainte est multi-*process*.** §9.3bis veut que plusieurs frontales lisent pendant qu'une écrit ; c'est ce que fait le mode WAL, et ce que les stores embarqués pur-Rust ne font pas — `redb` et ses pairs prennent un verrou exclusif sur le fichier, ce qui transformerait « le TUI est ouvert » en « la CLI ne peut pas lire ». Le coût est réel et écrit dans le module : `rusqlite` en `bundled` compile SQLite depuis du C, donc **construire un client demande un compilateur C**. Ce n'est pas le compromis que ce workspace a refusé pour le *serveur* (backend pur-Rust de jsonwebtoken, pour que l'image se construise d'un `cargo build` nu) — une CLI n'est pas une image de conteneur, et SQLite est le C le plus portable qui soit.
+
+**L'élection est un lock, pas un drapeau.** Le détenteur du flux est celui qui tient un verrou exclusif sur un fichier à côté du store. Un process qui meurt le libère *en cessant d'exister* — crash, `kill -9`, capot rabattu. Un drapeau en table aurait demandé un bail, un battement de cœur et un chemin de reprise pour le détenteur qui n'est jamais revenu, le tout pour répondre à une question que le système d'exploitation tranche gratuitement. Acquérir ne bloque pas : la frontale qui perd lit le store et continue, ce qui fait que l'app en tray gagne naturellement en étant simplement là avant.
+
+Deux choses trouvées en l'écrivant :
+
+- **`libsqlite3-sys` déclare `links = "sqlite3"`**, donc une seule version peut exister dans le graphe — et sqlx en tire déjà une par la macro `migrate!` que ce workspace utilise vraiment. `rusqlite` est donc épinglé sur la version qui partage celle de sqlx ; monter l'un impose de monter l'autre, et c'est écrit à côté de la dépendance ;
+- **le lock n'a demandé aucune dépendance** : `std::fs::File::try_lock` existe depuis Rust 1.89. Le MSRV passe de 1.85 à 1.89, ce qui a immédiatement fait apparaître un lint que le plancher précédent masquait (`manual_is_multiple_of` dans `notify-domain`) — un rappel utile que le MSRV n'est pas qu'une déclaration.
+
+**Le signal local est là** (D5, soldé). La détentrice écoute sur `store.stream.sock` à côté du verrou et pousse **un octet** après chaque écriture ; les lectrices se connectent, et rechargent **depuis le store** à la réception. L'octet ne porte rien et ne doit rien porter : y mettre l'événement en ferait un second canal de livraison avec son ordre, son backlog et ses façons d'avoir tort — le store *est* le canal, la socket dit seulement « regarde à nouveau ». Trois propriétés valent d'être écrites :
+
+- **rien n'est porteur** : socket absente, pair disparu, plateforme sans socket unix — tous les cas retombent sur le tick qui existait déjà. Une latence, jamais une panne, et c'est ce qui autorise à ne rien réessayer ni acquitter ;
+- **on ne pique que si quelque chose a bougé**. `sync_into` répond ce qu'il a écrit, et une détentrice au repos ne réveille personne : une lectrice tirée du sommeil quatre fois par seconde serait pire que celle qui attend son tick ;
+- **Windows n'est pas câblé** : l'équivalent est un named pipe, et là-bas le tick est tout le comportement. Écrit ici plutôt que découvert en M5.
+
+L'accept est fait **en passant**, par l'écrivain lui-même sur un listener non bloquant, ce qui évite un thread et donc son arrêt propre.
+
+**M2.5 en détail.** `notify ls`, `notify channel list|create|join`, `notify device list|enrol`, chacun en `--output json|table`. Les appels descendent dans `notify-client-core` et pas dans la CLI (§9.3) : la même logique servira au TUI et à la coquille Tauri, et une règle écrite ici devrait l'être trois fois.
+
+`device enrol` écrit l'identité device **dans le store partagé** (M2.4), pas dans le process : l'enrôlement est par *profil*, donc le TUI et l'app desktop en héritent au lieu d'en créer chacun un — trois devices pour une machine feraient aussi compter « vu par 3/5 » trois fois.
+
+`notify channel set-ttl` existe maintenant, au-dessus du `PATCH /channels/{id}` que D2 a ajouté : `--default 7d`, `--max 48h`, et `--max 0` pour retirer le plafond. Seul ce qui est passé part sur le fil — un `PATCH` qui répéterait le bouton qu'on n'a pas touché est la façon dont deux admins sur deux écrans s'écrasent.
+
+**Une commande de §9.1 n'a toujours pas d'endpoint** et est donc absente plutôt que simulée : `notify dnd …` attend `GET/PUT /preferences/dnd` (§7.4), qui arrive en M3.
+
+Une verrue relevée en câblant : la spec **inline le schéma des items** dans `Page_Channel` et `Page_Notification` au lieu de référencer `Channel` et `Notification`. Le client TS s'en moque (typage structurel) mais progenitor y frappe un second type nominal — `PageChannelItemsItem` — pour la même chose. `notify-client-core` l'isole derrière un alias pour que la verrue n'atteigne ni la CLI, ni le TUI, ni Tauri ; le vrai correctif est dans la façon dont utoipa compose `Page<T>`, et il reste à faire.
+
+**M2.6 à M2.8 en détail.** Le TUI est en place — architecture Elm-like (un `App`, un enum `Message`, un `update` seul autorisé à muter, un `draw` sans effet de bord), layout 3 zones miroir du web, hook panic qui restaure le terminal **avant** de crasher, et chaque chaîne venue du serveur strippée de ses séquences ANSI avant rendu (§2.3 — le serveur strippe déjà à l'ingestion, mais ici le terminal *est* le moteur de rendu). Le mode `:` passe la ligne au **même parseur clap** que le shell, ce qui est le mécanisme de parité de §9 : une sous-commande ajoutée à la CLI y est disponible sans une ligne de code TUI.
+
+Le sync client remplit le store depuis `GET /sync` en suivant le curseur, et remonte les deux compteurs que §7.2/§7.2bis rendent visibles : les révisions repliées par la compaction, et les notifications expirées par canal pendant l'absence.
+
+Côté web, Settings et Administration. Settings existe pour rendre visible ce que l'API modélise et qu'aucun autre client ne montre : **quels champs t'appartiennent**, avec un bouton pour les rendre à l'IdP. Administration met canaux, devices, clés et service accounts sur un écran parce que c'est une seule question — *qu'est-ce qui peut agir en mon nom, et sous quelles règles* — et le formulaire de clé n'offre **que** des propriétaires service account, ce qui est §5.2 transformé en interface plutôt qu'en documentation.
+
+L'écran des canaux ne décide pas qui a le droit d'éditer une policy : §5.1 dérive l'autorisation par requête, donc l'interface propose et affiche le refus s'il vient. Ce qu'elle cache est ce que la **donnée** tranche : un canal `managed` n'a aucun contrôle du tout, parce que la config le possède (§11) et que la prochaine réconciliation annulerait l'appel.
+
+**Trois trouvailles, dont une grave :**
+
+- **`task recu` était cassé et ma vérification ne le voyait pas.** L'upload d'avatar de M2.2 déclarait son corps en `Vec<u8>`, qu'utoipa rend en tableau d'entiers et que progenitor refuse pour `application/octet-stream`. La génération du client Rust échouait donc — et mon contrôle d'idempotence (« les fichiers n'ont pas changé ») **passait justement parce que rien ne tournait**. Exactement le mode d'échec dénoncé plus haut dans ce document, reproduit par moi. Le corps se déclare maintenant `string`/`format: binary`, et la règle qui manquait est écrite en D8 (§14.4) : une vérification doit prouver que le travail a eu lieu avant de vérifier son résultat.
+- **Le client Rust ne peut pas consommer `GET /sync`.** progenitor rend `Event` — un `allOf` de deux `oneOf`, ce qui produit la forme plate de §8.1 — en `pub enum EventVariant0 {}`, un type **inhabité** : la désérialisation ne marche que tant qu'il n'y a aucun événement. `notify-client-core` lit donc la réponse avec son propre modèle minimal, exception documentée dans le module. Le correctif est D1 en §14.4.
+- **La spec inline les items paginés** au lieu de référencer `Channel`/`Notification`, ce qui fait frapper à progenitor un second type nominal pour la même chose (M2.5).
+
+**Fermer M2 — les quatre manques soldés.** Le signal local de §9.3bis, l'exécution des commandes `:`, le badge retard et l'admin canaux étaient nommés ici plutôt que passés sous silence ; ils sont faits, et §14.4 dit lesquels par leur numéro (D2, D4, D5, D6). Deux choses n'étaient pas au programme et sont sorties en les faisant :
+
+- **Un refus « managed » rendait 422 alors que §8 documentait 409 sur les trois routes concernées.** `Origin::ensure_mutable_through_api` refusait avec un `Malformed`, donc le code stable sur le fil était `field.malformed` : un client qui branche dessus aurait traité « va changer la config » comme « tu as mal tapé ». La requête n'a rien de malformé — elle est comprise, et refusée par une question de propriété. D'où un variant à part, `origin.managed`, de catégorie `Conflict`. Le document ne mentait pas ; c'est le code qui ne le tenait pas.
+- **Le store local ne gardait que le *contenu* d'une révision**, pas l'événement. Une lectrice ne pouvait donc rien rendre depuis le cache — ni statut, ni état, ni horodatage —, ce qui rendait le signal local inutilisable pour ce à quoi §9.3bis le destine. Le cache stocke maintenant l'événement **verbatim** (ADR-0013 : la forme sur le fil *est* le contrat) et en relit ce qu'il dessine, donc un build ultérieur peut afficher ce que celui-ci a mis de côté.
+
+Deux formes valent d'être notées parce qu'elles se ressemblent et se décident autrement :
+
+- **le plafond de TTL se retire en écrivant `"0"`, pas `null`.** §7.2bis donne déjà à `"0"` le sens « illimité » partout où une durée apparaît, et un plafond *à jamais* **est** l'absence de plafond : une seule orthographe. Le tri-état de §2.4 (absent ≠ `null`) aurait été le réflexe, et il aurait été faux ici pour une raison mécanique — progenitor rend tout champ optionnel avec `skip_serializing_if`, donc le client Rust sait omettre une clé mais jamais l'envoyer nulle. ADR-0009 promet que les clients viennent du contrat ; le contrat n'a donc pas le droit de décrire ce qu'ils ne savent pas dire. Le profil garde son `null` parce que rien de généré n'écrit encore ce corps-là — le jour où ça arrive, D-profil rejoint cette liste ;
+- **`allow_forever` reste hors du `PATCH`.** §7.2bis en fait une décision d'opérateur : la laisser passer par l'API rendrait la réponse de la config consultative.
+
+Et une règle appliquée à la présentation plutôt qu'aux règles métier : **chaque commande CLI renvoie une `String` au lieu d'imprimer**. C'est ce qui permet au mode `:` d'*exécuter* les commandes et d'afficher **la réponse du shell**, pas une seconde mise en forme de la même chose — la §9.3 (« toute logique qui apparaît dans `notify-cli` doit redescendre ») vaut aussi pour ce qu'on écrit à l'écran, parce que deux rendus divergent et que la divergence est invisible tant que personne ne compare deux écrans.
+
+Portes au vert à la fin de M2 : `task lint:check`, `task test` (479 Rust + 52 web), `task test:critical` (73), `task test:e2e` (47, contre un vrai Postgres — vérifié en comptant zéro « skipping » et un temps d'exécution qui n'est pas celui d'une suite qui se saute), `task test:oidc-compat` (leg `mock`), `task audit` (cargo + deny + pnpm + trivy), couverture domaine+app à 96,3 % pour un plancher à 90 %, et `task recu` idempotent — l'idempotence contrôlée **après** avoir vérifié que la génération avait bien tourné, ce que D8 exige et ce que la fin de M2 avait raté.
+
 ### 14.2 Accès par groupe OIDC — le modèle dérivé
 
 Découvert en câblant M1.8 : `VerifiedClaims.groups` était extrait du token et **jeté**. `Authenticate::bearer` construisait `Caller::member(principal)` et `Authorizer` ne résolvait que par `Membership` stocké, donc tous les bindings `[[channels.managed.access]] oidc_group` de §11 n'accordaient rien — alice se connectait et ne voyait aucun canal.
@@ -1391,7 +1519,8 @@ Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est u
 |---|---|---|---|
 | `AuditLog` | ✅ | ✅ `PgStore` (M1.8) | Vocabulaire d'actions fermé — une valeur inconnue en base est signalée, jamais renommée en silence. |
 | `PushDispatcher` | ✅ | ✅ `TransportRegistry` (M1.8) | Vide en M1, ce qui est le comportement correct : `Fanout` saute déjà les devices `stream`, donc le registre n'est atteint que par un device enrôlé sur un transport que cette instance ne sert pas — il répond `NotConfigured` en nommant la capacité. |
-| `AttachmentStore` | ✅ | ⬜ `attachments-s3` vide | Hors périmètre M1 (§6.1) — aucun use case M1 ne le réclame. |
+| `AttachmentStore` | ✅ | ✅ `S3Attachments` (M2.2) | Conformité passée contre un vrai RustFS. Un déploiement sans `[attachments]` reçoit un double qui **refuse** (`NotConfigured`) au lieu de réussir dans le vide. |
+| `AvatarProcessor` | — | ✅ `notify-avatars` (M2.2) | Seule surface de décodage média du serveur (§15) : taille, format d'après les octets, dimensions **avant** décodage, ré-encodage qui strippe les métadonnées. |
 | `SinkDispatcher` / `SinkQueue` | ✅ | ⬜ | Hors périmètre M1 (§7.1bis). |
 | `FederationVerifier` | ❌ | ⬜ | M4 (§5.3). Pas encore de double non plus. |
 | `TokenVerifier` | ✅ | ✅ `notify-oidc` | |
@@ -1402,6 +1531,65 @@ Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est u
 | `LeaderElection` | ✅ | ✅ `PgLeaderElection` (advisory lock) | Backend `kubernetes` (Lease API, §11) non implémenté — c'est une option de config, pas un manque. |
 | `EventBus` | ✅ | ✅ `PgEventBus` | `eventbus-redis` vide — option d'échelle (§11), pas un manque. |
 
+### 14.4 Dette identifiée, et comment la solder
+
+Tout ce qui suit est connu, écrit et chiffré en effort. Une dette sans solution écrite est un souvenir : au bout de trois mois plus personne ne sait si c'était un choix ou un oubli. Chaque entrée dit donc **ce que ça coûte aujourd'hui** et **par quoi ça se répare**, dans l'ordre où il vaut mieux les prendre.
+
+| # | Dette | Coût aujourd'hui | Effort | État |
+|---|---|---|---|---|
+| D1 | `Event` illisible par le client Rust | `GET /sync` inutilisable depuis progenitor | M | ⬜ ouverte |
+| D2 | `PATCH /channels/{id}` absent | — | S | ✅ soldée en fermant M2 |
+| D3 | Items paginés inlinés dans la spec | types dupliqués dans le client Rust | S | ⬜ ouverte |
+| D4 | Commandes `:` non exécutées | — | M | ✅ soldée en fermant M2 |
+| D5 | Signal local absent (§9.3bis) | — | M | ✅ soldée en fermant M2 |
+| D6 | `delivered_at` non conservé | — | S | ✅ soldée en fermant M2 |
+| D7 | Legs Dex et Authentik de `oidc-compat` | une seule lecture d'OIDC au lieu de trois (§15) | M | ⬜ ouverte |
+| D8 | Une vérification qui passe sans rien exécuter | — | S | ✅ règle appliquée |
+
+Les quatre entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
+
+**D1 — `Event` rendu en type inhabité.** progenitor voit `allOf[Audience(oneOf), EventPayload(oneOf), {cursor, logged_at}]` et produit `pub enum EventVariant0 {}` : la désérialisation d'une page de sync ne marche que tant qu'elle est vide. `notify-client-core` contourne avec son propre modèle minimal (documenté dans le module), donc rien n'est cassé — mais la promesse d'ADR-0009, « les clients viennent du contrat », a un trou.
+
+*Solution* : **décrire `Event` à la main plutôt que le laisser composer**. Un `impl ToSchema` qui émet un `oneOf` de cinq objets complets — un par `event`, chacun portant déjà `channel_id` ou `user_id`, `cursor` et `logged_at`. **La forme sur le fil ne change pas d'un octet** ; seule sa description change, et elle devient quelque chose qu'un générateur sait modéliser. Le coût est un schéma écrit à la main qui doit suivre le type : à couvrir par un test qui sérialise un événement de chaque genre et vérifie que les champs obligatoires du schéma correspondent. À faire avant que quoi que ce soit d'autre consomme `/sync` en Rust — le TUI le fera.
+
+**D2 — pas de mise à jour de canal.** §9.1 promet `notify channel set-ttl` et §10.4 un écran d'admin canaux, alors que §8 n'avait aucune route pour changer une policy. L'incohérence était dans la spec, pas dans le code ; §8 porte désormais la route.
+
+*Solution, faite* : `PATCH /api/v1/channels/{id}`, corps = policy partielle (`default_ttl`, `max_ttl`, `default_priority`, `receipts_enabled`), qui **refuse un canal managé** comme `DELETE` le fait déjà, exige le scope `manage`, et s'inscrit à l'audit avec la policy **résultante** — un log d'audit se relit pour savoir à quoi c'était réglé, et un corps partiel ne répond pas à cette question. La CLI (`channel set-ttl`) et l'écran web en découlent.
+
+Trois décisions prises en l'écrivant :
+
+- **le domaine refuse une policy sous laquelle le canal ne saurait plus publier.** Après application, `TtlPolicy::resolve(None)` est rejoué et son refus est renvoyé : un `default` à `forever` sur un canal qui ne l'autorise pas ferait échouer *chaque* publication à venir, très loin de l'édition qui l'a causé. C'est la vérification faite là où l'erreur est faite ;
+- **un `PATCH` qui ne change rien n'écrit rien.** `edit_policy` répond si quelque chose a bougé ; sinon la réponse est la même — un `PATCH` est idempotent — mais sans ligne en base ni entrée d'audit affirmant un changement qui n'a pas eu lieu ;
+- **le refus « managed » est un 409**, ce qu'il n'était pas (voir les trouvailles de M2.6–M2.8).
+
+**D3 — items paginés inlinés.** `Page_Channel.items` décrit l'objet au lieu de référencer `Channel`, donc progenitor frappe `PageChannelItemsItem` — un second type nominal pour la même chose. Le client TS s'en moque (typage structurel), le Rust non ; `notify-client-core` masque la verrue derrière un alias pour qu'elle n'atteigne pas les frontales.
+
+*Solution* : un `impl PartialSchema`/`ToSchema` manuel pour `Page<T>` où `items` est un tableau de **référence** vers `T`, au lieu de laisser utoipa inliner le paramètre générique. Effet de bord agréable : le document rétrécit d'une copie complète de `Channel` et de `Notification`.
+
+**D4 — le mode `:` parse mais n'exécute pas.** La ligne passe par le parseur clap du shell (c'est ce qui garantit la parité §9) et le résultat s'affiche, mais la commande n'est pas lancée ; les verbes fréquents ont leurs raccourcis directs.
+
+*Solution, faite* : l'exécution est sortie de `main`. Chaque sous-commande **renvoie une `String` rendue**, `main` l'imprime, et le TUI appelle la *même* fonction de dispatch avec la session de sa fenêtre puis met le retour dans son popup. Ce n'était pas un refactor de confort : c'est la règle §9.3 (« toute logique qui apparaît dans `notify-cli` doit redescendre ») appliquée à la présentation.
+
+Deux détails qui font la parité plutôt que l'illusion : le `--output` **de la ligne** est honoré, donc `:ls --output json` veut dire au prompt `:` ce qu'il veut dire au shell ; et le `match` du dispatch est exhaustif, donc une sous-commande ajoutée à `Command` ne compile plus tant que les deux appelants ne la connaissent pas. `:watch` est refusé explicitement — depuis le TUI, ça ne peut vouloir dire qu'ouvrir la fenêtre dans laquelle on est déjà.
+
+**D5 — pas de signal local.** §9.3bis veut qu'une socket unix réveille les frontales lectrices dès que la détentrice du flux écrit dans le store. Sans elle, une lectrice ne voit rien tant qu'on ne rafraîchit pas — latence, pas incorrection, et le TUI affiche en permanence dans quel mode il est.
+
+*Solution, faite* : la détentrice écoute sur `store.stream.sock` et envoie un octet après chaque écriture ; les lectrices rechargent depuis le store à la réception, tick existant en filet. Détaillé en M2.4 ci-dessus, y compris les trois propriétés qui la rendent non porteuse et le fait que Windows n'est pas câblé.
+
+**D6 — `delivered_at` non conservé.** §7.2 veut le badge « reçue en retard (+2h13) » calculé côté client à partir des deux horodatages — le serveur les fournit tous les deux ; c'est le client qui ne garde pas le sien.
+
+*Solution, faite* : une colonne `delivered_at` dans le store local, **écrite par le store lui-même** — c'est un fait sur ce cache-ci, pas quelque chose qu'un appelant devrait pouvoir passer de travers — à la première insertion et jamais réécrite (la clause `ON CONFLICT` nomme ses colonnes une à une pour ça). Schéma en version 2 par `ALTER TABLE`, donc un cache existant n'est pas jeté ; les lignes qu'il contenait déjà n'ont **pas** d'heure d'arrivée, et n'en inventent pas — un horodatage deviné mettrait un badge sur toutes.
+
+Le retard est `delivered_at - created_at`, au-delà d'un seuil de cinq minutes en dessous duquel on mesure de la dérive d'horloge, et il se lit `+2h13` comme §7.2 l'écrit. Il s'affiche des deux côtés : sur une ligne venue du serveur (le cache répond l'heure d'arrivée, le serveur l'heure de création — aucun des deux n'a les deux) comme sur une ligne venue du cache. Le web garde sa version limitée aux arrivées du flux tant qu'il n'a pas de store, ce qui est déjà écrit dans sa vue.
+
+**D7 — les deux legs externes de la matrice OIDC.** Détaillé en §15 : la suite est en place et paramétrée, elle échoue bruyamment si on nomme un fournisseur injoignable, et seul le leg `mock` tourne.
+
+*Solution* : démarrer le fournisseur **dans une étape** et non en `services:` (ceux-là démarrent avant le checkout, donc aucune config rendue ne peut y être montée), puis exporter `WNK_TEST_OIDC_ISSUER` et les identifiants. Pour Dex, une config `staticClients` + `enablePasswordDB` avec alice et **aucun mapping de groupes** — cette absence *est* le test (T29). Pour Authentik, le blueprint déjà commité dans `dev/authentik/`.
+
+**D8 — un contrôle vert qui ne prouvait rien.** En écrivant M2, `task recu` échouait (D-avatar, corrigé) et le contrôle d'idempotence — « les fichiers générés n'ont pas bougé » — **passait justement parce que la génération n'avait pas tourné**. C'est le même mode d'échec que D7 sous une autre forme, et il a été commis ici après avoir été dénoncé deux sections plus haut.
+
+*Solution* : la règle, écrite pour qu'elle serve ailleurs — **une vérification doit prouver que le travail a eu lieu avant de vérifier son résultat**. Concrètement : contrôler le code de sortie *et* une trace d'exécution (`task recu` nomme ce qu'il régénère) avant de comparer des empreintes. Le job `contract` en CI était protégé par son code de sortie ; c'est la vérification manuelle qui ne l'était pas.
+
 ---
 
 ## 15. Points de vigilance
@@ -1409,7 +1597,13 @@ Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est u
 - **Cluster = frontière de confiance** (§6) : le contenu est lisible par le serveur et circule en clair applicatif à l'intérieur du cluster (TLS terminé à l'ingress, trafic interne pod↔PG↔bucket, attachments non chiffrés applicativement §6.1) ; la sécurité repose sur le durcissement de l'infra (hardening plan : network policies, bucket privé, disques et backups chiffrés). À documenter explicitement pour les utilisateurs.
 - **Au repos = prérequis d'exploitation, pas une option** : aucun chiffrement applicatif (décision §6.1) — la confidentialité d'un dump, d'un backup ou d'un disque repose **entièrement** sur le chiffrement disque et le chiffrement des backups (Postgres **et** bucket, y compris les backups logiques type `pg_dump` qui sortent du disque chiffré). À vérifier dans le hardening plan et à documenter en gras pour qui self-host ; si une exigence de conformité impose du chiffrement applicatif un jour, il revient via le port `KeyProvider` (§6.1).
 - **RustFS est jeune** : API S3 suffisante pour presign + get/put, mais le contrat est « S3-compatible », pas « RustFS » — l'adapter `attachments-s3` ne doit utiliser que des opérations S3 standard pour pouvoir basculer sur MinIO/Garage/S3 sans code.
-- **La compat IdP est un contrat testé, pas une promesse** : le dev quotidien tourne sur un mock que **nous écrivons** (§12.1, ADR-0014 — Authentik, ~1,5 Gi avec worker + redis, reste derrière `task dev:auth`), donc un écart de comportement entre mock et vrai IdP ne se voit pas au quotidien — et depuis ADR-0014 l'écart peut venir de nos propres hypothèses, pas seulement de celles d'un tiers. Le filet est la matrice `oidc-compat` (§3.2, T29 — Dex + Authentik), désormais la **seule** lecture indépendante d'OIDC que le projet rencontre : **ne jamais merger un changement du flow auth sans elle** ; `TokenVerifier` in-memory reste le niveau zéro pour le travail domaine (`task dev:core`).
+- **La compat IdP est un contrat testé, pas une promesse** — et le filet n'est pas encore tendu. Le dev quotidien tourne sur un mock que **nous écrivons** (§12.1, ADR-0014 — Authentik, ~1,5 Gi avec worker + redis, reste derrière `task dev:auth`), donc un écart de comportement entre mock et vrai IdP ne se voit pas au quotidien, et depuis ADR-0014 l'écart peut venir de nos propres hypothèses autant que de celles d'un tiers. La matrice `oidc-compat` (§3.2, T29) est censée être la **seule** lecture indépendante d'OIDC que le projet rencontre — **ne jamais merger un changement du flow auth sans elle**.
+
+  **État réel, découvert en finissant M1** : la matrice annonçait trois fournisseurs et n'en testait aucun. Elle se déclenchait sur des chemins qui n'existent pas (`crates/notify-app/src/auth/**`, `tests/auth/**`), lançait `task test:e2e` avec des arguments que la tâche ne relaie pas, sans conteneur de fournisseur ni base de données — donc une sélection de tests qui se sautaient tous, et un tick vert signifiant « rien n'a tourné ». Aucune configuration Dex n'existe d'ailleurs dans le repo.
+
+  Ce qui tourne aujourd'hui : la suite réelle (`crates/notify-adapters/oidc/tests/oidc_compat.rs`) prend un jeton d'un fournisseur **vivant** et le passe au vrai `OidcVerifier`, sur le leg `mock`. Elle est déjà paramétrée par `WNK_TEST_OIDC_PROVIDER`, et **échoue** si on nomme un fournisseur qu'elle ne peut pas joindre plutôt que de se sauter : c'est la propriété qui empêche le mode d'échec ci-dessus de revenir. Câbler Dex et Authentik reste à faire — c'est D7 en §14.4, avec la marche à suivre.
+
+  `TokenVerifier` in-memory reste le niveau zéro pour le travail domaine (`task dev:core`).
 - **iOS** : APNs impose un compte Apple Developer et l'extension Swift ; c'est le seul point non 100 % self-hosted.
 - **Rotation device** : la révocation d'un device doit invalider ses subscriptions push et son curseur de sync (et sa clé publique X25519 pour les devices mobiles).
 - **Web Push = confiance dans le navigateur** : côté PWA la protection contre le push service repose sur RFC 8291, clés gérées en interne par le navigateur (décision §6.2 — aucune clé applicative côté web). C'est équivalent en pratique au niveau mobile, mais la garantie dépend de l'implémentation du navigateur, pas de nous — à documenter pour les canaux sensibles.

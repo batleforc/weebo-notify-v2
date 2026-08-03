@@ -232,6 +232,26 @@ const connection = computed(() => {
 
     <div class="mt-auto space-y-2">
       <Separator />
+      <div class="flex flex-wrap items-center gap-1 px-1">
+        <RouterLink
+          to="/settings"
+          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+        >
+          Réglages
+        </RouterLink>
+        <RouterLink
+          to="/admin"
+          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+        >
+          Administration
+        </RouterLink>
+        <RouterLink
+          to="/"
+          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+        >
+          Inbox
+        </RouterLink>
+      </div>
       <div class="flex items-center justify-between gap-2 px-1">
         <span class="min-w-0 truncate text-xs text-muted-foreground">
           {{ session.displayName }}

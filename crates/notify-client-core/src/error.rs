@@ -29,6 +29,19 @@ pub enum ClientError {
     /// from a shell that captured more than the value.
     #[error("the configured token is not a usable credential")]
     BadCredential,
+
+    /// The local store could not be opened, read or written (design §9.3bis).
+    ///
+    /// Its own variant because it is the one failure that has nothing to do with
+    /// the server: a full disk, a data directory somebody made read-only, a store
+    /// written by a newer client. The detail is meant to be shown — "cannot open
+    /// /home/…/store.db: permission denied" is something the person reading it can
+    /// act on, which is not true of most error text.
+    #[error("the local store is unusable: {detail}")]
+    Store {
+        /// What went wrong, phrased for whoever has to fix it.
+        detail: String,
+    },
 }
 
 impl ClientError {
@@ -54,7 +67,9 @@ impl ClientError {
             Self::Refused(problem) => problem.status >= 500 || problem.status == 429,
             Self::Transport(_) => true,
             Self::Unexpected { status } => *status >= 500,
-            Self::BadCredential => false,
+            // Neither is fixed by asking again: a token with a newline in it stays
+            // unusable, and a full disk stays full.
+            Self::BadCredential | Self::Store { .. } => false,
         }
     }
 }

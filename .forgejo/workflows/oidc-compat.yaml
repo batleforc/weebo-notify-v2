@@ -8,21 +8,46 @@ name: oidc-compat
 # cannot surprise us, and a provider that never surprises you is a provider that
 # never tells you what real ones do.
 #
-# One auth suite, parameterised by issuer, replayed against three providers:
-#   * the built-in mock — the everyday baseline
-#   * Dex               — strict, minimal OIDC, and notably emits NO `groups` claim,
-#                         which exercises the graceful-degradation path (T29)
-#   * Authentik         — real behaviour: refresh token rotation, logout, groups
+# The suite is one body of tests parameterised by `WNK_TEST_OIDC_PROVIDER`
+# (crates/notify-adapters/oidc/tests/oidc_compat.rs). It takes a token from a LIVE
+# provider and puts it through the production verifier — discovery, JWKS, `kid`,
+# signature, audience, issuer, expiry and the claim mapping channel access derives
+# from (§14.2).
 #
-# NEVER merge a change to the auth flow without this job green.
+# ## What runs today, and what does not
+#
+# Only the `mock` leg. The `dex` and `authentik` legs were listed here long before
+# anything could run them: there is no Dex configuration in this repository, and no
+# provider container in this job. The matrix said three and tested zero, because the
+# step it ran selected `notify-app`'s in-memory unit tests against a database that
+# was never started — green, and empty.
+#
+# Wiring the two remaining legs is a bounded piece of work, and the suite is already
+# shaped for it:
+#
+#   1. start the provider in a step (NOT under `services:` — those containers start
+#      before checkout, so a rendered config cannot be mounted into them);
+#   2. export `WNK_TEST_OIDC_ISSUER`, `WNK_TEST_OIDC_CLIENT_ID`,
+#      `WNK_TEST_OIDC_PASSWORD` and, for a confidential client,
+#      `WNK_TEST_OIDC_CLIENT_SECRET`;
+#   3. for Dex: a `staticClients` + `enablePasswordDB` config with alice, and no
+#      groups mapping — that absence IS the test (T29);
+#   4. for Authentik: the blueprint already committed in dev/authentik/, which the
+#      compose profile applies, plus a user whose password the job generates.
+#
+# Until then the matrix says one, and tests one. NEVER merge a change to the auth
+# flow without this job green.
 
 on:
   pull_request:
     paths:
       - "crates/notify-adapters/oidc/**"
-      - "crates/notify-app/src/auth/**"
-      - "crates/notify-adapters/http-actix/src/middleware/**"
-      - "tests/auth/**"
+      - "crates/notify-app/src/auth.rs"
+      - "crates/notify-app/src/authz.rs"
+      - "crates/notify-adapters/http-actix/src/extract.rs"
+      - "crates/oidc-mock/**"
+      - "dev/oidc-mock/**"
+      - "dev/authentik/**"
       - ".forgejo/workflows/oidc-compat.yaml"
   schedule:
     # Nightly, so a provider's own update cannot break us silently.
@@ -42,14 +67,13 @@ jobs:
     runs-on: docker
     container:
       image: ghcr.io/catthehacker/ubuntu:act-24.04
-      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
 
     strategy:
       # Every provider reports independently: knowing it passes on two of three is
-      # far more useful than a single red cross.
+      # far more useful than a single red cross. One entry today — see the header.
       fail-fast: false
       matrix:
-        provider: [mock, dex, authentik]
+        provider: [mock]
 
     steps:
       - name: Checkout
@@ -75,21 +99,10 @@ jobs:
       - name: Install pinned tools
         run: mise install --yes
 
-      - name: Generate the Dex credentials
-        if: matrix.provider == 'dex'
-        # Dex is CI-only, so nothing justifies a fixed password the way local
-        # ergonomics justifies alice/bob's (design §12.5). These are generated per
-        # run, rendered into the config from a committed template, and never
-        # committed themselves.
-        run: |
-          password=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
-          echo "::add-mask::$password"
-          echo "DEX_TEST_PASSWORD=$password" >> "$GITHUB_ENV"
-
       - name: Run the auth suite against ${{ matrix.provider }}
         env:
           WNK_TEST_OIDC_PROVIDER: ${{ matrix.provider }}
-        # The suite is one body of tests; the provider fixture selects the issuer,
-        # the credentials and the expected claims. That is what makes "it behaves
-        # the same everywhere" a fact rather than a hope.
-        run: mise exec -- task test:e2e -- -E 'test(/auth::/)'
+        # The fixture selects the issuer, the credentials and the expected claims.
+        # That is what makes "it behaves the same everywhere" a fact rather than a
+        # hope — and why naming a provider it cannot reach fails the job.
+        run: mise exec -- task test:oidc-compat

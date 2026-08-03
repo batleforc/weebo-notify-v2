@@ -92,25 +92,35 @@ impl Authenticate {
             }
         };
 
-        // First login creates the account; later logins refresh the claims. The M2
-        // rule — a locally edited profile field stops being overwritten — belongs
-        // here, not in the repository (design §2.4).
+        // First login creates the account; later logins refresh what the provider
+        // owns, leaving whatever its owner claimed alone (design §2.4).
+        //
+        // The write is conditional, and that matters more than it looks: bearer
+        // auth re-runs on every single request (§5.1), so writing unconditionally
+        // meant one database write per authenticated call — the exact cost §14.2
+        // refuses when it declines to materialise groups, on the hottest path in
+        // the API.
         let existing = self.users.find_by_subject(&claims.subject).await?;
-        let user = match existing {
+        let (user, changed) = match existing {
             Some(mut found) => {
-                found.email.clone_from(&claims.email);
-                found.display_name.clone_from(&claims.display_name);
-                found
+                let changed = found
+                    .sync_from_claims(claims.email.as_deref(), claims.display_name.as_deref())?;
+                (found, changed)
             }
-            None => User::from_claims(
-                UserId::generate(),
-                &claims.subject,
-                claims.email.as_deref(),
-                claims.display_name.as_deref(),
-                self.clock.now(),
-            )?,
+            None => (
+                User::from_claims(
+                    UserId::generate(),
+                    &claims.subject,
+                    claims.email.as_deref(),
+                    claims.display_name.as_deref(),
+                    self.clock.now(),
+                )?,
+                true,
+            ),
         };
-        self.users.upsert(&user).await?;
+        if changed {
+            self.users.upsert(&user).await?;
+        }
 
         // The groups ride on the caller rather than being stored: they are a claim
         // this token carries, and the next token may carry different ones (§11).
@@ -223,6 +233,37 @@ mod tests {
         }
     }
 
+    /// A user repository that counts what it was asked to write.
+    ///
+    /// The point of the test below is a write that must *not* happen, and the only
+    /// way to assert on something not happening is to count.
+    #[derive(Clone)]
+    struct CountingUsers {
+        inner: InMemory,
+        writes: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl UserRepository for CountingUsers {
+        async fn get(&self, id: UserId) -> notify_ports::PortResult<Option<User>> {
+            UserRepository::get(&self.inner, id).await
+        }
+
+        async fn find_by_subject(&self, subject: &str) -> notify_ports::PortResult<Option<User>> {
+            self.inner.find_by_subject(subject).await
+        }
+
+        async fn find_by_email(&self, email: &str) -> notify_ports::PortResult<Option<User>> {
+            self.inner.find_by_email(email).await
+        }
+
+        async fn upsert(&self, user: &User) -> notify_ports::PortResult<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            UserRepository::upsert(&self.inner, user).await
+        }
+    }
+
     fn claims(subject: &str, expires_at: time::OffsetDateTime) -> VerifiedClaims {
         VerifiedClaims {
             issuer: Url::parse("https://auth.weebo.poc").unwrap(),
@@ -275,6 +316,104 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(stored.display_name.as_deref(), Some("Alice"));
+    }
+
+    #[tokio::test]
+    async fn a_repeated_request_with_unchanged_claims_writes_nothing() {
+        // Bearer auth re-runs on **every request** (§5.1), so an unconditional
+        // upsert here was one database write per authenticated call — the exact
+        // cost §14.2 refuses when it declines to materialise groups, sitting on the
+        // hottest path in the API. Counting is the only way to assert on a write
+        // that must not happen.
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let verifier = StaticTokenVerifier::with_clock(Arc::new(clock.clone()));
+        let users = CountingUsers {
+            inner: store.clone(),
+            writes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let auth = Authenticate::new(
+            Arc::new(verifier.clone()),
+            Arc::new(users.clone()),
+            Arc::new(store.clone()),
+            Arc::new(store),
+            Arc::new(StubSecretHasher),
+            Arc::new(clock.clone()),
+        );
+        verifier.register(
+            "good",
+            claims("ak-user-42", clock.now() + Duration::hours(1)),
+        );
+
+        for _ in 0..5 {
+            auth.execute(Credential::Bearer("good".to_owned()))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            users.writes.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the first login creates the account; the four after it changed nothing \
+             and must not have written"
+        );
+
+        // A claim that genuinely moved still lands, or the sync would be inert.
+        verifier.register(
+            "renamed",
+            VerifiedClaims {
+                display_name: Some("Alice Martin".to_owned()),
+                ..claims("ak-user-42", clock.now() + Duration::hours(1))
+            },
+        );
+        auth.execute(Credential::Bearer("renamed".to_owned()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            users.writes.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "a changed display name is exactly what a sync is for"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_minted_without_an_email_scope_does_not_erase_the_stored_one() {
+        // The stored address is what `[[channels.managed.access]] email = …`
+        // resolves against (§11, T29) — the only binding an IdP with no groups
+        // claim can offer. A client that asks for fewer scopes must not revoke
+        // somebody's channel access as a side effect.
+        let fixture = fixture();
+        fixture.verifier.register(
+            "full",
+            claims("ak-user-42", fixture.clock.now() + Duration::hours(1)),
+        );
+        fixture.verifier.register(
+            "minimal",
+            VerifiedClaims {
+                email: None,
+                display_name: None,
+                ..claims("ak-user-42", fixture.clock.now() + Duration::hours(1))
+            },
+        );
+
+        fixture
+            .auth
+            .execute(Credential::Bearer("full".to_owned()))
+            .await
+            .unwrap();
+        fixture
+            .auth
+            .execute(Credential::Bearer("minimal".to_owned()))
+            .await
+            .unwrap();
+
+        let stored = UserRepository::find_by_subject(&fixture.store, "ak-user-42")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.email.as_deref(), Some("alice@weebo.poc"));
         assert_eq!(stored.display_name.as_deref(), Some("Alice"));
     }
 
@@ -456,6 +595,7 @@ mod tests {
             Some("ArgoCD"),
             None,
             Origin::Dynamic,
+            None,
             fixture.clock.now(),
         )
         .unwrap();

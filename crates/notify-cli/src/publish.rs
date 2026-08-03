@@ -83,7 +83,7 @@ pub(crate) async fn publish(
     content: Content,
     idempotency_key: Option<&str>,
     output: OutputFormat,
-) -> Result<(), CliError> {
+) -> Result<String, CliError> {
     let published = session
         .publish(channel, content.into_revision()?, idempotency_key)
         .await?;
@@ -98,7 +98,7 @@ pub(crate) async fn update(
     external_id: &str,
     content: Content,
     output: OutputFormat,
-) -> Result<(), CliError> {
+) -> Result<String, CliError> {
     let published = session
         .update(channel, external_id, content.into_revision()?)
         .await?;
@@ -106,31 +106,33 @@ pub(crate) async fn update(
     render(&published, output)
 }
 
-fn render(published: &Published, output: OutputFormat) -> Result<(), CliError> {
+fn render(published: &Published, output: OutputFormat) -> Result<String, CliError> {
     match output {
         OutputFormat::Json => {
             // Whole response, verbatim: a script that wants a field should not have
             // to hope the CLI happened to print it.
-            let rendered = serde_json::to_string_pretty(published).map_err(|error| {
-                CliError::Api(format!("could not render the response: {error}"))
-            })?;
-            println!("{rendered}");
+            serde_json::to_string_pretty(published)
+                .map_err(|error| CliError::Api(format!("could not render the response: {error}")))
         }
         OutputFormat::Table => {
-            println!("{}", published.notification.id);
-            println!("  channel   {}", published.notification.channel);
-            println!(
-                "  state     {:?} / {:?}",
-                published.revision.state, published.revision.status
+            let mut out = format!(
+                "{}\n  channel   {}\n  state     {:?} / {:?}\n  revision  {}\n  cursor    {}",
+                published.notification.id,
+                published.notification.channel,
+                published.revision.state,
+                published.revision.status,
+                published.revision.seq,
+                published.cursor,
             );
-            println!("  revision  {}", published.revision.seq);
-            println!("  cursor    {}", published.cursor);
 
             // A clamp the publisher cannot see is a clamp they will report as a bug
             // (design §7.2bis, scenario T6).
             if let Some(requested) = &published.retention.clamped_from {
-                println!(
-                    "  ttl       {} — clamped from the {} you asked for",
+                use std::fmt::Write as _;
+
+                let _ = write!(
+                    out,
+                    "\n  ttl       {} — clamped from the {} you asked for",
                     published.retention.ttl,
                     // `Deref<Target = String>` is progenitor's rendering of a
                     // string newtype; there is no `Display` to reach for.
@@ -138,14 +140,14 @@ fn render(published: &Published, output: OutputFormat) -> Result<(), CliError> {
                 );
             }
             if published.replayed {
-                println!(
-                    "  replayed  yes — this is the stored answer to an earlier identical call"
+                out.push_str(
+                    "\n  replayed  yes — this is the stored answer to an earlier identical call",
                 );
             }
+
+            Ok(out)
         }
     }
-
-    Ok(())
 }
 
 /// The constrained values, as clap sees them.

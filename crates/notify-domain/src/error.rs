@@ -160,6 +160,18 @@ pub enum DomainError {
     #[error("this notification no longer exists")]
     NotificationGone,
 
+    /// The object is declared in GitOps config, which owns its shape (design §11).
+    ///
+    /// Its own variant rather than a [`Self::Malformed`] because the request is not
+    /// malformed at all — it is understood, and refused by policy. That distinction
+    /// is what a client branches on: `origin.managed` says "go and change the
+    /// config", where `field.malformed` says "you typed it wrong".
+    #[error("`{what}` is managed by GitOps — change it in config")]
+    ManagedByConfig {
+        /// What was being changed, e.g. `channel.policy`.
+        what: &'static str,
+    },
+
     /// The credential presented is not valid: a bad signature, an unknown key, a
     /// wrong secret, a malformed header.
     ///
@@ -195,6 +207,16 @@ pub enum DomainError {
         /// The scope that would have been needed.
         scope: &'static str,
     },
+
+    /// The endpoint describes a person, and this caller is not one (design §2.4).
+    ///
+    /// A service account has a profile of its own but no *settings* to edit, and a
+    /// channel key is anonymous by construction (§5.2) — there is nobody to
+    /// describe. Its own code rather than a scope refusal, because "you lack a
+    /// right" and "there is no such thing to have" send a client down different
+    /// paths: the first is worth asking an admin about, the second never will be.
+    #[error("this principal has no profile of its own")]
+    NotAPerson,
 }
 
 impl DomainError {
@@ -217,11 +239,13 @@ impl DomainError {
             Self::UrlSchemeNotAllowed { .. } => "action.url_scheme_not_allowed",
             Self::SilenceGroupNeedsDuration => "silence.duration_required",
             Self::NotificationGone => "notification.gone",
+            Self::ManagedByConfig { .. } => "origin.managed",
             Self::InvalidCredential => "auth.invalid_credential",
             Self::ApiKeyExpired => "apikey.expired",
             Self::ApiKeyRevoked => "apikey.revoked",
             Self::ServiceAccountDisabled => "service_account.disabled",
             Self::ScopeMissing { .. } => "scope.missing",
+            Self::NotAPerson => "principal.not_a_person",
         }
     }
 
@@ -243,12 +267,12 @@ impl DomainError {
             | Self::RevisionLimitReached { .. }
             | Self::InfiniteTtlNotAllowed => ErrorKind::LimitExceeded,
             Self::TooLarge { .. } => ErrorKind::TooLarge,
-            Self::NotificationGone => ErrorKind::Conflict,
+            Self::NotificationGone | Self::ManagedByConfig { .. } => ErrorKind::Conflict,
             Self::InvalidCredential
             | Self::ApiKeyExpired
             | Self::ApiKeyRevoked
             | Self::ServiceAccountDisabled => ErrorKind::Unauthenticated,
-            Self::ScopeMissing { .. } => ErrorKind::Forbidden,
+            Self::ScopeMissing { .. } | Self::NotAPerson => ErrorKind::Forbidden,
         }
     }
 }
@@ -305,6 +329,9 @@ mod tests {
             },
             DomainError::SilenceGroupNeedsDuration,
             DomainError::NotificationGone,
+            DomainError::ManagedByConfig {
+                what: "channel.policy",
+            },
             DomainError::InvalidCredential,
             DomainError::ApiKeyExpired,
             DomainError::ApiKeyRevoked,
@@ -338,6 +365,7 @@ mod tests {
                 "action.url_scheme_not_allowed",
                 "silence.duration_required",
                 "notification.gone",
+                "origin.managed",
                 "auth.invalid_credential",
                 "apikey.expired",
                 "apikey.revoked",
@@ -367,7 +395,7 @@ mod tests {
                 | "notification.revision_limit_reached"
                 | "ttl.infinite_not_allowed" => ErrorKind::LimitExceeded,
                 "payload.too_large" => ErrorKind::TooLarge,
-                "notification.gone" => ErrorKind::Conflict,
+                "notification.gone" | "origin.managed" => ErrorKind::Conflict,
                 "auth.invalid_credential"
                 | "apikey.expired"
                 | "apikey.revoked"

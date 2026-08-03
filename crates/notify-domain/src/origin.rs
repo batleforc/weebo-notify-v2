@@ -35,19 +35,24 @@ impl Origin {
     ///
     /// `what` names the object in the message, so the operator is told where to go
     /// instead of only being told no.
+    ///
+    /// The refusal is a *conflict* (409) and not a validation failure (422): the
+    /// request was understood and well formed, and what refuses it is who owns the
+    /// object. §8 already documented 409 on these routes — the code said 422, which
+    /// meant a client branching on `field.malformed` would have treated "go and edit
+    /// the config" as "you typed it wrong".
     pub fn ensure_mutable_through_api(self, what: &'static str) -> Result<()> {
         match self {
             Self::Dynamic => Ok(()),
-            Self::Managed => Err(DomainError::Malformed {
-                field: what,
-                reason: "is managed by GitOps — change it in config",
-            }),
+            Self::Managed => Err(DomainError::ManagedByConfig { what }),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
     use super::*;
 
     #[test]
@@ -65,5 +70,16 @@ mod tests {
         );
         assert!(Origin::Managed.is_managed());
         assert!(!Origin::Dynamic.is_managed());
+    }
+
+    #[test]
+    fn being_managed_is_a_conflict_and_not_a_malformed_request() {
+        // The status §8 documents, and the code a client branches on.
+        let refused = Origin::Managed
+            .ensure_mutable_through_api("channel.policy")
+            .unwrap_err();
+
+        assert_eq!(refused.code(), "origin.managed");
+        assert_eq!(refused.kind(), crate::ErrorKind::Conflict);
     }
 }

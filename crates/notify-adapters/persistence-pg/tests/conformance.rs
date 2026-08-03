@@ -906,23 +906,38 @@ mod e2e {
         let subject = format!("oidc-{}", ulid_slug());
         let email = format!("{}@weebo.local", ulid_slug());
 
-        let user = User {
-            id: UserId::generate(),
-            oidc_subject: subject.clone(),
-            email: Some(email.clone()),
-            display_name: Some("Alice Martin".to_owned()),
-            created_at: now(),
-        };
+        let mut user = User::from_claims(
+            UserId::generate(),
+            &subject,
+            Some(&email),
+            Some("Alice Martin"),
+            now(),
+        )
+        .unwrap();
+        // A claimed field and a timezone, so the round trip covers the columns the
+        // profile added rather than only the ones that were already there (§2.4).
+        user.edit_profile(notify_domain::ProfileEdit {
+            display_name: Some(notify_domain::FieldEdit::Set("alice".to_owned())),
+            timezone: Some(notify_domain::FieldEdit::Set("Europe/Paris".to_owned())),
+            ..notify_domain::ProfileEdit::default()
+        })
+        .unwrap();
+
         users(&store).upsert(&user).await.unwrap();
 
-        assert_eq!(
-            UserRepository::get(&store, user.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            user.id
+        let stored = UserRepository::get(&store, user.id).await.unwrap().unwrap();
+        assert_eq!(stored.id, user.id);
+        // The profile has to survive the round trip whole, override set included:
+        // losing that set is losing the feature, and it would look exactly like the
+        // identity provider quietly winning again (§2.4).
+        assert_eq!(stored.profile, user.profile);
+        assert_eq!(stored.profile.timezone.as_deref(), Some("Europe/Paris"));
+        assert!(
+            stored
+                .profile
+                .is_overridden(notify_domain::ProfileField::DisplayName)
         );
+
         assert_eq!(
             store.find_by_subject(&subject).await.unwrap().unwrap().id,
             user.id
@@ -951,6 +966,7 @@ mod e2e {
             display_name: Some("ArgoCD".to_owned()),
             description: Some("Publishes the state of ArgoCD syncs".to_owned()),
             origin: notify_domain::Origin::Managed,
+            created_by: None,
             created_at: now(),
             disabled_at: None,
         };

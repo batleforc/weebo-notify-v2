@@ -49,6 +49,7 @@ pub mod limits;
 pub mod notification;
 pub mod origin;
 pub mod principal;
+pub mod profile;
 pub mod receipt;
 pub mod silence;
 pub mod ttl;
@@ -56,7 +57,7 @@ pub mod ttl;
 pub use action::{
     Action, ActionDraft, ActionKind, Actions, ChoiceOption, ChoiceOptionDraft, SilenceScope,
 };
-pub use channel::{Channel, ChannelPolicy, GroupBinding, Membership, Scope};
+pub use channel::{Ceiling, Channel, ChannelPolicy, GroupBinding, Membership, PolicyEdit, Scope};
 pub use content::{Content, ContentDraft, Image, Progress};
 pub use cursor::Cursor;
 pub use device::{Device, DevicePublicKey, PushTransport};
@@ -74,6 +75,7 @@ pub use notification::{
 };
 pub use origin::Origin;
 pub use principal::{ApiKeyOwner, Author, Principal, PrincipalKind};
+pub use profile::{FieldEdit, Profile, ProfileEdit, ProfileField};
 pub use receipt::{Receipt, ReceiptKind, SeenTally};
 pub use silence::{Silence, SilenceTarget};
 pub use ttl::{Ttl, TtlPolicy, TtlResolution};

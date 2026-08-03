@@ -14,3 +14,15 @@ allowBuilds:
   esbuild: true
   "@biomejs/biome": true
   vue-demi: true
+
+# Transitive versions forced up because `task audit` flagged them. Each entry is a
+# liability: it makes us responsible for a compatibility we did not test upstream.
+# Re-run `task audit` after removing one to check whether it is still needed — they
+# should not outlive the advisory.
+overrides:
+  # GHSA-52cp-r559-cp3m — prototype pollution in js-yaml, fixed in 4.3.0. Reaches
+  # us only through HeyApi's spec parser, which runs at build time on a document
+  # this repository produces — but "only a build tool" is how a supply-chain
+  # problem gets waved through, and the fix is one line.
+  js-yaml: ^4.3.0
+

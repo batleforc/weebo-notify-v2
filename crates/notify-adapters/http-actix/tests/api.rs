@@ -16,17 +16,20 @@ use std::sync::Arc;
 
 use actix_web::{App, http::StatusCode, test, web};
 use notify_app::{
-    Authenticate, Authorizer, CreateApiKey, CreateChannel, DeleteChannel, DeleteNotification,
-    EnrolDevice, Fanout, GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox,
-    ListInteractions, ListRevisions, ManageMembers, PostReceipt, PublishNotification,
-    RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
-    SilenceNotification, SyncBacklog, UpsertNotification,
+    Authenticate, Authorizer, CreateApiKey, CreateChannel, CreateServiceAccount,
+    DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
+    GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
+    ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
+    ReadAvatar, ReadProfile, RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice,
+    SearchNotifications, SetAvatar, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile,
+    UpsertNotification,
 };
+use notify_avatars::ImageAvatarProcessor;
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
 use notify_http_actix::ApiState;
 use notify_ports::test_utils::{
-    CountingKeyGenerator, InMemory, StaticTokenVerifier, StubSecretHasher, TestClock,
-    TestRateLimiter,
+    CountingKeyGenerator, InMemory, InMemoryAttachments, StaticTokenVerifier, StubSecretHasher,
+    TestClock, TestRateLimiter,
 };
 use notify_ports::{ChannelRepository, Clock as _, UserRepository, VerifiedClaims};
 use serde_json::{Value, json};
@@ -54,6 +57,7 @@ impl Harness {
         let clock = TestClock::new();
         let tokens = StaticTokenVerifier::with_clock(Arc::new(clock.clone()));
         let limiter = TestRateLimiter::default();
+        let attachments = InMemoryAttachments::new();
         let authorizer = Authorizer::new(Arc::new(store.clone()));
 
         let fanout = Fanout::new(
@@ -144,6 +148,12 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
+            update_channel: UpdateChannel::new(
+                Arc::new(store.clone()),
+                authorizer.clone(),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
             delete_channel: DeleteChannel::new(
                 Arc::new(store.clone()),
                 authorizer.clone(),
@@ -181,6 +191,28 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
+
+            profile: ReadProfile::new(Arc::new(store.clone())),
+            update_profile: UpdateProfile::new(Arc::new(store.clone())),
+            set_avatar: SetAvatar::new(
+                Arc::new(store.clone()),
+                Arc::new(ImageAvatarProcessor::new()),
+                Arc::new(attachments.clone()),
+            ),
+            avatar: ReadAvatar::new(Arc::new(attachments.clone())),
+
+            accounts: ListServiceAccounts::new(Arc::new(store.clone())),
+            create_account: CreateServiceAccount::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
+            deactivate_account: DeactivateServiceAccount::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
         };
 
         let harness = Self {
@@ -195,13 +227,17 @@ impl Harness {
 
     /// Register alice, give her a token, and put her in a channel she can publish to.
     async fn with_alice_in(&self, channel: &str) -> ChannelId {
-        let user = User {
-            id: self.alice,
-            oidc_subject: "alice".to_owned(),
-            email: Some("alice@weebo.local".to_owned()),
-            display_name: Some("Alice Martin".to_owned()),
-            created_at: self.clock.now(),
-        };
+        // Through `from_claims` rather than a literal: it is the constructor the
+        // login path uses, so the profile starts out following the provider exactly
+        // as it would in production.
+        let user = User::from_claims(
+            self.alice,
+            "alice",
+            Some("alice@weebo.local"),
+            Some("Alice Martin"),
+            self.clock.now(),
+        )
+        .unwrap();
         UserRepository::upsert(&self.store, &user).await.unwrap();
 
         self.tokens.register(
@@ -756,6 +792,295 @@ async fn a_stream_needs_a_credential_like_everything_else() {
 }
 
 #[actix_web::test]
+async fn a_profile_edit_claims_the_field_and_a_null_hands_it_back() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    // What the identity provider said, before anybody touched it.
+    let request = test::TestRequest::get()
+        .uri("/api/v1/users/me/profile")
+        .insert_header(AUTH)
+        .to_request();
+    let profile: Value = test::call_and_read_body_json(&app, request).await;
+    assert_eq!(profile["display_name"], "Alice Martin");
+    assert!(
+        profile["overridden"].as_array().is_none_or(Vec::is_empty),
+        "a profile nobody has edited claims nothing: {profile}"
+    );
+
+    // Claiming two fields.
+    let request = test::TestRequest::put()
+        .uri("/api/v1/users/me/profile")
+        .insert_header(AUTH)
+        .set_json(json!({ "display_name": "alice", "timezone": "Europe/Paris" }))
+        .to_request();
+    let profile: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert_eq!(profile["display_name"], "alice");
+    assert_eq!(profile["timezone"], "Europe/Paris");
+    let claimed: Vec<&str> = profile["overridden"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(claimed.contains(&"display_name") && claimed.contains(&"timezone"));
+
+    // An absent field is left alone: this edit only mentions the locale.
+    let request = test::TestRequest::put()
+        .uri("/api/v1/users/me/profile")
+        .insert_header(AUTH)
+        .set_json(json!({ "locale": "fr-FR" }))
+        .to_request();
+    let profile: Value = test::call_and_read_body_json(&app, request).await;
+    assert_eq!(profile["display_name"], "alice");
+    assert_eq!(profile["locale"], "fr-FR");
+
+    // An explicit null hands the field back to the provider rather than blanking
+    // it — the way out of a name somebody typed once (§2.4).
+    let request = test::TestRequest::put()
+        .uri("/api/v1/users/me/profile")
+        .insert_header(AUTH)
+        .set_json(json!({ "display_name": null }))
+        .to_request();
+    let profile: Value = test::call_and_read_body_json(&app, request).await;
+
+    let claimed: Vec<&str> = profile["overridden"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!claimed.contains(&"display_name"), "{profile}");
+}
+
+#[actix_web::test]
+async fn an_avatar_is_decoded_and_resized_before_it_is_ever_stored() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    // A 900×300 JPEG: neither square nor PNG, so what comes back proves the bytes
+    // were processed rather than passed through (§2.4).
+    let source = {
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(900, 300));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .expect("the fixture encodes");
+        out.into_inner()
+    };
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/users/me/avatar")
+        .insert_header(AUTH)
+        .insert_header(("content-type", "application/octet-stream"))
+        .set_payload(source)
+        .to_request();
+    let profile: Value = test::call_and_read_body_json(&app, request).await;
+
+    let id = profile["avatar"].as_str().expect("the profile names it");
+
+    // And it is servable by that id.
+    let request = test::TestRequest::get()
+        .uri(&format!("/api/v1/avatars/{id}"))
+        .insert_header(AUTH)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "image/png",
+        "whatever went in, a PNG comes out — which is what strips the metadata"
+    );
+
+    let bytes = test::read_body(response).await;
+    let stored = image::load_from_memory(&bytes).expect("a decodable image");
+    assert_eq!((stored.width(), stored.height()), (256, 256));
+}
+
+#[actix_web::test]
+async fn something_that_is_not_an_image_never_reaches_the_bucket() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/users/me/avatar")
+        .insert_header(AUTH)
+        .set_payload(b"#!/bin/sh\necho not an image\n".to_vec())
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let problem: Value = test::read_body_json(response).await;
+    assert_eq!(problem["code"], "field.malformed");
+}
+
+#[actix_web::test]
+async fn a_timezone_the_database_does_not_know_is_refused() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/users/me/profile")
+        .insert_header(AUTH)
+        .set_json(json!({ "timezone": "Europe/Pris" }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let problem: Value = test::read_body_json(response).await;
+    assert_eq!(problem["code"], "field.malformed");
+}
+
+#[actix_web::test]
+async fn a_service_account_is_created_listed_and_deactivated() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/serviceaccounts")
+        .insert_header(AUTH)
+        .set_json(json!({ "id": "bot-argocd", "display_name": "ArgoCD" }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let created: Value = test::read_body_json(response).await;
+    assert_eq!(created["id"], "bot-argocd");
+    assert_eq!(created["origin"], "dynamic");
+    assert!(
+        created["created_by"].is_string(),
+        "a bot nobody owns is a bot nobody can turn off: {created}"
+    );
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/serviceaccounts")
+        .insert_header(AUTH)
+        .to_request();
+    let listed: Value = test::call_and_read_body_json(&app, request).await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+
+    // The same name twice is refused rather than adopted.
+    let request = test::TestRequest::post()
+        .uri("/api/v1/serviceaccounts")
+        .insert_header(AUTH)
+        .set_json(json!({ "id": "bot-argocd" }))
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let request = test::TestRequest::delete()
+        .uri("/api/v1/serviceaccounts/bot-argocd")
+        .insert_header(AUTH)
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    // Deactivated, not deleted: it stays listed so the revisions naming it still
+    // resolve, with the date it stopped being able to act.
+    let request = test::TestRequest::get()
+        .uri("/api/v1/serviceaccounts")
+        .insert_header(AUTH)
+        .to_request();
+    let listed: Value = test::call_and_read_body_json(&app, request).await;
+    assert!(listed[0]["disabled_at"].is_string(), "{listed}");
+}
+
+#[actix_web::test]
+async fn patching_a_policy_touches_only_what_the_body_names() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::patch()
+        .uri("/api/v1/channels/ci-infra")
+        .insert_header(AUTH)
+        .set_json(json!({ "max_ttl": "48h" }))
+        .to_request();
+    let channel: Value = test::call_and_read_body_json(&app, request).await;
+
+    // `2d` and not `48h`: a duration is normalised to its largest whole unit on the
+    // way back out, which is the same value said the shortest way.
+    assert_eq!(channel["policy"]["ttl"]["max"], "2d");
+    assert_eq!(
+        channel["policy"]["ttl"]["default"], "1w",
+        "a PATCH that names a ceiling must not reset the default"
+    );
+    assert_eq!(channel["policy"]["receipts_enabled"], false);
+
+    // `"0"` lifts it. Sending `null` would be the shape no generated client can
+    // express, which is why the API does not ask for one.
+    let request = test::TestRequest::patch()
+        .uri("/api/v1/channels/ci-infra")
+        .insert_header(AUTH)
+        .set_json(json!({ "max_ttl": "0" }))
+        .to_request();
+    let channel: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert!(
+        channel["policy"]["ttl"]["max"].is_null(),
+        "a ceiling that cannot be lifted is a channel stuck with its first admin's \
+         guess: {channel}"
+    );
+}
+
+#[actix_web::test]
+async fn patching_a_managed_channel_is_refused_like_deleting_one() {
+    let (harness, state) = Harness::new();
+    let id = harness.with_alice_in("cluster-ovh-1").await;
+
+    let mut managed = ChannelRepository::get(&harness.store, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    managed.origin = Origin::Managed;
+    ChannelRepository::upsert(&harness.store, &managed)
+        .await
+        .unwrap();
+
+    let app = service!(state);
+    let request = test::TestRequest::patch()
+        .uri("/api/v1/channels/cluster-ovh-1")
+        .insert_header(AUTH)
+        .set_json(json!({ "receipts_enabled": true }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "config owns a managed channel's policy (§11)"
+    );
+}
+
+#[actix_web::test]
+async fn a_policy_the_channel_could_not_publish_under_is_refused() {
+    // `forever` on a channel that does not allow it would fail every publish from
+    // now on, a long way from the request that caused it.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::patch()
+        .uri("/api/v1/channels/ci-infra")
+        .insert_header(AUTH)
+        .set_json(json!({ "default_ttl": "0" }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[actix_web::test]
 async fn the_openapi_document_covers_every_route_that_is_registered() {
     let (_, api) = App::new()
         .into_utoipa_app()
@@ -785,6 +1110,11 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
         "/api/v1/devices/{id}",
         "/api/v1/apikeys",
         "/api/v1/apikeys/{id}",
+        "/api/v1/users/me/profile",
+        "/api/v1/users/me/avatar",
+        "/api/v1/avatars/{id}",
+        "/api/v1/serviceaccounts",
+        "/api/v1/serviceaccounts/{id}",
     ] {
         assert!(
             paths.iter().any(|path| path.as_str() == expected),

@@ -9,13 +9,14 @@
 //! feeds the line it is given to *this same* clap parser, so a new subcommand is
 //! available in the TUI by construction (design §9.2).
 
-use std::io::IsTerminal as _;
 use std::process::ExitCode;
 
 use clap::{CommandFactory as _, Parser, Subcommand};
 use notify_client_core::{ClientError, ConfigError, Profile, Session};
 
+mod manage;
 mod publish;
+mod tui;
 
 /// Exit codes are part of the CLI contract so scripts can branch on them
 /// without parsing output (design §9.1).
@@ -31,7 +32,7 @@ const EXIT_USAGE: u8 = 2;
     long_about = "Run without a subcommand to open the terminal UI.\n\
                   Any subcommand runs one-shot and exits."
 )]
-struct Cli {
+pub(crate) struct Cli {
     /// Server profile to talk to, letting one machine hold several servers
     /// (personal, work). Selects the config section and the local store.
     #[arg(long, global = true, env = "WNK_PROFILE", default_value = "default")]
@@ -42,7 +43,7 @@ struct Cli {
     output: OutputFormat,
 
     #[command(subcommand)]
-    command: Option<Command>,
+    pub(crate) command: Option<Command>,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -54,7 +55,7 @@ pub(crate) enum OutputFormat {
 }
 
 #[derive(Debug, Subcommand)]
-enum Command {
+pub(crate) enum Command {
     /// Publish a notification.
     Publish {
         /// Which channel it goes to.
@@ -87,6 +88,36 @@ enum Command {
         content: publish::Content,
     },
 
+    /// Show the inbox, most recent first.
+    Ls {
+        /// Only this channel.
+        #[arg(long, short = 'c', env = "WNK_CHANNEL")]
+        channel: Option<String>,
+
+        /// How many rows.
+        #[arg(long, short = 'n', default_value_t = 20)]
+        limit: u16,
+    },
+
+    /// Catch the local store up with everything since its cursor.
+    Sync {
+        /// Only this channel.
+        #[arg(long, short = 'c', env = "WNK_CHANNEL")]
+        channel: Option<String>,
+    },
+
+    /// Channels: list, create, join.
+    Channel {
+        #[command(subcommand)]
+        command: manage::ChannelCommand,
+    },
+
+    /// Devices: list, and enrol this machine.
+    Device {
+        #[command(subcommand)]
+        command: manage::DeviceCommand,
+    },
+
     /// Open the terminal UI. Explicit alias of running `notify` with no subcommand.
     Watch,
 
@@ -100,10 +131,16 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let result = run(cli);
-
-    match result {
-        Ok(()) => ExitCode::from(EXIT_OK),
+    match run(cli) {
+        Ok(rendered) => {
+            // Printed *here* and nowhere else. Every command returns what it has to
+            // say instead of writing it out, which is what lets the TUI run the same
+            // command and show the same answer in its popup (§9.2, §9.3).
+            if !rendered.is_empty() {
+                println!("{rendered}");
+            }
+            ExitCode::from(EXIT_OK)
+        }
         Err(error) => {
             eprintln!("notify: {error}");
             ExitCode::from(error.exit_code())
@@ -111,78 +148,96 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> Result<(), CliError> {
+fn run(cli: Cli) -> Result<String, CliError> {
     match cli.command {
-        Some(Command::Completions { shell }) => {
-            let mut command = Cli::command();
-            let name = command.get_name().to_string();
-            clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
-            Ok(())
-        }
-        Some(Command::Watch) | None => open_tui(),
+        Some(Command::Completions { shell }) => Ok(completions(shell)),
+        Some(Command::Watch) | None => tui::run(&cli.profile).map(|()| String::new()),
         // Only the commands that talk to a server pay for a runtime; `completions`
         // in a shell's startup path should not start tokio to print a script.
         Some(command) => on_runtime(|| async move {
             let session = Session::open(&Profile::load(&cli.profile)?)?;
 
-            match command {
-                Command::Publish {
-                    channel,
-                    idempotency_key,
-                    content,
-                } => {
-                    publish::publish(
-                        &session,
-                        &channel,
-                        content,
-                        idempotency_key.as_deref(),
-                        cli.output,
-                    )
-                    .await
-                }
-                Command::Update {
-                    channel,
-                    id,
-                    content,
-                } => publish::update(&session, &channel, &id, content, cli.output).await,
-                Command::Watch | Command::Completions { .. } => unreachable(),
-            }
+            execute(&session, &cli.profile, cli.output, command).await
         }),
     }
 }
 
+/// Run one parsed command and give back what it has to say.
+///
+/// The single dispatch point, called by the shell above and by the TUI's `:` mode
+/// (design §9.2). Two callers and one table is the mechanism §9 promises: a
+/// subcommand added to [`Command`] is available in both without a line of TUI code —
+/// and the match below stops compiling until it is handled, which is what keeps the
+/// promise mechanical rather than remembered.
+pub(crate) async fn execute(
+    session: &Session,
+    profile: &str,
+    output: OutputFormat,
+    command: Command,
+) -> Result<String, CliError> {
+    match command {
+        Command::Publish {
+            channel,
+            idempotency_key,
+            content,
+        } => {
+            publish::publish(
+                session,
+                &channel,
+                content,
+                idempotency_key.as_deref(),
+                output,
+            )
+            .await
+        }
+        Command::Update {
+            channel,
+            id,
+            content,
+        } => publish::update(session, &channel, &id, content, output).await,
+        Command::Ls { channel, limit } => {
+            manage::list_inbox(session, channel.as_deref(), limit, output).await
+        }
+        Command::Sync { channel } => {
+            manage::sync(session, profile, channel.as_deref(), output).await
+        }
+        Command::Channel { command } => manage::channel(session, command, output).await,
+        Command::Device { command } => manage::device(session, command, profile, output).await,
+        Command::Completions { shell } => Ok(completions(shell)),
+        // Refused rather than ignored: from the shell this is handled before a
+        // session is opened, and from inside the TUI it can only mean somebody typed
+        // `:watch` in the window it would have opened.
+        Command::Watch => Err(CliError::Usage(
+            "`watch` opens the terminal UI, which is not something a command can do \
+             from inside it"
+                .to_owned(),
+        )),
+    }
+}
+
+/// The completion script for a shell, as a string.
+fn completions(shell: clap_complete::Shell) -> String {
+    let mut command = Cli::command();
+    let name = command.get_name().to_string();
+    let mut rendered = Vec::new();
+    clap_complete::generate(shell, &mut command, name, &mut rendered);
+
+    // Completion scripts are ASCII shell code; a generator that emitted anything
+    // else is a bug worth seeing rather than one worth papering over.
+    String::from_utf8_lossy(&rendered).into_owned()
+}
+
 /// Run one async command to completion.
-fn on_runtime<F, T>(work: F) -> Result<(), CliError>
+fn on_runtime<F, T>(work: F) -> Result<String, CliError>
 where
     F: FnOnce() -> T,
-    T: Future<Output = Result<(), CliError>>,
+    T: Future<Output = Result<String, CliError>>,
 {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| CliError::Api(format!("could not start the async runtime: {error}")))?
         .block_on(work())
-}
-
-/// The two variants handled above cannot reach here; saying so beats a `panic!`,
-/// which is denied workspace-wide for good reason.
-fn unreachable() -> Result<(), CliError> {
-    Err(CliError::Usage("unsupported command".to_owned()))
-}
-
-fn open_tui() -> Result<(), CliError> {
-    // Non-interactive guard rail (design §9.1): in a pipe, a cron job or CI, the
-    // TUI would block forever. Print the help and fail with the usage code instead.
-    if !std::io::stdout().is_terminal() {
-        let _ = Cli::command().print_help();
-        return Err(CliError::Usage(
-            "stdout is not a terminal — refusing to open the TUI".to_owned(),
-        ));
-    }
-
-    Err(CliError::Api(
-        "the terminal UI lands in milestone M2".to_owned(),
-    ))
 }
 
 #[derive(Debug)]

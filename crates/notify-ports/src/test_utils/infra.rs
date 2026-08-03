@@ -7,7 +7,9 @@ use notify_domain::{ApiKeyPrefix, AttachmentId, ChannelId, Scope};
 use time::{Duration, OffsetDateTime};
 use url::Url;
 
-use crate::attachments::{AttachmentStore, PresignedDownload, PresignedUpload, UploadRequest};
+use crate::attachments::{
+    AttachmentStore, PresignedDownload, PresignedUpload, StoredObject, UploadRequest,
+};
 use crate::clock::Clock;
 use crate::error::{PortError, PortResult};
 use crate::identities::{KeyGenerator, SecretHasher};
@@ -204,6 +206,8 @@ impl LeaderElection for TestLeaderElection {
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryAttachments {
     uploaded: Arc<Mutex<Vec<AttachmentId>>>,
+    /// Bytes the server wrote itself — the avatar path (design §2.4).
+    objects: Arc<Mutex<std::collections::HashMap<AttachmentId, StoredObject>>>,
 }
 
 impl InMemoryAttachments {
@@ -256,12 +260,28 @@ impl AttachmentStore for InMemoryAttachments {
     }
 
     async fn exists(&self, id: AttachmentId) -> PortResult<bool> {
-        Ok(lock(&self.uploaded).contains(&id))
+        Ok(lock(&self.uploaded).contains(&id) || lock(&self.objects).contains_key(&id))
     }
 
     async fn delete(&self, id: AttachmentId) -> PortResult<()> {
         lock(&self.uploaded).retain(|candidate| *candidate != id);
+        lock(&self.objects).remove(&id);
         Ok(())
+    }
+
+    async fn put(&self, id: AttachmentId, content_type: &str, bytes: Vec<u8>) -> PortResult<()> {
+        lock(&self.objects).insert(
+            id,
+            StoredObject {
+                content_type: content_type.to_owned(),
+                bytes,
+            },
+        );
+        Ok(())
+    }
+
+    async fn get(&self, id: AttachmentId) -> PortResult<Option<StoredObject>> {
+        Ok(lock(&self.objects).get(&id).cloned())
     }
 
     async fn health(&self) -> PortResult<()> {

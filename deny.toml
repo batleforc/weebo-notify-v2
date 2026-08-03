@@ -11,7 +11,11 @@ all-features = true
 # RustSec advisories. Yanked crates are an error too: a yank usually means the
 # author found something, and pinning to one is a decision, not an accident.
 yanked = "deny"
-ignore = []
+# Mirrors `.cargo/audit.toml`, which carries the full reasoning for each.
+# In one line each: `rsa` needs an RSA PRIVATE key we do not have (verification
+# only, §5.1), and the two `quick-xml` advisories are reachable only by an object
+# store that is already inside the trust boundary (§6).
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
 
 [licenses]
 # weebo-notify ships under MPL-2.0. The list below is the permissive set that is
@@ -47,7 +51,15 @@ confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"
+# A wildcard on a crates.io dependency means "whatever version resolves today",
+# which is how a supply-chain surprise arrives without a diff. That stays denied.
 wildcards = "deny"
+# Our own crates are the exception, and only they. A workspace member is declared
+# `{ path = "crates/…" }` with no version, which cargo-deny reads as a wildcard —
+# but nothing resolves from a registry there: the code is in this repository, at
+# this commit. Denying it would push us into writing versions on eleven internal
+# crates purely to satisfy a rule aimed at somebody else's code.
+allow-wildcard-paths = true
 # Duplicate versions are noise in a young dependency tree; they become an error
 # once the tree settles, rather than training everyone to ignore warnings now.
 skip = []

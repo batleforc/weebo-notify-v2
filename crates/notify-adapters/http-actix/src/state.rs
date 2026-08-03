@@ -8,11 +8,12 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Authenticate, CreateApiKey, CreateChannel, DeleteChannel, DeleteNotification, EnrolDevice,
-    GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
-    ListRevisions, ManageMembers, PostReceipt, PublishNotification, RecordInteraction,
-    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SilenceNotification,
-    SyncBacklog, UpsertNotification,
+    Authenticate, CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount,
+    DeleteChannel, DeleteNotification, EnrolDevice, GetNotification, ListApiKeys, ListChannels,
+    ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts, ManageMembers,
+    PostReceipt, PublishNotification, ReadAvatar, ReadProfile, RecordInteraction,
+    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SetAvatar,
+    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_ports::EventBus;
 
@@ -62,6 +63,8 @@ pub struct ApiState {
     pub channels: ListChannels,
     /// `POST /channels`.
     pub create_channel: CreateChannel,
+    /// `PATCH /channels/{id}`.
+    pub update_channel: UpdateChannel,
     /// `DELETE /channels/{id}`.
     pub delete_channel: DeleteChannel,
     /// `POST`/`DELETE /channels/{id}/members`.
@@ -80,6 +83,22 @@ pub struct ApiState {
     pub devices: ListDevices,
     /// `DELETE /devices/{id}`.
     pub revoke_device: RevokeDevice,
+
+    /// `GET /users/me/profile`.
+    pub profile: ReadProfile,
+    /// `PUT /users/me/profile`.
+    pub update_profile: UpdateProfile,
+    /// `PUT /users/me/avatar`.
+    pub set_avatar: SetAvatar,
+    /// `GET /avatars/{id}`.
+    pub avatar: ReadAvatar,
+
+    /// `GET /serviceaccounts`.
+    pub accounts: ListServiceAccounts,
+    /// `POST /serviceaccounts`.
+    pub create_account: CreateServiceAccount,
+    /// `DELETE /serviceaccounts/{id}`.
+    pub deactivate_account: DeactivateServiceAccount,
 }
 
 impl core::fmt::Debug for ApiState {

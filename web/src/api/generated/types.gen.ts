@@ -231,6 +231,19 @@ export type Author = Principal & {
 };
 
 /**
+ * The body of an avatar upload: the image bytes, nothing wrapping them.
+ *
+ * Nothing reads it: the handler takes `web::Bytes` directly. It exists so the
+ * document has a name for "raw bytes".
+ *
+ * A named schema rather than an inline one because the wire type has to be
+ * `string` with `format: binary` — that is how OpenAPI spells "raw bytes", and a
+ * generator that reads anything else refuses the document outright rather than
+ * guessing (which is what `Vec<u8>` did: an array of integers).
+ */
+export type AvatarUpload = Blob | File;
+
+/**
  * A channel.
  */
 export type Channel = {
@@ -287,6 +300,36 @@ export type ChannelPolicy = {
      * Retention rules (design §7.2bis).
      */
     ttl: TtlPolicy;
+};
+
+/**
+ * A partial change to a channel's policy (design §8).
+ *
+ * Absent fields are left alone, which is what makes this a `PATCH` rather than a
+ * `PUT`: a client that only wants to lower the TTL ceiling must not have to restate
+ * the priority and the receipts flag, and restating them is how two admins on two
+ * screens overwrite each other.
+ *
+ * Lifting a ceiling is spelled `"0"`, not `null`, and that is deliberate. §7.2bis
+ * already gives `"0"` the meaning "unbounded" everywhere a duration appears, and a
+ * ceiling of *forever* **is** the absence of a ceiling — so there is one spelling
+ * rather than two. The alternative, a `null` that means something different from an
+ * absent key, is a shape no generated client can express: progenitor renders every
+ * optional field with `skip_serializing_if`, so the Rust client could omit the key
+ * but never send it null (ADR-0009 promises clients come from the contract, which
+ * means the contract may not describe things they cannot say).
+ *
+ * `allow_forever` is not here on purpose — §7.2bis makes unbounded retention an
+ * operator decision, so it stays in configuration.
+ */
+export type ChannelPolicyBody = {
+    default_priority?: null | Priority;
+    default_ttl?: null | Ttl;
+    max_ttl?: null | Ttl;
+    /**
+     * Whether delivery and read receipts are collected here (§7.3).
+     */
+    receipts_enabled?: boolean | null;
 };
 
 /**
@@ -385,6 +428,26 @@ export type ContentDraft = {
      * an absent title is the same refusal an empty one gets.
      */
     title?: string;
+};
+
+/**
+ * What it takes to create one.
+ */
+export type CreateAccountBody = {
+    /**
+     * What it is for, read by whoever finds it in an audit log in six months.
+     */
+    description?: string | null;
+    /**
+     * What clients show instead of the id.
+     */
+    display_name?: string | null;
+    /**
+     * The name it will be known by, everywhere it appears — as an `author`, in the
+     * audit log, in a member list. Chosen rather than generated for exactly that
+     * reason (§5.2bis).
+     */
+    id: string;
 };
 
 /**
@@ -1086,6 +1149,88 @@ export type Problem = {
 };
 
 /**
+ * Everything a client shows about a person, beyond their identity.
+ */
+export type Profile = {
+    avatar?: null | AttachmentId;
+    /**
+     * What clients show. Falls back to the identity when unset.
+     */
+    display_name?: string | null;
+    /**
+     * A BCP 47 tag such as `fr-FR`.
+     */
+    locale?: string | null;
+    /**
+     * The fields this person set themselves.
+     *
+     * Public because the API surfaces it: a settings screen has to be able to say
+     * "this one is yours, and this one follows your identity provider", which is
+     * the difference between an editable field and a mysterious one.
+     */
+    overridden?: Array<ProfileField>;
+    /**
+     * An IANA name such as `Europe/Paris`.
+     *
+     * Validated against the real database rather than a shape: this is the default
+     * quiet hours are resolved in (§7.4), so a plausible-looking `Europe/Pris`
+     * accepted today becomes a notification that does not arrive in six months,
+     * with nothing connecting the two.
+     */
+    timezone?: string | null;
+};
+
+/**
+ * A partial edit of the caller's profile.
+ *
+ * Every field is doubly optional on the wire, and the two levels mean different
+ * things — this is the whole reason the body is not just a `Profile`:
+ *
+ * * **absent** — leave the field exactly as it is;
+ * * **`null`** — hand the field back to the identity provider, so the next login
+ * refreshes it;
+ * * **a value** — claim it, and stop later logins from overwriting it (§2.4).
+ *
+ * Without the middle case there is no way back: somebody who typed a display name
+ * once would be maintaining it by hand forever.
+ */
+export type ProfileBody = {
+    /**
+     * The name shown next to everything this person publishes.
+     */
+    display_name?: string | null;
+    /**
+     * A BCP 47 tag such as `fr-FR`.
+     */
+    locale?: string | null;
+    /**
+     * An IANA name such as `Europe/Paris`, validated against the real database.
+     * It is the default quiet hours are resolved in (§7.4).
+     */
+    timezone?: string | null;
+};
+
+/**
+ * A field of a profile that can be claimed by its owner.
+ *
+ * Named rather than positional: this set is persisted, and a variant added in the
+ * middle of a tuple would silently re-map what people had claimed.
+ */
+export const ProfileField = {
+    DISPLAY_NAME: 'display_name',
+    TIMEZONE: 'timezone',
+    LOCALE: 'locale'
+} as const;
+
+/**
+ * A field of a profile that can be claimed by its owner.
+ *
+ * Named rather than positional: this set is persisted, and a variant added in the
+ * middle of a tuple would silently re-map what people had claimed.
+ */
+export type ProfileField = typeof ProfileField[keyof typeof ProfileField];
+
+/**
  * How far along a long-running thing is. Rendered as a bar; the units are the
  * publisher's own (steps, files, percent).
  */
@@ -1396,6 +1541,42 @@ export const Scope = {
 export type Scope = typeof Scope[keyof typeof Scope];
 
 /**
+ * A named machine identity (design §5.2bis).
+ *
+ * The recommended shape for anything durable: a team bot running on a person's
+ * key dies the day that person is offboarded, which is a bad way to find out how
+ * the deploy notifications worked.
+ */
+export type ServiceAccount = {
+    /**
+     * When it was created.
+     */
+    created_at: string;
+    created_by?: null | UserId;
+    /**
+     * What it is for. Read by whoever finds it in an audit log in six months.
+     */
+    description?: string | null;
+    /**
+     * Set on deactivation. Deactivating revokes its keys and cuts its streams
+     * immediately (design §8, scenario T25) — it is not a soft "please stop".
+     */
+    disabled_at?: string | null;
+    /**
+     * What clients show — "published by ArgoCD", not by an opaque id.
+     */
+    display_name?: string | null;
+    /**
+     * Its name, and the id used everywhere it appears.
+     */
+    id: ServiceAccountId;
+    /**
+     * GitOps-declared or API-created (design §11).
+     */
+    origin: Origin;
+};
+
+/**
  * A service account, named so a timeline can say "published by `bot-argocd`"
  * rather than "published by a key" (design §5.2bis).
  */
@@ -1658,6 +1839,38 @@ export type RevokeKeyResponses = {
 
 export type RevokeKeyResponse = RevokeKeyResponses[keyof RevokeKeyResponses];
 
+export type ReadAvatarData = {
+    body?: never;
+    path: {
+        /**
+         * The attachment id from a profile
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/avatars/{id}';
+};
+
+export type ReadAvatarErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No such object
+     */
+    404: Problem;
+};
+
+export type ReadAvatarError = ReadAvatarErrors[keyof ReadAvatarErrors];
+
+export type ReadAvatarResponses = {
+    /**
+     * The image
+     */
+    200: unknown;
+};
+
 export type ListChannelsData = {
     body?: never;
     path?: never;
@@ -1762,6 +1975,48 @@ export type DeleteChannelResponses = {
 };
 
 export type DeleteChannelResponse = DeleteChannelResponses[keyof DeleteChannelResponses];
+
+export type UpdateChannelData = {
+    body: ChannelPolicyBody;
+    path: {
+        /**
+         * Channel id
+         */
+        channel: string;
+    };
+    query?: never;
+    url: '/api/v1/channels/{channel}';
+};
+
+export type UpdateChannelErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `manage` scope there
+     */
+    403: Problem;
+    /**
+     * The channel is managed; change it in GitOps
+     */
+    409: Problem;
+    /**
+     * A policy the channel could not then answer a publish with
+     */
+    422: Problem;
+};
+
+export type UpdateChannelError = UpdateChannelErrors[keyof UpdateChannelErrors];
+
+export type UpdateChannelResponses = {
+    /**
+     * The channel as it now stands
+     */
+    200: Channel;
+};
+
+export type UpdateChannelResponse = UpdateChannelResponses[keyof UpdateChannelResponses];
 
 export type AddMemberData = {
     body: AddMemberBody;
@@ -2445,6 +2700,102 @@ export type SearchResponses = {
 
 export type SearchResponse = SearchResponses[keyof SearchResponses];
 
+export type ListAccountsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/serviceaccounts';
+};
+
+export type ListAccountsErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+};
+
+export type ListAccountsError = ListAccountsErrors[keyof ListAccountsErrors];
+
+export type ListAccountsResponses = {
+    /**
+     * The accounts, deactivated ones included
+     */
+    200: Array<ServiceAccount>;
+};
+
+export type ListAccountsResponse = ListAccountsResponses[keyof ListAccountsResponses];
+
+export type CreateAccountData = {
+    body: CreateAccountBody;
+    path?: never;
+    query?: never;
+    url: '/api/v1/serviceaccounts';
+};
+
+export type CreateAccountErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * A bot cannot create bots (design §5.2bis)
+     */
+    403: Problem;
+    /**
+     * A name that is not a slug, or one already taken
+     */
+    422: Problem;
+};
+
+export type CreateAccountError = CreateAccountErrors[keyof CreateAccountErrors];
+
+export type CreateAccountResponses = {
+    /**
+     * Created
+     */
+    201: ServiceAccount;
+};
+
+export type CreateAccountResponse = CreateAccountResponses[keyof CreateAccountResponses];
+
+export type DeactivateAccountData = {
+    body?: never;
+    path: {
+        /**
+         * The account's name
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/serviceaccounts/{id}';
+};
+
+export type DeactivateAccountErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Somebody else's, or a person is not asking
+     */
+    403: Problem;
+    /**
+     * Managed by GitOps — change it in config (design §11)
+     */
+    422: Problem;
+};
+
+export type DeactivateAccountError = DeactivateAccountErrors[keyof DeactivateAccountErrors];
+
+export type DeactivateAccountResponses = {
+    /**
+     * Deactivated, or already was
+     */
+    204: void;
+};
+
+export type DeactivateAccountResponse = DeactivateAccountResponses[keyof DeactivateAccountResponses];
+
 export type StreamData = {
     body?: never;
     headers?: {
@@ -2546,6 +2897,108 @@ export type SyncResponses = {
 };
 
 export type SyncResponse = SyncResponses[keyof SyncResponses];
+
+export type SetAvatarData = {
+    /**
+     * PNG, JPEG or WebP, at most 512 KiB
+     */
+    body: AvatarUpload;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users/me/avatar';
+};
+
+export type SetAvatarErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This principal is not a person (design §2.4)
+     */
+    403: Problem;
+    /**
+     * Over the 512 KiB ceiling
+     */
+    413: Problem;
+    /**
+     * Not a supported image, or one that will not decode
+     */
+    422: Problem;
+};
+
+export type SetAvatarError = SetAvatarErrors[keyof SetAvatarErrors];
+
+export type SetAvatarResponses = {
+    /**
+     * The profile, now naming the stored avatar
+     */
+    200: Profile;
+};
+
+export type SetAvatarResponse = SetAvatarResponses[keyof SetAvatarResponses];
+
+export type ReadProfileData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users/me/profile';
+};
+
+export type ReadProfileErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This principal is not a person (design §2.4)
+     */
+    403: Problem;
+};
+
+export type ReadProfileError = ReadProfileErrors[keyof ReadProfileErrors];
+
+export type ReadProfileResponses = {
+    /**
+     * The caller's profile
+     */
+    200: Profile;
+};
+
+export type ReadProfileResponse = ReadProfileResponses[keyof ReadProfileResponses];
+
+export type UpdateProfileData = {
+    body: ProfileBody;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users/me/profile';
+};
+
+export type UpdateProfileErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This principal is not a person (design §2.4)
+     */
+    403: Problem;
+    /**
+     * A timezone the IANA database does not know, or text that fails hygiene
+     */
+    422: Problem;
+};
+
+export type UpdateProfileError = UpdateProfileErrors[keyof UpdateProfileErrors];
+
+export type UpdateProfileResponses = {
+    /**
+     * The profile as it now stands
+     */
+    200: Profile;
+};
+
+export type UpdateProfileResponse = UpdateProfileResponses[keyof UpdateProfileResponses];
 
 export type WebsocketData = {
     body?: never;

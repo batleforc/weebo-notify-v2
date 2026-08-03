@@ -1,9 +1,11 @@
 //! The route table, and the small conversions the path segments need.
 
+pub(crate) mod accounts;
 pub(crate) mod channels;
 pub(crate) mod identity;
 pub(crate) mod interactions;
 pub(crate) mod notifications;
+pub(crate) mod profile;
 pub(crate) mod stream;
 pub(crate) mod sync;
 
@@ -35,6 +37,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(stream::websocket)
             .service(channels::list_channels)
             .service(channels::create_channel)
+            .service(channels::update_channel)
             .service(channels::delete_channel)
             .service(channels::add_member)
             .service(channels::remove_member)
@@ -43,7 +46,14 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(identity::revoke_device)
             .service(identity::create_key)
             .service(identity::list_keys)
-            .service(identity::revoke_key),
+            .service(identity::revoke_key)
+            .service(profile::read_profile)
+            .service(profile::update_profile)
+            .service(profile::set_avatar)
+            .service(profile::read_avatar)
+            .service(accounts::list_accounts)
+            .service(accounts::create_account)
+            .service(accounts::deactivate_account),
     );
 }
 

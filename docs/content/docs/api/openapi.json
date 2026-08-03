@@ -157,6 +157,59 @@
         ]
       }
     },
+    "/api/v1/avatars/{id}": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Fetch an avatar by the id a profile or an author gave you.",
+        "operationId": "read_avatar",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The attachment id from a profile",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image",
+            "content": {
+              "image/png": {}
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such object",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/channels": {
       "get": {
         "tags": [
@@ -323,6 +376,91 @@
           },
           "409": {
             "description": "The channel is managed; change it in GitOps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Change a channel's policy. Refused on a GitOps-managed one.",
+        "operationId": "update_channel",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "description": "Channel id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelPolicyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The channel as it now stands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No `manage` scope there",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The channel is managed; change it in GitOps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A policy the channel could not then answer a publish with",
             "content": {
               "application/json": {
                 "schema": {
@@ -1599,6 +1737,169 @@
         ]
       }
     },
+    "/api/v1/serviceaccounts": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Every service account on this instance.",
+        "operationId": "list_accounts",
+        "responses": {
+          "200": {
+            "description": "The accounts, deactivated ones included",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceAccount"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Create one, owned by the caller.",
+        "operationId": "create_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccountBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceAccount"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A bot cannot create bots (design §5.2bis)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A name that is not a slug, or one already taken",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/serviceaccounts/{id}": {
+      "delete": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Deactivate one: its keys are revoked with it.",
+        "operationId": "deactivate_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The account's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deactivated, or already was"
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Somebody else's, or a person is not asking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Managed by GitOps — change it in config (design §11)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/stream": {
       "get": {
         "tags": [
@@ -1773,6 +2074,194 @@
           },
           "422": {
             "description": "That cursor is not one of ours",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/users/me/avatar": {
+      "put": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Replace your own avatar.",
+        "description": "The body is the image itself rather than a multipart form: there is exactly one\nfield, and a multipart parser is a parser more on a path that already decodes\nuser-supplied media (§15).",
+        "operationId": "set_avatar",
+        "requestBody": {
+          "description": "PNG, JPEG or WebP, at most 512 KiB",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/AvatarUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The profile, now naming the stored avatar",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This principal is not a person (design §2.4)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Over the 512 KiB ceiling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not a supported image, or one that will not decode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/users/me/profile": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Read your own profile.",
+        "operationId": "read_profile",
+        "responses": {
+          "200": {
+            "description": "The caller's profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This principal is not a person (design §2.4)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Edit your own profile.",
+        "operationId": "update_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The profile as it now stands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This principal is not a person (design §2.4)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A timezone the IANA database does not know, or text that fails hygiene",
             "content": {
               "application/json": {
                 "schema": {
@@ -2315,6 +2804,11 @@
         ],
         "description": "A principal as it is *rendered*: the identity plus the label a client shows\nnext to a revision, an interaction or a receipt (design §2.4, §8.1).\n\nCarried alongside events rather than fetched, because there is deliberately no\nendpoint that reads someone else's profile: embedding it where it is legitimate\nis what mechanically enforces \"visible only through a shared channel\"\n(design §2.4). Profile *management* arrives with M2; M1 only needs to be able\nto say who published."
       },
+      "AvatarUpload": {
+        "type": "string",
+        "format": "binary",
+        "description": "The body of an avatar upload: the image bytes, nothing wrapping them.\n\nNothing reads it: the handler takes `web::Bytes` directly. It exists so the\ndocument has a name for \"raw bytes\".\n\nA named schema rather than an inline one because the wire type has to be\n`string` with `format: binary` — that is how OpenAPI spells \"raw bytes\", and a\ngenerator that reads anything else refuses the document outright rather than\nguessing (which is what `Vec<u8>` did: an array of integers)."
+      },
       "Channel": {
         "type": "object",
         "description": "A channel.",
@@ -2384,6 +2878,52 @@
           "ttl": {
             "$ref": "#/components/schemas/TtlPolicy",
             "description": "Retention rules (design §7.2bis)."
+          }
+        }
+      },
+      "ChannelPolicyBody": {
+        "type": "object",
+        "description": "A partial change to a channel's policy (design §8).\n\nAbsent fields are left alone, which is what makes this a `PATCH` rather than a\n`PUT`: a client that only wants to lower the TTL ceiling must not have to restate\nthe priority and the receipts flag, and restating them is how two admins on two\nscreens overwrite each other.\n\nLifting a ceiling is spelled `\"0\"`, not `null`, and that is deliberate. §7.2bis\nalready gives `\"0\"` the meaning \"unbounded\" everywhere a duration appears, and a\nceiling of *forever* **is** the absence of a ceiling — so there is one spelling\nrather than two. The alternative, a `null` that means something different from an\nabsent key, is a shape no generated client can express: progenitor renders every\noptional field with `skip_serializing_if`, so the Rust client could omit the key\nbut never send it null (ADR-0009 promises clients come from the contract, which\nmeans the contract may not describe things they cannot say).\n\n`allow_forever` is not here on purpose — §7.2bis makes unbounded retention an\noperator decision, so it stays in configuration.",
+        "properties": {
+          "default_priority": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Priority",
+                "description": "The priority applied when a publisher asks for none."
+              }
+            ]
+          },
+          "default_ttl": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Ttl",
+                "description": "The TTL applied when a publisher asks for none, e.g. `7d`."
+              }
+            ]
+          },
+          "max_ttl": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Ttl",
+                "description": "The forced ceiling, e.g. `48h`. `\"0\"` lifts it."
+              }
+            ]
+          },
+          "receipts_enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether delivery and read receipts are collected here (§7.3)."
           }
         }
       },
@@ -2537,6 +3077,33 @@
           "title": {
             "type": "string",
             "description": "See [`Content::title`].\n\nOptional on the wire, and absent means \"leave it alone\" on a revision — see\n[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so\nan absent title is the same refusal an empty one gets."
+          }
+        }
+      },
+      "CreateAccountBody": {
+        "type": "object",
+        "description": "What it takes to create one.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it is for, read by whoever finds it in an audit log in six months."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What clients show instead of the id."
+          },
+          "id": {
+            "type": "string",
+            "description": "The name it will be known by, everywhere it appears — as an `author`, in the\naudit log, in a member list. Chosen rather than generated for exactly that\nreason (§5.2bis)."
           }
         }
       },
@@ -3690,6 +4257,88 @@
           }
         }
       },
+      "Profile": {
+        "type": "object",
+        "description": "Everything a client shows about a person, beyond their identity.",
+        "properties": {
+          "avatar": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AttachmentId",
+                "description": "The object holding their picture, once one has been uploaded (§2.4).\n\nNot in [`ProfileField`], and that is deliberate: an avatar is never synced\nfrom the identity provider, so there is nothing for its owner to claim it\n*from*. OIDC does publish a `picture` claim, and following it would mean the\nserver fetching an arbitrary URL found in a token — a request-forgery\nprimitive pointed at whatever the cluster can reach. An avatar arrives by\nupload or not at all."
+              }
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What clients show. Falls back to the identity when unset."
+          },
+          "locale": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A BCP 47 tag such as `fr-FR`."
+          },
+          "overridden": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileField"
+            },
+            "description": "The fields this person set themselves.\n\nPublic because the API surfaces it: a settings screen has to be able to say\n\"this one is yours, and this one follows your identity provider\", which is\nthe difference between an editable field and a mysterious one.",
+            "uniqueItems": true
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An IANA name such as `Europe/Paris`.\n\nValidated against the real database rather than a shape: this is the default\nquiet hours are resolved in (§7.4), so a plausible-looking `Europe/Pris`\naccepted today becomes a notification that does not arrive in six months,\nwith nothing connecting the two."
+          }
+        }
+      },
+      "ProfileBody": {
+        "type": "object",
+        "description": "A partial edit of the caller's profile.\n\nEvery field is doubly optional on the wire, and the two levels mean different\nthings — this is the whole reason the body is not just a `Profile`:\n\n* **absent** — leave the field exactly as it is;\n* **`null`** — hand the field back to the identity provider, so the next login\n  refreshes it;\n* **a value** — claim it, and stop later logins from overwriting it (§2.4).\n\nWithout the middle case there is no way back: somebody who typed a display name\nonce would be maintaining it by hand forever.",
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name shown next to everything this person publishes."
+          },
+          "locale": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A BCP 47 tag such as `fr-FR`."
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An IANA name such as `Europe/Paris`, validated against the real database.\nIt is the default quiet hours are resolved in (§7.4)."
+          }
+        }
+      },
+      "ProfileField": {
+        "type": "string",
+        "description": "A field of a profile that can be claimed by its owner.\n\nNamed rather than positional: this set is persisted, and a variant added in the\nmiddle of a tuple would silently re-map what people had claimed.",
+        "enum": [
+          "display_name",
+          "timezone",
+          "locale"
+        ]
+      },
       "Progress": {
         "type": "object",
         "description": "How far along a long-running thing is. Rendered as a bar; the units are the\npublisher's own (steps, files, percent).",
@@ -4243,6 +4892,63 @@
           "subscribe",
           "manage"
         ]
+      },
+      "ServiceAccount": {
+        "type": "object",
+        "description": "A named machine identity (design §5.2bis).\n\nThe recommended shape for anything durable: a team bot running on a person's\nkey dies the day that person is offboarded, which is a bad way to find out how\nthe deploy notifications worked.",
+        "required": [
+          "id",
+          "origin",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "created_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UserId",
+                "description": "Who created it, for the ones created through the API.\n\n`None` for a managed account: the configuration administers those, and a\nperson who happened to apply it is not their owner (design §11).\n\nFor a dynamic one this is who may deactivate it, for the same reason a\nchannel's creator becomes its manager — an object nobody can administer\nneeds database access to fix. It is also the tension §5.2bis names: a bot\nwhose creator leaves keeps *running* (its keys are its own) but has nobody\nleft to turn it off. That is what GitOps is for, and what the platform role\n(§5.4, M4) closes for the ones already created."
+              }
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it is for. Read by whoever finds it in an audit log in six months."
+          },
+          "disabled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set on deactivation. Deactivating revokes its keys and cuts its streams\nimmediately (design §8, scenario T25) — it is not a soft \"please stop\"."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What clients show — \"published by ArgoCD\", not by an opaque id."
+          },
+          "id": {
+            "$ref": "#/components/schemas/ServiceAccountId",
+            "description": "Its name, and the id used everywhere it appears."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/Origin",
+            "description": "GitOps-declared or API-created (design §11)."
+          }
+        }
       },
       "ServiceAccountId": {
         "type": "string",

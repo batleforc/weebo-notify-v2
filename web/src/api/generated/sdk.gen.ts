@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddMemberData, AddMemberErrors, AddMemberResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PublishData, PublishErrors, PublishResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, UpsertData, UpsertErrors, UpsertResponses, WebsocketData, WebsocketErrors } from './types.gen';
+import type { AddMemberData, AddMemberErrors, AddMemberResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebsocketData, WebsocketErrors } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -52,6 +52,16 @@ export const revokeKey = <ThrowOnError extends boolean = false>(options: Options
 });
 
 /**
+ * Fetch an avatar by the id a profile or an author gave you.
+ */
+export const readAvatar = <ThrowOnError extends boolean = false>(options: Options<ReadAvatarData, ThrowOnError>): RequestResult<ReadAvatarResponses, ReadAvatarErrors, ThrowOnError> => (options.client ?? client).get<ReadAvatarResponses, ReadAvatarErrors, ThrowOnError>({
+    responseType: 'blob',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/avatars/{id}',
+    ...options
+});
+
+/**
  * The channels the caller can see.
  */
 export const listChannels = <ThrowOnError extends boolean = false>(options?: Options<ListChannelsData, ThrowOnError>): RequestResult<ListChannelsResponses, ListChannelsErrors, ThrowOnError> => (options?.client ?? client).get<ListChannelsResponses, ListChannelsErrors, ThrowOnError>({
@@ -82,6 +92,20 @@ export const deleteChannel = <ThrowOnError extends boolean = false>(options: Opt
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/channels/{channel}',
     ...options
+});
+
+/**
+ * Change a channel's policy. Refused on a GitOps-managed one.
+ */
+export const updateChannel = <ThrowOnError extends boolean = false>(options: Options<UpdateChannelData, ThrowOnError>): RequestResult<UpdateChannelResponses, UpdateChannelErrors, ThrowOnError> => (options.client ?? client).patch<UpdateChannelResponses, UpdateChannelErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/channels/{channel}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**
@@ -280,6 +304,39 @@ export const search = <ThrowOnError extends boolean = false>(options: Options<Se
 });
 
 /**
+ * Every service account on this instance.
+ */
+export const listAccounts = <ThrowOnError extends boolean = false>(options?: Options<ListAccountsData, ThrowOnError>): RequestResult<ListAccountsResponses, ListAccountsErrors, ThrowOnError> => (options?.client ?? client).get<ListAccountsResponses, ListAccountsErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/serviceaccounts',
+    ...options
+});
+
+/**
+ * Create one, owned by the caller.
+ */
+export const createAccount = <ThrowOnError extends boolean = false>(options: Options<CreateAccountData, ThrowOnError>): RequestResult<CreateAccountResponses, CreateAccountErrors, ThrowOnError> => (options.client ?? client).post<CreateAccountResponses, CreateAccountErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/serviceaccounts',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Deactivate one: its keys are revoked with it.
+ */
+export const deactivateAccount = <ThrowOnError extends boolean = false>(options: Options<DeactivateAccountData, ThrowOnError>): RequestResult<DeactivateAccountResponses, DeactivateAccountErrors, ThrowOnError> => (options.client ?? client).delete<DeactivateAccountResponses, DeactivateAccountErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/serviceaccounts/{id}',
+    ...options
+});
+
+/**
  * The live stream.
  */
 export const stream = <ThrowOnError extends boolean = false>(options?: Options<StreamData, ThrowOnError, unknown>): Promise<ServerSentEventsResult<StreamResponses>> => (options?.client ?? client).sse.get<StreamResponses, StreamErrors, ThrowOnError>({
@@ -301,6 +358,49 @@ export const sync = <ThrowOnError extends boolean = false>(options?: Options<Syn
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/sync',
     ...options
+});
+
+/**
+ * Replace your own avatar.
+ *
+ * The body is the image itself rather than a multipart form: there is exactly one
+ * field, and a multipart parser is a parser more on a path that already decodes
+ * user-supplied media (§15).
+ */
+export const setAvatar = <ThrowOnError extends boolean = false>(options: Options<SetAvatarData, ThrowOnError>): RequestResult<SetAvatarResponses, SetAvatarErrors, ThrowOnError> => (options.client ?? client).put<SetAvatarResponses, SetAvatarErrors, ThrowOnError>({
+    bodySerializer: null,
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/users/me/avatar',
+    ...options,
+    headers: {
+        'Content-Type': 'application/octet-stream',
+        ...options.headers
+    }
+});
+
+/**
+ * Read your own profile.
+ */
+export const readProfile = <ThrowOnError extends boolean = false>(options?: Options<ReadProfileData, ThrowOnError>): RequestResult<ReadProfileResponses, ReadProfileErrors, ThrowOnError> => (options?.client ?? client).get<ReadProfileResponses, ReadProfileErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/users/me/profile',
+    ...options
+});
+
+/**
+ * Edit your own profile.
+ */
+export const updateProfile = <ThrowOnError extends boolean = false>(options: Options<UpdateProfileData, ThrowOnError>): RequestResult<UpdateProfileResponses, UpdateProfileErrors, ThrowOnError> => (options.client ?? client).put<UpdateProfileResponses, UpdateProfileErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/users/me/profile',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**

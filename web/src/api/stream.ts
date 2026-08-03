@@ -129,6 +129,8 @@ export function openStream(options: StreamOptions): Stream {
   const controller = new AbortController();
   let closed = false;
   let attempt = 0;
+  /** Whether this attempt already spent its one free token refresh. */
+  let refreshed = false;
   /** The last cursor seen. This is what makes a reconnect a resume. */
   let lastEventId = options.cursor;
 
@@ -168,13 +170,22 @@ export function openStream(options: StreamOptions): Stream {
         });
 
         if (response.status === 401) {
-          // Force one refresh, then let the loop try again immediately.
           if (!(await session.refresh())) {
             status("offline");
             return;
           }
+          // Exactly one immediate retry, and then never again without backoff.
+          // A `401` that survives a successful refresh is not a stale token — it
+          // is clock skew, a revoked account, an audience mismatch — and retrying
+          // it immediately in a loop is a client hammering its own API as fast as
+          // the network allows, refreshing a token every round.
+          if (refreshed) {
+            throw new Error("still refused after a refresh");
+          }
+          refreshed = true;
           continue;
         }
+        refreshed = false;
 
         if (!response.ok || !response.body) {
           throw new Error(`stream refused with ${response.status}`);

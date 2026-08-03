@@ -55,10 +55,12 @@ pub use state::ApiState;
 /// something the domain does not — a minted secret, an outcome label, a channel
 /// alongside a revision.
 pub mod dto {
-    pub use crate::routes::channels::{AddMemberBody, CreateChannelBody};
+    pub use crate::routes::accounts::CreateAccountBody;
+    pub use crate::routes::channels::{AddMemberBody, ChannelPolicyBody, CreateChannelBody};
     pub use crate::routes::identity::{CreateKeyBody, EnrolBody, MintedKey};
     pub use crate::routes::interactions::{ReceiptBody, RecordedInteraction, SilenceBody};
     pub use crate::routes::notifications::{InboxParams, PageParams, PublishBody, SearchParams};
+    pub use crate::routes::profile::{AvatarUpload, ProfileBody};
     pub use crate::routes::stream::StreamParams;
     pub use crate::routes::sync::SyncParams;
 }

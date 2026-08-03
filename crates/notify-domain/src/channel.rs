@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::duration::HumanDuration;
 use crate::error::{DomainError, Result};
 use crate::hygiene::{TextKind, optional_text};
 use crate::ids::ChannelId;
@@ -18,7 +19,7 @@ use crate::limits::MAX_TITLE_CHARS;
 use crate::notification::Priority;
 use crate::origin::Origin;
 use crate::principal::Principal;
-use crate::ttl::TtlPolicy;
+use crate::ttl::{Ttl, TtlPolicy};
 
 /// What a principal may do in a channel (design §5.2).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -136,6 +137,50 @@ impl Default for ChannelPolicy {
             default_priority: Priority::Default,
             receipts_enabled: false,
         }
+    }
+}
+
+/// What a ceiling is being changed *to* (design §8, `PATCH /channels/{id}`).
+///
+/// Two states, because lifting a ceiling has to be sayable: an edit that could only
+/// lower one would leave a channel stuck with whatever the first admin typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ceiling {
+    /// No ceiling: nothing gets clamped.
+    None,
+    /// Clamp anything longer than this.
+    At(HumanDuration),
+}
+
+/// A requested change to a channel policy. Absent fields are left exactly as they
+/// are — a `PATCH` that names one knob must not reset the other three.
+///
+/// `allow_forever` is deliberately **not** here. §7.2bis calls unbounded retention
+/// an operator decision, so it comes from configuration; letting a channel manager
+/// grant it through the API would make the config's answer advisory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PolicyEdit {
+    /// The TTL applied when a publisher says nothing.
+    pub default_ttl: Option<Ttl>,
+    /// The forced ceiling, or its removal.
+    pub max_ttl: Option<Ceiling>,
+    /// The priority applied when a publisher says nothing.
+    pub default_priority: Option<Priority>,
+    /// Whether receipts are collected and shown as "seen by 3/5" (§7.3).
+    pub receipts_enabled: Option<bool>,
+}
+
+impl PolicyEdit {
+    /// Whether this edit asks for anything at all.
+    ///
+    /// An empty `PATCH` is not an error — it is idempotent — but it should not cost
+    /// a write and an audit entry claiming a policy changed.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.default_ttl.is_none()
+            && self.max_ttl.is_none()
+            && self.default_priority.is_none()
+            && self.receipts_enabled.is_none()
     }
 }
 
@@ -269,6 +314,45 @@ impl Channel {
     /// source of truth and would put it straight back (design §8, §11).
     pub fn ensure_mutable_through_api(&self) -> Result<()> {
         self.origin.ensure_mutable_through_api("channel")
+    }
+
+    /// Apply a partial policy change (design §8, `PATCH /channels/{id}`).
+    ///
+    /// Returns whether anything actually changed, so a caller can skip the write and
+    /// the audit entry for a `PATCH` that asked for what is already true.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an edit that leaves the channel unable to answer its own publishers:
+    /// the resulting policy is asked to resolve a publish that requests nothing, and
+    /// its refusal is returned. That is the check made *here* rather than in each
+    /// publisher's face — a default of `forever` on a channel that does not allow it
+    /// would otherwise fail every publish from now on, far from the edit that caused
+    /// it.
+    pub fn edit_policy(&mut self, edit: PolicyEdit) -> Result<bool> {
+        let mut policy = self.policy;
+
+        if let Some(default) = edit.default_ttl {
+            policy.ttl.default = default;
+        }
+        if let Some(ceiling) = edit.max_ttl {
+            policy.ttl.max = match ceiling {
+                Ceiling::None => None,
+                Ceiling::At(duration) => Some(duration),
+            };
+        }
+        if let Some(priority) = edit.default_priority {
+            policy.default_priority = priority;
+        }
+        if let Some(receipts) = edit.receipts_enabled {
+            policy.receipts_enabled = receipts;
+        }
+
+        policy.ttl.resolve(None)?;
+
+        let changed = policy != self.policy;
+        self.policy = policy;
+        Ok(changed)
     }
 }
 
@@ -453,5 +537,99 @@ mod group_access_tests {
         assert!(!json.contains("group_access"));
         // And a payload written before this field existed still parses.
         assert_eq!(serde_json::from_str::<Channel>(&json).unwrap(), channel);
+    }
+}
+
+/// Policy edits (design §8, `PATCH /channels/{id}`).
+#[cfg(test)]
+mod policy_tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
+    use super::*;
+
+    fn channel() -> Channel {
+        Channel::dynamic(ChannelId::parse("ci-infra").unwrap(), None).unwrap()
+    }
+
+    fn hours(n: u64) -> HumanDuration {
+        HumanDuration::from_secs(n * 3_600, "ttl").unwrap()
+    }
+
+    #[test]
+    fn an_edit_touches_only_what_it_names() {
+        // The property a PATCH exists for: setting a ceiling must not reset the
+        // default TTL to whatever the client happened not to send.
+        let mut channel = channel();
+        let before = channel.policy;
+
+        let changed = channel
+            .edit_policy(PolicyEdit {
+                max_ttl: Some(Ceiling::At(hours(24))),
+                ..PolicyEdit::default()
+            })
+            .unwrap();
+
+        assert!(changed);
+        assert_eq!(channel.policy.ttl.max, Some(hours(24)));
+        assert_eq!(channel.policy.ttl.default, before.ttl.default);
+        assert_eq!(channel.policy.default_priority, before.default_priority);
+        assert_eq!(channel.policy.receipts_enabled, before.receipts_enabled);
+    }
+
+    #[test]
+    fn a_ceiling_can_be_removed_and_not_only_lowered() {
+        // An edit that could only lower a ceiling would leave a channel stuck with
+        // whatever its first admin typed.
+        let mut channel = channel();
+        channel
+            .edit_policy(PolicyEdit {
+                max_ttl: Some(Ceiling::At(hours(24))),
+                ..PolicyEdit::default()
+            })
+            .unwrap();
+
+        channel
+            .edit_policy(PolicyEdit {
+                max_ttl: Some(Ceiling::None),
+                ..PolicyEdit::default()
+            })
+            .unwrap();
+
+        assert_eq!(channel.policy.ttl.max, None);
+    }
+
+    #[test]
+    fn an_edit_that_would_break_every_later_publish_is_refused_now() {
+        // A default of `forever` on a channel that does not allow it makes every
+        // publish fail with `ttl.infinite_not_allowed` — a long way from the edit
+        // that caused it. Refusing here is the whole reason `edit_policy` resolves.
+        let mut channel = channel();
+
+        let refused = channel.edit_policy(PolicyEdit {
+            default_ttl: Some(Ttl::Forever),
+            ..PolicyEdit::default()
+        });
+
+        assert_eq!(refused.unwrap_err(), DomainError::InfiniteTtlNotAllowed);
+        assert_eq!(
+            channel.policy,
+            ChannelPolicy::default(),
+            "a refused edit leaves the policy alone"
+        );
+    }
+
+    #[test]
+    fn an_edit_that_asks_for_what_is_already_true_changes_nothing() {
+        let mut channel = channel();
+
+        let changed = channel
+            .edit_policy(PolicyEdit {
+                receipts_enabled: Some(false),
+                ..PolicyEdit::default()
+            })
+            .unwrap();
+
+        assert!(!changed, "a write and an audit entry would both be lies");
+        assert!(PolicyEdit::default().is_empty());
     }
 }

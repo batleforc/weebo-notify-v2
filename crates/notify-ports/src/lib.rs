@@ -58,6 +58,7 @@ pub mod idempotency;
 pub mod identities;
 pub mod interactions;
 pub mod leader;
+pub mod media;
 pub mod notifications;
 pub mod pagination;
 pub mod push;
@@ -71,7 +72,9 @@ pub mod tokens;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
-pub use attachments::{AttachmentStore, PresignedDownload, PresignedUpload, UploadRequest};
+pub use attachments::{
+    AttachmentStore, PresignedDownload, PresignedUpload, StoredObject, UploadRequest,
+};
 pub use audit::{AuditEntry, AuditLog, AuditQuery};
 pub use channels::ChannelRepository;
 pub use clock::{Clock, SystemClock};
@@ -89,6 +92,7 @@ pub use identities::{
 };
 pub use interactions::InteractionRepository;
 pub use leader::{LeaderElection, LeaderGuard};
+pub use media::{AvatarProcessor, ImageRejection, ProcessedImage};
 pub use notifications::{ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery};
 pub use pagination::{Page, PageRequest};
 pub use push::{PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport};

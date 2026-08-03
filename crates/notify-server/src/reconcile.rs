@@ -89,6 +89,10 @@ impl Reconciler {
                     display_name: declared.display_name.clone(),
                     description: declared.description.clone(),
                     origin: Origin::Managed,
+                    // A managed account has no owner: the configuration administers
+                    // it, and whoever happened to apply that config is not its
+                    // owner (§11).
+                    created_by: None,
                     // Preserved rather than reset: config declares that the account
                     // exists, not when it was created.
                     created_at: existing

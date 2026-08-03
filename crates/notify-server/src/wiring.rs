@@ -13,17 +13,21 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Authenticate, Authorizer, CreateApiKey, CreateChannel, DeleteChannel, DeleteNotification,
-    EnrolDevice, Fanout, GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox,
-    ListInteractions, ListRevisions, ManageMembers, PostReceipt, PublishNotification, PurgeExpired,
-    RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
-    SilenceNotification, SyncBacklog, UlidKeyGenerator, UpsertNotification,
+    Authenticate, Authorizer, CreateApiKey, CreateChannel, CreateServiceAccount,
+    DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
+    GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
+    ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
+    PurgeExpired, ReadAvatar, ReadProfile, RecordInteraction, ResolveStreamStart, RevokeApiKey,
+    RevokeDevice, SearchNotifications, SetAvatar, SilenceNotification, SyncBacklog,
+    UlidKeyGenerator, UpdateChannel, UpdateProfile, UpsertNotification,
 };
+use notify_attachments_s3::{S3Attachments, S3Config};
+use notify_avatars::ImageAvatarProcessor;
 use notify_eventbus_pg::PgEventBus;
 use notify_http_actix::ApiState;
 use notify_oidc::{Argon2SecretHasher, OidcConfig, OidcVerifier};
 use notify_persistence_pg::{PgLeaderElection, PgStore};
-use notify_ports::{EventBus, SystemClock};
+use notify_ports::{AttachmentStore, EventBus, SystemClock};
 
 use crate::bus::SharedBus;
 use crate::config::Config;
@@ -91,6 +95,23 @@ impl Application {
 
         let transports = TransportRegistry::empty();
         let dispatcher = Arc::new(transports.clone());
+
+        // The object store. Absent from the configuration means absent from the
+        // deployment, and the double that stands in for it refuses rather than
+        // pretends: an avatar upload then answers "not configured" instead of
+        // succeeding into nowhere (§14.3 — a port with no adapter is a refusal, not
+        // a silent no-op).
+        let attachments: Arc<dyn AttachmentStore> = match &config.attachments {
+            Some(settings) => Arc::new(S3Attachments::connect(&S3Config {
+                endpoint: settings.endpoint.parse()?,
+                bucket: settings.bucket.clone(),
+                region: settings.region.clone(),
+                access_key: settings.access_key.clone(),
+                secret_key: settings.secret_key.clone(),
+            })?),
+            None => Arc::new(NoAttachments),
+        };
+        let avatars = Arc::new(ImageAvatarProcessor::new());
 
         let authorizer = Authorizer::new(repository.clone());
         let fanout = Fanout::new(
@@ -185,6 +206,12 @@ impl Application {
                 repository.clone(),
                 clock.clone(),
             ),
+            update_channel: UpdateChannel::new(
+                repository.clone(),
+                authorizer.clone(),
+                repository.clone(),
+                clock.clone(),
+            ),
             delete_channel: DeleteChannel::new(
                 repository.clone(),
                 authorizer.clone(),
@@ -212,6 +239,24 @@ impl Application {
             enrol_device: EnrolDevice::new(repository.clone(), repository.clone(), clock.clone()),
             devices: ListDevices::new(repository.clone()),
             revoke_device: RevokeDevice::new(repository.clone(), repository.clone(), clock.clone()),
+
+            profile: ReadProfile::new(repository.clone()),
+            update_profile: UpdateProfile::new(repository.clone()),
+            set_avatar: SetAvatar::new(repository.clone(), avatars, attachments.clone()),
+            avatar: ReadAvatar::new(attachments),
+
+            accounts: ListServiceAccounts::new(repository.clone()),
+            create_account: CreateServiceAccount::new(
+                repository.clone(),
+                repository.clone(),
+                clock.clone(),
+            ),
+            deactivate_account: DeactivateServiceAccount::new(
+                repository.clone(),
+                repository.clone(),
+                repository.clone(),
+                clock.clone(),
+            ),
         };
 
         let purge = PurgeExpired::new(
@@ -233,5 +278,70 @@ impl Application {
             reconciler,
             transports,
         })
+    }
+}
+
+/// The object store a deployment without one gets.
+///
+/// It refuses rather than pretending. §14.3 makes the rule explicit: a port with no
+/// adapter answers `NotConfigured` naming the capability, so an avatar upload on an
+/// instance with no bucket fails visibly instead of succeeding into nowhere and
+/// leaving a profile pointing at bytes that were never written.
+#[derive(Debug)]
+struct NoAttachments;
+
+#[async_trait::async_trait]
+impl AttachmentStore for NoAttachments {
+    async fn presign_upload(
+        &self,
+        _request: &notify_ports::UploadRequest,
+    ) -> notify_ports::PortResult<notify_ports::PresignedUpload> {
+        Err(unconfigured())
+    }
+
+    async fn presign_download(
+        &self,
+        _id: notify_domain::AttachmentId,
+    ) -> notify_ports::PortResult<notify_ports::PresignedDownload> {
+        Err(unconfigured())
+    }
+
+    async fn exists(&self, _id: notify_domain::AttachmentId) -> notify_ports::PortResult<bool> {
+        Ok(false)
+    }
+
+    async fn delete(&self, _id: notify_domain::AttachmentId) -> notify_ports::PortResult<()> {
+        // Nothing to delete is the desired state, so the purge job stays green on an
+        // instance that never stored anything.
+        Ok(())
+    }
+
+    async fn put(
+        &self,
+        _id: notify_domain::AttachmentId,
+        _content_type: &str,
+        _bytes: Vec<u8>,
+    ) -> notify_ports::PortResult<()> {
+        Err(unconfigured())
+    }
+
+    async fn get(
+        &self,
+        _id: notify_domain::AttachmentId,
+    ) -> notify_ports::PortResult<Option<notify_ports::StoredObject>> {
+        Ok(None)
+    }
+
+    async fn health(&self) -> notify_ports::PortResult<()> {
+        // Healthy: an instance with no bucket configured is not a broken instance,
+        // and reporting it unready would take the whole replica out over a feature
+        // it was never asked to provide.
+        Ok(())
+    }
+}
+
+const fn unconfigured() -> notify_ports::PortError {
+    notify_ports::PortError::NotConfigured {
+        what: "attachments",
     }
 }

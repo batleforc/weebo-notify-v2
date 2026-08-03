@@ -20,13 +20,13 @@ use crate::ids::{ApiKeyId, ChannelId, ServiceAccountId, UserId};
 use crate::limits::{MAX_BODY_CHARS, MAX_TITLE_CHARS};
 use crate::origin::Origin;
 use crate::principal::{ApiKeyOwner, Principal};
+use crate::profile::{Profile, ProfileEdit};
 
 /// A human, created on first OIDC login (design §5.1).
 ///
 /// The `oidc_subject` is the identity; email and display name are claims that may
-/// change, and the full profile — avatar, timezone, locale, and the rule that a
-/// locally edited field stops being overwritten by later syncs — arrives with M2
-/// (design §2.4).
+/// change, and [`Profile`] holds what they chose for themselves — including which
+/// fields they claimed, so a later sync leaves those alone (design §2.4).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
@@ -40,8 +40,16 @@ pub struct User {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     /// What clients show next to their revisions and receipts.
+    ///
+    /// Mirrors `profile.display_name` and is what every embedded [`Author`] reads,
+    /// so a client that never asks for a profile still shows the right name.
+    ///
+    /// [`Author`]: crate::principal::Author
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// What they chose for themselves (design §2.4).
+    #[serde(default)]
+    pub profile: Profile,
     /// First login.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -56,6 +64,13 @@ impl User {
         display_name: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<Self> {
+        let display_name = optional_text(
+            display_name,
+            TextKind::SingleLine,
+            MAX_TITLE_CHARS,
+            "user.display_name",
+        )?;
+
         Ok(Self {
             id,
             // Claims are third-party text reaching our terminals and browsers like
@@ -67,14 +82,84 @@ impl User {
                 "user.oidc_subject",
             )?,
             email: optional_text(email, TextKind::SingleLine, MAX_TITLE_CHARS, "user.email")?,
-            display_name: optional_text(
+            profile: Profile {
+                display_name: display_name.clone(),
+                ..Profile::default()
+            },
+            display_name,
+            created_at: now,
+        })
+    }
+
+    /// Refresh what the identity provider owns, and say whether anything moved.
+    ///
+    /// The return value is not a convenience. Bearer authentication re-runs on
+    /// **every request** (§5.1), so a sync that wrote unconditionally was one
+    /// database write per authenticated call — precisely the cost §14.2 refuses
+    /// when it rejects materialising groups. The caller writes only when this
+    /// returns `true`.
+    ///
+    /// # An absent claim is no news, not an erasure
+    ///
+    /// A token carries what its scopes asked for. The same person signing in from a
+    /// client that requested no `email` scope presents a token with no email — and
+    /// treating that as "they no longer have one" would wipe the stored address.
+    /// That address is not decoration: `[[channels.managed.access]] email = …` is
+    /// the only binding an identity provider with no groups claim can offer (§11,
+    /// scenario T29), and the reconciler resolves it by looking the address up.
+    /// Losing it revokes somebody's channel access, on a timer, with nothing in any
+    /// log connecting the two.
+    ///
+    /// So a claim that is **present** replaces what is stored, and a claim that is
+    /// **absent** changes nothing. Clearing a field is what the profile endpoint is
+    /// for (§2.4), where it is a deliberate act rather than a side effect of which
+    /// client was used.
+    ///
+    /// # Errors
+    ///
+    /// Refuses claims that fail the hygiene rules, as `from_claims` does.
+    pub fn sync_from_claims(
+        &mut self,
+        email: Option<&str>,
+        display_name: Option<&str>,
+    ) -> Result<bool> {
+        let mut changed = false;
+
+        if email.is_some() {
+            let email = optional_text(email, TextKind::SingleLine, MAX_TITLE_CHARS, "user.email")?;
+            if email != self.email {
+                self.email = email;
+                changed = true;
+            }
+        }
+
+        // The profile decides whether the claim is allowed to land: a display name
+        // its owner claimed is theirs (§2.4).
+        if display_name.is_some() {
+            let incoming = optional_text(
                 display_name,
                 TextKind::SingleLine,
                 MAX_TITLE_CHARS,
                 "user.display_name",
-            )?,
-            created_at: now,
-        })
+            )?;
+            if self.profile.follow_claims(incoming.as_deref()) {
+                self.display_name.clone_from(&self.profile.display_name);
+                changed = true;
+            }
+        }
+
+        Ok(changed)
+    }
+
+    /// Apply an edit the owner made, and keep the shown name in step.
+    ///
+    /// # Errors
+    ///
+    /// Refuses anything [`Profile::edit`] refuses.
+    pub fn edit_profile(&mut self, edit: ProfileEdit) -> Result<()> {
+        self.profile.edit(edit)?;
+        self.display_name.clone_from(&self.profile.display_name);
+        Ok(())
     }
 
     /// This user as a principal.
@@ -102,6 +187,19 @@ pub struct ServiceAccount {
     pub description: Option<String>,
     /// GitOps-declared or API-created (design §11).
     pub origin: Origin,
+    /// Who created it, for the ones created through the API.
+    ///
+    /// `None` for a managed account: the configuration administers those, and a
+    /// person who happened to apply it is not their owner (design §11).
+    ///
+    /// For a dynamic one this is who may deactivate it, for the same reason a
+    /// channel's creator becomes its manager — an object nobody can administer
+    /// needs database access to fix. It is also the tension §5.2bis names: a bot
+    /// whose creator leaves keeps *running* (its keys are its own) but has nobody
+    /// left to turn it off. That is what GitOps is for, and what the platform role
+    /// (§5.4, M4) closes for the ones already created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<UserId>,
     /// When it was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -113,15 +211,20 @@ pub struct ServiceAccount {
 
 impl ServiceAccount {
     /// Create one.
+    ///
+    /// `created_by` is `Some` for an account created through the API and `None` for
+    /// one the reconciler declares — see the field.
     pub fn new(
         id: ServiceAccountId,
         display_name: Option<&str>,
         description: Option<&str>,
         origin: Origin,
+        created_by: Option<UserId>,
         now: OffsetDateTime,
     ) -> Result<Self> {
         Ok(Self {
             id,
+            created_by,
             display_name: optional_text(
                 display_name,
                 TextKind::SingleLine,
@@ -159,6 +262,27 @@ impl ServiceAccount {
     /// Deactivate. Idempotent, so a retried request cannot move the timestamp.
     pub fn disable(&mut self, now: OffsetDateTime) {
         self.disabled_at.get_or_insert(now);
+    }
+
+    /// Whether this caller may deactivate it.
+    ///
+    /// A managed account cannot be deactivated through the API **by anybody** —
+    /// the configuration is its source of truth, exactly as `DELETE /channels/{id}`
+    /// refuses a managed channel (§11). Letting an API call win would mean the next
+    /// reconciliation silently undoing it, which is worse than a refusal.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a managed account outright, and somebody else's with
+    /// [`DomainError::ScopeMissing`].
+    pub fn ensure_may_disable(&self, caller: UserId) -> Result<()> {
+        self.origin.ensure_mutable_through_api("service_account")?;
+
+        if self.created_by == Some(caller) {
+            Ok(())
+        } else {
+            Err(DomainError::ScopeMissing { scope: "manage" })
+        }
     }
 }
 
@@ -424,6 +548,7 @@ mod tests {
             Some("ArgoCD"),
             None,
             Origin::Dynamic,
+            Some(UserId::generate()),
             now(),
         )
         .unwrap();

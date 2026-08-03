@@ -199,6 +199,14 @@ pub(crate) struct Attachments {
     pub bucket: String,
     pub access_key: String,
     pub secret_key: String,
+    /// Meaningless to most self-hosted stores and required by the signature, so it
+    /// has a default rather than being asked for.
+    #[serde(default = "default_region")]
+    pub region: String,
+}
+
+fn default_region() -> String {
+    "us-east-1".to_owned()
 }
 
 /// What happens to a managed channel that disappears from the config.
@@ -415,10 +423,6 @@ impl Config {
         {
             pending
                 .push("[push.*] credentials — no push transport is wired in M1 (§6.2)".to_owned());
-        }
-
-        if self.attachments.is_some() {
-            pending.push("[attachments] — the object store adapter lands with M2".to_owned());
         }
 
         pending

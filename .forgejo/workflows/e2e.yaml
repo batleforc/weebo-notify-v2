@@ -1,9 +1,15 @@
 name: e2e
 
-# End-to-end tests against the real binary, with real dependencies: Postgres and
-# RustFS from testcontainers, and the identity provider in-process — it is a crate
-# in this workspace (ADR-0014), so there is no image to pull and no registry that
-# can be down when the suite runs.
+# Adapter conformance against real dependencies: every query, every LISTEN/NOTIFY
+# poke and every cursor replayed against a real Postgres rather than against the
+# in-memory doubles. The identity provider is in-process — it is a crate in this
+# workspace (ADR-0014), so there is no image to pull and no registry that can be
+# down when the suite runs.
+#
+# The database is a service container, not testcontainers: these are conformance
+# suites, and giving each of them its own container would spend more time starting
+# Postgres than testing it. Nothing here drives a container engine, which is why
+# this job asks for no socket and no privileges.
 #
 # Includes the `critical` suite (design §3.4) — blocking, never skipped, and growing
 # by one regression scenario with every bug fix.
@@ -31,8 +37,6 @@ jobs:
     runs-on: docker
     container:
       image: ghcr.io/catthehacker/ubuntu:act-24.04
-      # testcontainers drives the host's container engine from inside the job.
-      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
 
     services:
       # The persistence and event-bus suites talk to a plain database rather than a
@@ -73,13 +77,6 @@ jobs:
 
       - name: Install pinned tools
         run: mise install --yes
-
-      - name: Pre-pull the service images
-        # Pulling inside the test would count against the container start timeout
-        # and turn a slow registry into a flaky test.
-        run: |
-          docker pull postgres:17-alpine
-          docker pull rustfs/rustfs:latest
 
       - name: Critical suite
         # Runs first and separately: if a critical scenario is broken, that is the

@@ -3,9 +3,22 @@
 
 use notify_client_api::Client;
 use notify_client_api::types::{
-    Actions, ChannelId, ExternalId, Image, Priority, Progress, PublishBody, Published,
-    RevisionDraft, State, Status, Ttl,
+    Actions, AddMemberBody, Channel, ChannelId, ChannelPolicyBody, CreateChannelBody, Device,
+    EnrolBody, ExternalId, Image, Principal, Priority, Progress, PublishBody, Published,
+    PushTransport, RevisionDraft, Scope, State, Status, Ttl,
 };
+
+/// A channel as a *page* of channels carries it.
+///
+/// Structurally identical to [`Channel`], and a different type only because the
+/// OpenAPI document inlines the item schema inside `Page_Channel` instead of
+/// referencing it — so progenitor mints a second, nominally distinct struct. The
+/// alias keeps that wart out of the CLI, the TUI and the Tauri shell; the fix is in
+/// the spec, and it is written down in §14.1.
+pub type ChannelSummary = notify_client_api::types::PageChannelItemsItem;
+
+/// A notification as a page of them carries it. Same wart as [`ChannelSummary`].
+pub type InboxEntry = notify_client_api::types::PageNotificationItemsItem;
 
 use crate::config::Profile;
 use crate::error::ClientError;
@@ -14,6 +27,10 @@ use crate::error::ClientError;
 #[derive(Debug, Clone)]
 pub struct Session {
     api: Client,
+    /// The same client the generated one holds, kept for the one call that cannot
+    /// go through it — see `sync`.
+    http: reqwest::Client,
+    base: String,
 }
 
 /// A revision as a front end describes it, before it becomes a request body.
@@ -89,8 +106,12 @@ impl Session {
             .build()
             .map_err(ClientError::Transport)?;
 
+        let base = profile.url.as_str().trim_end_matches('/').to_owned();
+
         Ok(Self {
-            api: Client::new_with_client(profile.url.as_str().trim_end_matches('/'), http),
+            api: Client::new_with_client(&base, http.clone()),
+            http,
+            base,
         })
     }
 
@@ -148,5 +169,159 @@ impl Session {
             .map_err(ClientError::from)?;
 
         Ok(response.into_inner())
+    }
+
+    /// `GET /channels` — every channel this caller can see.
+    ///
+    /// Follows the cursor to the end rather than returning one page. A channel list
+    /// is a sidebar and a completion source, not a feed: a front end that showed
+    /// the first fifty and stopped would be quietly wrong for anybody in more.
+    pub async fn channels(&self) -> Result<Vec<ChannelSummary>, ClientError> {
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let page = self
+                .api
+                .list_channels(cursor.as_deref(), Some(100))
+                .await
+                .map_err(ClientError::from)?
+                .into_inner();
+
+            all.extend(page.items);
+            // Followed until `next` is null, never until a page looks short: rows
+            // can expire between two calls (design §8).
+            match page.next {
+                Some(next) => cursor = Some(next.to_string()),
+                None => return Ok(all),
+            }
+        }
+    }
+
+    /// `POST /channels` — create one, with the caller as its first manager.
+    pub async fn create_channel(
+        &self,
+        id: &str,
+        display_name: Option<&str>,
+    ) -> Result<Channel, ClientError> {
+        let response = self
+            .api
+            .create_channel(&CreateChannelBody {
+                id: ChannelId::from(id.to_owned()),
+                display_name: display_name.map(ToOwned::to_owned),
+            })
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(response.into_inner())
+    }
+
+    /// `PATCH /channels/{id}` — change part of a channel's policy (§8).
+    ///
+    /// Partial by construction: the fields left `None` are not sent at all, so two
+    /// people editing two different knobs from two screens do not overwrite each
+    /// other. A `max_ttl` of `Ttl::Forever` (`"0"`) lifts the ceiling — §7.2bis's own
+    /// spelling for "unbounded", rather than a second way of saying it.
+    pub async fn update_channel_policy(
+        &self,
+        channel: &str,
+        policy: ChannelPolicyBody,
+    ) -> Result<Channel, ClientError> {
+        let response = self
+            .api
+            .update_channel(&ChannelId::from(channel.to_owned()), &policy)
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(response.into_inner())
+    }
+
+    /// `POST /channels/{id}/members` — add a principal to a channel.
+    ///
+    /// "Join" and "invite" are the same call with a different principal, which is
+    /// why there is one method: the server decides whether the caller may, and a
+    /// second method would only duplicate that decision badly.
+    pub async fn add_member(
+        &self,
+        channel: &str,
+        principal: Principal,
+        scopes: Vec<Scope>,
+    ) -> Result<(), ClientError> {
+        self.api
+            .add_member(
+                &ChannelId::from(channel.to_owned()),
+                &AddMemberBody { principal, scopes },
+            )
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(())
+    }
+
+    /// `POST /devices` — enrol this machine.
+    ///
+    /// `stream` transport and no key: the CLI receives over SSE on TLS, so there is
+    /// no third party carrying the payload and nothing to re-encrypt for (§6.2).
+    /// The mobile shells are the ones that need a device key, and they are M6.
+    pub async fn enrol_device(&self, label: &str) -> Result<Device, ClientError> {
+        let response = self
+            .api
+            .enrol_device(&EnrolBody {
+                label: label.to_owned(),
+                transport: PushTransport::Stream,
+                public_key: None,
+            })
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(response.into_inner())
+    }
+
+    /// `GET /devices` — the caller's devices, revoked ones included.
+    pub async fn devices(&self) -> Result<Vec<Device>, ClientError> {
+        let response = self.api.list_devices().await.map_err(ClientError::from)?;
+
+        Ok(response.into_inner())
+    }
+
+    /// `GET /notifications` — one page of the inbox.
+    ///
+    /// One page on purpose, unlike [`Self::channels`]: an inbox is unbounded, and a
+    /// client that walked it all would download a year of history to print ten
+    /// lines.
+    pub async fn inbox(
+        &self,
+        channels: Option<&str>,
+        limit: u16,
+    ) -> Result<Vec<InboxEntry>, ClientError> {
+        let response = self
+            .api
+            .inbox(
+                channels,
+                None,
+                None,
+                Some(i32::from(limit)),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(response.into_inner().items)
+    }
+}
+
+impl Session {
+    /// The server this session talks to, without a trailing slash.
+    pub(crate) fn base_url(&self) -> &str {
+        &self.base
+    }
+
+    /// The authenticated HTTP client, for the one call the generated one cannot
+    /// make (see `sync`).
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.http
     }
 }

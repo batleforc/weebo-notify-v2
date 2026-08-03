@@ -119,6 +119,30 @@ export const useInbox = defineStore("inbox", () => {
     return ordered;
   });
 
+  /**
+   * Append a row and index the value the list actually holds.
+   *
+   * The re-read is the point. `rows` is a `ref`, so reading an element back gives
+   * the **reactive proxy** wrapping it, while the object handed in is the raw one.
+   * Indexing the raw object would mean later mutations — a revision landing on this
+   * row — going straight to the target and never tripping the proxy, so nothing
+   * subscribed would be told. Today the UI still refreshes because `applyRevision`
+   * sorts immediately afterwards and *that* mutation wakes everyone; the day
+   * somebody skips a sort that changes no order, rows loaded past the first page
+   * would silently stop updating. Correct by construction beats correct by
+   * side effect.
+   */
+  function remember(row: Row): void {
+    if (index.has(row.id)) {
+      return;
+    }
+    rows.value.push(row);
+    const stored = rows.value.at(-1);
+    if (stored) {
+      index.set(stored.id, stored);
+    }
+  }
+
   function reindex(): void {
     index.clear();
     for (const row of rows.value) {
@@ -183,10 +207,7 @@ export const useInbox = defineStore("inbox", () => {
         throwOnError: true,
       });
       for (const row of page.data.items) {
-        if (!index.has(row.id)) {
-          rows.value.push(row);
-          index.set(row.id, row);
-        }
+        remember(row);
       }
       cursor.value = page.data.next ?? null;
     } catch (caught) {
@@ -278,10 +299,7 @@ export const useInbox = defineStore("inbox", () => {
   /** Move everything the separator is announcing into the list. */
   function revealPending(): void {
     for (const row of pending.value) {
-      if (!index.has(row.id)) {
-        rows.value.push(row);
-        index.set(row.id, row);
-      }
+      remember(row);
     }
     pending.value = [];
     sort();

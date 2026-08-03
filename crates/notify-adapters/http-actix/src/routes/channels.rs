@@ -1,7 +1,7 @@
 //! Channels and their members (design §8, §11).
 
-use actix_web::{HttpResponse, delete, get, post, web};
-use notify_domain::{Channel, ChannelId, Principal, Scope};
+use actix_web::{HttpResponse, delete, get, patch, post, web};
+use notify_domain::{Ceiling, Channel, ChannelId, PolicyEdit, Principal, Priority, Scope, Ttl};
 use notify_ports::Page;
 use serde::Deserialize;
 use utoipa::ToSchema;
@@ -19,6 +19,54 @@ pub struct CreateChannelBody {
     /// A human label, when the id is not one.
     #[serde(default)]
     pub display_name: Option<String>,
+}
+
+/// A partial change to a channel's policy (design §8).
+///
+/// Absent fields are left alone, which is what makes this a `PATCH` rather than a
+/// `PUT`: a client that only wants to lower the TTL ceiling must not have to restate
+/// the priority and the receipts flag, and restating them is how two admins on two
+/// screens overwrite each other.
+///
+/// Lifting a ceiling is spelled `"0"`, not `null`, and that is deliberate. §7.2bis
+/// already gives `"0"` the meaning "unbounded" everywhere a duration appears, and a
+/// ceiling of *forever* **is** the absence of a ceiling — so there is one spelling
+/// rather than two. The alternative, a `null` that means something different from an
+/// absent key, is a shape no generated client can express: progenitor renders every
+/// optional field with `skip_serializing_if`, so the Rust client could omit the key
+/// but never send it null (ADR-0009 promises clients come from the contract, which
+/// means the contract may not describe things they cannot say).
+///
+/// `allow_forever` is not here on purpose — §7.2bis makes unbounded retention an
+/// operator decision, so it stays in configuration.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct ChannelPolicyBody {
+    /// The TTL applied when a publisher asks for none, e.g. `7d`.
+    #[serde(default)]
+    pub default_ttl: Option<Ttl>,
+    /// The forced ceiling, e.g. `48h`. `"0"` lifts it.
+    #[serde(default)]
+    pub max_ttl: Option<Ttl>,
+    /// The priority applied when a publisher asks for none.
+    #[serde(default)]
+    pub default_priority: Option<Priority>,
+    /// Whether delivery and read receipts are collected here (§7.3).
+    #[serde(default)]
+    pub receipts_enabled: Option<bool>,
+}
+
+impl From<ChannelPolicyBody> for PolicyEdit {
+    fn from(body: ChannelPolicyBody) -> Self {
+        Self {
+            default_ttl: body.default_ttl,
+            max_ttl: body.max_ttl.map(|ceiling| match ceiling {
+                Ttl::Forever => Ceiling::None,
+                Ttl::For(duration) => Ceiling::At(duration),
+            }),
+            default_priority: body.default_priority,
+            receipts_enabled: body.receipts_enabled,
+        }
+    }
 }
 
 /// Add somebody to a channel.
@@ -82,6 +130,40 @@ pub(crate) async fn create_channel(
         .await?;
 
     Ok(HttpResponse::Created().json(channel))
+}
+
+/// Change a channel's policy. Refused on a GitOps-managed one.
+#[utoipa::path(
+    patch,
+    path = "/channels/{channel}",
+    tag = "channels",
+    request_body = ChannelPolicyBody,
+    params(("channel" = String, Path, description = "Channel id")),
+    responses(
+        (status = 200, description = "The channel as it now stands", body = Channel),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "No `manage` scope there", body = Problem),
+        (status = 409, description = "The channel is managed; change it in GitOps", body = Problem),
+        (status = 422, description = "A policy the channel could not then answer a publish with", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[patch("/channels/{channel}")]
+pub(crate) async fn update_channel(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+    body: web::Json<ChannelPolicyBody>,
+) -> Result<web::Json<Channel>, ApiError> {
+    let channel = ChannelId::parse(&path.into_inner())?;
+    let edit = PolicyEdit::from(body.into_inner());
+
+    Ok(web::Json(
+        state
+            .update_channel
+            .execute(&caller.0, &channel, edit)
+            .await?,
+    ))
 }
 
 /// Delete a channel. Refused on a GitOps-managed one.

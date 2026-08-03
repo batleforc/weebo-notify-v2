@@ -31,6 +31,16 @@ tasks:
     cmds:
       - cargo nextest run --workspace -E 'test(/^e2e::/)' --no-fail-fast
 
+  oidc-compat:
+    desc: "The identity-provider compatibility suite (§3.2, T29) — set WNK_TEST_OIDC_PROVIDER to pick one"
+    # The one independent reading of OIDC this project gets (§15). Defaults to the
+    # in-process mock, which is what makes it runnable on a laptop; naming an
+    # external provider without an issuer FAILS rather than skips, on purpose — a
+    # green tick meaning "no provider was reachable" is the failure mode this suite
+    # exists to prevent.
+    cmds:
+      - cargo nextest run -p notify-oidc --test oidc_compat --no-fail-fast
+
   web:
     desc: "Web unit tests (vitest) — skipped while web/ does not exist yet"
     cmds:

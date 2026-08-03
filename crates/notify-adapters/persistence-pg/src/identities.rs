@@ -9,8 +9,8 @@
 //! endpoint that can show a secret twice (scenario T12).
 
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, ChannelId, Origin, Principal, Scope,
-    ServiceAccount, ServiceAccountId, User, UserId,
+    ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, AttachmentId, ChannelId, Origin, Principal,
+    Profile, ProfileField, Scope, ServiceAccount, ServiceAccountId, User, UserId,
 };
 use notify_ports::{
     ApiKeyRepository, PortResult, ServiceAccountRepository, StoredApiKey, UserRepository,
@@ -42,18 +42,35 @@ impl UserRepository for PgStore {
     }
 
     async fn upsert(&self, user: &User) -> PortResult<()> {
+        let overridden: Vec<String> = user
+            .profile
+            .overridden
+            .iter()
+            .map(|field| field_name(*field).to_owned())
+            .collect();
+
         sqlx::query(
-            "INSERT INTO users (id, oidc_subject, email, display_name, created_at)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO users
+                 (id, oidc_subject, email, display_name, timezone, locale,
+                  overridden_fields, avatar, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (id) DO UPDATE
-               SET oidc_subject = EXCLUDED.oidc_subject,
-                   email        = EXCLUDED.email,
-                   display_name = EXCLUDED.display_name",
+               SET oidc_subject      = EXCLUDED.oidc_subject,
+                   email             = EXCLUDED.email,
+                   display_name      = EXCLUDED.display_name,
+                   timezone          = EXCLUDED.timezone,
+                   locale            = EXCLUDED.locale,
+                   overridden_fields = EXCLUDED.overridden_fields,
+                   avatar            = EXCLUDED.avatar",
         )
         .bind(user.id.to_string())
         .bind(&user.oidc_subject)
         .bind(user.email.as_deref())
         .bind(user.display_name.as_deref())
+        .bind(user.profile.timezone.as_deref())
+        .bind(user.profile.locale.as_deref())
+        .bind(&overridden)
+        .bind(user.profile.avatar.map(|id| id.to_string()))
         .bind(user.created_at)
         .execute(self.pool())
         .await
@@ -67,7 +84,8 @@ impl PgStore {
     /// text argument.
     async fn one_user(&self, filter: &'static str, argument: &str) -> PortResult<Option<User>> {
         let sql = [
-            "SELECT id, oidc_subject, email, display_name, created_at FROM users ",
+            "SELECT id, oidc_subject, email, display_name, timezone, locale, \
+             overridden_fields, avatar, created_at FROM users ",
             filter,
         ]
         .concat();
@@ -84,14 +102,71 @@ impl PgStore {
 
 fn hydrate_user(row: &PgRow) -> PortResult<User> {
     let id: String = row.try_get("id").map_err(|e| fail("user", e))?;
+    let display_name: Option<String> = row.try_get("display_name").map_err(|e| fail("user", e))?;
+    let overridden: Vec<String> = row
+        .try_get("overridden_fields")
+        .map_err(|e| fail("user", e))?;
 
     Ok(User {
         id: parse("user.id", &id, str::parse::<UserId>)?,
         oidc_subject: row.try_get("oidc_subject").map_err(|e| fail("user", e))?,
         email: row.try_get("email").map_err(|e| fail("user", e))?,
-        display_name: row.try_get("display_name").map_err(|e| fail("user", e))?,
+        profile: Profile {
+            display_name: display_name.clone(),
+            timezone: row.try_get("timezone").map_err(|e| fail("user", e))?,
+            locale: row.try_get("locale").map_err(|e| fail("user", e))?,
+            avatar: row
+                .try_get::<Option<String>, _>("avatar")
+                .map_err(|e| fail("user", e))?
+                .map(|raw| parse("user.avatar", &raw, str::parse::<AttachmentId>))
+                .transpose()?,
+            overridden: overridden
+                .iter()
+                .filter_map(|name| field_of(name))
+                .collect(),
+        },
+        display_name,
         created_at: row.try_get("created_at").map_err(|e| fail("user", e))?,
     })
+}
+
+/// The wire name of a claimed field, and the only place it is spelled.
+const fn field_name(field: ProfileField) -> &'static str {
+    match field {
+        ProfileField::DisplayName => "display_name",
+        ProfileField::Timezone => "timezone",
+        ProfileField::Locale => "locale",
+    }
+}
+
+/// The reverse, tolerant of a name this build does not know.
+///
+/// Dropping an unknown entry rather than failing the read is deliberate, and it is
+/// the opposite of what [`crate::audit`] does with an unknown action: an audit log
+/// that silently renames an action loses evidence, while a profile field this build
+/// has never heard of is simply not one it can show.
+///
+/// **What that costs, stated rather than implied.** Dropping it on read means the
+/// next write from this replica drops it from the row too — an older replica that
+/// syncs someone's claims mid-rollout erases a field a newer one had claimed, and
+/// the field quietly goes back to following the identity provider. Nobody sees an
+/// error; a timezone just reverts.
+///
+/// The mitigation is operational, not code: a new profile field ships in one
+/// release that only *reads* it and a later one that writes it, so no replica ever
+/// meets a name it does not know. If that ever becomes too subtle to rely on, the
+/// fix is to carry unknown names through untouched — which costs the `Profile` a
+/// field the domain cannot interpret, and is not worth it before then.
+fn field_of(name: &str) -> Option<ProfileField> {
+    match name {
+        "display_name" => Some(ProfileField::DisplayName),
+        "timezone" => Some(ProfileField::Timezone),
+        "locale" => Some(ProfileField::Locale),
+        unknown => {
+            tracing::debug!(field = unknown, "ignoring an unknown claimed profile field");
+            None
+        }
+    }
 }
 
 // --- Service accounts ------------------------------------------------------
@@ -100,7 +175,7 @@ fn hydrate_user(row: &PgRow) -> PortResult<User> {
 impl ServiceAccountRepository for PgStore {
     async fn get(&self, id: &ServiceAccountId) -> PortResult<Option<ServiceAccount>> {
         let row = sqlx::query(
-            "SELECT id, display_name, description, origin, created_at, disabled_at
+            "SELECT id, display_name, description, origin, created_by, created_at, disabled_at
              FROM service_accounts WHERE id = $1",
         )
         .bind(id.as_str())
@@ -113,7 +188,7 @@ impl ServiceAccountRepository for PgStore {
 
     async fn list(&self) -> PortResult<Vec<ServiceAccount>> {
         let rows = sqlx::query(
-            "SELECT id, display_name, description, origin, created_at, disabled_at
+            "SELECT id, display_name, description, origin, created_by, created_at, disabled_at
              FROM service_accounts ORDER BY id",
         )
         .fetch_all(self.pool())
@@ -126,18 +201,23 @@ impl ServiceAccountRepository for PgStore {
     async fn upsert(&self, account: &ServiceAccount) -> PortResult<()> {
         sqlx::query(
             "INSERT INTO service_accounts
-                 (id, display_name, description, origin, created_at, disabled_at)
-             VALUES ($1, $2, $3, $4, $5, $6)
+                 (id, display_name, description, origin, created_by, created_at, disabled_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (id) DO UPDATE
                SET display_name = EXCLUDED.display_name,
                    description  = EXCLUDED.description,
                    origin       = EXCLUDED.origin,
                    disabled_at  = EXCLUDED.disabled_at",
+            // `created_by` is deliberately absent from the update: ownership is
+            // decided once, at creation. The reconciler rewrites managed accounts on
+            // every pass, and letting it write `NULL` here would quietly disown a
+            // dynamic account that later appeared in the configuration.
         )
         .bind(account.id.as_str())
         .bind(account.display_name.as_deref())
         .bind(account.description.as_deref())
         .bind(enum_to_text("service_account.origin", &account.origin)?)
+        .bind(account.created_by.map(|id| id.to_string()))
         .bind(account.created_at)
         .bind(account.disabled_at)
         .execute(self.pool())
@@ -148,7 +228,7 @@ impl ServiceAccountRepository for PgStore {
 
     async fn list_managed(&self) -> PortResult<Vec<ServiceAccount>> {
         let rows = sqlx::query(
-            "SELECT id, display_name, description, origin, created_at, disabled_at
+            "SELECT id, display_name, description, origin, created_by, created_at, disabled_at
              FROM service_accounts WHERE origin = 'managed' ORDER BY id",
         )
         .fetch_all(self.pool())
@@ -165,7 +245,14 @@ fn hydrate_service_account(row: &PgRow) -> PortResult<ServiceAccount> {
         .try_get("origin")
         .map_err(|e| fail("service_account", e))?;
 
+    let created_by: Option<String> = row
+        .try_get("created_by")
+        .map_err(|e| fail("service_account", e))?;
+
     Ok(ServiceAccount {
+        created_by: created_by
+            .map(|raw| parse("service_account.created_by", &raw, str::parse::<UserId>))
+            .transpose()?,
         id: parse("service_account.id", &id, ServiceAccountId::parse)?,
         display_name: row
             .try_get("display_name")

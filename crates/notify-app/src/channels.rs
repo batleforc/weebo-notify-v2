@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use notify_domain::{Channel, ChannelId, DomainError, Membership, Principal, Scope};
+use notify_domain::{Channel, ChannelId, DomainError, Membership, PolicyEdit, Principal, Scope};
 use notify_ports::{AuditEntry, AuditLog, ChannelRepository, Clock, Failure, Page, PageRequest};
 
 use crate::authz::{Authorizer, Caller};
@@ -223,6 +223,87 @@ impl ManageMembers {
     }
 }
 
+/// `PATCH /api/v1/channels/{id}` — the channel's policy (design §8).
+///
+/// Its own use case rather than a method on [`ManageMembers`]: members and policy
+/// are the two things `manage` covers, and a type per operation is what keeps the
+/// authorisation check visible at each call site.
+#[derive(Clone)]
+pub struct UpdateChannel {
+    channels: Arc<dyn ChannelRepository>,
+    authorizer: Authorizer,
+    audit: Arc<dyn AuditLog>,
+    clock: Arc<dyn Clock>,
+}
+
+impl core::fmt::Debug for UpdateChannel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UpdateChannel").finish_non_exhaustive()
+    }
+}
+
+impl UpdateChannel {
+    /// Wire it.
+    #[must_use]
+    pub fn new(
+        channels: Arc<dyn ChannelRepository>,
+        authorizer: Authorizer,
+        audit: Arc<dyn AuditLog>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            channels,
+            authorizer,
+            audit,
+            clock,
+        }
+    }
+
+    /// Change part of a channel's policy. Managed channels are refused (§8, §11).
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        channel_id: &ChannelId,
+        edit: PolicyEdit,
+    ) -> Result<Channel, Failure> {
+        let mut channel = self
+            .authorizer
+            .authorize(caller, channel_id, Scope::Manage)
+            .await?;
+        // Same refusal as `DELETE` and the member routes: config owns a managed
+        // channel's policy, and letting this through would only move the argument to
+        // the next reconciliation (design §11).
+        channel
+            .origin
+            .ensure_mutable_through_api("channel.policy")?;
+
+        // The domain decides whether the edit is coherent; an incoherent one never
+        // reaches storage.
+        if !channel.edit_policy(edit)? {
+            // Nothing moved. Returning the channel is still the right answer — a
+            // `PATCH` is idempotent — but writing a row and an audit entry saying the
+            // policy changed would be a record of something that did not happen.
+            return Ok(channel);
+        }
+
+        self.channels.upsert(&channel).await?;
+        self.audit
+            .record(&AuditEntry {
+                actor: caller.principal.clone(),
+                action: "channel.policy_updated",
+                target: Some(channel_id.to_string()),
+                channel: Some(channel_id.clone()),
+                // The resulting policy rather than the request: an audit log is read
+                // to answer "what was it set to", and a partial body cannot answer it.
+                detail: serde_json::to_value(channel.policy).ok(),
+                at: self.clock.now(),
+            })
+            .await?;
+
+        Ok(channel)
+    }
+}
+
 /// `DELETE /api/v1/channels/{id}` (design §8).
 #[derive(Clone)]
 pub struct DeleteChannel {
@@ -294,6 +375,7 @@ mod tests {
         list: ListChannels,
         create: CreateChannel,
         members: ManageMembers,
+        update: UpdateChannel,
         delete: DeleteChannel,
         alice: Principal,
     }
@@ -315,6 +397,12 @@ mod tests {
                 Arc::new(clock.clone()),
             ),
             members: ManageMembers::new(
+                Arc::new(store.clone()),
+                authorizer.clone(),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
+            update: UpdateChannel::new(
                 Arc::new(store.clone()),
                 authorizer.clone(),
                 Arc::new(store.clone()),
@@ -507,6 +595,109 @@ mod tests {
                 )
                 .await
                 .is_err()
+        );
+        assert!(
+            fixture
+                .update
+                .execute(
+                    &caller,
+                    &channel_id("cluster-ovh-1"),
+                    PolicyEdit {
+                        receipts_enabled: Some(true),
+                        ..PolicyEdit::default()
+                    },
+                )
+                .await
+                .is_err(),
+            "a policy is config's to set on a managed channel too"
+        );
+    }
+
+    #[tokio::test]
+    async fn updating_a_policy_needs_manage_and_is_audited() {
+        let fixture = fixture();
+        let caller = Caller::member(fixture.alice.clone());
+        fixture
+            .create
+            .execute(&caller, channel_id("ci-infra"), None)
+            .await
+            .unwrap();
+
+        let updated = fixture
+            .update
+            .execute(
+                &caller,
+                &channel_id("ci-infra"),
+                PolicyEdit {
+                    receipts_enabled: Some(true),
+                    ..PolicyEdit::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(updated.policy.receipts_enabled);
+        assert!(
+            fixture
+                .store
+                .audit_entries()
+                .iter()
+                .any(|entry| entry.action == "channel.policy_updated")
+        );
+
+        let bob = Principal::User {
+            id: UserId::generate(),
+        };
+        fixture
+            .members
+            .add(
+                &caller,
+                &channel_id("ci-infra"),
+                bob.clone(),
+                vec![Scope::Subscribe],
+            )
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .update
+                .execute(
+                    &Caller::member(bob),
+                    &channel_id("ci-infra"),
+                    PolicyEdit {
+                        receipts_enabled: Some(false),
+                        ..PolicyEdit::default()
+                    },
+                )
+                .await
+                .is_err(),
+            "a subscriber must not be able to turn receipts off for everybody"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_patch_that_changes_nothing_writes_nothing() {
+        let fixture = fixture();
+        let caller = Caller::member(fixture.alice.clone());
+        fixture
+            .create
+            .execute(&caller, channel_id("ci-infra"), None)
+            .await
+            .unwrap();
+
+        fixture
+            .update
+            .execute(&caller, &channel_id("ci-infra"), PolicyEdit::default())
+            .await
+            .unwrap();
+
+        assert!(
+            !fixture
+                .store
+                .audit_entries()
+                .iter()
+                .any(|entry| entry.action == "channel.policy_updated"),
+            "an audit entry for a policy that did not move is a false record"
         );
     }
 

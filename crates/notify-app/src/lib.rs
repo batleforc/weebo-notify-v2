@@ -35,6 +35,7 @@
 //! | Administration | [`ListChannels`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
 //! | Background | [`PurgeExpired`] |
 
+pub mod accounts;
 pub mod auth;
 pub mod authz;
 pub mod channels;
@@ -43,13 +44,15 @@ pub mod fanout;
 pub mod interact;
 pub mod keys;
 pub mod maintenance;
+pub mod profiles;
 pub mod publish;
 pub mod read;
 pub mod sync;
 
+pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
 pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
-pub use channels::{CreateChannel, DeleteChannel, ListChannels, ManageMembers};
+pub use channels::{CreateChannel, DeleteChannel, ListChannels, ManageMembers, UpdateChannel};
 pub use devices::{EnrolDevice, ListDevices, RevokeDevice};
 pub use fanout::Fanout;
 pub use interact::{ListInteractions, PostReceipt, RecordInteraction, SilenceNotification};
@@ -57,6 +60,7 @@ pub use keys::{
     CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, RevokeApiKey, UlidKeyGenerator,
 };
 pub use maintenance::{PurgeExpired, PurgeReport};
+pub use profiles::{ReadAvatar, ReadProfile, SetAvatar, UpdateProfile};
 pub use publish::{
     PublishNotification, PublishRequest, Published, UpsertNotification, UpsertRequest,
 };

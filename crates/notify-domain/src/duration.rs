@@ -128,7 +128,7 @@ impl fmt::Display for HumanDuration {
             (MINUTE, 'm'),
             (SECOND, 's'),
         ] {
-            if seconds % unit_seconds == 0 {
+            if seconds.is_multiple_of(unit_seconds) {
                 return write!(f, "{}{suffix}", seconds / unit_seconds);
             }
         }

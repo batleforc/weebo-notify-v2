@@ -7,11 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
+notify-attachments-s3.workspace = true
+notify-avatars.workspace = true
 notify-http-actix.workspace = true
 
 actix-web.workspace = true

@@ -1153,6 +1153,66 @@ channel key — in which case clients fall back to the reference.*/
             value.parse()
         }
     }
+    /**The body of an avatar upload: the image bytes, nothing wrapping them.
+
+Nothing reads it: the handler takes `web::Bytes` directly. It exists so the
+document has a name for "raw bytes".
+
+A named schema rather than an inline one because the wire type has to be
+`string` with `format: binary` — that is how OpenAPI spells "raw bytes", and a
+generator that reads anything else refuses the document outright rather than
+guessing (which is what `Vec<u8>` did: an array of integers).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The body of an avatar upload: the image bytes, nothing wrapping them.\n\nNothing reads it: the handler takes `web::Bytes` directly. It exists so the\ndocument has a name for \"raw bytes\".\n\nA named schema rather than an inline one because the wire type has to be\n`string` with `format: binary` — that is how OpenAPI spells \"raw bytes\", and a\ngenerator that reads anything else refuses the document outright rather than\nguessing (which is what `Vec<u8>` did: an array of integers).",
+    ///  "type": "string",
+    ///  "format": "binary"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct AvatarUpload(pub ::std::string::String);
+    impl ::std::ops::Deref for AvatarUpload {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<AvatarUpload> for ::std::string::String {
+        fn from(value: AvatarUpload) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for AvatarUpload {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for AvatarUpload {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for AvatarUpload {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     ///A channel.
     ///
     /// <details><summary>JSON schema</summary>
@@ -1307,6 +1367,74 @@ against an older build still parses a channel.*/
 is a product decision, not a default.*/
         pub receipts_enabled: bool,
         pub ttl: TtlPolicy,
+    }
+    /**A partial change to a channel's policy (design §8).
+
+Absent fields are left alone, which is what makes this a `PATCH` rather than a
+`PUT`: a client that only wants to lower the TTL ceiling must not have to restate
+the priority and the receipts flag, and restating them is how two admins on two
+screens overwrite each other.
+
+Lifting a ceiling is spelled `"0"`, not `null`, and that is deliberate. §7.2bis
+already gives `"0"` the meaning "unbounded" everywhere a duration appears, and a
+ceiling of *forever* **is** the absence of a ceiling — so there is one spelling
+rather than two. The alternative, a `null` that means something different from an
+absent key, is a shape no generated client can express: progenitor renders every
+optional field with `skip_serializing_if`, so the Rust client could omit the key
+but never send it null (ADR-0009 promises clients come from the contract, which
+means the contract may not describe things they cannot say).
+
+`allow_forever` is not here on purpose — §7.2bis makes unbounded retention an
+operator decision, so it stays in configuration.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A partial change to a channel's policy (design §8).\n\nAbsent fields are left alone, which is what makes this a `PATCH` rather than a\n`PUT`: a client that only wants to lower the TTL ceiling must not have to restate\nthe priority and the receipts flag, and restating them is how two admins on two\nscreens overwrite each other.\n\nLifting a ceiling is spelled `\"0\"`, not `null`, and that is deliberate. §7.2bis\nalready gives `\"0\"` the meaning \"unbounded\" everywhere a duration appears, and a\nceiling of *forever* **is** the absence of a ceiling — so there is one spelling\nrather than two. The alternative, a `null` that means something different from an\nabsent key, is a shape no generated client can express: progenitor renders every\noptional field with `skip_serializing_if`, so the Rust client could omit the key\nbut never send it null (ADR-0009 promises clients come from the contract, which\nmeans the contract may not describe things they cannot say).\n\n`allow_forever` is not here on purpose — §7.2bis makes unbounded retention an\noperator decision, so it stays in configuration.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "default_priority": {
+    ///      "$ref": "#/components/schemas/Priority"
+    ///    },
+    ///    "default_ttl": {
+    ///      "$ref": "#/components/schemas/Ttl"
+    ///    },
+    ///    "max_ttl": {
+    ///      "$ref": "#/components/schemas/Ttl"
+    ///    },
+    ///    "receipts_enabled": {
+    ///      "description": "Whether delivery and read receipts are collected here (§7.3).",
+    ///      "type": [
+    ///        "boolean",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ChannelPolicyBody {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub default_priority: ::std::option::Option<Priority>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub default_ttl: ::std::option::Option<Ttl>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub max_ttl: ::std::option::Option<Ttl>,
+        ///Whether delivery and read receipts are collected here (§7.3).
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub receipts_enabled: ::std::option::Option<bool>,
+    }
+    impl ::std::default::Default for ChannelPolicyBody {
+        fn default() -> Self {
+            Self {
+                default_priority: Default::default(),
+                default_ttl: Default::default(),
+                max_ttl: Default::default(),
+                receipts_enabled: Default::default(),
+            }
+        }
     }
     ///One option of a `choice` action.
     ///
@@ -1575,6 +1703,53 @@ an absent title is the same refusal an empty one gets.*/
                 title: Default::default(),
             }
         }
+    }
+    ///What it takes to create one.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What it takes to create one.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id"
+    ///  ],
+    ///  "properties": {
+    ///    "description": {
+    ///      "description": "What it is for, read by whoever finds it in an audit log in six months.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "display_name": {
+    ///      "description": "What clients show instead of the id.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "id": {
+    ///      "description": "The name it will be known by, everywhere it appears — as an `author`, in the\naudit log, in a member list. Chosen rather than generated for exactly that\nreason (§5.2bis).",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateAccountBody {
+        ///What it is for, read by whoever finds it in an audit log in six months.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        ///What clients show instead of the id.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        /**The name it will be known by, everywhere it appears — as an `author`, in the
+audit log, in a member list. Chosen rather than generated for exactly that
+reason (§5.2bis).*/
+        pub id: ::std::string::String,
     }
     ///Create a channel through the API. GitOps-managed ones come from config instead.
     ///
@@ -6686,6 +6861,240 @@ ceremony.*/
         #[serde(rename = "type")]
         pub type_: ::std::string::String,
     }
+    ///Everything a client shows about a person, beyond their identity.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Everything a client shows about a person, beyond their identity.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "avatar": {
+    ///      "$ref": "#/components/schemas/AttachmentId"
+    ///    },
+    ///    "display_name": {
+    ///      "description": "What clients show. Falls back to the identity when unset.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "locale": {
+    ///      "description": "A BCP 47 tag such as `fr-FR`.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "overridden": {
+    ///      "description": "The fields this person set themselves.\n\nPublic because the API surfaces it: a settings screen has to be able to say\n\"this one is yours, and this one follows your identity provider\", which is\nthe difference between an editable field and a mysterious one.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ProfileField"
+    ///      },
+    ///      "uniqueItems": true
+    ///    },
+    ///    "timezone": {
+    ///      "description": "An IANA name such as `Europe/Paris`.\n\nValidated against the real database rather than a shape: this is the default\nquiet hours are resolved in (§7.4), so a plausible-looking `Europe/Pris`\naccepted today becomes a notification that does not arrive in six months,\nwith nothing connecting the two.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Profile {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub avatar: ::std::option::Option<AttachmentId>,
+        ///What clients show. Falls back to the identity when unset.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        ///A BCP 47 tag such as `fr-FR`.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub locale: ::std::option::Option<::std::string::String>,
+        /**The fields this person set themselves.
+
+Public because the API surfaces it: a settings screen has to be able to say
+"this one is yours, and this one follows your identity provider", which is
+the difference between an editable field and a mysterious one.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub overridden: ::std::option::Option<Vec<ProfileField>>,
+        /**An IANA name such as `Europe/Paris`.
+
+Validated against the real database rather than a shape: this is the default
+quiet hours are resolved in (§7.4), so a plausible-looking `Europe/Pris`
+accepted today becomes a notification that does not arrive in six months,
+with nothing connecting the two.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub timezone: ::std::option::Option<::std::string::String>,
+    }
+    impl ::std::default::Default for Profile {
+        fn default() -> Self {
+            Self {
+                avatar: Default::default(),
+                display_name: Default::default(),
+                locale: Default::default(),
+                overridden: Default::default(),
+                timezone: Default::default(),
+            }
+        }
+    }
+    /**A partial edit of the caller's profile.
+
+Every field is doubly optional on the wire, and the two levels mean different
+things — this is the whole reason the body is not just a `Profile`:
+
+* **absent** — leave the field exactly as it is;
+* **`null`** — hand the field back to the identity provider, so the next login
+  refreshes it;
+* **a value** — claim it, and stop later logins from overwriting it (§2.4).
+
+Without the middle case there is no way back: somebody who typed a display name
+once would be maintaining it by hand forever.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A partial edit of the caller's profile.\n\nEvery field is doubly optional on the wire, and the two levels mean different\nthings — this is the whole reason the body is not just a `Profile`:\n\n* **absent** — leave the field exactly as it is;\n* **`null`** — hand the field back to the identity provider, so the next login\n  refreshes it;\n* **a value** — claim it, and stop later logins from overwriting it (§2.4).\n\nWithout the middle case there is no way back: somebody who typed a display name\nonce would be maintaining it by hand forever.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "display_name": {
+    ///      "description": "The name shown next to everything this person publishes.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "locale": {
+    ///      "description": "A BCP 47 tag such as `fr-FR`.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "timezone": {
+    ///      "description": "An IANA name such as `Europe/Paris`, validated against the real database.\nIt is the default quiet hours are resolved in (§7.4).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProfileBody {
+        ///The name shown next to everything this person publishes.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        ///A BCP 47 tag such as `fr-FR`.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub locale: ::std::option::Option<::std::string::String>,
+        /**An IANA name such as `Europe/Paris`, validated against the real database.
+It is the default quiet hours are resolved in (§7.4).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub timezone: ::std::option::Option<::std::string::String>,
+    }
+    impl ::std::default::Default for ProfileBody {
+        fn default() -> Self {
+            Self {
+                display_name: Default::default(),
+                locale: Default::default(),
+                timezone: Default::default(),
+            }
+        }
+    }
+    /**A field of a profile that can be claimed by its owner.
+
+Named rather than positional: this set is persisted, and a variant added in the
+middle of a tuple would silently re-map what people had claimed.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A field of a profile that can be claimed by its owner.\n\nNamed rather than positional: this set is persisted, and a variant added in the\nmiddle of a tuple would silently re-map what people had claimed.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "display_name",
+    ///    "timezone",
+    ///    "locale"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum ProfileField {
+        #[serde(rename = "display_name")]
+        DisplayName,
+        #[serde(rename = "timezone")]
+        Timezone,
+        #[serde(rename = "locale")]
+        Locale,
+    }
+    impl ::std::fmt::Display for ProfileField {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::DisplayName => f.write_str("display_name"),
+                Self::Timezone => f.write_str("timezone"),
+                Self::Locale => f.write_str("locale"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for ProfileField {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "display_name" => Ok(Self::DisplayName),
+                "timezone" => Ok(Self::Timezone),
+                "locale" => Ok(Self::Locale),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for ProfileField {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for ProfileField {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for ProfileField {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
     /**How far along a long-running thing is. Rendered as a bar; the units are the
 publisher's own (steps, files, percent).*/
     ///
@@ -7657,6 +8066,85 @@ last-write-wins (design §2.2).*/
             value.parse()
         }
     }
+    /**A named machine identity (design §5.2bis).
+
+The recommended shape for anything durable: a team bot running on a person's
+key dies the day that person is offboarded, which is a bad way to find out how
+the deploy notifications worked.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A named machine identity (design §5.2bis).\n\nThe recommended shape for anything durable: a team bot running on a person's\nkey dies the day that person is offboarded, which is a bad way to find out how\nthe deploy notifications worked.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "created_at",
+    ///    "id",
+    ///    "origin"
+    ///  ],
+    ///  "properties": {
+    ///    "created_at": {
+    ///      "description": "When it was created.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "created_by": {
+    ///      "$ref": "#/components/schemas/UserId"
+    ///    },
+    ///    "description": {
+    ///      "description": "What it is for. Read by whoever finds it in an audit log in six months.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "disabled_at": {
+    ///      "description": "Set on deactivation. Deactivating revokes its keys and cuts its streams\nimmediately (design §8, scenario T25) — it is not a soft \"please stop\".",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ],
+    ///      "format": "date-time"
+    ///    },
+    ///    "display_name": {
+    ///      "description": "What clients show — \"published by ArgoCD\", not by an opaque id.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/ServiceAccountId"
+    ///    },
+    ///    "origin": {
+    ///      "$ref": "#/components/schemas/Origin"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ServiceAccount {
+        ///When it was created.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub created_by: ::std::option::Option<UserId>,
+        ///What it is for. Read by whoever finds it in an audit log in six months.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        /**Set on deactivation. Deactivating revokes its keys and cuts its streams
+immediately (design §8, scenario T25) — it is not a soft "please stop".*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub disabled_at: ::std::option::Option<
+            ::chrono::DateTime<::chrono::offset::Utc>,
+        >,
+        ///What clients show — "published by ArgoCD", not by an opaque id.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        pub id: ServiceAccountId,
+        pub origin: Origin,
+    }
     /**A service account, named so a timeline can say "published by `bot-argocd`"
 rather than "published by a key" (design §5.2bis).*/
     ///
@@ -8602,6 +9090,46 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /**Fetch an avatar by the id a profile or an author gave you
+
+Sends a `GET` request to `/api/v1/avatars/{id}`
+
+Arguments:
+- `id`: The attachment id from a profile
+*/
+    pub async fn read_avatar<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<ByteStream>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/avatars/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self.client.get(url).headers(header_map).build()?;
+        let info = OperationInfo {
+            operation_id: "read_avatar",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => Ok(ResponseValue::stream(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            404u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /**The channels the caller can see
 
 Sends a `GET` request to `/api/v1/channels`
@@ -8743,6 +9271,63 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Change a channel's policy. Refused on a GitOps-managed one
+
+Sends a `PATCH` request to `/api/v1/channels/{channel}`
+
+Arguments:
+- `channel`: Channel id
+- `body`
+*/
+    pub async fn update_channel<'a>(
+        &'a self,
+        channel: &'a str,
+        body: &'a types::ChannelPolicyBody,
+    ) -> Result<ResponseValue<types::Channel>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/channels/{}", self.baseurl, encode_path(& channel.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .patch(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "update_channel",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),
@@ -9662,6 +10247,148 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /**Every service account on this instance
+
+Sends a `GET` request to `/api/v1/serviceaccounts`
+
+*/
+    pub async fn list_accounts<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::ServiceAccount>>,
+        Error<types::Problem>,
+    > {
+        let url = format!("{}/api/v1/serviceaccounts", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_accounts",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Create one, owned by the caller
+
+Sends a `POST` request to `/api/v1/serviceaccounts`
+
+*/
+    pub async fn create_account<'a>(
+        &'a self,
+        body: &'a types::CreateAccountBody,
+    ) -> Result<ResponseValue<types::ServiceAccount>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/serviceaccounts", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "create_account",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            201u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Deactivate one: its keys are revoked with it
+
+Sends a `DELETE` request to `/api/v1/serviceaccounts/{id}`
+
+Arguments:
+- `id`: The account's name
+*/
+    pub async fn deactivate_account<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/serviceaccounts/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "deactivate_account",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /**The live stream
 
 Sends a `GET` request to `/api/v1/stream`
@@ -9765,6 +10492,158 @@ caller — `curl /sync` from a shell has no cursor to keep.
             .build()?;
         let info = OperationInfo {
             operation_id: "sync",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Replace your own avatar
+
+The body is the image itself rather than a multipart form: there is exactly one
+field, and a multipart parser is a parser more on a path that already decodes
+user-supplied media (§15).
+
+Sends a `PUT` request to `/api/v1/users/me/avatar`
+
+Arguments:
+- `body`: PNG, JPEG or WebP, at most 512 KiB
+*/
+    pub async fn set_avatar<'a, B: Into<reqwest::Body>>(
+        &'a self,
+        body: B,
+    ) -> Result<ResponseValue<types::Profile>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/users/me/avatar", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
+            )
+            .body(body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_avatar",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            413u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Read your own profile
+
+Sends a `GET` request to `/api/v1/users/me/profile`
+
+*/
+    pub async fn read_profile<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<types::Profile>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/users/me/profile", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "read_profile",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Edit your own profile
+
+Sends a `PUT` request to `/api/v1/users/me/profile`
+
+*/
+    pub async fn update_profile<'a>(
+        &'a self,
+        body: &'a types::ProfileBody,
+    ) -> Result<ResponseValue<types::Profile>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/users/me/profile", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "update_profile",
         };
         self.pre(&mut request, &info).await?;
         let result = self.exec(request, &info).await;

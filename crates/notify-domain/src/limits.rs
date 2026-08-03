@@ -54,6 +54,13 @@ pub const MAX_TAGS: usize = 16;
 /// Length of a single tag.
 pub const MAX_TAG_CHARS: usize = 32;
 
+/// The ceiling on an avatar upload (design §2.4, §8.2).
+///
+/// Here rather than in the decoder because it is a documented API limit like every
+/// other number in this file — a client has to be able to refuse a file before
+/// spending an upload on it.
+pub const MAX_AVATAR_BYTES: usize = 512 * 1024;
+
 /// Length of a `group_key` (design §2.3) — clients group on it, they do not read it.
 pub const MAX_GROUP_KEY_CHARS: usize = 128;
 

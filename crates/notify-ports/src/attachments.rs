@@ -58,6 +58,15 @@ pub struct PresignedDownload {
     pub expires_at: OffsetDateTime,
 }
 
+/// An object read back out of the bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredObject {
+    /// What it was stored as.
+    pub content_type: String,
+    /// The bytes.
+    pub bytes: Vec<u8>,
+}
+
 /// The object store.
 #[async_trait::async_trait]
 pub trait AttachmentStore: Send + Sync {
@@ -74,6 +83,21 @@ pub trait AttachmentStore: Send + Sync {
     /// leaving a payload referencing bytes that do not exist. Checking beats
     /// rendering a broken image.
     async fn exists(&self, id: AttachmentId) -> PortResult<bool>;
+
+    /// Write bytes the server itself is holding.
+    ///
+    /// The exception to "uploads never go through the server", and there is exactly
+    /// one: an avatar (design §2.4). It has to be decoded, capped, resized and
+    /// stripped of its metadata before it is stored, and none of that can happen if
+    /// the bytes go straight from a browser to the bucket. Everything else presigns.
+    async fn put(&self, id: AttachmentId, content_type: &str, bytes: Vec<u8>) -> PortResult<()>;
+
+    /// Read bytes back, for the same reason.
+    ///
+    /// An avatar is served *through* the API rather than by a presigned URL: it is
+    /// shown next to every revision its owner published, so a signature per render
+    /// would mean a signing round trip per row of an inbox.
+    async fn get(&self, id: AttachmentId) -> PortResult<Option<StoredObject>>;
 
     /// Delete an object, when its notification is purged.
     async fn delete(&self, id: AttachmentId) -> PortResult<()>;

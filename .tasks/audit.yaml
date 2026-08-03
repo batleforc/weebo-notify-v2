@@ -16,9 +16,21 @@ tasks:
 
   web:
     desc: "JS/TS dependencies of web/ and docs/ (pnpm audit)"
+    # The `|| true` this used to carry existed so the task would not fail before
+    # web/ was bootstrapped — and it swallowed real findings the day it was. A
+    # missing project is skipped explicitly now; a project that IS there and has an
+    # advisory fails the task, which is the only reason to run it.
     cmds:
-      - cmd: '[ -f web/package.json ] && pnpm -C web audit --audit-level moderate || true'
-      - cmd: '[ -f docs/package.json ] && pnpm -C docs audit --audit-level moderate || true'
+      - cmd: |
+          set -eu
+          for project in web docs; do
+            if [ -f "$project/package.json" ]; then
+              echo "==> $project"
+              pnpm -C "$project" audit --audit-level moderate
+            else
+              echo "==> $project not bootstrapped yet — skipping"
+            fi
+          done
 
   container:
     desc: "Scan the repository and the Containerfile for CVEs, misconfigurations and secrets (trivy)"
