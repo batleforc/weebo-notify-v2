@@ -13,8 +13,9 @@
 //! * [`content`] and [`action`] — what a notification says and what it offers to
 //!   do. Constructible only through validation.
 //! * [`channel`] — membership, scopes and policy: the only door to content.
-//! * [`interaction`], [`receipt`], [`silence`] — what comes back from a
-//!   notification, and how a user turns it down.
+//! * [`interaction`], [`receipt`], [`silence`], [`dnd`] — what comes back from a
+//!   notification, and the two ways a user turns it down: one reactive and
+//!   targeted, one planned and broad.
 //! * [`principal`] and [`identity`] — who is acting, and who exists to act.
 //! * [`device`] and [`cursor`] — where a notification is delivered, and how far
 //!   each device has read.
@@ -39,6 +40,7 @@ pub mod channel;
 pub mod content;
 pub mod cursor;
 pub mod device;
+pub mod dnd;
 pub mod duration;
 pub mod error;
 pub mod hygiene;
@@ -61,6 +63,7 @@ pub use channel::{Ceiling, Channel, ChannelPolicy, GroupBinding, Membership, Pol
 pub use content::{Content, ContentDraft, Image, Progress};
 pub use cursor::Cursor;
 pub use device::{Device, DevicePublicKey, PushTransport};
+pub use dnd::{Day, Dnd, DndDraft, DndScope, QuietHours, WallClock};
 pub use duration::HumanDuration;
 pub use error::{DomainError, ErrorKind, Result};
 pub use identity::{ApiKey, ApiKeyPrefix, PresentedApiKey, ServiceAccount, User};

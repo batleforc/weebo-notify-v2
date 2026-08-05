@@ -7,9 +7,10 @@
 
 use std::sync::Arc;
 
-use notify_domain::{ChannelId, Cursor, DeviceId, DomainError, Principal};
+use notify_domain::{ChannelId, Cursor, DeviceId, DomainError, NotificationId, Principal, UserId};
 use notify_ports::{
-    Clock, DeviceRepository, EventStore, Failure, PageRequest, SyncPage, SyncQuery,
+    Clock, DeviceRepository, EventPayload, EventStore, Failure, PageRequest, PreferenceRepository,
+    SyncPage, SyncQuery,
 };
 
 use crate::authz::{Authorizer, Caller};
@@ -19,6 +20,7 @@ use crate::authz::{Authorizer, Caller};
 pub struct SyncBacklog {
     events: Arc<dyn EventStore>,
     devices: Arc<dyn DeviceRepository>,
+    preferences: Arc<dyn PreferenceRepository>,
     authorizer: Authorizer,
     clock: Arc<dyn Clock>,
 }
@@ -49,12 +51,14 @@ impl SyncBacklog {
     pub fn new(
         events: Arc<dyn EventStore>,
         devices: Arc<dyn DeviceRepository>,
+        preferences: Arc<dyn PreferenceRepository>,
         authorizer: Authorizer,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             events,
             devices,
+            preferences,
             authorizer,
             clock,
         }
@@ -87,7 +91,7 @@ impl SyncBacklog {
                 .collect()
         };
 
-        let page = self
+        let mut page = self
             .events
             .sync(
                 user,
@@ -99,6 +103,8 @@ impl SyncBacklog {
                 },
             )
             .await?;
+
+        page.deferred_by_dnd = self.deferred(user, &page).await?;
 
         // Advance the device to the furthest event it actually received. Doing it
         // from the events rather than from `page.next` is what keeps a short page
@@ -113,6 +119,61 @@ impl SyncBacklog {
         }
 
         Ok(page)
+    }
+
+    /// Which notifications on this page arrived late because their owner asked for
+    /// quiet (design §7.4).
+    ///
+    /// # It is derived, not recorded
+    ///
+    /// The alternative is a row per suppressed push, written on the fan-out path and
+    /// pruned forever after — a table that grows with every deferred notification,
+    /// to answer a question about a badge. This asks the preference instead: *was a
+    /// quiet period running for this channel when the notification was created?*
+    ///
+    /// The cost is honest and worth stating: the preference read is the **current**
+    /// one, so somebody who rewrites their quiet hours changes the answer for
+    /// notifications already in their backlog. That is a badge appearing or
+    /// disappearing on a row nobody is looking at any more, and it buys the absence
+    /// of a growing table on the hottest path in the product.
+    ///
+    /// Priority is taken from the revision the event carries rather than assumed: a
+    /// user who lets `urgent` through was never deferred by one, so flagging it would
+    /// hide a badge that is telling the truth.
+    async fn deferred(
+        &self,
+        user: UserId,
+        page: &SyncPage,
+    ) -> Result<Vec<NotificationId>, Failure> {
+        // Notifications, not events: forty revisions of one deploy are one row to a
+        // client, and one badge.
+        let mut deferred = Vec::new();
+        if page.events.is_empty() {
+            return Ok(deferred);
+        }
+
+        let dnd = self.preferences.dnd(user).await?;
+        // Nothing set means nothing was ever deferred, and no reason to walk the
+        // page — the common case by a wide margin.
+        if dnd.quiet_hours.is_empty() && dnd.until.is_none() {
+            return Ok(deferred);
+        }
+
+        for event in &page.events {
+            let (EventPayload::Revision(revision), Some(channel)) =
+                (&event.payload, event.audience.channel())
+            else {
+                continue;
+            };
+            if deferred.contains(&revision.notification_id) {
+                continue;
+            }
+            if dnd.is_muted(channel, revision.priority, revision.created_at) {
+                deferred.push(revision.notification_id);
+            }
+        }
+
+        Ok(deferred)
     }
 }
 
@@ -165,7 +226,7 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
     use notify_domain::{
-        Author, Channel, ChannelPolicy, ContentDraft, Device, Membership, Notification,
+        Author, Channel, ChannelPolicy, ContentDraft, Device, Dnd, Membership, Notification,
         NotificationId, PushTransport, RevisionDraft, Scope, State, UserId,
     };
     use notify_ports::NotificationRepository;
@@ -201,6 +262,7 @@ mod tests {
 
         Fixture {
             sync: SyncBacklog::new(
+                Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Authorizer::new(Arc::new(store.clone())),
@@ -243,6 +305,100 @@ mod tests {
         let id = device.id;
         fixture.store.seed_device(device);
         id
+    }
+
+    // --- T10 · Lateness that was asked for (design §3.4, §7.4) ------------
+
+    async fn set_dnd(fixture: &Fixture, dnd: Dnd) {
+        PreferenceRepository::set_dnd(&fixture.store, &dnd, fixture.clock.now())
+            .await
+            .unwrap();
+    }
+
+    fn alice_id(fixture: &Fixture) -> UserId {
+        let Principal::User { id } = fixture.alice else {
+            unreachable!()
+        };
+        id
+    }
+
+    async fn caught_up(fixture: &Fixture) -> SyncPage {
+        fixture
+            .sync
+            .execute(
+                &Caller::member(fixture.alice.clone()),
+                SyncRequest::default(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn critical_t10_a_notification_created_during_a_quiet_period_is_flagged_as_deferred() {
+        let fixture = fixture();
+        set_dnd(
+            &fixture,
+            Dnd {
+                until: Some(fixture.clock.now() + time::Duration::hours(8)),
+                ..Dnd::off(alice_id(&fixture))
+            },
+        )
+        .await;
+        let published = publish(&fixture, "etcd degraded").await;
+
+        let page = caught_up(&fixture).await;
+
+        assert_eq!(
+            page.deferred_by_dnd,
+            vec![published.id],
+            "this lateness was asked for, so the client must not badge it (§7.2, §7.4)"
+        );
+    }
+
+    #[tokio::test]
+    async fn critical_t10_a_notification_outside_any_quiet_period_is_not_flagged() {
+        let fixture = fixture();
+        // A preference that exists but is not running: having one is not the same
+        // as being in one.
+        set_dnd(
+            &fixture,
+            Dnd {
+                until: Some(fixture.clock.now() - time::Duration::hours(1)),
+                ..Dnd::off(alice_id(&fixture))
+            },
+        )
+        .await;
+        publish(&fixture, "etcd degraded").await;
+
+        assert!(caught_up(&fixture).await.deferred_by_dnd.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_rings_anyway_is_never_reported_as_deferred() {
+        let fixture = fixture();
+        set_dnd(
+            &fixture,
+            Dnd {
+                until: Some(fixture.clock.now() + time::Duration::hours(8)),
+                exceptions: vec![channel_id("ci-infra")],
+                ..Dnd::off(alice_id(&fixture))
+            },
+        )
+        .await;
+        publish(&fixture, "etcd degraded").await;
+
+        assert!(
+            caught_up(&fixture).await.deferred_by_dnd.is_empty(),
+            "it was never held back, so its lateness is real and worth a badge"
+        );
+    }
+
+    #[tokio::test]
+    async fn somebody_with_no_preference_pays_nothing_for_the_flag() {
+        let fixture = fixture();
+        publish(&fixture, "etcd degraded").await;
+
+        assert!(caught_up(&fixture).await.deferred_by_dnd.is_empty());
     }
 
     // --- T7 · Resuming (design §3.4) --------------------------------------

@@ -188,6 +188,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let store = application.store;
     let jobs = actix_web::rt::spawn(background(
         application.purge,
+        application.digests,
         application.reconciler,
         config,
     ));
@@ -214,16 +215,20 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     outcome.map_err(Into::into)
 }
 
-/// The background loops: TTL purge and reconciliation, both leader-tolerant.
+/// The background loops: TTL purge, do-not-disturb digests and reconciliation, all
+/// leader-tolerant.
 async fn background(
     purge: notify_app::PurgeExpired,
+    digests: notify_app::SendDndDigests,
     reconciler: reconcile::Reconciler,
     config: config::Config,
 ) {
     let mut purge_tick = actix_web::rt::time::interval(JOB_INTERVAL);
+    let mut digest_tick = actix_web::rt::time::interval(JOB_INTERVAL);
     let mut reconcile_tick = actix_web::rt::time::interval(RECONCILE_INTERVAL);
-    // The first tick fires immediately and both have just run at boot.
+    // The first tick fires immediately and all three have just run at boot.
     purge_tick.tick().await;
+    digest_tick.tick().await;
     reconcile_tick.tick().await;
 
     loop {
@@ -238,6 +243,17 @@ async fn background(
                 // Not leading is the normal answer on all but one replica.
                 Ok(_) => {}
                 Err(error) => tracing::warn!(?error, "purge pass failed; retrying next tick"),
+            },
+            // A quiet period ending is the absence of an event, so somebody has to
+            // look — which is why this is a timer rather than a moment (§7.4).
+            _ = digest_tick.tick() => match digests.execute().await {
+                Ok(report) if report.sent > 0 => tracing::info!(
+                    sent = report.sent,
+                    still_quiet = report.still_quiet,
+                    "do-not-disturb digests sent"
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(?error, "digest pass failed; retrying next tick"),
             },
             _ = reconcile_tick.tick() => match reconciler.execute(&config).await {
                 Ok(report) => for pending in &report.pending {

@@ -30,6 +30,10 @@ thiserror = { workspace = true }
 # than against a shape — pure data, no I/O, which is what keeps it allowed in this
 # crate.
 chrono-tz = { workspace = true }
+# chrono-tz *is* that database and its interface is chrono's, so asking a zone what
+# its clocks read at an instant needs both. Confined to one function in `dnd`; every
+# timestamp this crate owns is still `time::OffsetDateTime`.
+chrono = { workspace = true }
 time = { workspace = true }
 ulid = { workspace = true }
 url = { workspace = true }

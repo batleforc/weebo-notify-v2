@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddMemberData, AddMemberErrors, AddMemberResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebsocketData, WebsocketErrors } from './types.gen';
+import type { AddMemberData, AddMemberErrors, AddMemberResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebsocketData, WebsocketErrors } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -272,6 +272,30 @@ export const silence = <ThrowOnError extends boolean = false>(options: Options<S
     responseType: 'json',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/notifications/{id}/silence',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Read your own do-not-disturb.
+ */
+export const readDnd = <ThrowOnError extends boolean = false>(options?: Options<ReadDndData, ThrowOnError>): RequestResult<ReadDndResponses, ReadDndErrors, ThrowOnError> => (options?.client ?? client).get<ReadDndResponses, ReadDndErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/preferences/dnd',
+    ...options
+});
+
+/**
+ * Replace your own do-not-disturb.
+ */
+export const setDnd = <ThrowOnError extends boolean = false>(options: Options<SetDndData, ThrowOnError>): RequestResult<SetDndResponses, SetDndErrors, ThrowOnError> => (options.client ?? client).put<SetDndResponses, SetDndErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/preferences/dnd',
     ...options,
     headers: {
         'Content-Type': 'application/json',

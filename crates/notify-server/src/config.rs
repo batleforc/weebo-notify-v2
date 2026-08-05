@@ -1,4 +1,11 @@
-//! Configuration: defaults < TOML file < `WNK_*` environment (design §11).
+|| self.push.unifiedpush.is_some() {
+            // Web Push is wired since M3.5; these two are M6 and M7.
+            pending.push(
+                "[push.apns] / [push.unifiedpush] credentials — mobile transports \
+                 land with M6 and M7 (§6.2)"
+                    .to_owned(),
+            );
+        }//! Configuration: defaults < TOML file < `WNK_*` environment (design §11).
 //!
 //! **Every key is overridable from the environment, without exception.** The
 //! convention is `WNK_` plus the path in `__`, so `[oidc] issuer` becomes
@@ -312,9 +319,28 @@ pub(crate) struct TrustPolicy {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Push {
-    pub webpush: Option<serde_json::Value>,
+    pub webpush: Option<WebPush>,
     pub apns: Option<serde_json::Value>,
     pub unifiedpush: Option<serde_json::Value>,
+}
+
+/// `[push.webpush]` — RFC 8292 identification (design §11, M3.5).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct WebPush {
+    /// Where the P-256 VAPID private key lives.
+    ///
+    /// A path and not the key itself, so it can be mounted from whatever the cluster
+    /// uses for secrets (§11) without the key passing through a config file that
+    /// gets committed by accident.
+    pub vapid_key_file: PathBuf,
+    /// `mailto:…` or `https://…` — how a push service reaches this instance's
+    /// operator (RFC 8292 `sub`).
+    ///
+    /// §11 did not list it, and it is not optional: relays refuse a VAPID assertion
+    /// without one. Added rather than defaulted, because a wrong contact is worse
+    /// than a missing one.
+    pub contact: String,
 }
 
 impl Config {

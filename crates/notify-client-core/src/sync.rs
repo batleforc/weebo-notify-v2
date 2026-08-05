@@ -10,25 +10,25 @@
 //! compaction folded away, which is what lets a client say "38 updates" instead of
 //! pretending nothing happened.
 //!
-//! # Why this does not use the generated client
+//! # Events are read through the generated client, and stored before they are
 //!
-//! It should, and ADR-0009 says so. It cannot today: progenitor renders the `Event`
-//! schema — an `allOf` of two `oneOf`s, which is what makes the wire shape flat
-//! (§8.1) — as `pub enum EventVariant0 {}`. An **uninhabited** type: the generated
-//! client can deserialise a sync page only while it contains no events at all.
+//! [`Event`] comes from the contract as ADR-0009 asks (it did not, until D1 §14.4
+//! gave it a schema a generator can model). What does *not* go through the generated
+//! call is the page envelope: the body is taken as JSON so each event can be handed
+//! to the store **verbatim**, and only then read.
 //!
-//! So this module reads the response with [`crate::wire`]'s minimal model of what a
-//! cache needs, and that is a **stated exception rather than a pattern**. The real
-//! fix is in the specification — either the `allOf` composition or the lowering shim
-//! ADR-0009 already owns — and it is D1 in §14.4. When it lands, this file goes back
-//! to the generated call and loses thirty lines.
+//! That order is the point. A progenitor struct drops the fields this build does not
+//! know about, so re-serialising one would cache a *newer server's* event minus
+//! everything new about it — and the cache is what a front end that lost the election
+//! renders from (§9.3bis). Storing the bytes and parsing a copy costs one envelope
+//! struct and keeps ADR-0013's promise that the shape on the wire is the contract.
 
+use notify_client_api::types::Event;
 use serde::Deserialize;
 
 use crate::error::ClientError;
 use crate::session::Session;
 use crate::store::{CacheEntry, Store};
-use crate::wire::WireEvent;
 
 /// What one catch-up did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,13 +53,16 @@ impl SyncOutcome {
 
 /// A sync page.
 ///
-/// `events` stays a `Value` on the way in so the whole event can be **stored
-/// verbatim** while [`WireEvent`] reads the handful of fields the cache needs from a
-/// copy. Shredding it into the fields this build happens to know would leave a later
-/// build unable to render what an earlier one cached.
+/// `events` stays a `Value` on the way in so the whole event reaches the store
+/// **verbatim**, and [`Event`] reads a copy. Shredding it into the fields this build
+/// happens to know would leave a later build unable to render what an earlier one
+/// cached.
 #[derive(Debug, Deserialize)]
 struct Page {
     events: Vec<serde_json::Value>,
+    /// The notifications this page says arrived late on purpose (§7.4).
+    #[serde(default)]
+    deferred_by_dnd: Vec<String>,
     #[serde(default)]
     expired: Vec<RawExpired>,
     #[serde(default)]
@@ -93,52 +96,58 @@ impl Session {
             let page = self.fetch_page(cursor.as_deref(), channels, device).await?;
 
             for raw in &page.events {
-                let Ok(event) = serde_json::from_value::<WireEvent>(raw.clone()) else {
-                    // Not an event this build can read at all. Skipping beats
-                    // refusing the whole page and stalling the cursor forever — but
-                    // the cursor cannot advance past something unread either, so the
-                    // page is followed and this one is simply not cached.
-                    continue;
-                };
+                // Read off the document rather than off the parsed event, so an event
+                // kind this build has never heard of still moves the cursor. Refusing
+                // to advance past one would stall an older client against a newer
+                // server for good, which is a worse failure than not caching a row.
+                //
+                // Advanced per event and written per page: the cursor must never
+                // claim more than the store actually holds (see `Store::set_cursor`).
+                if let Some(position) = raw.get("cursor").and_then(serde_json::Value::as_str) {
+                    cursor = Some(position.to_owned());
+                }
 
-                match event.event.as_str() {
-                    "revision" => {
-                        let (Some(id), Some(channel)) = (
-                            event.notification_id.as_deref(),
-                            event.channel_id.as_deref(),
-                        ) else {
-                            // A revision that names no notification is not one this
-                            // build understands.
-                            continue;
-                        };
-
+                match serde_json::from_value::<Event>(raw.clone()) {
+                    Ok(Event::Revision {
+                        notification_id,
+                        channel_id,
+                        created_at,
+                        revised_at,
+                        ..
+                    }) => {
                         store.upsert(CacheEntry {
-                            id,
-                            channel,
-                            revised_at: event.revised_at.as_deref().unwrap_or_default(),
-                            created_at: event.created_at.as_deref().unwrap_or_default(),
+                            id: &notification_id,
+                            channel: &channel_id,
+                            revised_at: &rfc3339(revised_at),
+                            created_at: &rfc3339(created_at),
                             // The arrival time is stamped by the store, not passed
                             // in: it is a fact about this machine's cache, and §7.2's
                             // badge is the gap between it and `created_at`.
                             payload: &raw.to_string(),
+                            // Whether that gap was asked for, which only the server
+                            // knows: it holds the preference (§7.4).
+                            deferred_by_dnd: page
+                                .deferred_by_dnd
+                                .iter()
+                                .any(|id| id.as_str() == notification_id.as_str()),
                         })?;
                         outcome.stored += 1;
                     }
-                    "tombstone" => {
-                        if let Some(id) = event.notification_id.as_deref() {
-                            store.remove(id)?;
-                            outcome.removed += 1;
-                        }
+                    Ok(Event::Tombstone {
+                        notification_id, ..
+                    }) => {
+                        store.remove(&notification_id)?;
+                        outcome.removed += 1;
                     }
-                    // Receipts, interactions and preferences change a notification's
-                    // detail rather than the cache's contents. The TUI reads them
-                    // live; a cold catch-up has nothing to do with them.
-                    _ => {}
+                    // Nothing for the cache to hold, for one of two reasons that
+                    // happen to want the same thing. A receipt, an interaction or a
+                    // preference changes a notification's detail rather than the
+                    // cache's contents — the TUI reads those live, a cold catch-up
+                    // has nothing to do with them. An event this build cannot read
+                    // at all is a newer kind, or one whose shape moved; either way
+                    // the cursor has already advanced past it.
+                    Ok(_) | Err(_) => {}
                 }
-
-                // Advanced per event and written per page: the cursor must never
-                // claim more than the store actually holds (see `Store::set_cursor`).
-                cursor = Some(event.cursor.clone());
             }
 
             if let Some(last) = &cursor {
@@ -212,6 +221,14 @@ impl Session {
     }
 }
 
+/// Back to the text the server sent.
+///
+/// The store keeps its timestamps as strings and orders on them, so the spelling has
+/// to stay the one the wire uses: `Z` rather than `+00:00`, and no invented decimals.
+fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+}
+
 /// Percent-encode a query value.
 ///
 /// Cursors are opaque and channel ids are slugs, so the alphabet is small — but
@@ -231,6 +248,7 @@ fn urlencode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(
+        clippy::panic,
         clippy::unwrap_used,
         clippy::expect_used,
         reason = "a failing assertion is a failing test"
@@ -240,8 +258,8 @@ mod tests {
 
     #[test]
     fn a_sync_page_deserialises_from_the_shape_8_1_documents() {
-        // The regression this file exists for: the generated client renders these
-        // events as an uninhabited type, so the wire shape has to be parsed here.
+        // The page envelope this module still reads itself, and one whole event of
+        // the shape §8.1 documents.
         let raw = serde_json::json!({
             "events": [{
                 "cursor": "evt_00000000000042",
@@ -270,34 +288,49 @@ mod tests {
         assert_eq!(page.expired[0].count, 3);
         assert_eq!(page.compacted, 38);
 
-        let event: WireEvent = serde_json::from_value(page.events[0].clone()).unwrap();
-        assert_eq!(event.channel_id.as_deref(), Some("ci-infra"));
-        assert_eq!(event.created_at.as_deref(), Some("2026-08-01T10:00:00Z"));
-        assert_eq!(
-            event.payload.map(|content| content.title).as_deref(),
-            Some("etcd degraded")
-        );
+        // Read through the generated type, which is what D1 bought: before it, this
+        // deserialisation could not compile against an uninhabited enum.
+        let event: Event = serde_json::from_value(page.events[0].clone()).unwrap();
+        let Event::Revision {
+            channel_id,
+            created_at,
+            payload,
+            ..
+        } = event
+        else {
+            panic!("the wire shape of §8.1 is a revision event");
+        };
+
+        assert_eq!(channel_id.as_str(), "ci-infra");
+        assert_eq!(rfc3339(created_at), "2026-08-01T10:00:00Z");
+        assert_eq!(payload.title, "etcd degraded");
     }
 
     #[test]
     fn an_event_kind_this_build_does_not_know_does_not_break_the_page() {
         // A newer server adding an event kind must not stall an older client's
-        // cursor — it would stop syncing entirely and nobody would see why.
+        // cursor — it would stop syncing entirely and nobody would see why. The page
+        // still parses, the event does not, and the cursor is read off the document.
         let raw = serde_json::json!({
             "events": [{ "cursor": "evt_1", "event": "something_new" }],
             "compacted": 0
         });
 
         let page: Page = serde_json::from_value(raw).unwrap();
-        let event: WireEvent = serde_json::from_value(page.events[0].clone()).unwrap();
+        let unreadable = &page.events[0];
 
-        assert_eq!(event.event, "something_new");
+        assert!(serde_json::from_value::<Event>(unreadable.clone()).is_err());
+        assert_eq!(
+            unreadable.get("cursor").and_then(serde_json::Value::as_str),
+            Some("evt_1"),
+            "the cursor has to be reachable without understanding the event"
+        );
     }
 
     #[test]
     fn an_event_is_stored_whole_and_not_shredded_into_what_this_build_reads() {
         // The property that lets a later build render what this one cached: the
-        // fields `WireEvent` does not name are still on the way to the store.
+        // fields the generated type does not name are still on the way to the store.
         let raw = serde_json::json!({
             "cursor": "evt_1",
             "event": "revision",

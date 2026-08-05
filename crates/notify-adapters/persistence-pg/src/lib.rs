@@ -40,6 +40,7 @@ mod interactions;
 mod leader;
 mod mapping;
 mod notifications;
+mod preferences;
 mod quota;
 mod receipts;
 

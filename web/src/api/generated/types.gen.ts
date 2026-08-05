@@ -192,27 +192,6 @@ export type ApiKeyPrefix = string;
 export type AttachmentId = string;
 
 /**
- * Who an event is for.
- *
- * The wire names are `channel_id` and `user_id` rather than a shared `id`,
- * because an [`Event`] flattens this next to its payload and a `receipt` payload
- * already owns an `id` — see [`Event`]'s own note.
- */
-export type Audience = {
-    audience: 'channel';
-    /**
-     * The channel.
-     */
-    channel_id: ChannelId;
-} | {
-    audience: 'user';
-    /**
-     * The user.
-     */
-    user_id: UserId;
-};
-
-/**
  * A principal as it is *rendered*: the identity plus the label a client shows
  * next to a revision, an interaction or a receipt (design §2.4, §8.1).
  *
@@ -497,6 +476,32 @@ export type CreateKeyBody = {
 export type Cursor = string;
 
 /**
+ * A day of the week, as the wire spells it.
+ *
+ * Its own enum rather than `time::Weekday` because this one is API: `"mon"` is a
+ * contract, and the serde representation of somebody else's type is not ours to
+ * promise.
+ */
+export const Day = {
+    MON: 'mon',
+    TUE: 'tue',
+    WED: 'wed',
+    THU: 'thu',
+    FRI: 'fri',
+    SAT: 'sat',
+    SUN: 'sun'
+} as const;
+
+/**
+ * A day of the week, as the wire spells it.
+ *
+ * Its own enum rather than `time::Weekday` because this one is API: `"mon"` is a
+ * contract, and the serde representation of somebody else's type is not ours to
+ * promise.
+ */
+export type Day = typeof Day[keyof typeof Day];
+
+/**
  * The state of a single dependency.
  */
 export type DependencyCheck = {
@@ -563,6 +568,97 @@ export type DeviceId = string;
 export type DevicePublicKey = string;
 
 /**
+ * One user's delivery preferences (design §7.4).
+ *
+ * Carried whole by the `preference` event of §8.1 rather than as a delta: a client
+ * that missed one update would otherwise apply the next to the wrong baseline.
+ */
+export type Dnd = {
+    /**
+     * Channels that ring anyway — the on-call case: mute everything *except* the
+     * one that matters.
+     */
+    exceptions?: Array<ChannelId>;
+    /**
+     * Recurring weekly windows.
+     */
+    quiet_hours?: Array<QuietHours>;
+    /**
+     * Which channels any of the above applies to.
+     */
+    scope?: DndScope;
+    /**
+     * The quick toggle: quiet until this instant, whatever the schedule says.
+     */
+    until?: string | null;
+    /**
+     * Whether `urgent` is allowed through.
+     *
+     * Off by default, and opt-in by the **recipient**: the publisher chooses how
+     * insistent a notification is, the person receiving it chooses what may wake
+     * them (§2.3, §7.4). Note that this never reaches an iOS critical alert — no
+     * entitlement, by decision.
+     */
+    urgent_bypasses?: boolean;
+    /**
+     * Whose it is.
+     */
+    user: UserId;
+};
+
+/**
+ * A do-not-disturb as somebody *states* it: everything except whose it is.
+ *
+ * The draft/entity split this codebase uses everywhere else ([`ContentDraft`],
+ * [`RevisionDraft`]), and here it carries a decision: **the subject is never an
+ * input.** A caller states quiet hours and exceptions; the use case decides who
+ * they belong to, because it is the only thing that knows.
+ *
+ * Leaving `user` on the request body was tried and it is worse than misleading —
+ * it is *required*, so a client that legitimately does not know its own id cannot
+ * build a body at all, and one that guesses gets a deserialisation error about a
+ * field the server was going to overwrite.
+ *
+ * [`ContentDraft`]: crate::content::ContentDraft
+ * [`RevisionDraft`]: crate::notification::RevisionDraft
+ */
+export type DndDraft = {
+    /**
+     * Channels that ring anyway.
+     */
+    exceptions?: Array<ChannelId>;
+    /**
+     * Recurring weekly windows. Absent means none.
+     */
+    quiet_hours?: Array<QuietHours>;
+    /**
+     * Which channels it applies to.
+     */
+    scope?: DndScope;
+    /**
+     * Quiet until this instant. Absent ends the quick toggle.
+     */
+    until?: string | null;
+    /**
+     * Whether `urgent` may come through.
+     */
+    urgent_bypasses?: boolean;
+};
+
+/**
+ * How wide a do-not-disturb reaches (design §7.4).
+ */
+export type DndScope = {
+    kind: 'everything';
+} | {
+    /**
+     * The channels the preference applies to.
+     */
+    channels: Array<ChannelId>;
+    kind: 'channels';
+};
+
+/**
  * Enrol a device.
  */
 export type EnrolBody = {
@@ -578,59 +674,55 @@ export type EnrolBody = {
 };
 
 /**
- * One row of the event log.
- *
- * # One flat object, therefore no name may be claimed twice
- *
- * The audience and the payload are both flattened, because the wire shape §8.1
- * documents is flat: `channel_id`, `notification_id`, `seq` and the rest sit side
- * by side in one object, and a client renders a row without unwrapping anything.
- *
- * Flattening means the envelope and the payload share one namespace, and serde
- * resolves a clash by emitting the key twice — a document that no longer reads
- * back. Two names are therefore reserved by this struct and by nothing else:
- *
- * * the audience's is `channel_id` / `user_id`, never `id`, because `receipt` and
- * `interaction` payloads carry their own `id`;
- * * the envelope's timestamp is `logged_at`, never `recorded_at`, because an
- * `interaction` payload carries its own `recorded_at`.
- *
- * Both are covered by tests below. A new payload field colliding with one of
- * these is a wire break, not a detail.
+ * One row of the event log, flattened as design §8.1 puts it on the wire: the envelope, the audience and the payload share one object.
  */
-export type Event = Audience & EventPayload & {
-    /**
-     * This row's position — the `id:` of the stream frame, and the cursor a client
-     * sends back.
-     */
+export type Event = (RevisionEvent & {
+    audience: 'channel';
+    channel_id: ChannelId;
     cursor: Cursor;
+    event: 'revision';
     /**
      * When it was appended, by the server's clock.
      */
     logged_at: string;
-};
-
-/**
- * What actually happened.
- */
-export type EventPayload = (RevisionEvent & {
-    event: 'revision';
 }) | (Receipt & {
+    audience: 'channel';
+    channel_id: ChannelId;
+    cursor: Cursor;
     event: 'receipt';
+    /**
+     * When it was appended, by the server's clock.
+     */
+    logged_at: string;
 }) | (InteractionRecord & {
+    audience: 'channel';
+    channel_id: ChannelId;
+    cursor: Cursor;
     event: 'interaction';
+    /**
+     * When it was appended, by the server's clock.
+     */
+    logged_at: string;
 }) | {
+    audience: 'channel';
+    channel_id: ChannelId;
+    cursor: Cursor;
     event: 'tombstone';
     /**
-     * Which one.
+     * When it was appended, by the server's clock.
      */
+    logged_at: string;
     notification_id: NotificationId;
-    /**
-     * Why — clients word "deleted" and "expired" differently.
-     */
     reason: TombstoneReason;
 } | (PreferenceEvent & {
+    audience: 'user';
+    cursor: Cursor;
     event: 'preference';
+    /**
+     * When it was appended, by the server's clock.
+     */
+    logged_at: string;
+    user_id: UserId;
 });
 
 /**
@@ -898,36 +990,10 @@ export type PageChannel = {
     /**
      * The rows, in the ordering of the endpoint.
      */
-    items: Array<{
-        /**
-         * Human label. Falls back to the id when unset.
-         */
-        display_name?: string | null;
-        /**
-         * Access granted to whole identity-provider groups (design §11).
-         *
-         * Resolved against the `groups` claim of the caller's token rather than stored
-         * per user — see [`GroupBinding`]. Defaulted on the wire so a client written
-         * against an older build still parses a channel.
-         */
-        group_access?: Array<GroupBinding>;
-        /**
-         * Operator-chosen name, and the id used in URLs.
-         */
-        id: ChannelId;
-        /**
-         * Its members, users and service accounts alike.
-         */
-        members: Array<Membership>;
-        /**
-         * Where it came from.
-         */
-        origin: Origin;
-        /**
-         * Its policy.
-         */
-        policy: ChannelPolicy;
-    }>;
+    items: Array<Channel>;
+    /**
+     * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
+     */
     next?: null | Cursor;
 };
 
@@ -938,53 +1004,10 @@ export type PageNotification = {
     /**
      * The rows, in the ordering of the endpoint.
      */
-    items: Array<{
-        /**
-         * The channel it lives in.
-         */
-        channel: ChannelId;
-        /**
-         * When it last closed, and therefore when its retention clock started.
-         * `None` while it is live — which is exactly why a running incident cannot
-         * expire (design §7.2bis).
-         */
-        closed_at?: string | null;
-        /**
-         * When the first revision landed.
-         */
-        created_at: string;
-        /**
-         * Set on deletion; the row survives long enough to broadcast a tombstone and
-         * to keep sync cursors honest (design §7.2bis).
-         */
-        deleted_at?: string | null;
-        external_id?: null | ExternalId;
-        /**
-         * The highest-`seq` revision applied so far — the current truth.
-         */
-        head: Revision;
-        /**
-         * Stable across every revision.
-         */
-        id: NotificationId;
-        /**
-         * Which publishing shape created it.
-         */
-        kind: NotificationKind;
-        /**
-         * Highest `seq` assigned. The next revision gets `last_seq + 1`.
-         */
-        last_seq: number;
-        /**
-         * How many revisions have been recorded. Equal to `last_seq` unless the
-         * aggregate was rehydrated from a partial history.
-         */
-        revision_count: number;
-        /**
-         * Retention as resolved by the channel policy.
-         */
-        ttl: Ttl;
-    }>;
+    items: Array<Notification>;
+    /**
+     * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
+     */
     next?: null | Cursor;
 };
 
@@ -995,45 +1018,10 @@ export type PageRevision = {
     /**
      * The rows, in the ordering of the endpoint.
      */
-    items: Array<{
-        /**
-         * The principal that published it (design §5).
-         */
-        author: Author;
-        /**
-         * What it says.
-         */
-        content: Content;
-        /**
-         * Identity of this revision.
-         */
-        id: RevisionId;
-        /**
-         * The notification it belongs to.
-         */
-        notification_id: NotificationId;
-        /**
-         * Priority as of this revision.
-         */
-        priority: Priority;
-        /**
-         * When the server received it — the server's clock, not the publisher's.
-         */
-        received_at: string;
-        /**
-         * Server-assigned, monotonic within the notification, starting at 1. The
-         * arbiter of last-write-wins.
-         */
-        seq: number;
-        /**
-         * Lifecycle position as of this revision.
-         */
-        state: State;
-        /**
-         * Status as of this revision.
-         */
-        status: Status;
-    }>;
+    items: Array<Revision>;
+    /**
+     * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
+     */
     next?: null | Cursor;
 };
 
@@ -1043,9 +1031,17 @@ export type PageRevision = {
  * Carries the whole state rather than a delta: a client that missed one of these
  * would otherwise apply the next one to the wrong baseline, and "my phone kept
  * buzzing after I turned on do-not-disturb" is not a bug anybody enjoys chasing.
- * Do-not-disturb schedules join this in M3; M1 carries the silences.
+ *
+ * Both halves of "stop notifying me" ride together for the same reason — a client
+ * deciding whether to raise a toast asks about the do-not-disturb *and* the
+ * silences (§7.4), so shipping them in separate events would give it a moment
+ * where it holds one and not the other.
  */
 export type PreferenceEvent = {
+    /**
+     * Their do-not-disturb, whole (design §7.4).
+     */
+    dnd: Dnd;
     /**
      * Every silence currently in force for them.
      */
@@ -1326,6 +1322,35 @@ export type PushTransport = {
      */
     token: string;
     transport: 'apns';
+};
+
+/**
+ * One recurring weekly window of quiet (design §7.4).
+ */
+export type QuietHours = {
+    /**
+     * The days it applies to. **Empty means every day** — the common case, and the
+     * one nobody should have to spell out seven times.
+     *
+     * For a window that crosses midnight the day is the one it **starts** on: a
+     * Friday `22:00–08:00` is the night from Friday to Saturday, which is what a
+     * person means by "Friday night".
+     */
+    days?: Array<Day>;
+    /**
+     * When it ends. May be earlier than `start`, which means the window crosses
+     * midnight.
+     */
+    end: WallClock;
+    /**
+     * When quiet begins, on the local clock.
+     */
+    start: WallClock;
+    /**
+     * The IANA zone `start` and `end` are read in — the preference's own, never the
+     * device's.
+     */
+    timezone: string;
 };
 
 /**
@@ -1685,12 +1710,26 @@ export type Status = typeof Status[keyof typeof Status];
  * * `compacted` records how many revisions were folded away (design §7.2). Forty
  * revisions of one deploy become one entry; the number is what lets a client say
  * "38 updates" instead of pretending nothing happened.
+ * * `deferred_by_dnd` names the notifications whose lateness was *asked for*
+ * (design §7.4), so a client does not badge them "arrived late".
  */
 export type SyncPage = {
     /**
      * How many revisions the compaction folded away.
      */
     compacted: number;
+    /**
+     * The notifications on this page that arrived late **on purpose** — a quiet
+     * period was running when they were created (design §7.4).
+     *
+     * Beside the events rather than on them, and that is the decision: an [`Event`]
+     * is addressed to a *channel* and every member of it receives the same bytes,
+     * while this is one person's own preference. Putting it on the event would make
+     * the same event differ per reader, which is exactly what §8.1 promises it does
+     * not — the stream and the backlog carry identical events. It sits here with
+     * `expired` and `compacted`, the other two per-user facts a catch-up reports.
+     */
+    deferred_by_dnd?: Array<NotificationId>;
     /**
      * The events, oldest first.
      */
@@ -1750,6 +1789,17 @@ export type TtlResolution = {
  * A human, created on first OIDC login.
  */
 export type UserId = string;
+
+/**
+ * A time of day on a wall clock, to the minute.
+ *
+ * Minutes, not seconds: quiet hours are a human intention ("ten in the evening"),
+ * and a field nobody will ever set to a non-zero value is a field somebody will
+ * eventually set wrong. Stored as minutes since local midnight because that is the
+ * form every comparison here wants, and rendered `HH:MM` because that is the form
+ * §7.4 writes it in.
+ */
+export type WallClock = string;
 
 export type ListKeysData = {
     body?: never;
@@ -2628,6 +2678,68 @@ export type SilenceResponses = {
 };
 
 export type SilenceResponse = SilenceResponses[keyof SilenceResponses];
+
+export type ReadDndData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/preferences/dnd';
+};
+
+export type ReadDndErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This principal is not a person (design §5.2bis)
+     */
+    403: Problem;
+};
+
+export type ReadDndError = ReadDndErrors[keyof ReadDndErrors];
+
+export type ReadDndResponses = {
+    /**
+     * The caller's do-not-disturb; muting nothing if never set
+     */
+    200: Dnd;
+};
+
+export type ReadDndResponse = ReadDndResponses[keyof ReadDndResponses];
+
+export type SetDndData = {
+    body: DndDraft;
+    path?: never;
+    query?: never;
+    url: '/api/v1/preferences/dnd';
+};
+
+export type SetDndErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This principal is not a person (design §5.2bis)
+     */
+    403: Problem;
+    /**
+     * A window that could not be resolved — an unknown timezone, or ends that are equal
+     */
+    422: Problem;
+};
+
+export type SetDndError = SetDndErrors[keyof SetDndErrors];
+
+export type SetDndResponses = {
+    /**
+     * The stored preference
+     */
+    200: Dnd;
+};
+
+export type SetDndResponse = SetDndResponses[keyof SetDndResponses];
 
 export type ReceiptData = {
     body: ReceiptBody;

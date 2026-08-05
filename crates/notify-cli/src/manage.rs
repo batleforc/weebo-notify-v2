@@ -21,7 +21,7 @@
 //! would be output the TUI cannot reach — and a second rendering of every command
 //! is exactly what §9 says not to write.
 
-use notify_client_core::types::{ChannelPolicyBody, Ttl};
+use notify_client_core::types::{ChannelPolicyBody, Day, DndDraft, QuietHours, Ttl, WallClock};
 use notify_client_core::{Session, Store};
 
 use crate::{CliError, OutputFormat};
@@ -329,4 +329,275 @@ pub(crate) async fn sync(
             Ok(lines.join("\n"))
         }
     }
+}
+
+/// `notify dnd …` — the do-not-disturb of design §7.4.
+///
+/// §9.1 sketches this as `on|off|until 9h|for 2h|schedule|status`. `until` and `for`
+/// are flags of `on` here rather than verbs of their own, because they are two
+/// spellings of one action: as subcommands, clap would have to offer a bare
+/// `notify dnd until` with nothing to say what it applies to.
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum DndCommand {
+    /// Show what is set, and whether it is quiet right now.
+    Status,
+
+    /// Start a quiet period. Say how long with `--for`, or when it ends with
+    /// `--until`.
+    On {
+        /// How long, e.g. `2h` or `45m`.
+        #[arg(long = "for", value_name = "DURATION", conflicts_with = "until")]
+        duration: Option<String>,
+
+        /// When it lifts, as an RFC 3339 instant, e.g. `2026-08-05T09:00:00Z`.
+        #[arg(long, value_name = "INSTANT")]
+        until: Option<String>,
+    },
+
+    /// End the quiet period now. Leaves the weekly schedule alone.
+    Off,
+
+    /// Replace the weekly quiet hours.
+    Schedule {
+        /// Days it applies to, e.g. `mon,tue,fri`. Omitted means every day.
+        #[arg(long, value_delimiter = ',')]
+        days: Vec<String>,
+
+        /// When quiet begins, on the local clock, e.g. `22:00`.
+        #[arg(long, required_unless_present = "clear")]
+        from: Option<String>,
+
+        /// When it ends, e.g. `08:00`. Earlier than `--from` crosses midnight.
+        #[arg(long, required_unless_present = "clear")]
+        to: Option<String>,
+
+        /// The IANA zone the two are read in, e.g. `Europe/Paris`. Yours, never the
+        /// machine's — §7.4 keeps somebody's nights theirs when they travel.
+        #[arg(long, required_unless_present = "clear")]
+        timezone: Option<String>,
+
+        /// Remove every window instead of adding one.
+        #[arg(long, conflicts_with_all = ["from", "to", "timezone"])]
+        clear: bool,
+    },
+}
+
+/// Run one `notify dnd …`.
+///
+/// Every branch reads the current preference before writing: the endpoint replaces
+/// it whole (§7.4 carries it whole for the same reason), so a client that wants to
+/// change one thing has to send back the rest. Doing that read here rather than in
+/// each caller is what stops `dnd on` from quietly wiping somebody's schedule.
+pub(crate) async fn dnd(
+    session: &Session,
+    command: DndCommand,
+    output: OutputFormat,
+) -> Result<String, CliError> {
+    let current = session.dnd().await?;
+
+    // Read before write, because the endpoint replaces the preference whole (§7.4).
+    // Carrying the rest across is what stops `dnd on` from wiping a schedule.
+    let current = DndDraft {
+        quiet_hours: current.quiet_hours,
+        until: current.until,
+        scope: current.scope,
+        exceptions: current.exceptions,
+        urgent_bypasses: current.urgent_bypasses,
+    };
+
+    let wanted = match command {
+        DndCommand::Status => return render_draft(&current, output),
+
+        DndCommand::On { duration, until } => {
+            let until = match (duration, until) {
+                (Some(duration), _) => now_plus(&duration)?,
+                (None, Some(instant)) => instant.parse().map_err(|_| {
+                    CliError::Usage(
+                        "`--until` wants an RFC 3339 instant, e.g. `2026-08-05T09:00:00Z`"
+                            .to_owned(),
+                    )
+                })?,
+                (None, None) => {
+                    // Refused rather than guessed at: §7.4 makes the quick toggle a
+                    // deadline, and an unbounded one is what somebody sets at 3am
+                    // and rediscovers a quarter later.
+                    return Err(CliError::Usage(
+                        "say how long: `--for 2h`, or `--until <instant>`".to_owned(),
+                    ));
+                }
+            };
+            DndDraft {
+                until: Some(until),
+                ..current
+            }
+        }
+
+        DndCommand::Off => DndDraft {
+            until: None,
+            ..current
+        },
+
+        DndCommand::Schedule {
+            days,
+            from,
+            to,
+            timezone,
+            clear,
+        } => {
+            if clear {
+                DndDraft {
+                    quiet_hours: Vec::new(),
+                    ..current
+                }
+            } else {
+                // The three are `required_unless_present = "clear"`, so clap has
+                // already refused the combination where any is missing.
+                let (Some(from), Some(to), Some(timezone)) = (from, to, timezone) else {
+                    return Err(CliError::Usage(
+                        "a window needs `--from`, `--to` and `--timezone`".to_owned(),
+                    ));
+                };
+
+                DndDraft {
+                    quiet_hours: vec![QuietHours {
+                        days: days
+                            .iter()
+                            .map(|day| parse_day(day))
+                            .collect::<Result<_, _>>()?,
+                        start: WallClock::from(from),
+                        end: WallClock::from(to),
+                        timezone,
+                    }],
+                    ..current
+                }
+            }
+        }
+    };
+
+    // The server validates the window — the timezone against the real IANA
+    // database, the ends against each other — and says which field is wrong. Doing
+    // it a second time here would be a second set of rules to keep in step.
+    let stored = session.set_dnd(&wanted).await?;
+
+    // Rendered through the draft so there is one renderer rather than two that
+    // drift: the only field the entity adds is the subject, and it is the caller.
+    render_draft(
+        &DndDraft {
+            quiet_hours: stored.quiet_hours,
+            until: stored.until,
+            scope: stored.scope,
+            exceptions: stored.exceptions,
+            urgent_bypasses: stored.urgent_bypasses,
+        },
+        output,
+    )
+}
+
+/// Render a preference, in both formats.
+fn render_draft(dnd: &DndDraft, output: OutputFormat) -> Result<String, CliError> {
+    match output {
+        OutputFormat::Json => render_json(dnd),
+        OutputFormat::Table => {
+            let mut lines = Vec::new();
+
+            match &dnd.until {
+                Some(until) => lines.push(format!("quiet until {until}")),
+                None => lines.push("no quiet period running".to_owned()),
+            }
+
+            for window in &dnd.quiet_hours {
+                let days = if window.days.is_empty() {
+                    "every day".to_owned()
+                } else {
+                    window
+                        .days
+                        .iter()
+                        .map(|day| format!("{day:?}").to_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                lines.push(format!(
+                    "{days}  {}–{}  {}",
+                    window.start.as_str(),
+                    window.end.as_str(),
+                    window.timezone
+                ));
+            }
+
+            if !dnd.exceptions.is_empty() {
+                lines.push(format!(
+                    "always rings: {}",
+                    dnd.exceptions
+                        .iter()
+                        .map(|channel| channel.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if dnd.urgent_bypasses == Some(true) {
+                lines.push("`urgent` is allowed through".to_owned());
+            }
+
+            Ok(lines.join("\n"))
+        }
+    }
+}
+
+/// A day name as §7.4 spells it.
+fn parse_day(raw: &str) -> Result<Day, CliError> {
+    match raw.trim().to_lowercase().as_str() {
+        "mon" => Ok(Day::Mon),
+        "tue" => Ok(Day::Tue),
+        "wed" => Ok(Day::Wed),
+        "thu" => Ok(Day::Thu),
+        "fri" => Ok(Day::Fri),
+        "sat" => Ok(Day::Sat),
+        "sun" => Ok(Day::Sun),
+        other => Err(CliError::Usage(format!(
+            "`{other}` is not a day — expected mon, tue, wed, thu, fri, sat or sun"
+        ))),
+    }
+}
+
+/// `--for 2h`, resolved against this machine's clock.
+///
+/// The client's clock and not the server's, which is a real difference and a small
+/// one: the two disagree by seconds, and the alternative is an endpoint that takes a
+/// duration purely so the arithmetic happens on the other side.
+fn now_plus(duration: &str) -> Result<chrono::DateTime<chrono::Utc>, CliError> {
+    let (value, unit) = duration.split_at(
+        duration
+            .find(|character: char| !character.is_ascii_digit())
+            .ok_or_else(|| {
+                CliError::Usage("`--for` wants a unit, e.g. `2h`, `45m` or `30s`".to_owned())
+            })?,
+    );
+    let value: i64 = value
+        .parse()
+        .map_err(|_| CliError::Usage(format!("`{duration}` is not a duration, e.g. `2h`")))?;
+
+    let seconds = match unit {
+        "s" => value,
+        "m" => value * 60,
+        "h" => value * 3_600,
+        "d" => value * 86_400,
+        other => {
+            return Err(CliError::Usage(format!(
+                "`{other}` is not a unit — expected s, m, h or d"
+            )));
+        }
+    };
+
+    // Through `time` rather than `chrono::Utc::now`: the workspace takes chrono
+    // without its `clock` feature — it is here for the shapes progenitor emits, not
+    // as a second source of the current time.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| CliError::Usage("this machine's clock is before 1970".to_owned()))?;
+    let now = i64::try_from(now.as_secs())
+        .map_err(|_| CliError::Usage("this machine's clock is out of range".to_owned()))?;
+
+    chrono::DateTime::from_timestamp(now, 0)
+        .and_then(|at| at.checked_add_signed(chrono::TimeDelta::seconds(seconds)))
+        .ok_or_else(|| CliError::Usage(format!("`{duration}` is further away than time goes")))
 }

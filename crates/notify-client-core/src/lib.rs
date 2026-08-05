@@ -6,12 +6,11 @@
 //! any business logic that appears in `notify-cli` belongs down here, because Tauri
 //! will want it too.
 //!
-//! # What is here in M1
+//! # What is here
 //!
-//! Configuration, an authenticated session, and the two ingestion calls
-//! (`publish` and `update`). The local SQLite store, the sync cursor and the SSE
-//! reconnection loop (design §9.3bis) land with the TUI in M2 — the shape above
-//! them does not change when they do.
+//! Configuration, an authenticated session and the ingestion calls (M1); the local
+//! SQLite store, the sync cursor, the stream election and its local signal (M2,
+//! design §9.3bis).
 //!
 //! # The generated client is a boundary, not an interface
 //!
@@ -27,12 +26,11 @@ mod session;
 mod signal;
 mod store;
 mod sync;
-mod wire;
 
 pub use config::{ConfigError, DEFAULT_PROFILE, Profile};
 pub use election::{StreamLease, lock_path, try_hold_stream};
 pub use error::ClientError;
-pub use session::{ChannelSummary, InboxEntry, Revision, Session};
+pub use session::{Revision, Session};
 pub use signal::{StreamSignal, StreamWatch, signal_path};
 pub use store::{CacheEntry, CachedNotification, Store, store_path};
 pub use sync::SyncOutcome;
@@ -41,7 +39,8 @@ pub use sync::SyncOutcome;
 /// depend on the generated crate directly.
 pub mod types {
     pub use notify_client_api::types::{
-        Action, Actions, Channel, ChannelPolicyBody, Device, Image, Notification, Principal,
-        Priority, Progress, Published, Scope, State, Status, Ttl,
+        Action, Actions, Channel, ChannelPolicyBody, Day, Device, Dnd, DndDraft, DndScope, Image,
+        Notification, Principal, Priority, Progress, Published, QuietHours, Scope, State, Status,
+        Ttl, WallClock,
     };
 }

@@ -83,7 +83,11 @@ impl Default for PageRequest {
 }
 
 /// What a caller gets.
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+///
+/// Its schema is written rather than derived (`crate::schema`, design §14.4 D3):
+/// utoipa inlines a generic parameter, so `Page_Channel.items` described a whole
+/// channel instead of referencing the one the document already names — which makes
+/// progenitor mint a second, nominally distinct type for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page<T> {
     /// The rows, in the ordering of the endpoint.

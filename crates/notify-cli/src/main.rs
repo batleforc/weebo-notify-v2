@@ -112,6 +112,12 @@ pub(crate) enum Command {
         command: manage::ChannelCommand,
     },
 
+    /// Do not disturb: quiet hours and the quick toggle (§7.4).
+    Dnd {
+        #[command(subcommand)]
+        command: manage::DndCommand,
+    },
+
     /// Devices: list, and enrol this machine.
     Device {
         #[command(subcommand)]
@@ -203,6 +209,7 @@ pub(crate) async fn execute(
         }
         Command::Channel { command } => manage::channel(session, command, output).await,
         Command::Device { command } => manage::device(session, command, profile, output).await,
+        Command::Dnd { command } => manage::dnd(session, command, output).await,
         Command::Completions { shell } => Ok(completions(shell)),
         // Refused rather than ignored: from the shell this is handled before a
         // session is opened, and from inside the TUI it can only mean somebody typed

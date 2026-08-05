@@ -11,8 +11,8 @@ use notify_app::{
     Authenticate, CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount,
     DeleteChannel, DeleteNotification, EnrolDevice, GetNotification, ListApiKeys, ListChannels,
     ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts, ManageMembers,
-    PostReceipt, PublishNotification, ReadAvatar, ReadProfile, RecordInteraction,
-    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SetAvatar,
+    PostReceipt, PublishNotification, ReadAvatar, ReadDnd, ReadProfile, RecordInteraction,
+    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SetAvatar, SetDnd,
     SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_ports::EventBus;
@@ -92,6 +92,11 @@ pub struct ApiState {
     pub set_avatar: SetAvatar,
     /// `GET /avatars/{id}`.
     pub avatar: ReadAvatar,
+
+    /// `GET /preferences/dnd`.
+    pub dnd: ReadDnd,
+    /// `PUT /preferences/dnd`.
+    pub set_dnd: SetDnd,
 
     /// `GET /serviceaccounts`.
     pub accounts: ListServiceAccounts,

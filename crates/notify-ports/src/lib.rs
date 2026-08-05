@@ -61,9 +61,14 @@ pub mod leader;
 pub mod media;
 pub mod notifications;
 pub mod pagination;
+pub mod preferences;
 pub mod push;
 pub mod quota;
 pub mod receipts;
+// The two schemas that are written rather than derived (design §14.4, D1 and D3).
+// Private: it contributes trait implementations, and there is nothing in it to call.
+#[cfg(feature = "openapi")]
+mod schema;
 pub mod sinks;
 pub mod tokens;
 
@@ -95,6 +100,7 @@ pub use leader::{LeaderElection, LeaderGuard};
 pub use media::{AvatarProcessor, ImageRejection, ProcessedImage};
 pub use notifications::{ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery};
 pub use pagination::{Page, PageRequest};
+pub use preferences::{DeferredTally, PreferenceRepository};
 pub use push::{PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport};
 pub use quota::{Allowance, Quota, RateLimiter};
 pub use receipts::ReceiptRepository;

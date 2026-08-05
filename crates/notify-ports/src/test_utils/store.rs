@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use futures::stream::BoxStream;
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyPrefix, Channel, ChannelId, Cursor, Device, DeviceId, ExternalId,
+    ApiKey, ApiKeyId, ApiKeyPrefix, Channel, ChannelId, Cursor, Device, DeviceId, Dnd, ExternalId,
     InteractionRecord, Notification, NotificationId, Principal, Receipt, ReceiptKind, Recorded,
-    Revision, Scope, ServiceAccount, ServiceAccountId, Silence, TombstoneReason, User, UserId,
+    Revision, Scope, ServiceAccount, ServiceAccountId, Silence, Status, TombstoneReason, User,
+    UserId,
 };
 use time::OffsetDateTime;
 
@@ -32,6 +33,7 @@ use crate::identities::{ApiKeyRepository, ServiceAccountRepository, StoredApiKey
 use crate::interactions::InteractionRepository;
 use crate::notifications::{ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery};
 use crate::pagination::{Page, PageRequest};
+use crate::preferences::{DeferredTally, PreferenceRepository};
 use crate::push::{PushDispatcher, PushMessage, PushOutcome};
 use crate::receipts::ReceiptRepository;
 use crate::sinks::{DeadLetter, SinkDelivery, SinkQueue};
@@ -70,6 +72,10 @@ struct State {
     receipts: Vec<Receipt>,
     interactions: Vec<InteractionRecord>,
     silences: Vec<Silence>,
+    /// Only the users who have set one; everybody else reads as `Dnd::off`.
+    dnd: Vec<Dnd>,
+    /// Held-back pushes per user: (user, total, failures) — design §7.4.
+    deferred: Vec<(UserId, u32, u32)>,
     users: Vec<User>,
     service_accounts: Vec<ServiceAccount>,
     api_keys: Vec<StoredApiKey>,
@@ -103,6 +109,37 @@ impl State {
             payload,
         });
         cursor
+    }
+
+    /// Append the `preference` event of §8.1, carrying both halves of what this
+    /// user has asked not to be bothered by.
+    ///
+    /// One helper rather than two call sites building it: the event is whole by
+    /// contract, and the way it stops being whole is somebody adding a third half
+    /// and updating only the writer they were looking at.
+    fn announce_preference(&mut self, user: UserId, at: OffsetDateTime) -> Cursor {
+        let dnd = self
+            .dnd
+            .iter()
+            .find(|preference| preference.user == user)
+            .cloned()
+            .unwrap_or_else(|| Dnd::off(user));
+        let silences = self
+            .silences
+            .iter()
+            .filter(|silence| silence.user == user && silence.is_active(at))
+            .cloned()
+            .collect();
+
+        self.append(
+            Audience::User { id: user },
+            EventPayload::Preference(Box::new(PreferenceEvent {
+                user,
+                dnd,
+                silences,
+            })),
+            at,
+        )
     }
 
     fn notification(&self, id: NotificationId) -> Option<&Row<Notification>> {
@@ -830,18 +867,7 @@ impl InteractionRepository for InMemory {
         state.silences.push(silence.clone());
 
         let user = silence.user;
-        let silences = state
-            .silences
-            .iter()
-            .filter(|candidate| candidate.user == user && candidate.is_active(silence.since))
-            .cloned()
-            .collect();
-
-        Ok(state.append(
-            Audience::User { id: user },
-            EventPayload::Preference(Box::new(PreferenceEvent { user, silences })),
-            silence.since,
-        ))
+        Ok(state.announce_preference(user, silence.since))
     }
 
     async fn active_silences(&self, user: UserId, now: OffsetDateTime) -> PortResult<Vec<Silence>> {
@@ -852,6 +878,78 @@ impl InteractionRepository for InMemory {
             .filter(|silence| silence.user == user && silence.is_active(now))
             .cloned()
             .collect())
+    }
+}
+
+// --- Do not disturb ---------------------------------------------------------
+
+#[async_trait::async_trait]
+impl PreferenceRepository for InMemory {
+    async fn dnd(&self, user: UserId) -> PortResult<Dnd> {
+        Ok(self
+            .state()
+            .dnd
+            .iter()
+            .find(|preference| preference.user == user)
+            .cloned()
+            .unwrap_or_else(|| Dnd::off(user)))
+    }
+
+    async fn set_dnd(&self, dnd: &Dnd, now: OffsetDateTime) -> PortResult<Cursor> {
+        let mut state = self.state();
+        state.dnd.retain(|existing| existing.user != dnd.user);
+        state.dnd.push(dnd.clone());
+        // A digest for a quiet period that has just been redefined would be counting
+        // something that no longer happened.
+        state.deferred.retain(|(user, ..)| *user != dnd.user);
+
+        Ok(state.announce_preference(dnd.user, now))
+    }
+
+    async fn defer(&self, user: UserId, status: Status) -> PortResult<()> {
+        let mut state = self.state();
+        // No preference means nothing could have muted them, so nothing to count.
+        if !state.dnd.iter().any(|dnd| dnd.user == user) {
+            return Ok(());
+        }
+
+        let failure = u32::from(status == Status::Failure);
+        match state.deferred.iter_mut().find(|(owner, ..)| *owner == user) {
+            Some((_, total, failures)) => {
+                *total += 1;
+                *failures += failure;
+            }
+            None => state.deferred.push((user, 1, failure)),
+        }
+
+        Ok(())
+    }
+
+    async fn deferred_tallies(&self, limit: u32) -> PortResult<Vec<DeferredTally>> {
+        let state = self.state();
+
+        Ok(state
+            .deferred
+            .iter()
+            .filter(|(_, total, _)| *total > 0)
+            .take(limit as usize)
+            .filter_map(|(user, total, failures)| {
+                state
+                    .dnd
+                    .iter()
+                    .find(|dnd| dnd.user == *user)
+                    .map(|dnd| DeferredTally {
+                        dnd: dnd.clone(),
+                        total: *total,
+                        failures: *failures,
+                    })
+            })
+            .collect())
+    }
+
+    async fn clear_deferred(&self, user: UserId) -> PortResult<()> {
+        self.state().deferred.retain(|(owner, ..)| *owner != user);
+        Ok(())
     }
 }
 
@@ -1148,6 +1246,10 @@ impl EventStore for InMemory {
             next,
             expired,
             compacted,
+            // Filled by the use case, which is where the preference is read: the
+            // event store answers "what did this user miss", not "what did they ask
+            // not to be bothered by" (design §7.4).
+            deferred_by_dnd: Vec::new(),
         })
     }
 

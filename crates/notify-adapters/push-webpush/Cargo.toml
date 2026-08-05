@@ -13,3 +13,28 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+# Signs the VAPID assertion (RFC 8292). The same crate `notify-oidc` verifies with,
+# rather than the second JWT library `web-push-native`'s own `vapid` feature pulls.
+jsonwebtoken = { workspace = true }
+# Pinned to 0.13 because that is what `web-push-native` is built against, while the
+# workspace is on 0.14. Both were already in the lockfile, so nothing new is
+# duplicated — but a future upgrade has to move the two together.
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+# RFC 8291 content encryption, RustCrypto throughout. Deliberately NOT the `web-push`
+# crate: it reaches `ece`, which reaches OpenSSL — the C toolchain this workspace
+# refused for the server so the image builds from a plain `cargo build` (M1 audit).
+web-push-native = { version = "0.5", default-features = false }
+
+[dev-dependencies]
+time = { workspace = true }
+tokio = { workspace = true }

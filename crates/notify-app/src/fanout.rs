@@ -6,8 +6,11 @@
 //!    replica has to learn about the write. The poke carries an id and a cursor,
 //!    never a payload (ADR-0008).
 //! 2. **Push to devices that are not listening.** Filtered by the recipient's own
-//!    silence state — the server is where "stop notifying me" is enforced, so that
-//!    it holds across every device the person owns (design §2.3, §7.4).
+//!    silence *and* do-not-disturb — the server is where "stop notifying me" is
+//!    enforced, so that it holds across every device the person owns (design §2.3,
+//!    §7.4). Only the push is suppressed: the bus poke above still goes out, so a
+//!    client with the app open keeps receiving on its stream and the inbox fills
+//!    normally. An app somebody chose to leave open is not an interruption.
 //!
 //! Both are best-effort by design. A failed poke costs latency and the cursor
 //! catches up; a failed push is recorded and retried by the transport. Neither may
@@ -18,8 +21,8 @@ use std::sync::Arc;
 
 use notify_domain::{Cursor, Device, Notification, Principal, PushTransport};
 use notify_ports::{
-    Clock, DeviceRepository, EventBus, InteractionRepository, Poke, PushBody, PushDispatcher,
-    PushMessage, PushOutcome,
+    Clock, DeviceRepository, EventBus, InteractionRepository, Poke, PreferenceRepository, PushBody,
+    PushDispatcher, PushMessage, PushOutcome,
 };
 
 /// Broadcasts a write to the rest of the instance and to devices.
@@ -29,6 +32,7 @@ pub struct Fanout {
     devices: Arc<dyn DeviceRepository>,
     push: Arc<dyn PushDispatcher>,
     interactions: Arc<dyn InteractionRepository>,
+    preferences: Arc<dyn PreferenceRepository>,
     clock: Arc<dyn Clock>,
 }
 
@@ -46,6 +50,7 @@ impl Fanout {
         devices: Arc<dyn DeviceRepository>,
         push: Arc<dyn PushDispatcher>,
         interactions: Arc<dyn InteractionRepository>,
+        preferences: Arc<dyn PreferenceRepository>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -53,6 +58,7 @@ impl Fanout {
             devices,
             push,
             interactions,
+            preferences,
             clock,
         }
     }
@@ -95,7 +101,7 @@ impl Fanout {
         };
 
         for device in targets {
-            if self.is_silenced(&device, notification).await {
+            if self.stays_quiet(&device, notification).await {
                 continue;
             }
             // A device with no push transport is reachable only while its client
@@ -125,28 +131,63 @@ impl Fanout {
         }
     }
 
-    /// Whether this device's owner has silenced this notification (design §2.3).
-    async fn is_silenced(&self, device: &Device, notification: &Notification) -> bool {
-        // Silences are per user; a service account has none to have.
+    /// Whether this device's owner has asked not to be bothered by this — by a
+    /// silence (design §2.3) or by a do-not-disturb (§7.4).
+    ///
+    /// Both are read here rather than in one place because they answer different
+    /// questions about the same moment: a silence is *this notification or this
+    /// group*, a do-not-disturb is *this channel, at this priority, right now*.
+    /// Neither reaches the stream: only the push is suppressed (§7.4).
+    async fn stays_quiet(&self, device: &Device, notification: &Notification) -> bool {
+        // Both are per user; a service account has no attention to protect
+        // (design §5.2bis).
         let Principal::User { id } = device.owner else {
             return false;
         };
         let now = self.clock.now();
 
         match self.interactions.active_silences(id, now).await {
-            Ok(silences) => silences.iter().any(|silence| {
-                silence.covers(
-                    notification.id,
-                    notification.head.content.group_key.as_deref(),
-                )
-            }),
+            Ok(active) => {
+                let covered = active.iter().any(|silence| {
+                    silence.covers(
+                        notification.id,
+                        notification.head.content.group_key.as_deref(),
+                    )
+                });
+                if covered {
+                    return true;
+                }
+            }
             Err(error) => {
                 // Failing open would buzz a phone somebody asked to stay quiet.
                 // Failing closed loses one push, which the inbox still holds.
                 tracing::warn!(?error, "could not read silences; suppressing the push");
-                true
+                return true;
             }
         }
+
+        let muted = match self.preferences.dnd(id).await {
+            Ok(dnd) => dnd.is_muted(&notification.channel, notification.priority(), now),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "could not read do-not-disturb; suppressing the push"
+                );
+                return true;
+            }
+        };
+
+        if muted {
+            // Counted here and nowhere else: the digest that ends the quiet period
+            // says how many were held back (§7.4), and this is the only moment that
+            // knows one was. Failing to count costs a number in a message; failing
+            // the publish over it would be absurd.
+            if let Err(error) = self.preferences.defer(id, notification.head.status).await {
+                tracing::warn!(?error, "could not record a deferred push for the digest");
+            }
+        }
+
+        muted
     }
 
     /// Build the push body, degrading to a poke when the payload will not fit.
@@ -161,21 +202,52 @@ impl Fanout {
                 sealed: false,
             });
 
-        PushMessage {
+        PushMessage::Notification {
             channel: notification.channel.clone(),
             notification_id: notification.id,
             priority: notification.priority(),
             body,
         }
     }
+
+    /// Send one device the digest that ends a quiet period (design §7.4).
+    ///
+    /// Here rather than in the job because this is where "talking to a device" lives
+    /// — including the part the job would otherwise duplicate: a relay reporting a
+    /// dead subscription revokes it, whatever the message was.
+    pub async fn push_digest(&self, device: &Device, message: &PushMessage) {
+        if matches!(device.transport, PushTransport::Stream) {
+            return;
+        }
+
+        match self.push.dispatch(device, message).await {
+            Ok(PushOutcome::Delivered) => {}
+            Ok(PushOutcome::Expired) => {
+                let now = self.clock.now();
+                if let Err(error) = self.devices.revoke(device.id, now).await {
+                    tracing::warn!(?error, device = %device.id, "could not revoke a dead device");
+                }
+            }
+            Ok(PushOutcome::Failed { reason }) => {
+                tracing::warn!(device = %device.id, reason, "digest push failed");
+            }
+            Err(error) => {
+                tracing::warn!(?error, device = %device.id, "push transport unusable");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+    #![allow(
+        clippy::panic,
+        clippy::unwrap_used,
+        reason = "a failing assertion is a failing test"
+    )]
 
     use notify_domain::{
-        Channel, ChannelId, ChannelPolicy, ContentDraft, DeviceId, HumanDuration, Membership,
+        Channel, ChannelId, ChannelPolicy, ContentDraft, DeviceId, Dnd, HumanDuration, Membership,
         NotificationId, RevisionDraft, Scope, Silence, SilenceTarget, State, UserId,
     };
     use notify_ports::test_utils::{InMemory, TestClock};
@@ -185,6 +257,7 @@ mod tests {
 
     fn fanout(store: &InMemory, clock: &TestClock) -> Fanout {
         Fanout::new(
+            Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(store.clone()),
@@ -355,6 +428,151 @@ mod tests {
         );
     }
 
+    // --- T19 · Do not disturb (design §3.4, §7.4) --------------------------
+
+    /// The clause that matters most, and the one an implementation gets wrong by
+    /// suppressing too much: the push stops, the stream does not.
+    #[tokio::test]
+    async fn critical_t19_a_quiet_period_stops_the_push_and_leaves_the_stream_alone() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        let Principal::User { id: alice_id } = alice else {
+            unreachable!()
+        };
+        seed(&store, &alice, webpush(), clock.now());
+
+        // Quiet from now until well past the publish.
+        PreferenceRepository::set_dnd(
+            &store,
+            &Dnd {
+                until: Some(clock.now() + time::Duration::hours(8)),
+                ..Dnd::off(alice_id)
+            },
+            clock.now(),
+        )
+        .await
+        .unwrap();
+
+        let notification = notification(&alice, None, clock.now());
+        let fanout = fanout(&store, &clock);
+        fanout
+            .poke_channel(&notification, Cursor::from_sequence(1))
+            .await;
+        fanout.push(&notification, 4_096).await;
+
+        assert!(
+            store.pushes().is_empty(),
+            "a quiet period means no OS push (§7.4)"
+        );
+        assert!(
+            store
+                .pokes()
+                .iter()
+                .any(|poke| matches!(poke, Poke::Channel { .. })),
+            "the stream keeps flowing: an app somebody left open is not an interruption"
+        );
+    }
+
+    #[tokio::test]
+    async fn critical_t19_an_excepted_channel_rings_through_a_quiet_period() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        let Principal::User { id: alice_id } = alice else {
+            unreachable!()
+        };
+        seed(&store, &alice, webpush(), clock.now());
+
+        PreferenceRepository::set_dnd(
+            &store,
+            &Dnd {
+                until: Some(clock.now() + time::Duration::hours(8)),
+                // The on-call case: mute everything *except* this one.
+                exceptions: vec![channel_id()],
+                ..Dnd::off(alice_id)
+            },
+            clock.now(),
+        )
+        .await
+        .unwrap();
+
+        fanout(&store, &clock)
+            .push(&notification(&alice, None, clock.now()), 4_096)
+            .await;
+
+        assert_eq!(store.pushes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn critical_t19_urgent_does_not_get_through_on_its_own_authority() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        let Principal::User { id: alice_id } = alice else {
+            unreachable!()
+        };
+        seed(&store, &alice, webpush(), clock.now());
+
+        PreferenceRepository::set_dnd(
+            &store,
+            &Dnd {
+                until: Some(clock.now() + time::Duration::hours(8)),
+                ..Dnd::off(alice_id)
+            },
+            clock.now(),
+        )
+        .await
+        .unwrap();
+
+        // The publisher asks as loudly as the model allows.
+        let urgent = Notification::create(
+            NotificationId::generate(),
+            channel_id(),
+            None,
+            RevisionDraft {
+                priority: Some(notify_domain::Priority::Urgent),
+                ..RevisionDraft::lifecycle(State::Open, ContentDraft::titled("etcd is gone"))
+            },
+            notify_domain::Author::anonymous(alice.clone()),
+            clock.now(),
+            &ChannelPolicy::default(),
+        )
+        .unwrap()
+        .0;
+
+        fanout(&store, &clock).push(&urgent, 4_096).await;
+
+        assert!(
+            store.pushes().is_empty(),
+            "the recipient decides what wakes them, not the publisher (§2.3, §7.4)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_account_device_is_never_quieted_by_a_preference() {
+        // A bot has no attention to protect (§5.2bis), so there is nothing to read
+        // and nothing that could suppress its delivery.
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let bot = Principal::ServiceAccount {
+            id: notify_domain::ServiceAccountId::parse("bot-argocd").unwrap(),
+        };
+        seed(&store, &bot, webpush(), clock.now());
+
+        fanout(&store, &clock)
+            .push(&notification(&bot, None, clock.now()), 4_096)
+            .await;
+
+        assert_eq!(store.pushes().len(), 1);
+    }
+
     #[tokio::test]
     async fn a_relay_reporting_a_dead_subscription_revokes_the_device() {
         let store = InMemory::new();
@@ -394,8 +612,11 @@ mod tests {
             .await;
 
         let (_, message) = store.pushes().into_iter().next().unwrap();
+        let PushMessage::Notification { body, .. } = message else {
+            panic!("a publish pushes a notification, not a digest");
+        };
         assert_eq!(
-            message.body,
+            body,
             PushBody::Poke,
             "the client wakes and fetches over TLS instead"
         );

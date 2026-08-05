@@ -17,9 +17,10 @@ use notify_app::{
     DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
     GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
     ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
-    PurgeExpired, ReadAvatar, ReadProfile, RecordInteraction, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SetAvatar, SilenceNotification, SyncBacklog,
-    UlidKeyGenerator, UpdateChannel, UpdateProfile, UpsertNotification,
+    PurgeExpired, ReadAvatar, ReadDnd, ReadProfile, RecordInteraction, ResolveStreamStart,
+    RevokeApiKey, RevokeDevice, SearchNotifications, SendDndDigests, SetAvatar, SetDnd,
+    SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel, UpdateProfile,
+    UpsertNotification,
 };
 use notify_attachments_s3::{S3Attachments, S3Config};
 use notify_avatars::ImageAvatarProcessor;
@@ -46,6 +47,8 @@ pub(crate) struct Application {
     pub pump: actix_web::rt::task::JoinHandle<()>,
     /// The TTL purge, run on a timer by whichever replica leads.
     pub purge: PurgeExpired,
+    /// The do-not-disturb digest (§7.4), on the same terms.
+    pub digests: SendDndDigests,
     /// GitOps reconciliation.
     pub reconciler: Reconciler,
     /// The push transports this deployment has — none in M1.
@@ -119,6 +122,7 @@ impl Application {
             repository.clone(),
             dispatcher,
             repository.clone(),
+            repository.clone(),
             clock.clone(),
         );
 
@@ -189,10 +193,11 @@ impl Application {
                 repository.clone(),
                 get,
                 clock.clone(),
-                fanout,
+                fanout.clone(),
             ),
 
             sync: SyncBacklog::new(
+                repository.clone(),
                 repository.clone(),
                 repository.clone(),
                 authorizer.clone(),
@@ -245,6 +250,9 @@ impl Application {
             set_avatar: SetAvatar::new(repository.clone(), avatars, attachments.clone()),
             avatar: ReadAvatar::new(attachments),
 
+            dnd: ReadDnd::new(repository.clone()),
+            set_dnd: SetDnd::new(repository.clone(), clock.clone(), fanout.clone()),
+
             accounts: ListServiceAccounts::new(repository.clone()),
             create_account: CreateServiceAccount::new(
                 repository.clone(),
@@ -268,6 +276,16 @@ impl Application {
             clock.clone(),
         );
 
+        // The digest of §7.4: one push when a quiet period ends, leader-only for the
+        // same reason the purge is — every replica running it would send one each.
+        let digests = SendDndDigests::new(
+            repository.clone(),
+            repository.clone(),
+            Arc::new(PgLeaderElection::new(store.pool().clone())),
+            fanout,
+            clock.clone(),
+        );
+
         let reconciler = Reconciler::new(repository.clone(), repository.clone(), repository, clock);
 
         Ok(Self {
@@ -275,6 +293,7 @@ impl Application {
             store,
             pump,
             purge,
+            digests,
             reconciler,
             transports,
         })

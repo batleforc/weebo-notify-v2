@@ -3,8 +3,8 @@
 
 use chrono::TimeDelta;
 use crossterm::event::{KeyCode, KeyModifiers};
-use notify_client_core::types::{State, Status};
-use notify_client_core::{CachedNotification, ChannelSummary, InboxEntry, Session, Store};
+use notify_client_core::types::{Channel, Notification, State, Status};
+use notify_client_core::{CachedNotification, Session, Store};
 
 use super::sanitise;
 
@@ -39,7 +39,7 @@ impl Row {
     ///
     /// The badge needs both halves and neither side has both: the server knows when
     /// it was created, only this machine knows when it got here.
-    fn from_inbox(entry: &InboxEntry, late_by: Option<TimeDelta>) -> Self {
+    fn from_inbox(entry: &Notification, late_by: Option<TimeDelta>) -> Self {
         let head = &entry.head;
         Self {
             id: entry.id.to_string(),
@@ -144,7 +144,7 @@ pub(crate) struct App {
     /// (§9.3bis). Shown, because "why is this one live and that one not" is the
     /// first question somebody asks with two windows open.
     pub holds_stream: bool,
-    pub channels: Vec<ChannelSummary>,
+    pub channels: Vec<Channel>,
     pub inbox: Vec<Row>,
     pub focus: Pane,
     pub selected_channel: usize,

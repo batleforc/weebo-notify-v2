@@ -41,20 +41,56 @@ pub enum PushBody {
 }
 
 /// One delivery.
+///
+/// Two shapes, because two things get pushed. Almost everything is a notification;
+/// the exception is the digest that goes out when a quiet period ends — **one**
+/// push saying what was held back, rather than the burst §7.4 exists to prevent.
+/// A digest names no notification and belongs to no channel, so folding it into the
+/// same struct would mean two fields that are only sometimes meaningful and a
+/// transport that has to know which case it is in anyway.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PushMessage {
-    /// Which channel it came from — enough for a client to route it before it has
-    /// fetched anything.
-    pub channel: ChannelId,
-    /// Which notification.
-    pub notification_id: NotificationId,
-    /// How loudly to ask. Transports map this to their own urgency headers; it does
-    /// not override the recipient's do-not-disturb, which was already applied
-    /// before we got here (design §7.4).
-    pub priority: Priority,
-    /// The body, in whichever form fitted.
-    pub body: PushBody,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PushMessage {
+    /// Something happened in a channel.
+    Notification {
+        /// Which channel it came from — enough for a client to route it before it
+        /// has fetched anything.
+        channel: ChannelId,
+        /// Which notification.
+        notification_id: NotificationId,
+        /// How loudly to ask. Transports map this to their own urgency headers; it
+        /// does not override the recipient's do-not-disturb, which was already
+        /// applied before we got here (design §7.4).
+        priority: Priority,
+        /// The body, in whichever form fitted.
+        body: PushBody,
+    },
+    /// "12 notifications while you were away (2 failure)" — the one push that ends
+    /// a quiet period (design §7.4).
+    Digest {
+        /// How many were held back.
+        total: u32,
+        /// How many of those closed on a failure. The one status worth calling out
+        /// on a lock screen: it is the difference between "catch up when you can"
+        /// and "look now".
+        failures: u32,
+    },
+}
+
+impl PushMessage {
+    /// How loudly to ask.
+    ///
+    /// A digest is deliberately not urgent whatever it contains: it arrives *after*
+    /// a quiet period, so nothing in it is news that could not wait — and something
+    /// that waited eight hours by request should not then buzz like an alarm.
+    #[must_use]
+    pub const fn priority(&self) -> Priority {
+        match self {
+            Self::Notification { priority, .. } => *priority,
+            Self::Digest { .. } => Priority::Default,
+        }
+    }
 }
 
 /// How a delivery went.

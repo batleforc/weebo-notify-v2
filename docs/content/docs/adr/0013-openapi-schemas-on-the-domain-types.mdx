@@ -59,3 +59,18 @@ that exist only because HTTP has a shape — stay in the adapter, where they bel
   everything up front.
 - `Ttl` and `Cursor` are hand-written schemas: they are enums or newtypes in Rust
   and plain strings on the wire, and the derive cannot see that on its own.
+- `Event` and `Page<T>` are hand-written too, for a different reason: what the
+  derive *composes* for them is valid OpenAPI that no generator can model, and
+  [ADR-0009](/docs/adr/0009-progenitor-and-heyapi-for-generated-clients) promises
+  the clients come from the contract. `Event` flattens an audience and a payload,
+  which composes to `allOf[oneOf, oneOf, object]` — progenitor renders that as an
+  uninhabited type, so a generated client could deserialise a page of `GET /sync`
+  only while it was empty. `Page<T>` inlines its generic parameter, so a page of
+  channels described a channel instead of referencing the one the document already
+  names, and progenitor minted a second nominal type for it. Both are written in
+  `notify-ports::schema`, both describe **the same bytes** as before, and the one
+  that repeats a type's fields — `Event`'s envelope — is held to that type by a
+  test that round-trips a real event of every kind through it. A hand-written
+  schema is the exception this ADR spends its "one source of truth" on, so the
+  bar for adding a third is the same: the derive produces something a client
+  cannot consume, not something merely ugly.

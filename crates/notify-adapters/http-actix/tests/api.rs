@@ -20,9 +20,9 @@ use notify_app::{
     DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
     GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
     ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
-    ReadAvatar, ReadProfile, RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice,
-    SearchNotifications, SetAvatar, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile,
-    UpsertNotification,
+    ReadAvatar, ReadDnd, ReadProfile, RecordInteraction, ResolveStreamStart, RevokeApiKey,
+    RevokeDevice, SearchNotifications, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
+    UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_avatars::ImageAvatarProcessor;
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
@@ -61,6 +61,7 @@ impl Harness {
         let authorizer = Authorizer::new(Arc::new(store.clone()));
 
         let fanout = Fanout::new(
+            Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(store.clone()),
@@ -133,9 +134,10 @@ impl Harness {
                 Arc::new(store.clone()),
                 get,
                 Arc::new(clock.clone()),
-                fanout,
+                fanout.clone(),
             ),
             sync: SyncBacklog::new(
+                Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 authorizer.clone(),
@@ -200,6 +202,13 @@ impl Harness {
                 Arc::new(attachments.clone()),
             ),
             avatar: ReadAvatar::new(Arc::new(attachments.clone())),
+
+            dnd: ReadDnd::new(Arc::new(store.clone())),
+            set_dnd: SetDnd::new(
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+                fanout.clone(),
+            ),
 
             accounts: ListServiceAccounts::new(Arc::new(store.clone())),
             create_account: CreateServiceAccount::new(
@@ -1121,4 +1130,108 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
             "{expected} is served but undocumented; the generated clients would not have it"
         );
     }
+}
+
+// --- Do not disturb (design §7.4) -------------------------------------------
+
+#[actix_web::test]
+async fn a_do_not_disturb_reads_back_as_it_was_set() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    // Never set: a preference that mutes nothing, not a 404.
+    let request = test::TestRequest::get()
+        .uri("/api/v1/preferences/dnd")
+        .insert_header(AUTH)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let dnd: Value = test::read_body_json(response).await;
+    assert!(dnd["quiet_hours"].as_array().is_none_or(Vec::is_empty));
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/preferences/dnd")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "quiet_hours": [{
+                "days": ["mon", "fri"],
+                "start": "22:00",
+                "end": "08:00",
+                "timezone": "Europe/Paris"
+            }],
+            "exceptions": ["cluster-ovh-1"],
+            "urgent_bypasses": true
+        }))
+        .to_request();
+    let stored: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert_eq!(stored["quiet_hours"][0]["start"], "22:00");
+    assert_eq!(stored["exceptions"][0], "cluster-ovh-1");
+    assert_eq!(stored["urgent_bypasses"], true);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/preferences/dnd")
+        .insert_header(AUTH)
+        .to_request();
+    let read_back: Value = test::call_and_read_body_json(&app, request).await;
+    assert_eq!(read_back, stored, "what was stored is what comes back");
+}
+
+#[actix_web::test]
+async fn a_do_not_disturb_is_set_on_the_caller_who_never_had_to_name_themselves() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    // An empty body is a complete one: the subject is not something a caller says,
+    // and requiring it would mean a client that does not know its own id could not
+    // build a request at all.
+    let request = test::TestRequest::put()
+        .uri("/api/v1/preferences/dnd")
+        .insert_header(AUTH)
+        .set_json(json!({}))
+        .to_request();
+    let stored: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert_eq!(stored["user"], harness.alice.to_string());
+}
+
+#[actix_web::test]
+async fn a_window_the_timezone_database_does_not_know_is_refused() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/preferences/dnd")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "quiet_hours": [{
+                "start": "22:00",
+                "end": "08:00",
+                "timezone": "Europe/Pris"
+            }]
+        }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    // Refused at the door: accepted here, it becomes a notification that never
+    // arrives in six months with nothing to connect the two.
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[actix_web::test]
+async fn a_do_not_disturb_needs_a_credential() {
+    let (_harness, state) = Harness::new();
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/preferences/dnd")
+        .to_request();
+
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }

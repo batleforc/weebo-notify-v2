@@ -16,7 +16,7 @@
 //! each stream, sync and websocket path having to remember the exception.
 
 use notify_domain::{
-    Author, ChannelId, Content, Cursor, ExternalId, InteractionRecord, Notification,
+    Author, ChannelId, Content, Cursor, Dnd, ExternalId, InteractionRecord, Notification,
     NotificationId, Priority, Receipt, Revision, Silence, State, Status, TombstoneReason, UserId,
 };
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,10 @@ use crate::pagination::PageRequest;
 /// The wire names are `channel_id` and `user_id` rather than a shared `id`,
 /// because an [`Event`] flattens this next to its payload and a `receipt` payload
 /// already owns an `id` — see [`Event`]'s own note.
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+///
+/// No schema derive: this half of an [`Event`] is described inside [`Event`]'s own
+/// hand-written schema (`crate::schema`, design §14.4 D1). A derive left here would
+/// suggest the document still follows this type, and it no longer does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "audience", rename_all = "snake_case")]
 pub enum Audience {
@@ -158,18 +161,26 @@ impl RevisionEvent {
 /// Carries the whole state rather than a delta: a client that missed one of these
 /// would otherwise apply the next one to the wrong baseline, and "my phone kept
 /// buzzing after I turned on do-not-disturb" is not a bug anybody enjoys chasing.
-/// Do-not-disturb schedules join this in M3; M1 carries the silences.
+///
+/// Both halves of "stop notifying me" ride together for the same reason — a client
+/// deciding whether to raise a toast asks about the do-not-disturb *and* the
+/// silences (§7.4), so shipping them in separate events would give it a moment
+/// where it holds one and not the other.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreferenceEvent {
     /// Whose preferences these are.
     pub user: UserId,
+    /// Their do-not-disturb, whole (design §7.4).
+    pub dnd: Dnd,
     /// Every silence currently in force for them.
     pub silences: Vec<Silence>,
 }
 
 /// What actually happened.
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+///
+/// Same as [`Audience`]: no schema derive, because [`Event`]'s hand-written schema
+/// describes these five shapes itself (design §14.4, D1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventPayload {
@@ -238,7 +249,14 @@ impl EventPayload {
 ///
 /// Both are covered by tests below. A new payload field colliding with one of
 /// these is a wire break, not a detail.
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+///
+/// # Its schema is written, not derived
+///
+/// Composed by utoipa this flattening comes out as `allOf[oneOf, oneOf, object]`,
+/// which progenitor renders as an uninhabited type — `GET /sync` becomes unreadable
+/// from the generated Rust client. `crate::schema` describes the same bytes as a
+/// `oneOf` of five complete events instead (design §14.4, D1), and a test there
+/// holds that description to this type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// This row's position — the `id:` of the stream frame, and the cursor a client
@@ -306,6 +324,8 @@ pub struct SyncQuery {
 /// * `compacted` records how many revisions were folded away (design §7.2). Forty
 ///   revisions of one deploy become one entry; the number is what lets a client say
 ///   "38 updates" instead of pretending nothing happened.
+/// * `deferred_by_dnd` names the notifications whose lateness was *asked for*
+///   (design §7.4), so a client does not badge them "arrived late".
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncPage {
@@ -319,6 +339,17 @@ pub struct SyncPage {
     pub expired: Vec<ExpiredWhileAway>,
     /// How many revisions the compaction folded away.
     pub compacted: u32,
+    /// The notifications on this page that arrived late **on purpose** — a quiet
+    /// period was running when they were created (design §7.4).
+    ///
+    /// Beside the events rather than on them, and that is the decision: an [`Event`]
+    /// is addressed to a *channel* and every member of it receives the same bytes,
+    /// while this is one person's own preference. Putting it on the event would make
+    /// the same event differ per reader, which is exactly what §8.1 promises it does
+    /// not — the stream and the backlog carry identical events. It sits here with
+    /// `expired` and `compacted`, the other two per-user facts a catch-up reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_by_dnd: Vec<NotificationId>,
 }
 
 impl SyncPage {
@@ -330,6 +361,7 @@ impl SyncPage {
             next: None,
             expired: Vec::new(),
             compacted: 0,
+            deferred_by_dnd: Vec::new(),
         }
     }
 }
@@ -408,6 +440,7 @@ mod tests {
         let private = Event {
             payload: EventPayload::Preference(Box::new(PreferenceEvent {
                 user: alice,
+                dnd: Dnd::off(alice),
                 silences: Vec::new(),
             })),
             ..event(Audience::User { id: alice })
@@ -482,8 +515,10 @@ mod tests {
 
     #[test]
     fn a_preference_event_belongs_to_no_notification() {
+        let alice = user();
         let payload = EventPayload::Preference(Box::new(PreferenceEvent {
-            user: user(),
+            user: alice,
+            dnd: Dnd::off(alice),
             silences: Vec::new(),
         }));
         assert_eq!(payload.notification_id(), None);

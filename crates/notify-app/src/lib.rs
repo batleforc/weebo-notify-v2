@@ -40,10 +40,12 @@ pub mod auth;
 pub mod authz;
 pub mod channels;
 pub mod devices;
+pub mod digest;
 pub mod fanout;
 pub mod interact;
 pub mod keys;
 pub mod maintenance;
+pub mod preferences;
 pub mod profiles;
 pub mod publish;
 pub mod read;
@@ -54,12 +56,14 @@ pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{CreateChannel, DeleteChannel, ListChannels, ManageMembers, UpdateChannel};
 pub use devices::{EnrolDevice, ListDevices, RevokeDevice};
+pub use digest::{DigestReport, SendDndDigests};
 pub use fanout::Fanout;
 pub use interact::{ListInteractions, PostReceipt, RecordInteraction, SilenceNotification};
 pub use keys::{
     CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, RevokeApiKey, UlidKeyGenerator,
 };
 pub use maintenance::{PurgeExpired, PurgeReport};
+pub use preferences::{ReadDnd, SetDnd};
 pub use profiles::{ReadAvatar, ReadProfile, SetAvatar, UpdateProfile};
 pub use publish::{
     PublishNotification, PublishRequest, Published, UpsertNotification, UpsertRequest,

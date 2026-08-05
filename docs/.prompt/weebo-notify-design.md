@@ -1321,8 +1321,8 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 | Milestone | État |
 |---|---|
 | **M0 — Socle** | ✅ commité (`240ff36`) |
-| **M1 — Cœur + web v0** | 🟡 **écrit en entier**, pas encore commité — détail ci-dessous |
-| **M2 — Sync, offline & TUI** | 🟡 **écrit en entier**, pas encore commité — les huit incréments et les quatre manques soldés |
+| **M1 — Cœur + web v0** | ✅ commité (`9cd9414`, `aef4844`) — détail ci-dessous |
+| **M2 — Sync, offline & TUI** | 🟡 les huit incréments et les quatre manques commités (`e6a6b2e`) ; D1 et D3 **écrits**, pas encore commités — ci-dessous |
 | M3 → M7 | ⬜ non commencés |
 
 **Découpage de M1** :
@@ -1460,7 +1460,7 @@ L'accept est fait **en passant**, par l'écrivain lui-même sur un listener non 
 
 **Une commande de §9.1 n'a toujours pas d'endpoint** et est donc absente plutôt que simulée : `notify dnd …` attend `GET/PUT /preferences/dnd` (§7.4), qui arrive en M3.
 
-Une verrue relevée en câblant : la spec **inline le schéma des items** dans `Page_Channel` et `Page_Notification` au lieu de référencer `Channel` et `Notification`. Le client TS s'en moque (typage structurel) mais progenitor y frappe un second type nominal — `PageChannelItemsItem` — pour la même chose. `notify-client-core` l'isole derrière un alias pour que la verrue n'atteigne ni la CLI, ni le TUI, ni Tauri ; le vrai correctif est dans la façon dont utoipa compose `Page<T>`, et il reste à faire.
+Une verrue relevée en câblant : la spec **inlinait le schéma des items** dans `Page_Channel` et `Page_Notification` au lieu de référencer `Channel` et `Notification`. Le client TS s'en moquait (typage structurel) mais progenitor y frappait un second type nominal — `PageChannelItemsItem` — pour la même chose, que `notify-client-core` isolait derrière un alias. C'était D3, soldée depuis (voir « Solder D1 et D3 » plus bas) : les alias `ChannelSummary`/`InboxEntry` n'existent plus, la CLI et le TUI nomment `Channel` et `Notification`.
 
 **M2.6 à M2.8 en détail.** Le TUI est en place — architecture Elm-like (un `App`, un enum `Message`, un `update` seul autorisé à muter, un `draw` sans effet de bord), layout 3 zones miroir du web, hook panic qui restaure le terminal **avant** de crasher, et chaque chaîne venue du serveur strippée de ses séquences ANSI avant rendu (§2.3 — le serveur strippe déjà à l'ingestion, mais ici le terminal *est* le moteur de rendu). Le mode `:` passe la ligne au **même parseur clap** que le shell, ce qui est le mécanisme de parité de §9 : une sous-commande ajoutée à la CLI y est disponible sans une ligne de code TUI.
 
@@ -1473,8 +1473,8 @@ L'écran des canaux ne décide pas qui a le droit d'éditer une policy : §5.1 d
 **Trois trouvailles, dont une grave :**
 
 - **`task recu` était cassé et ma vérification ne le voyait pas.** L'upload d'avatar de M2.2 déclarait son corps en `Vec<u8>`, qu'utoipa rend en tableau d'entiers et que progenitor refuse pour `application/octet-stream`. La génération du client Rust échouait donc — et mon contrôle d'idempotence (« les fichiers n'ont pas changé ») **passait justement parce que rien ne tournait**. Exactement le mode d'échec dénoncé plus haut dans ce document, reproduit par moi. Le corps se déclare maintenant `string`/`format: binary`, et la règle qui manquait est écrite en D8 (§14.4) : une vérification doit prouver que le travail a eu lieu avant de vérifier son résultat.
-- **Le client Rust ne peut pas consommer `GET /sync`.** progenitor rend `Event` — un `allOf` de deux `oneOf`, ce qui produit la forme plate de §8.1 — en `pub enum EventVariant0 {}`, un type **inhabité** : la désérialisation ne marche que tant qu'il n'y a aucun événement. `notify-client-core` lit donc la réponse avec son propre modèle minimal, exception documentée dans le module. Le correctif est D1 en §14.4.
-- **La spec inline les items paginés** au lieu de référencer `Channel`/`Notification`, ce qui fait frapper à progenitor un second type nominal pour la même chose (M2.5).
+- **Le client Rust ne pouvait pas consommer `GET /sync`.** progenitor rendait `Event` — un `allOf` de deux `oneOf`, ce qui produit la forme plate de §8.1 — en `pub enum EventVariant0 {}`, un type **inhabité** : la désérialisation ne marchait que tant qu'il n'y avait aucun événement. `notify-client-core` lisait donc la réponse avec son propre modèle minimal, exception documentée dans le module. C'était D1, soldée depuis.
+- **La spec inlinait les items paginés** au lieu de référencer `Channel`/`Notification`, ce qui faisait frapper à progenitor un second type nominal pour la même chose (M2.5). C'était D3, soldée depuis.
 
 **Fermer M2 — les quatre manques soldés.** Le signal local de §9.3bis, l'exécution des commandes `:`, le badge retard et l'admin canaux étaient nommés ici plutôt que passés sous silence ; ils sont faits, et §14.4 dit lesquels par leur numéro (D2, D4, D5, D6). Deux choses n'étaient pas au programme et sont sorties en les faisant :
 
@@ -1488,7 +1488,98 @@ Deux formes valent d'être notées parce qu'elles se ressemblent et se décident
 
 Et une règle appliquée à la présentation plutôt qu'aux règles métier : **chaque commande CLI renvoie une `String` au lieu d'imprimer**. C'est ce qui permet au mode `:` d'*exécuter* les commandes et d'afficher **la réponse du shell**, pas une seconde mise en forme de la même chose — la §9.3 (« toute logique qui apparaît dans `notify-cli` doit redescendre ») vaut aussi pour ce qu'on écrit à l'écran, parce que deux rendus divergent et que la divergence est invisible tant que personne ne compare deux écrans.
 
-Portes au vert à la fin de M2 : `task lint:check`, `task test` (479 Rust + 52 web), `task test:critical` (73), `task test:e2e` (47, contre un vrai Postgres — vérifié en comptant zéro « skipping » et un temps d'exécution qui n'est pas celui d'une suite qui se saute), `task test:oidc-compat` (leg `mock`), `task audit` (cargo + deny + pnpm + trivy), couverture domaine+app à 96,3 % pour un plancher à 90 %, et `task recu` idempotent — l'idempotence contrôlée **après** avoir vérifié que la génération avait bien tourné, ce que D8 exige et ce que la fin de M2 avait raté.
+**Solder D1 et D3 — le contrat devient descriptible.** Les deux dettes que M2 a créées disaient la même chose : `ADR-0009` promet que les clients viennent du contrat, et le contrat décrivait deux formes qu'aucun générateur ne sait modéliser. Elles se soldent au même endroit — `crates/notify-ports/src/schema.rs`, les deux seuls schémas **écrits** de tout le document, chacun avec la raison de l'être en tête de module.
+
+**D1 : `Event` est décrit comme les cinq événements qu'il est.** Un `oneOf` de cinq branches, chacune complète — son discriminant `event`, l'enveloppe (`cursor`, `logged_at`) et l'audience — au lieu de l'`allOf[oneOf, oneOf, object]` que la composition produisait. **Les octets sur le fil ne bougent pas d'un iota** ; seule leur description change, et progenitor en tire cinq variantes de structure là où il émettait un type inhabité. Trois choses décidées en l'écrivant :
+
+- **la moitié « charge utile » de chaque branche reste un `$ref`**, pas une liste de propriétés recopiée. §14.4 prescrivait « cinq objets complets », et un `allOf[$ref, objet]` en est un — c'est d'ailleurs exactement la forme que `EventPayload` compilait déjà correctement, donc la preuve que progenitor la fusionne était dans le client généré. Le bénéfice est ce que la solution écrite coûtait : un champ ajouté à `RevisionEvent` atteint encore le document tout seul, et ce qui est écrit à la main se réduit à cinq enveloppes de six lignes ;
+- **chaque branche porte un `title`.** Sans lui, progenitor nomme les variantes `Variant0`…`Variant4` et un client qui filtre dessus change de sens le jour où une branche se déplace. Avec, le client rend `Event::Revision { … }` jusqu'à `Event::Preference { … }` ;
+- **l'audience est fixée par genre** : `preference` porte `user_id`, tous les autres `channel_id`. C'est T26 écrit dans le document et plus seulement dans le code — un client qui lit la spec ne peut pas attendre un canal sur une préférence. `Audience` et `EventPayload` ont perdu leur dérive et, avec elle, leur place dans le document : plus rien ne les référence, et une dérive laissée là aurait laissé croire que le document suit encore ces types.
+
+Le coût que §14.4 annonçait est réel et couvert : un test sérialise un **vrai** événement de chaque genre et vérifie les deux sens — rien de ce que la branche exige ne manque à l'événement, rien de ce que l'événement porte n'échappe à la branche.
+
+**D3 : une page référence son item.** Un `ToSchema` manuel pour `Page<T>` où `items` est un tableau de `$ref`. Deux détails qui ne se devinent pas : un corps générique n'est pas *décrit* mais **composé** (`ComposeSchema` ; `PartialSchema` en découle par l'implémentation générale d'utoipa), et le `name()` d'un type générique est un **préfixe** auquel utoipa ajoute celui de l'élément — le nommer en entier a d'abord donné `Page_Channel_Channel`. `PageChannelItemsItem` a disparu, le document a maigri d'une copie complète de `Channel`, `Notification` et `Revision`, et les alias `ChannelSummary`/`InboxEntry` de `notify-client-core` sont supprimés.
+
+**Ce que ça change côté client**, et la seule chose qui *ne* revient pas au client généré : `wire.rs` n'existe plus, `sync.rs` et `store.rs` lisent l'`Event` généré. L'enveloppe de page, elle, continue d'être lue à la main, et c'est délibéré — le corps est pris en JSON pour que l'événement atteigne le store **verbatim** (ADR-0013, propriété acquise en fermant M2). Re-sérialiser une structure progenitor mettrait en cache l'événement d'un serveur plus récent *amputé de tout ce qu'il a de nouveau*, et le cache est précisément ce que rend une frontale qui a perdu l'élection (§9.3bis). Stocker les octets puis relire une copie coûte une structure de quatre champs et garde les deux propriétés.
+
+Deux conséquences de la rigueur du type généré, notées parce qu'elles ne se voyaient pas avec un modèle tolérant :
+
+- **le curseur se lit sur le document, pas sur l'événement analysé.** Un genre d'événement que ce build ne connaît pas ne doit pas empêcher le curseur d'avancer, sinon un vieux client cale pour de bon devant un serveur plus récent. Avec l'ancien modèle — tous les champs optionnels — tout se désérialisait, donc le cas n'existait pas ;
+- **une fixture de test n'était pas un événement entier.** Celle du store omettait `audience`, `logged_at`, `priority` et `author` ; le modèle tolérant l'acceptait. Elle vérifiait donc la tolérance du parseur plutôt que le comportement du store.
+
+Portes au vert à la fin de M2 : `task lint:check`, `task test` (482 Rust + 52 web), `task test:critical` (73), `task test:e2e` (47, contre un vrai Postgres — vérifié en comptant zéro « skipping » et un temps d'exécution qui n'est pas celui d'une suite qui se saute), `task test:oidc-compat` (leg `mock`), `task audit` (cargo + deny + pnpm + trivy), couverture domaine+app à 96,2 % pour un plancher à 90 %, et `task recu` idempotent — l'idempotence contrôlée **après** avoir vérifié que la génération avait bien tourné, ce que D8 exige et ce que la fin de M2 avait raté.
+
+**Découpage de M3** :
+
+| # | Livrable | État |
+|---|---|---|
+| M3.1 | DND dans le domaine (§7.4) — quiet hours à timezone explicite, DND ponctuel, portée globale/canal + exceptions, bypass `urgent` opt-in | ✅ écrit |
+| M3.2 | `GET/PUT /preferences/dnd` (§8), le DND porté par l'événement `preference` (§8.1), et `notify dnd` — la commande de §9.1 qui attendait son endpoint | ✅ écrit |
+| M3.3 | Suppression des push pendant une période DND, `deferred_by_dnd` au sync (§7.2, T10 et T19) | ✅ écrit |
+| M3.4 | Digest de sortie — **un** push, pas une rafale ; job leader-only (§11) | ✅ écrit |
+| M3.5 | `push-webpush` — RFC 8030/8291 (VAPID), premier adapter de production de `PushDispatcher` (§14.3), config `[push.webpush]` | ⬜ |
+| M3.6 | Web : PWA installable + service worker, abonnement Web Push, enrôlement device, DND respecté localement | ⬜ |
+| M3.7 | Receipts : « vu par 3/5 » en `HoverCard` (§7.3, §10.3), compté en users | ⬜ |
+
+L'ordre n'est pas libre : M3.3 et M3.4 consomment la préférence de M3.1–M3.2, et M3.6 consomme le transport de M3.5. M3.5 est le premier à sortir du « registre vide » que §14.3 décrit comme le comportement correct de M1.
+
+**Ce que M3 ne prend pas.** La palette `Cmd+K` (§10.4) attendait `GET /search` **et** les écrans de M2 ; elle est débloquée depuis, mais elle n'est pas dans la ligne M3 de §14 et l'y glisser diluerait un milestone déjà large. Elle reste nommée ici plutôt que passée sous silence, comme les quatre manques de M2 l'ont été.
+
+**M3.1 en détail.** Une préférence par user, entièrement côté serveur — c'est ce qui la rend vraie sur tous les appareils à la fois (§7.4) — et lisible sans I/O : `is_muted(canal, priorité, instant)` répond par oui ou non, et rien d'autre dans le produit n'a le droit de se demander ce que « DND » veut dire.
+
+Quatre décisions, dont trois que §7.4 impose et une qu'il ne tranchait pas :
+
+- **la timezone est celle de la préférence, jamais du device.** `22:00–08:00, Europe/Paris` veut dire les nuits de la personne, pas celles du fuseau où son téléphone se trouve ce mois-ci. Elle est validée contre la base IANA comme le fuseau de profil de M2.1, et pour la même raison : un `Europe/Pris` accepté aujourd'hui est une notification qui ne part pas dans six mois, et le lien entre les deux serait introuvable ;
+- **une plage qui passe minuit est une plage**, pas deux. `22:00–08:00` couvre la fin d'un jour et le début du suivant, et le jour de la semaine se juge sur le **début** — un vendredi 22:00–08:00 couvre la nuit de vendredi à samedi, ce que « vendredi » veut dire pour un humain et pas ce que `samedi 02:00 ∈ vendredi` dirait ;
+- **`urgent` ne passe que si le destinataire l'a demandé** (défaut : non). C'est §2.3 et §7.4 dans le même sens : le publisher choisit l'insistance, le destinataire choisit ce qui a le droit de le réveiller ;
+- **une exception de canal bat tout le reste**, y compris un DND ponctuel posé à la main. §7.4 ne le disait pas — il donne le cas d'astreinte (« tout couper *sauf* le canal critique ») sans dire qui gagne quand les deux se contredisent. Faire gagner l'exception est la seule lecture qui rende le cas d'astreinte utilisable : l'inverse obligerait à défaire son exception chaque fois qu'on coupe le reste, c'est-à-dire précisément au moment où on ne veut pas y penser.
+
+**M3.2 en détail.** `GET/PUT /preferences/dnd`, un port `PreferenceRepository`, et la commande `notify dnd` que M2.5 avait laissée absente plutôt que simulée.
+
+Trois choses décidées en le câblant :
+
+- **le sujet n'est pas une entrée.** Aucune route ici ne prend d'id de user — il n'y a pas de chemin qui *pourrait* parler de quelqu'un d'autre. Le corps est un `DndDraft`, le couple draft/entité que ce code utilise déjà partout (`ContentDraft`, `RevisionDraft`), et il n'a pas de champ pour le sujet du tout. C'est ce qui fait de T26 une propriété de l'espace d'URL plutôt qu'une vérification qu'il faut penser à écrire dans chaque handler, exactement comme `/users/me/profile` de §2.4 ;
+- **le `PUT` remplace en entier.** Les quiet hours sont une liste, et fusionner une liste n'a pas de sens univoque : un corps qui omet une plage ne se distingue pas d'un corps qui demande de la retirer. Le tri-état de M2.1 (absent ≠ `null`) répondait à une autre question — un champ scalaire dont on veut rendre la main à l'IdP — et l'appliquer ici aurait produit une API que personne ne sait écrire correctement. La CLI relit donc avant d'écrire, ce qui est aussi ce qui empêche `dnd on` d'effacer un planning au passage ;
+- **`PreferenceRepository` est un port à part**, et pas une troisième méthode sur `InteractionRepository`. Un silence se pose depuis un bouton d'une notification et vit à côté des interactions qui arrivent avec ; un DND se pose dans Settings et survit à toutes les notifications de l'instance. Les deux ne se rencontrent que sur le fil.
+
+Et c'est cette rencontre qui a produit la seule vraie contrainte : **l'événement `preference` porte les deux moitiés, quelle que soit celle qui a changé.** §8.1 le promet, un client qui décide s'il doit lever un toast a besoin des deux, et un événement qui ne porterait que la moitié écrite laisserait l'autre à deviner. Les deux écrivains passent donc par **un seul constructeur** (`announce_preference`, côté adapter comme côté double) — deux sites qui le construisent chacun de leur côté, c'est la façon dont l'un des deux finit par n'expédier que ce qu'il vient d'écrire. Un test de conformance le vérifie contre un vrai Postgres : poser un *silence* doit rendre un événement qui contient encore le DND que ce write n'a pas touché.
+
+Deux formes valent d'être notées :
+
+- **pas de ligne pour qui n'a rien réglé.** Le port répond `Dnd::off` quand la ligne manque : « jamais ouvert Settings » et « une préférence qui ne coupe rien » sont la même réponse pour tous les appelants, et créer une ligne au premier login mettrait une écriture sur le chemin le plus chaud de l'API pour une valeur qui est déjà le défaut. Le stockage est un document jsonb, parce que la préférence se lit et s'écrit entière et que rien ne demande jamais « qui est silencieux le mardi » — relu à travers `Dnd::validated`, donc une ligne écrite par le build du mois dernier doit encore satisfaire les invariants de celui-ci ;
+- **une préférence illisible en base est `Corrupt`, pas une erreur client.** C'est nous qui avons écrit la ligne (§4, deux types d'erreur exprès).
+
+**Vérifié en le lançant**, contre un vrai Postgres et le provider de dev : login PKCE → `PUT` → `GET` → l'événement `preference` sur `GET /sync`, adressé au user et portant les deux moitiés. Et **un bug que seul le fait de le lancer pouvait révéler** : le corps de la requête était un `Dnd`, donc il portait le `user`.
+
+Ce champ était documenté « ignoré, réécrit par le use case », ce qui semblait suffire — les tests passaient, parce que celui qui les écrit connaît l'id qu'il vient de créer. Un vrai client ne le connaît pas, et le champ n'est pas optionnel : il est **requis**. Un `curl` avec n'importe quoi d'autre qu'un ULID reçoit une erreur de désérialisation à propos d'un champ que le serveur allait écraser, et un client qui ne connaît pas son propre id ne peut simplement pas construire de corps. « Trompeur » était la bonne intuition et la mauvaise conclusion : ce n'était pas un champ mal nommé, c'était une entrée obligatoire qui n'aurait jamais dû exister. D'où `DndDraft`, et un corps vide `{}` qui est désormais un corps complet.
+
+**Un écart avec §9.1, assumé** : le croquis y écrit `notify dnd on|off|until 9h|for 2h|schedule|status`. `until` et `for` sont ici des options de `on` et non des verbes, parce que ce sont deux orthographes d'une même action — en sous-commandes, clap devrait proposer un `notify dnd until` tout seul, sans rien pour dire à quoi il s'applique. Et **`on` sans borne est refusé** : §7.4 fait du basculement rapide une échéance, et un DND sans fin est ce qu'on pose à 3h du matin pour le redécouvrir un trimestre plus tard — le même raisonnement que le silence de groupe de §2.3, qui exige déjà une durée.
+
+**M3.3 en détail.** Le DND devient effectif : le `Fanout` le consulte avant de pousser, et le sync dit quel retard était voulu.
+
+**Ce qui est supprimé, et ce qui ne l'est pas.** Seul le **push** est retenu — le poke de bus part quand même, donc une frontale ouverte continue de recevoir sur son flux et l'inbox se remplit normalement (§7.4). C'est la clause de T19 qu'une implémentation rate en coupant trop, et le test l'affirme dans les deux sens : zéro push, et un poke `Channel` bien présent. Deux autres clauses suivent : un canal excepté sonne, et `urgent` reste bloqué sans accord du destinataire.
+
+Un détail de ce genre de code : le silence et le DND répondent à deux questions différentes sur le même instant — l'un *cette notification ou ce groupe*, l'autre *ce canal, à cette priorité, maintenant* — et les deux échouent **fermé**. Ne pas pouvoir lire une préférence fait taire le push : le faire sonner ferait vibrer un téléphone dont on ne sait justement pas s'il avait demandé le silence, alors que l'inverse coûte une notification que l'inbox garde de toute façon.
+
+**`deferred_by_dnd` est dérivé, pas enregistré.** §7.4 veut que le client n'affiche pas « reçue en retard » sur un retard qu'il a lui-même demandé. L'implémentation évidente — une ligne par push supprimé, écrite sur le chemin de fan-out et purgée ensuite — est une table qui grossit avec chaque notification différée, pour répondre à une question de badge. À la place, le sync repose la question à la préférence : *une période de calme tournait-elle sur ce canal quand la notification a été créée ?*
+
+Le coût est réel et écrit là où il se voit : la préférence lue est l'**actuelle**, donc réécrire ses quiet hours change la réponse pour des notifications déjà dans le backlog. C'est un badge qui apparaît ou disparaît sur une ligne que plus personne ne regarde, contre l'absence d'une table qui grossit sur le chemin le plus chaud du produit.
+
+**Et il est à côté des événements, pas dessus.** Un `Event` est adressé à un *canal* et tous ses membres en reçoivent les mêmes octets ; ceci est la préférence d'une seule personne. Le mettre sur l'événement ferait diverger le même événement selon son lecteur, ce que §8.1 promet précisément qu'il ne fait pas — le flux et le backlog portent des événements identiques. Il rejoint donc `expired` et `compacted` sur la page, les deux autres faits par-user qu'un rattrapage rapporte.
+
+Côté client, le store local passe en schéma **3** (`ALTER TABLE`, un cache existant n'est pas jeté) et `late_by()` rend `None` quand le retard était voulu. Contrairement à `delivered_at` — que le store estampille lui-même parce que c'est un fait sur *ce* cache — le drapeau est **passé** : c'est ce que le serveur dit d'une préférence, et lui seul la connaît.
+
+**M3.4 en détail.** La dernière clause de T19 : à la sortie d'une période de calme, **un** push, pas une rafale.
+
+**Pourquoi c'est un job et pas un instant.** Rien ne *se produit* quand une période de calme se termine — la fin d'un planning est l'absence d'un événement, donc il faut que quelqu'un regarde. D'où un timer, et donc leader-only (§11) : chaque replica qui le lancerait enverrait son propre digest. Ce qui décide que c'est fini est `Dnd::is_active` et rien d'autre : le store rend tout le monde qui a quelque chose en attente **avec sa préférence**, et le filtre se fait dans le use case, parce qu'un store qui répondrait à cette question serait une seconde implémentation de ce que §7.4 veut dire.
+
+**Deux compteurs, pas une table de notifications retenues.** Le digest dit « 12 notifications pendant votre absence (2 failure) », donc deux entiers y répondent exactement. Une ligne par push supprimé grossirait sur le chemin de fan-out pour être lue une fois puis jetée, et n'achèterait que la possibilité de les *lister* — qu'aucun écran ne demande, l'inbox les tenant déjà. Les `failure` ont leur colonne parce qu'elles sont le seul statut qui vaille d'être nommé sur un écran verrouillé : la différence entre « rattrape quand tu peux » et « regarde maintenant ». C'est aussi l'exception assumée au raisonnement de M3.3 — `deferred_by_dnd` est dérivé pour ne rien écrire, le tally est écrit parce qu'un push doit partir **une fois**, et une dérivation ne sait pas dire si elle a déjà été envoyée.
+
+Trois décisions notées là où elles se voient :
+
+- **`PushMessage` devient une somme.** Un digest ne nomme aucune notification et n'appartient à aucun canal ; le plier dans la même structure aurait donné deux champs parfois vides et un transport qui doit de toute façon savoir dans quel cas il est. Le moment est le bon : aucun transport de production n'existe encore (M3.5) ;
+- **un digest n'est jamais `urgent`**, quoi qu'il contienne. Il arrive *après* une période de calme, donc rien dedans n'est une nouvelle qui ne pouvait pas attendre — et ce qui a attendu huit heures sur demande ne doit pas ensuite sonner comme une alarme ;
+- **le tally est vidé même si l'envoi échoue.** Quelqu'un qui rate un résumé a une inbox ; quelqu'un qui reçoit le même résumé toutes les minutes a un bug — et c'est précisément la rafale que §7.4 veut éviter. De même, **redéfinir sa préférence vide le tally** : un digest qui compterait une période de calme qu'on vient de réécrire rapporterait quelque chose qui n'a pas eu lieu.
 
 ### 14.2 Accès par groupe OIDC — le modèle dérivé
 
@@ -1537,20 +1628,22 @@ Tout ce qui suit est connu, écrit et chiffré en effort. Une dette sans solutio
 
 | # | Dette | Coût aujourd'hui | Effort | État |
 |---|---|---|---|---|
-| D1 | `Event` illisible par le client Rust | `GET /sync` inutilisable depuis progenitor | M | ⬜ ouverte |
+| D1 | `Event` illisible par le client Rust | — | M | ✅ soldée en fermant M2 |
 | D2 | `PATCH /channels/{id}` absent | — | S | ✅ soldée en fermant M2 |
-| D3 | Items paginés inlinés dans la spec | types dupliqués dans le client Rust | S | ⬜ ouverte |
+| D3 | Items paginés inlinés dans la spec | — | S | ✅ soldée en fermant M2 |
 | D4 | Commandes `:` non exécutées | — | M | ✅ soldée en fermant M2 |
 | D5 | Signal local absent (§9.3bis) | — | M | ✅ soldée en fermant M2 |
 | D6 | `delivered_at` non conservé | — | S | ✅ soldée en fermant M2 |
 | D7 | Legs Dex et Authentik de `oidc-compat` | une seule lecture d'OIDC au lieu de trois (§15) | M | ⬜ ouverte |
 | D8 | Une vérification qui passe sans rien exécuter | — | S | ✅ règle appliquée |
 
-Les quatre entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
+Les six entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
 
-**D1 — `Event` rendu en type inhabité.** progenitor voit `allOf[Audience(oneOf), EventPayload(oneOf), {cursor, logged_at}]` et produit `pub enum EventVariant0 {}` : la désérialisation d'une page de sync ne marche que tant qu'elle est vide. `notify-client-core` contourne avec son propre modèle minimal (documenté dans le module), donc rien n'est cassé — mais la promesse d'ADR-0009, « les clients viennent du contrat », a un trou.
+**D1 — `Event` rendu en type inhabité.** progenitor voyait `allOf[Audience(oneOf), EventPayload(oneOf), {cursor, logged_at}]` et produisait `pub enum EventVariant0 {}` : la désérialisation d'une page de sync ne marchait que tant qu'elle était vide. `notify-client-core` contournait avec son propre modèle minimal (documenté dans le module), donc rien n'était cassé — mais la promesse d'ADR-0009, « les clients viennent du contrat », avait un trou.
 
-*Solution* : **décrire `Event` à la main plutôt que le laisser composer**. Un `impl ToSchema` qui émet un `oneOf` de cinq objets complets — un par `event`, chacun portant déjà `channel_id` ou `user_id`, `cursor` et `logged_at`. **La forme sur le fil ne change pas d'un octet** ; seule sa description change, et elle devient quelque chose qu'un générateur sait modéliser. Le coût est un schéma écrit à la main qui doit suivre le type : à couvrir par un test qui sérialise un événement de chaque genre et vérifie que les champs obligatoires du schéma correspondent. À faire avant que quoi que ce soit d'autre consomme `/sync` en Rust — le TUI le fera.
+*Solution, faite* : **décrire `Event` à la main plutôt que le laisser composer**. Un `impl ToSchema` qui émet un `oneOf` de cinq objets complets — un par `event`, chacun portant déjà `channel_id` ou `user_id`, `cursor` et `logged_at`. **La forme sur le fil n'a pas changé d'un octet** ; seule sa description a changé, et elle est devenue quelque chose qu'un générateur sait modéliser : `Event::Revision { … }` jusqu'à `Event::Preference { … }` dans le client Rust.
+
+Un écart avec la solution écrite, dans le sens qui coûte moins : la charge utile de chaque branche reste un `$ref` vers le schéma dérivé du type, et non une liste de propriétés recopiée. `allOf[$ref, objet]` est la forme que progenitor fusionnait **déjà** correctement — `EventPayload` en était la preuve dans le client généré — donc seule l'enveloppe est écrite à la main, et un champ ajouté à `RevisionEvent` atteint encore le document tout seul. Le coût résiduel est couvert comme prévu : un test sérialise un événement de chaque genre et vérifie les deux sens (rien d'obligatoire ne manque, rien de porté n'est indécrit). Détaillé en §14.1, « Solder D1 et D3 », avec les deux choses que la rigueur du type généré a fait apparaître.
 
 **D2 — pas de mise à jour de canal.** §9.1 promet `notify channel set-ttl` et §10.4 un écran d'admin canaux, alors que §8 n'avait aucune route pour changer une policy. L'incohérence était dans la spec, pas dans le code ; §8 porte désormais la route.
 
@@ -1562,9 +1655,9 @@ Trois décisions prises en l'écrivant :
 - **un `PATCH` qui ne change rien n'écrit rien.** `edit_policy` répond si quelque chose a bougé ; sinon la réponse est la même — un `PATCH` est idempotent — mais sans ligne en base ni entrée d'audit affirmant un changement qui n'a pas eu lieu ;
 - **le refus « managed » est un 409**, ce qu'il n'était pas (voir les trouvailles de M2.6–M2.8).
 
-**D3 — items paginés inlinés.** `Page_Channel.items` décrit l'objet au lieu de référencer `Channel`, donc progenitor frappe `PageChannelItemsItem` — un second type nominal pour la même chose. Le client TS s'en moque (typage structurel), le Rust non ; `notify-client-core` masque la verrue derrière un alias pour qu'elle n'atteigne pas les frontales.
+**D3 — items paginés inlinés.** `Page_Channel.items` décrivait l'objet au lieu de référencer `Channel`, donc progenitor frappait `PageChannelItemsItem` — un second type nominal pour la même chose. Le client TS s'en moquait (typage structurel), le Rust non ; `notify-client-core` masquait la verrue derrière un alias pour qu'elle n'atteigne pas les frontales.
 
-*Solution* : un `impl PartialSchema`/`ToSchema` manuel pour `Page<T>` où `items` est un tableau de **référence** vers `T`, au lieu de laisser utoipa inliner le paramètre générique. Effet de bord agréable : le document rétrécit d'une copie complète de `Channel` et de `Notification`.
+*Solution, faite* : un `impl ToSchema` manuel pour `Page<T>` où `items` est un tableau de **référence** vers `T`, au lieu de laisser utoipa inliner le paramètre générique. Deux détails qui ne se devinent pas : un corps générique n'est pas décrit mais **composé** (`ComposeSchema` ; `PartialSchema` en découle par l'implémentation générale d'utoipa), et le `name()` d'un type générique est un **préfixe** auquel utoipa ajoute celui de l'élément — le nommer en entier donne `Page_Channel_Channel`. Effet de bord agréable, obtenu : le document a rétréci d'une copie complète de `Channel`, `Notification` et `Revision`, et les alias `ChannelSummary`/`InboxEntry` ont disparu de `notify-client-core`.
 
 **D4 — le mode `:` parse mais n'exécute pas.** La ligne passe par le parseur clap du shell (c'est ce qui garantit la parité §9) et le résultat s'affiche, mais la commande n'est pas lancée ; les verbes fréquents ont leurs raccourcis directs.
 

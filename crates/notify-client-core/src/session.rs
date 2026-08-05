@@ -3,22 +3,10 @@
 
 use notify_client_api::Client;
 use notify_client_api::types::{
-    Actions, AddMemberBody, Channel, ChannelId, ChannelPolicyBody, CreateChannelBody, Device,
-    EnrolBody, ExternalId, Image, Principal, Priority, Progress, PublishBody, Published,
-    PushTransport, RevisionDraft, Scope, State, Status, Ttl,
+    Actions, AddMemberBody, Channel, ChannelId, ChannelPolicyBody, CreateChannelBody, Device, Dnd,
+    DndDraft, EnrolBody, ExternalId, Image, Notification, Principal, Priority, Progress,
+    PublishBody, Published, PushTransport, RevisionDraft, Scope, State, Status, Ttl,
 };
-
-/// A channel as a *page* of channels carries it.
-///
-/// Structurally identical to [`Channel`], and a different type only because the
-/// OpenAPI document inlines the item schema inside `Page_Channel` instead of
-/// referencing it — so progenitor mints a second, nominally distinct struct. The
-/// alias keeps that wart out of the CLI, the TUI and the Tauri shell; the fix is in
-/// the spec, and it is written down in §14.1.
-pub type ChannelSummary = notify_client_api::types::PageChannelItemsItem;
-
-/// A notification as a page of them carries it. Same wart as [`ChannelSummary`].
-pub type InboxEntry = notify_client_api::types::PageNotificationItemsItem;
 
 use crate::config::Profile;
 use crate::error::ClientError;
@@ -176,7 +164,7 @@ impl Session {
     /// Follows the cursor to the end rather than returning one page. A channel list
     /// is a sidebar and a completion source, not a feed: a front end that showed
     /// the first fifty and stopped would be quietly wrong for anybody in more.
-    pub async fn channels(&self) -> Result<Vec<ChannelSummary>, ClientError> {
+    pub async fn channels(&self) -> Result<Vec<Channel>, ClientError> {
         let mut all = Vec::new();
         let mut cursor: Option<String> = None;
 
@@ -233,6 +221,30 @@ impl Session {
             .await
             .map_err(ClientError::from)?;
 
+        Ok(response.into_inner())
+    }
+
+    /// `GET /preferences/dnd` — the caller's own do-not-disturb (§7.4).
+    ///
+    /// Somebody who has never set one reads a preference that mutes nothing rather
+    /// than a 404: "off" and "never configured" are the same thing to a client, and
+    /// making it tell them apart only invites two code paths that must agree.
+    pub async fn dnd(&self) -> Result<Dnd, ClientError> {
+        let response = self.api.read_dnd().await.map_err(ClientError::from)?;
+        Ok(response.into_inner())
+    }
+
+    /// `PUT /preferences/dnd` — replace it (§7.4).
+    ///
+    /// Whole, not partial: quiet hours are a list, and a body that omitted a window
+    /// could not be told apart from one asking to drop it. A caller that wants to
+    /// change one thing reads first — which is what the CLI does.
+    ///
+    /// Takes a [`DndDraft`] and answers with a [`Dnd`]: whose preference it is is
+    /// not something a client says, so a client that does not know its own id can
+    /// still set one.
+    pub async fn set_dnd(&self, wanted: &DndDraft) -> Result<Dnd, ClientError> {
+        let response = self.api.set_dnd(wanted).await.map_err(ClientError::from)?;
         Ok(response.into_inner())
     }
 
@@ -293,7 +305,7 @@ impl Session {
         &self,
         channels: Option<&str>,
         limit: u16,
-    ) -> Result<Vec<InboxEntry>, ClientError> {
+    ) -> Result<Vec<Notification>, ClientError> {
         let response = self
             .api
             .inbox(

@@ -1597,6 +1597,116 @@
         ]
       }
     },
+    "/api/v1/preferences/dnd": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Read your own do-not-disturb.",
+        "operationId": "read_dnd",
+        "responses": {
+          "200": {
+            "description": "The caller's do-not-disturb; muting nothing if never set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dnd"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This principal is not a person (design §5.2bis)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Replace your own do-not-disturb.",
+        "operationId": "set_dnd",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DndDraft"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The stored preference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dnd"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This principal is not a person (design §5.2bis)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A window that could not be resolved — an unknown timezone, or ends that are equal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/receipts": {
       "post": {
         "tags": [
@@ -2738,51 +2848,6 @@
         "type": "string",
         "description": "An uploaded attachment, referenced by a payload rather than embedded in it\n(design §2.3)."
       },
-      "Audience": {
-        "oneOf": [
-          {
-            "type": "object",
-            "description": "Every principal with `subscribe` on the channel.",
-            "required": [
-              "channel_id",
-              "audience"
-            ],
-            "properties": {
-              "audience": {
-                "type": "string",
-                "enum": [
-                  "channel"
-                ]
-              },
-              "channel_id": {
-                "$ref": "#/components/schemas/ChannelId",
-                "description": "The channel."
-              }
-            }
-          },
-          {
-            "type": "object",
-            "description": "One user's own connections, wherever they are. Never anybody else's.",
-            "required": [
-              "user_id",
-              "audience"
-            ],
-            "properties": {
-              "audience": {
-                "type": "string",
-                "enum": [
-                  "user"
-                ]
-              },
-              "user_id": {
-                "$ref": "#/components/schemas/UserId",
-                "description": "The user."
-              }
-            }
-          }
-        ],
-        "description": "Who an event is for.\n\nThe wire names are `channel_id` and `user_id` rather than a shared `id`,\nbecause an [`Event`] flattens this next to its payload and a `receipt` payload\nalready owns an `id` — see [`Event`]'s own note."
-      },
       "Author": {
         "allOf": [
           {
@@ -3176,6 +3241,19 @@
         "description": "A position in the global event sequence.",
         "example": "evt_00000000000042"
       },
+      "Day": {
+        "type": "string",
+        "description": "A day of the week, as the wire spells it.\n\nIts own enum rather than `time::Weekday` because this one is API: `\"mon\"` is a\ncontract, and the serde representation of somebody else's type is not ours to\npromise.",
+        "enum": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri",
+          "sat",
+          "sun"
+        ]
+      },
       "DependencyCheck": {
         "type": "object",
         "description": "The state of a single dependency.",
@@ -3283,6 +3361,128 @@
         "format": "byte",
         "description": "Base64url, 32 bytes"
       },
+      "Dnd": {
+        "type": "object",
+        "description": "One user's delivery preferences (design §7.4).\n\nCarried whole by the `preference` event of §8.1 rather than as a delta: a client\nthat missed one update would otherwise apply the next to the wrong baseline.",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "exceptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            },
+            "description": "Channels that ring anyway — the on-call case: mute everything *except* the\none that matters."
+          },
+          "quiet_hours": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuietHours"
+            },
+            "description": "Recurring weekly windows."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/DndScope",
+            "description": "Which channels any of the above applies to."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The quick toggle: quiet until this instant, whatever the schedule says."
+          },
+          "urgent_bypasses": {
+            "type": "boolean",
+            "description": "Whether `urgent` is allowed through.\n\nOff by default, and opt-in by the **recipient**: the publisher chooses how\ninsistent a notification is, the person receiving it chooses what may wake\nthem (§2.3, §7.4). Note that this never reaches an iOS critical alert — no\nentitlement, by decision."
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserId",
+            "description": "Whose it is."
+          }
+        }
+      },
+      "DndDraft": {
+        "type": "object",
+        "description": "A do-not-disturb as somebody *states* it: everything except whose it is.\n\nThe draft/entity split this codebase uses everywhere else ([`ContentDraft`],\n[`RevisionDraft`]), and here it carries a decision: **the subject is never an\ninput.** A caller states quiet hours and exceptions; the use case decides who\nthey belong to, because it is the only thing that knows.\n\nLeaving `user` on the request body was tried and it is worse than misleading —\nit is *required*, so a client that legitimately does not know its own id cannot\nbuild a body at all, and one that guesses gets a deserialisation error about a\nfield the server was going to overwrite.\n\n[`ContentDraft`]: crate::content::ContentDraft\n[`RevisionDraft`]: crate::notification::RevisionDraft",
+        "properties": {
+          "exceptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            },
+            "description": "Channels that ring anyway."
+          },
+          "quiet_hours": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuietHours"
+            },
+            "description": "Recurring weekly windows. Absent means none."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/DndScope",
+            "description": "Which channels it applies to."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Quiet until this instant. Absent ends the quick toggle."
+          },
+          "urgent_bypasses": {
+            "type": "boolean",
+            "description": "Whether `urgent` may come through."
+          }
+        }
+      },
+      "DndScope": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Every channel. What a preference means when it does not say.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "everything"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Only these ones are quieted; the rest ring as usual.",
+            "required": [
+              "channels",
+              "kind"
+            ],
+            "properties": {
+              "channels": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ChannelId"
+                },
+                "description": "The channels the preference applies to."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channels"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "How wide a do-not-disturb reaches (design §7.4)."
+      },
       "EnrolBody": {
         "type": "object",
         "description": "Enrol a device.",
@@ -3313,157 +3513,226 @@
         }
       },
       "Event": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Audience",
-            "description": "Who may see it."
-          },
-          {
-            "$ref": "#/components/schemas/EventPayload",
-            "description": "What happened."
-          },
-          {
-            "type": "object",
-            "required": [
-              "cursor",
-              "logged_at"
-            ],
-            "properties": {
-              "cursor": {
-                "$ref": "#/components/schemas/Cursor",
-                "description": "This row's position — the `id:` of the stream frame, and the cursor a client\nsends back."
-              },
-              "logged_at": {
-                "type": "string",
-                "format": "date-time",
-                "description": "When it was appended, by the server's clock."
-              }
-            }
-          }
-        ],
-        "description": "One row of the event log.\n\n# One flat object, therefore no name may be claimed twice\n\nThe audience and the payload are both flattened, because the wire shape §8.1\ndocuments is flat: `channel_id`, `notification_id`, `seq` and the rest sit side\nby side in one object, and a client renders a row without unwrapping anything.\n\nFlattening means the envelope and the payload share one namespace, and serde\nresolves a clash by emitting the key twice — a document that no longer reads\nback. Two names are therefore reserved by this struct and by nothing else:\n\n* the audience's is `channel_id` / `user_id`, never `id`, because `receipt` and\n  `interaction` payloads carry their own `id`;\n* the envelope's timestamp is `logged_at`, never `recorded_at`, because an\n  `interaction` payload carries its own `recorded_at`.\n\nBoth are covered by tests below. A new payload field colliding with one of\nthese is a wire break, not a detail."
-      },
-      "EventPayload": {
         "oneOf": [
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/RevisionEvent",
-                "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it."
+                "$ref": "#/components/schemas/RevisionEvent"
               },
               {
                 "type": "object",
                 "required": [
-                  "event"
+                  "cursor",
+                  "logged_at",
+                  "event",
+                  "audience",
+                  "channel_id"
                 ],
                 "properties": {
+                  "audience": {
+                    "type": "string",
+                    "enum": [
+                      "channel"
+                    ]
+                  },
+                  "channel_id": {
+                    "$ref": "#/components/schemas/ChannelId"
+                  },
+                  "cursor": {
+                    "$ref": "#/components/schemas/Cursor"
+                  },
                   "event": {
                     "type": "string",
                     "enum": [
                       "revision"
                     ]
+                  },
+                  "logged_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When it was appended, by the server's clock."
                   }
                 }
               }
             ],
-            "description": "See [`RevisionEvent`]. Boxed because it is much larger than its siblings and\nevery `Event` would otherwise pay for it."
+            "title": "LoggedRevision"
           },
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/Receipt",
-                "description": "A receipt was posted."
+                "$ref": "#/components/schemas/Receipt"
               },
               {
                 "type": "object",
                 "required": [
-                  "event"
+                  "cursor",
+                  "logged_at",
+                  "event",
+                  "audience",
+                  "channel_id"
                 ],
                 "properties": {
+                  "audience": {
+                    "type": "string",
+                    "enum": [
+                      "channel"
+                    ]
+                  },
+                  "channel_id": {
+                    "$ref": "#/components/schemas/ChannelId"
+                  },
+                  "cursor": {
+                    "$ref": "#/components/schemas/Cursor"
+                  },
                   "event": {
                     "type": "string",
                     "enum": [
                       "receipt"
                     ]
+                  },
+                  "logged_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When it was appended, by the server's clock."
                   }
                 }
               }
             ],
-            "description": "A receipt was posted."
+            "title": "LoggedReceipt"
           },
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/InteractionRecord",
-                "description": "An interaction was recorded."
+                "$ref": "#/components/schemas/InteractionRecord"
               },
               {
                 "type": "object",
                 "required": [
-                  "event"
+                  "cursor",
+                  "logged_at",
+                  "event",
+                  "audience",
+                  "channel_id"
                 ],
                 "properties": {
+                  "audience": {
+                    "type": "string",
+                    "enum": [
+                      "channel"
+                    ]
+                  },
+                  "channel_id": {
+                    "$ref": "#/components/schemas/ChannelId"
+                  },
+                  "cursor": {
+                    "$ref": "#/components/schemas/Cursor"
+                  },
                   "event": {
                     "type": "string",
                     "enum": [
                       "interaction"
                     ]
+                  },
+                  "logged_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When it was appended, by the server's clock."
                   }
                 }
               }
             ],
-            "description": "An interaction was recorded."
+            "title": "LoggedInteraction"
           },
           {
             "type": "object",
-            "description": "A notification is gone.",
+            "title": "LoggedTombstone",
+            "description": "A notification stopped existing; clients drop it locally.",
             "required": [
+              "cursor",
+              "logged_at",
+              "event",
+              "audience",
+              "channel_id",
               "notification_id",
-              "reason",
-              "event"
+              "reason"
             ],
             "properties": {
+              "audience": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "cursor": {
+                "$ref": "#/components/schemas/Cursor"
+              },
               "event": {
                 "type": "string",
                 "enum": [
                   "tombstone"
                 ]
               },
+              "logged_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When it was appended, by the server's clock."
+              },
               "notification_id": {
-                "$ref": "#/components/schemas/NotificationId",
-                "description": "Which one."
+                "$ref": "#/components/schemas/NotificationId"
               },
               "reason": {
-                "$ref": "#/components/schemas/TombstoneReason",
-                "description": "Why — clients word \"deleted\" and \"expired\" differently."
+                "$ref": "#/components/schemas/TombstoneReason"
               }
             }
           },
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/PreferenceEvent",
-                "description": "See [`PreferenceEvent`]."
+                "$ref": "#/components/schemas/PreferenceEvent"
               },
               {
                 "type": "object",
                 "required": [
-                  "event"
+                  "cursor",
+                  "logged_at",
+                  "event",
+                  "audience",
+                  "user_id"
                 ],
                 "properties": {
+                  "audience": {
+                    "type": "string",
+                    "enum": [
+                      "user"
+                    ]
+                  },
+                  "cursor": {
+                    "$ref": "#/components/schemas/Cursor"
+                  },
                   "event": {
                     "type": "string",
                     "enum": [
                       "preference"
                     ]
+                  },
+                  "logged_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When it was appended, by the server's clock."
+                  },
+                  "user_id": {
+                    "$ref": "#/components/schemas/UserId"
                   }
                 }
               }
             ],
-            "description": "See [`PreferenceEvent`]."
+            "title": "LoggedPreference"
           }
         ],
-        "description": "What actually happened."
+        "description": "One row of the event log, flattened as design §8.1 puts it on the wire: the envelope, the audience and the payload share one object."
       },
       "ExpiredWhileAway": {
         "type": "object",
@@ -3842,49 +4111,7 @@
           "items": {
             "type": "array",
             "items": {
-              "type": "object",
-              "description": "A channel.",
-              "required": [
-                "id",
-                "origin",
-                "policy",
-                "members"
-              ],
-              "properties": {
-                "display_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "Human label. Falls back to the id when unset."
-                },
-                "group_access": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/GroupBinding"
-                  },
-                  "description": "Access granted to whole identity-provider groups (design §11).\n\nResolved against the `groups` claim of the caller's token rather than stored\nper user — see [`GroupBinding`]. Defaulted on the wire so a client written\nagainst an older build still parses a channel."
-                },
-                "id": {
-                  "$ref": "#/components/schemas/ChannelId",
-                  "description": "Operator-chosen name, and the id used in URLs."
-                },
-                "members": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Membership"
-                  },
-                  "description": "Its members, users and service accounts alike."
-                },
-                "origin": {
-                  "$ref": "#/components/schemas/Origin",
-                  "description": "Where it came from."
-                },
-                "policy": {
-                  "$ref": "#/components/schemas/ChannelPolicy",
-                  "description": "Its policy."
-                }
-              }
+              "$ref": "#/components/schemas/Channel"
             },
             "description": "The rows, in the ordering of the endpoint."
           },
@@ -3894,10 +4121,10 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/Cursor",
-                "description": "Pass this back as [`PageRequest::after`] for the next page. `None` means\nthis was the last one.\n\nNote that `next` being `Some` does not promise the next page is non-empty:\nrows can expire between two calls. Clients follow the cursor until it is\n`None` rather than until a page comes back short."
+                "$ref": "#/components/schemas/Cursor"
               }
-            ]
+            ],
+            "description": "Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short."
           }
         }
       },
@@ -3911,84 +4138,7 @@
           "items": {
             "type": "array",
             "items": {
-              "type": "object",
-              "description": "A notification and its current state.",
-              "required": [
-                "id",
-                "channel",
-                "kind",
-                "head",
-                "last_seq",
-                "revision_count",
-                "created_at",
-                "ttl"
-              ],
-              "properties": {
-                "channel": {
-                  "$ref": "#/components/schemas/ChannelId",
-                  "description": "The channel it lives in."
-                },
-                "closed_at": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "format": "date-time",
-                  "description": "When it last closed, and therefore when its retention clock started.\n`None` while it is live — which is exactly why a running incident cannot\nexpire (design §7.2bis)."
-                },
-                "created_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "description": "When the first revision landed."
-                },
-                "deleted_at": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "format": "date-time",
-                  "description": "Set on deletion; the row survives long enough to broadcast a tombstone and\nto keep sync cursors honest (design §7.2bis)."
-                },
-                "external_id": {
-                  "oneOf": [
-                    {
-                      "type": "null"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ExternalId",
-                      "description": "The publisher's own identifier, when it upserted by one (design §2.2)."
-                    }
-                  ]
-                },
-                "head": {
-                  "$ref": "#/components/schemas/Revision",
-                  "description": "The highest-`seq` revision applied so far — the current truth."
-                },
-                "id": {
-                  "$ref": "#/components/schemas/NotificationId",
-                  "description": "Stable across every revision."
-                },
-                "kind": {
-                  "$ref": "#/components/schemas/NotificationKind",
-                  "description": "Which publishing shape created it."
-                },
-                "last_seq": {
-                  "type": "integer",
-                  "format": "int32",
-                  "description": "Highest `seq` assigned. The next revision gets `last_seq + 1`.",
-                  "minimum": 0
-                },
-                "revision_count": {
-                  "type": "integer",
-                  "format": "int32",
-                  "description": "How many revisions have been recorded. Equal to `last_seq` unless the\naggregate was rehydrated from a partial history.",
-                  "minimum": 0
-                },
-                "ttl": {
-                  "$ref": "#/components/schemas/Ttl",
-                  "description": "Retention as resolved by the channel policy."
-                }
-              }
+              "$ref": "#/components/schemas/Notification"
             },
             "description": "The rows, in the ordering of the endpoint."
           },
@@ -3998,10 +4148,10 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/Cursor",
-                "description": "Pass this back as [`PageRequest::after`] for the next page. `None` means\nthis was the last one.\n\nNote that `next` being `Some` does not promise the next page is non-empty:\nrows can expire between two calls. Clients follow the cursor until it is\n`None` rather than until a page comes back short."
+                "$ref": "#/components/schemas/Cursor"
               }
-            ]
+            ],
+            "description": "Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short."
           }
         }
       },
@@ -4015,60 +4165,7 @@
           "items": {
             "type": "array",
             "items": {
-              "type": "object",
-              "description": "One immutable step of a notification's life.",
-              "required": [
-                "id",
-                "notification_id",
-                "seq",
-                "author",
-                "received_at",
-                "state",
-                "status",
-                "priority",
-                "content"
-              ],
-              "properties": {
-                "author": {
-                  "$ref": "#/components/schemas/Author",
-                  "description": "The principal that published it (design §5)."
-                },
-                "content": {
-                  "$ref": "#/components/schemas/Content",
-                  "description": "What it says."
-                },
-                "id": {
-                  "$ref": "#/components/schemas/RevisionId",
-                  "description": "Identity of this revision."
-                },
-                "notification_id": {
-                  "$ref": "#/components/schemas/NotificationId",
-                  "description": "The notification it belongs to."
-                },
-                "priority": {
-                  "$ref": "#/components/schemas/Priority",
-                  "description": "Priority as of this revision."
-                },
-                "received_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "description": "When the server received it — the server's clock, not the publisher's."
-                },
-                "seq": {
-                  "type": "integer",
-                  "format": "int32",
-                  "description": "Server-assigned, monotonic within the notification, starting at 1. The\narbiter of last-write-wins.",
-                  "minimum": 0
-                },
-                "state": {
-                  "$ref": "#/components/schemas/State",
-                  "description": "Lifecycle position as of this revision."
-                },
-                "status": {
-                  "$ref": "#/components/schemas/Status",
-                  "description": "Status as of this revision."
-                }
-              }
+              "$ref": "#/components/schemas/Revision"
             },
             "description": "The rows, in the ordering of the endpoint."
           },
@@ -4078,21 +4175,26 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/Cursor",
-                "description": "Pass this back as [`PageRequest::after`] for the next page. `None` means\nthis was the last one.\n\nNote that `next` being `Some` does not promise the next page is non-empty:\nrows can expire between two calls. Clients follow the cursor until it is\n`None` rather than until a page comes back short."
+                "$ref": "#/components/schemas/Cursor"
               }
-            ]
+            ],
+            "description": "Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short."
           }
         }
       },
       "PreferenceEvent": {
         "type": "object",
-        "description": "This user's delivery preferences changed (design §7.4, §8.1).\n\nCarries the whole state rather than a delta: a client that missed one of these\nwould otherwise apply the next one to the wrong baseline, and \"my phone kept\nbuzzing after I turned on do-not-disturb\" is not a bug anybody enjoys chasing.\nDo-not-disturb schedules join this in M3; M1 carries the silences.",
+        "description": "This user's delivery preferences changed (design §7.4, §8.1).\n\nCarries the whole state rather than a delta: a client that missed one of these\nwould otherwise apply the next one to the wrong baseline, and \"my phone kept\nbuzzing after I turned on do-not-disturb\" is not a bug anybody enjoys chasing.\n\nBoth halves of \"stop notifying me\" ride together for the same reason — a client\ndeciding whether to raise a toast asks about the do-not-disturb *and* the\nsilences (§7.4), so shipping them in separate events would give it a moment\nwhere it holds one and not the other.",
         "required": [
           "user",
+          "dnd",
           "silences"
         ],
         "properties": {
+          "dnd": {
+            "$ref": "#/components/schemas/Dnd",
+            "description": "Their do-not-disturb, whole (design §7.4)."
+          },
           "silences": {
             "type": "array",
             "items": {
@@ -4565,6 +4667,36 @@
           }
         ],
         "description": "How the server reaches a device when its client is not connected."
+      },
+      "QuietHours": {
+        "type": "object",
+        "description": "One recurring weekly window of quiet (design §7.4).",
+        "required": [
+          "start",
+          "end",
+          "timezone"
+        ],
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Day"
+            },
+            "description": "The days it applies to. **Empty means every day** — the common case, and the\none nobody should have to spell out seven times.\n\nFor a window that crosses midnight the day is the one it **starts** on: a\nFriday `22:00–08:00` is the night from Friday to Saturday, which is what a\nperson means by \"Friday night\"."
+          },
+          "end": {
+            "$ref": "#/components/schemas/WallClock",
+            "description": "When it ends. May be earlier than `start`, which means the window crosses\nmidnight."
+          },
+          "start": {
+            "$ref": "#/components/schemas/WallClock",
+            "description": "When quiet begins, on the local clock."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "The IANA zone `start` and `end` are read in — the preference's own, never the\ndevice's."
+          }
+        }
       },
       "Readiness": {
         "type": "object",
@@ -5082,7 +5214,7 @@
       },
       "SyncPage": {
         "type": "object",
-        "description": "The answer to a catch-up, which is more than a list of events.\n\nTwo extras carry real product meaning:\n\n* `expired` is the \"N notifications expired while you were away\" counter\n  (design §7.2bis). A message that expired undelivered is deliberately *not* in\n  the backlog — but silently dropping it would leave a user wondering, so the\n  count is reported per channel instead.\n* `compacted` records how many revisions were folded away (design §7.2). Forty\n  revisions of one deploy become one entry; the number is what lets a client say\n  \"38 updates\" instead of pretending nothing happened.",
+        "description": "The answer to a catch-up, which is more than a list of events.\n\nTwo extras carry real product meaning:\n\n* `expired` is the \"N notifications expired while you were away\" counter\n  (design §7.2bis). A message that expired undelivered is deliberately *not* in\n  the backlog — but silently dropping it would leave a user wondering, so the\n  count is reported per channel instead.\n* `compacted` records how many revisions were folded away (design §7.2). Forty\n  revisions of one deploy become one entry; the number is what lets a client say\n  \"38 updates\" instead of pretending nothing happened.\n* `deferred_by_dnd` names the notifications whose lateness was *asked for*\n  (design §7.4), so a client does not badge them \"arrived late\".",
         "required": [
           "events",
           "compacted"
@@ -5093,6 +5225,13 @@
             "format": "int32",
             "description": "How many revisions the compaction folded away.",
             "minimum": 0
+          },
+          "deferred_by_dnd": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationId"
+            },
+            "description": "The notifications on this page that arrived late **on purpose** — a quiet\nperiod was running when they were created (design §7.4).\n\nBeside the events rather than on them, and that is the decision: an [`Event`]\nis addressed to a *channel* and every member of it receives the same bytes,\nwhile this is one person's own preference. Putting it on the event would make\nthe same event differ per reader, which is exactly what §8.1 promises it does\nnot — the stream and the backlog carry identical events. It sits here with\n`expired` and `compacted`, the other two per-user facts a catch-up reports."
           },
           "events": {
             "type": "array",
@@ -5192,6 +5331,11 @@
       "UserId": {
         "type": "string",
         "description": "A human, created on first OIDC login."
+      },
+      "WallClock": {
+        "type": "string",
+        "description": "A time of day on a wall clock, to the minute.\n\nMinutes, not seconds: quiet hours are a human intention (\"ten in the evening\"),\nand a field nobody will ever set to a non-zero value is a field somebody will\neventually set wrong. Stored as minutes since local midnight because that is the\nform every comparison here wants, and rendered `HH:MM` because that is the form\n§7.4 writes it in.",
+        "example": "22:00"
       }
     },
     "securitySchemes": {

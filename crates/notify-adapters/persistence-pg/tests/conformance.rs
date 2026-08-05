@@ -27,19 +27,19 @@ mod e2e {
 
     use notify_domain::{
         ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, Author, Channel, ChannelId, ChannelPolicy,
-        ContentDraft, Cursor, Device, DeviceId, DevicePublicKey, ExternalId, GroupBinding,
-        HumanDuration, Interaction, InteractionLog, Membership, Notification, NotificationId,
-        Principal, Priority, PushTransport, Receipt, ReceiptKind, RevisionDraft, Scope,
-        ServiceAccount, ServiceAccountId, Silence, SilenceTarget, State, Status, TombstoneReason,
-        Ttl, User, UserId,
+        ContentDraft, Cursor, Day, Device, DeviceId, DevicePublicKey, Dnd, DndScope, ExternalId,
+        GroupBinding, HumanDuration, Interaction, InteractionLog, Membership, Notification,
+        NotificationId, Principal, Priority, PushTransport, QuietHours, Receipt, ReceiptKind,
+        RevisionDraft, Scope, ServiceAccount, ServiceAccountId, Silence, SilenceTarget, State,
+        Status, TombstoneReason, Ttl, User, UserId, WallClock,
     };
     use notify_persistence_pg::{PgLeaderElection, PgStore};
     use notify_ports::{
         Allowance, ApiKeyRepository, AuditEntry, AuditLog, AuditQuery, ChannelRepository, Claim,
         DeviceRepository, EventPayload, EventStore, IdempotencyStore, InboxQuery,
-        InteractionRepository, LeaderElection, NotificationRepository, PageRequest, Quota,
-        RateLimiter, ReceiptRepository, SearchQuery, ServiceAccountRepository, StoredApiKey,
-        SyncQuery, UserRepository,
+        InteractionRepository, LeaderElection, NotificationRepository, PageRequest,
+        PreferenceRepository, Quota, RateLimiter, ReceiptRepository, SearchQuery,
+        ServiceAccountRepository, StoredApiKey, SyncQuery, UserRepository,
     };
     use time::{Duration, OffsetDateTime};
 
@@ -1432,6 +1432,238 @@ mod e2e {
             .await
             .unwrap();
         assert!(lapsed.is_empty());
+    }
+
+    // --- Do not disturb (design §7.4) --------------------------------------
+
+    #[tokio::test]
+    async fn a_preference_nobody_set_reads_as_one_that_mutes_nothing() {
+        let store = store!();
+        let (alice_id, _) = user();
+
+        // No row, and no error: "never opened Settings" and "a preference that
+        // mutes nothing" are the same answer, so there is no absence to handle.
+        let dnd = PreferenceRepository::dnd(&store, alice_id).await.unwrap();
+
+        assert_eq!(dnd.user, alice_id);
+        assert!(dnd.quiet_hours.is_empty());
+        assert!(!dnd.is_active(now()));
+    }
+
+    #[tokio::test]
+    async fn a_preference_survives_the_round_trip_through_jsonb() {
+        let store = store!();
+        let (alice_id, _) = user();
+        let channel = fresh_channel();
+
+        let wanted = Dnd {
+            quiet_hours: vec![
+                QuietHours::new(
+                    vec![Day::Fri, Day::Sat],
+                    WallClock::new(22, 0).unwrap(),
+                    WallClock::new(8, 0).unwrap(),
+                    "Europe/Paris",
+                )
+                .unwrap(),
+            ],
+            until: Some(now() + Duration::hours(2)),
+            scope: DndScope::Channels {
+                channels: vec![channel.clone()],
+            },
+            exceptions: vec![channel],
+            urgent_bypasses: true,
+            ..Dnd::off(alice_id)
+        };
+
+        store.set_dnd(&wanted, now()).await.unwrap();
+
+        assert_eq!(
+            PreferenceRepository::dnd(&store, alice_id).await.unwrap(),
+            wanted,
+            "the whole document comes back, not the fields this query happened to name"
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_one_replaces_the_previous_rather_than_stacking() {
+        let store = store!();
+        let (alice_id, _) = user();
+
+        store
+            .set_dnd(
+                &Dnd {
+                    until: Some(now() + Duration::hours(2)),
+                    ..Dnd::off(alice_id)
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+        store.set_dnd(&Dnd::off(alice_id), now()).await.unwrap();
+
+        assert!(
+            !PreferenceRepository::dnd(&store, alice_id)
+                .await
+                .unwrap()
+                .is_active(now()),
+            "turning it off has to actually turn it off"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_back_push_is_counted_and_the_failures_among_them_separately() {
+        let store = store!();
+        let (alice_id, _) = user();
+        store.set_dnd(&Dnd::off(alice_id), now()).await.unwrap();
+
+        for status in [Status::Info, Status::Failure, Status::Success] {
+            PreferenceRepository::defer(&store, alice_id, status)
+                .await
+                .unwrap();
+        }
+
+        let mine = store
+            .deferred_tallies(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|tally| tally.dnd.user == alice_id)
+            .expect("a tally with something on it comes back");
+
+        assert_eq!(mine.total, 3);
+        assert_eq!(mine.failures, 1, "the one status a digest calls out");
+
+        PreferenceRepository::clear_deferred(&store, alice_id)
+            .await
+            .unwrap();
+        assert!(
+            !store
+                .deferred_tallies(100)
+                .await
+                .unwrap()
+                .iter()
+                .any(|tally| tally.dnd.user == alice_id),
+            "a cleared tally is gone, so the digest goes out once"
+        );
+    }
+
+    #[tokio::test]
+    async fn somebody_with_no_preference_cannot_have_anything_held_back() {
+        let store = store!();
+        let (alice_id, _) = user();
+
+        // No row: nothing could have muted them, so the statement matching nothing
+        // is the right outcome rather than something to report.
+        PreferenceRepository::defer(&store, alice_id, Status::Failure)
+            .await
+            .unwrap();
+
+        assert!(
+            !store
+                .deferred_tallies(100)
+                .await
+                .unwrap()
+                .iter()
+                .any(|tally| tally.dnd.user == alice_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn replacing_a_preference_drops_what_was_counted_under_the_old_one() {
+        let store = store!();
+        let (alice_id, _) = user();
+        store.set_dnd(&Dnd::off(alice_id), now()).await.unwrap();
+        PreferenceRepository::defer(&store, alice_id, Status::Failure)
+            .await
+            .unwrap();
+
+        // A digest counting a quiet period somebody has just redefined would be
+        // reporting something that, under the new preference, did not happen.
+        store
+            .set_dnd(
+                &Dnd {
+                    until: Some(now() + Duration::hours(1)),
+                    ..Dnd::off(alice_id)
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !store
+                .deferred_tallies(100)
+                .await
+                .unwrap()
+                .iter()
+                .any(|tally| tally.dnd.user == alice_id)
+        );
+    }
+
+    /// The reason both writers go through one builder: a `silence` must not ship a
+    /// `preference` event that has forgotten the do-not-disturb it did not touch.
+    #[tokio::test]
+    async fn critical_t26_a_preference_event_carries_both_halves_whichever_one_changed() {
+        let store = store!();
+        let (alice_id, alice) = user();
+
+        let channel = fresh_channel();
+        let mut shared = Channel::dynamic(channel.clone(), None).unwrap();
+        shared.upsert_member(Membership::new(alice.clone(), vec![Scope::Subscribe]).unwrap());
+        channels(&store).upsert(&shared).await.unwrap();
+
+        store
+            .set_dnd(
+                &Dnd {
+                    exceptions: vec![channel],
+                    ..Dnd::off(alice_id)
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+
+        // A silence, which writes the *other* half.
+        let cursor = store
+            .silence(&Silence {
+                user: alice_id,
+                target: SilenceTarget::Group {
+                    key: "release-9".to_owned(),
+                },
+                until: Some(now() + Duration::hours(2)),
+                since: now(),
+            })
+            .await
+            .unwrap();
+
+        let page = store
+            .sync(
+                alice_id,
+                &SyncQuery {
+                    after: Some(Cursor::from_sequence(cursor.sequence() - 1)),
+                    channels: Vec::new(),
+                    groups: Vec::new(),
+                    page: PageRequest::first(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let preference = page
+            .events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::Preference(preference) => Some(preference),
+                _ => None,
+            })
+            .expect("the silence announced itself");
+
+        assert_eq!(preference.silences.len(), 1);
+        assert_eq!(
+            preference.dnd.exceptions.len(),
+            1,
+            "the half this write did not touch still has to be on the wire"
+        );
     }
 
     // --- The event log -----------------------------------------------------

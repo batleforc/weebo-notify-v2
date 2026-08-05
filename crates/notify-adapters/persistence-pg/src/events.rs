@@ -105,6 +105,10 @@ impl EventStore for PgStore {
             next: page.next,
             expired,
             compacted: u32::try_from(compacted).unwrap_or(0),
+            // Filled by the use case, which is where the preference is read: this
+            // store answers "what did this user miss", not "what did they ask not to
+            // be bothered by" (design §7.4).
+            deferred_by_dnd: Vec::new(),
         })
     }
 

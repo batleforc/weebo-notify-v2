@@ -41,9 +41,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, TimeDelta, Utc};
 use rusqlite::Connection;
 
+use notify_client_api::types::{Event, State, Status};
+
 use crate::error::ClientError;
-use crate::types::{State, Status};
-use crate::wire::WireEvent;
 
 /// The schema this build expects.
 ///
@@ -53,7 +53,9 @@ use crate::wire::WireEvent;
 ///
 /// * **1** — the cache, the cursor and the device.
 /// * **2** — `created_at` and `delivered_at`, for the "arrived late" badge (§7.2).
-const SCHEMA_VERSION: i64 = 2;
+/// * **3** — `deferred_by_dnd`, so the badge is not shown for lateness that was
+///   asked for (§7.4).
+const SCHEMA_VERSION: i64 = 3;
 
 /// One row of the cache, in the shape a front end draws (design §7.2, §9.2).
 ///
@@ -82,15 +84,24 @@ pub struct CachedNotification {
     /// which is what makes the lateness below a property of the arrival rather than
     /// of the last edit.
     pub delivered_at: Option<DateTime<Utc>>,
+    /// Whether the server said this one was held back on purpose (design §7.4).
+    pub deferred_by_dnd: bool,
 }
 
 impl CachedNotification {
     /// How long after its creation this profile first saw it (design §7.2).
     ///
     /// `None` when either end is missing — a row cached by a schema-1 build has no
-    /// arrival time, and inventing one would put a badge on every old row.
+    /// arrival time, and inventing one would put a badge on every old row — and
+    /// `None` when the wait was **asked for** (§7.4). That last case is the point of
+    /// the flag: somebody who set quiet hours does not want to be told every morning
+    /// that their night was late.
     #[must_use]
     pub fn late_by(&self) -> Option<TimeDelta> {
+        if self.deferred_by_dnd {
+            return None;
+        }
+
         let (created, delivered) = (self.created_at?, self.delivered_at?);
         let late = delivered - created;
 
@@ -116,6 +127,11 @@ pub struct CacheEntry<'a> {
     pub created_at: &'a str,
     /// The event, verbatim as §8.1 put it on the wire.
     pub payload: &'a str,
+    /// Whether the server reported this one as held back on purpose (§7.4).
+    ///
+    /// Passed in rather than stamped by the store, unlike `delivered_at`: this is a
+    /// fact about the *server's* view of a preference, not about this cache.
+    pub deferred_by_dnd: bool,
 }
 
 /// The local cache and cursor for one profile.
@@ -233,6 +249,18 @@ impl Store {
                 .map_err(|error| store_failure(&error))?;
         }
 
+        if found < 3 {
+            // Schema 3 (design §7.4): lateness that was asked for. Defaults to
+            // false, which is the truth for every row cached before there was a
+            // do-not-disturb to defer anything.
+            self.connection
+                .execute_batch(
+                    "ALTER TABLE notifications
+                         ADD COLUMN deferred_by_dnd INTEGER NOT NULL DEFAULT 0;",
+                )
+                .map_err(|error| store_failure(&error))?;
+        }
+
         self.connection
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(|error| store_failure(&error))
@@ -306,19 +334,22 @@ impl Store {
         self.connection
             .execute(
                 "INSERT INTO notifications
-                     (id, channel, received_at, created_at, delivered_at, payload)
-                 VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5)
+                     (id, channel, received_at, created_at, delivered_at, payload,
+                      deferred_by_dnd)
+                 VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5, ?6)
                  ON CONFLICT (id) DO UPDATE
                    SET channel = excluded.channel,
                        received_at = excluded.received_at,
                        created_at = excluded.created_at,
-                       payload = excluded.payload",
+                       payload = excluded.payload,
+                       deferred_by_dnd = excluded.deferred_by_dnd",
                 (
                     entry.id,
                     entry.channel,
                     entry.revised_at,
                     entry.created_at,
                     entry.payload,
+                    entry.deferred_by_dnd,
                 ),
             )
             .map(|_| ())
@@ -380,7 +411,7 @@ impl Store {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT id, channel, created_at, delivered_at, payload
+                "SELECT id, channel, created_at, delivered_at, payload, deferred_by_dnd
                  FROM notifications
                  ORDER BY received_at DESC, id DESC
                  LIMIT ?1",
@@ -395,19 +426,27 @@ impl Store {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, bool>(5)?,
                 ))
             })
             .map_err(|error| store_failure(&error))?;
 
         let mut cached = Vec::new();
         for row in rows {
-            let (id, channel, created_at, delivered_at, payload) =
+            let (id, channel, created_at, delivered_at, payload, deferred_by_dnd) =
                 row.map_err(|error| store_failure(&error))?;
 
-            let Ok(event) = serde_json::from_str::<WireEvent>(&payload) else {
-                continue;
-            };
-            let Some(content) = event.payload else {
+            // Only a revision has anything to draw, and only a revision is ever
+            // stored under a notification's id — anything else here is a row written
+            // by a build whose events this one cannot read.
+            let Ok(Event::Revision {
+                payload: content,
+                seq,
+                state,
+                status,
+                ..
+            }) = serde_json::from_str::<Event>(&payload)
+            else {
                 continue;
             };
 
@@ -416,11 +455,12 @@ impl Store {
                 channel,
                 title: content.title,
                 body: content.body,
-                seq: event.seq.unwrap_or(1),
-                state: event.state.unwrap_or(State::Closed),
-                status: event.status.unwrap_or(Status::Info),
+                seq: seq.try_into().unwrap_or(1),
+                state,
+                status,
                 created_at: timestamp(&created_at),
                 delivered_at: timestamp(&delivered_at),
+                deferred_by_dnd,
             });
         }
 
@@ -580,6 +620,7 @@ mod tests {
             revised_at,
             created_at: "2026-08-01T09:00:00Z",
             payload,
+            deferred_by_dnd: false,
         }
     }
 
@@ -658,17 +699,25 @@ mod tests {
     }
 
     /// One revision as §8.1 puts it on the wire, created `created_at`.
+    ///
+    /// Whole rather than "the fields this test reads": since D1 the cache is read
+    /// back through the generated [`Event`], so a half-written fixture would be
+    /// testing the parser's tolerance instead of the store's behaviour.
     fn revision(id: &str, created_at: &str, seq: u32, title: &str) -> String {
         serde_json::json!({
             "cursor": "evt_1",
-            "event": "revision",
+            "audience": "channel",
             "channel_id": "ci-infra",
+            "logged_at": created_at,
+            "event": "revision",
             "notification_id": id,
             "created_at": created_at,
             "revised_at": created_at,
             "seq": seq,
             "state": "open",
             "status": "warning",
+            "priority": "default",
+            "author": { "kind": "user", "id": "usr_1" },
             "payload": { "title": title },
         })
         .to_string()
@@ -686,6 +735,7 @@ mod tests {
                 revised_at: "2026-08-01T10:00:00Z",
                 created_at: "2026-08-01T08:00:00Z",
                 payload: &revision("ntf_1", "2026-08-01T08:00:00Z", 3, "etcd degraded"),
+                deferred_by_dnd: false,
             })
             .unwrap();
 
@@ -711,6 +761,7 @@ mod tests {
                 revised_at: "2026-08-01T11:00:00Z",
                 created_at: "2026-08-01T08:00:00Z",
                 payload: &revision("ntf_good", "2026-08-01T08:00:00Z", 1, "still here"),
+                deferred_by_dnd: false,
             })
             .unwrap();
 
@@ -780,6 +831,7 @@ mod tests {
             status: Status::Info,
             created_at: None,
             delivered_at: None,
+            deferred_by_dnd: false,
         };
 
         assert_eq!(cached.late_by(), None);
@@ -798,6 +850,7 @@ mod tests {
             .execute_batch(
                 "ALTER TABLE notifications DROP COLUMN created_at;
                  ALTER TABLE notifications DROP COLUMN delivered_at;
+                 ALTER TABLE notifications DROP COLUMN deferred_by_dnd;
                  PRAGMA user_version = 1;",
             )
             .unwrap();
@@ -807,6 +860,47 @@ mod tests {
 
         assert_eq!(reopened.len().unwrap(), 1, "the cache survives the upgrade");
         assert_eq!(reopened.delivered_at("ntf_1").unwrap(), None);
+        assert!(
+            reopened
+                .cached_inbox(10)
+                .unwrap()
+                .iter()
+                .all(|row| !row.deferred_by_dnd),
+            "a row from before the flag existed was not deferred by anything"
+        );
+    }
+
+    /// T10's other half: lateness that was asked for gets no badge (§7.2, §7.4).
+    #[test]
+    fn critical_t10_lateness_that_was_asked_for_carries_no_badge() {
+        let (store, _) = temp_store("deferred");
+        for (id, deferred) in [("ntf_late", false), ("ntf_quiet", true)] {
+            store
+                .upsert(CacheEntry {
+                    id,
+                    channel: "ci-infra",
+                    revised_at: "2026-08-01T10:00:00Z",
+                    // Eight hours before it was cached: unmistakably late.
+                    created_at: "2026-08-01T02:00:00Z",
+                    payload: &revision(id, "2026-08-01T02:00:00Z", 1, "etcd degraded"),
+                    deferred_by_dnd: deferred,
+                })
+                .unwrap();
+        }
+
+        let rows = store.cached_inbox(10).unwrap();
+        let badge = |id: &str| {
+            rows.iter()
+                .find(|row| row.id == id)
+                .and_then(CachedNotification::late_by)
+        };
+
+        assert!(badge("ntf_late").is_some(), "a real delay is worth saying");
+        assert!(
+            badge("ntf_quiet").is_none(),
+            "somebody who set quiet hours does not want to be told every morning \
+             that their night was late"
+        );
     }
 
     #[test]

@@ -139,7 +139,7 @@ mod tests {
     }
 
     fn message() -> PushMessage {
-        PushMessage {
+        PushMessage::Notification {
             channel: ChannelId::parse("ci-infra").unwrap(),
             notification_id: NotificationId::generate(),
             priority: Priority::Default,

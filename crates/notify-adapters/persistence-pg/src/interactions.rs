@@ -9,7 +9,7 @@ use notify_domain::{
     ActionKey, Author, Cursor, Interaction, InteractionId, InteractionRecord, NotificationId,
     Recorded, Silence, SilenceTarget, UserId,
 };
-use notify_ports::{Audience, EventPayload, InteractionRepository, PortResult, PreferenceEvent};
+use notify_ports::{Audience, EventPayload, InteractionRepository, PortResult};
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
@@ -151,21 +151,12 @@ impl InteractionRepository for PgStore {
         // The event carries the whole preference state rather than a delta: a
         // client that missed one would otherwise apply the next to the wrong
         // baseline, and "my phone kept buzzing after I turned on do-not-disturb" is
-        // not a bug anybody enjoys chasing (design §8.1).
-        let silences = self.silences_for(&mut transaction, silence.user).await?;
-
-        // Addressed to the user, never to the channel: sharing a channel with
-        // somebody does not make their silences your business (scenario T26).
-        let cursor = append_event(
-            &mut transaction,
-            &Audience::User { id: silence.user },
-            &EventPayload::Preference(Box::new(PreferenceEvent {
-                user: silence.user,
-                silences,
-            })),
-            silence.since,
-        )
-        .await?;
+        // not a bug anybody enjoys chasing (design §8.1). Both halves of it —
+        // including the do-not-disturb this write did not touch — which is why it
+        // is built in one place rather than here (see `preferences`).
+        let cursor = self
+            .announce_preference(&mut transaction, silence.user, silence.since)
+            .await?;
 
         transaction
             .commit()
@@ -196,7 +187,7 @@ impl PgStore {
     /// Every silence still in force for a user, read inside the caller's
     /// transaction so the event it goes into cannot disagree with the row that
     /// caused it.
-    async fn silences_for(
+    pub(crate) async fn silences_for(
         &self,
         transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         user: UserId,
