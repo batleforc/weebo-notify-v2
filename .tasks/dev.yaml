@@ -20,6 +20,17 @@ vars:
     fi
 
 tasks:
+  setup:
+    desc: "Create everything a fresh clone needs before the stack runs: Authentik credentials, VAPID key"
+    # The single entry point, and every task that needs any of it depends on this
+    # one rather than on a piece of it. Each step below is idempotent and guarded
+    # by its own `status:`, so running it on every `dev:up` costs nothing and
+    # removes the failure mode this exists for: a secret that has to be created by
+    # hand is one somebody will not create, and the symptom lands somewhere else.
+    cmds:
+      - task: env
+      - task: vapid
+
   env:
     desc: "Create dev/.env.local with freshly generated Authentik bootstrap credentials (gitignored)"
     status:
@@ -41,9 +52,19 @@ tasks:
           echo "  Bootstrap token : $tok"
           echo "This is the only time these are printed."
 
+  vapid:
+    desc: "Mint the P-256 VAPID key that [push.webpush] reads, into dev/secrets/ (gitignored)"
+    # Rust rather than `openssl genpkey`: nothing here assumes a tool the Che image
+    # may not ship, and the generator prints the `applicationServerKey` that a
+    # browser subscribes with — which openssl cannot do in one command (§12.5).
+    status:
+      - test -f dev/secrets/vapid.pem
+    cmds:
+      - cargo run --quiet -p xtask -- vapid-key --output dev/secrets/vapid.pem
+
   up:
     desc: "Start the everyday dev stack: Postgres + RustFS (~20s, no Authentik)"
-    deps: [env]
+    deps: [setup]
     cmds:
       - cmd: |
           {{.CHE_GUARD}}
@@ -54,7 +75,7 @@ tasks:
 
   core:
     desc: "Start Postgres + RustFS only — for domain work with the in-memory TokenVerifier (no OIDC)"
-    deps: [env]
+    deps: [setup]
     cmds:
       - cmd: |
           {{.CHE_GUARD}}
@@ -72,7 +93,7 @@ tasks:
 
   auth:
     desc: "Add real Authentik on top (profile `authentik`) — for work touching the OIDC flow itself"
-    deps: [env]
+    deps: [setup]
     cmds:
       - cmd: |
           {{.CHE_GUARD}}
@@ -83,7 +104,7 @@ tasks:
 
   sinks:
     desc: "Add Mailpit (profile `sinks`) to exercise the email sink — UI on http://localhost:8025"
-    deps: [env]
+    deps: [setup]
     cmds:
       - cmd: |
           {{.CHE_GUARD}}
@@ -96,6 +117,10 @@ tasks:
 
   run:
     desc: "Run the weebo-notify server against config/dev.toml (outside any container)"
+    # The one task that genuinely cannot start without the key: `config/dev.toml`
+    # declares `[push.webpush]`, and the composition root refuses a key it cannot
+    # read rather than starting mute (M3.5).
+    deps: [setup]
     cmds:
       - cargo run -p notify-server -- --config config/dev.toml
 
@@ -118,6 +143,8 @@ tasks:
 
   down:
     desc: "Stop every dev service, keeping the volumes"
+    # `env` and not `setup`: compose needs the env file to resolve, and tearing a
+    # stack down has no use for a push key.
     deps: [env]
     cmds:
       - cmd: |

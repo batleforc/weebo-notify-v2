@@ -191,6 +191,7 @@ mod tests {
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
+            4_096,
         );
 
         Fixture {
@@ -322,6 +323,7 @@ mod tests {
                 Arc::new(fixture.store.clone()),
                 Arc::new(fixture.store.clone()),
                 Arc::new(fixture.clock.clone()),
+                4_096,
             ),
             Arc::new(fixture.clock.clone()),
         );
@@ -376,6 +378,7 @@ mod tests {
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
+                4_096,
             ),
             Arc::new(clock.clone()),
         );

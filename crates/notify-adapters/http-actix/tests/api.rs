@@ -67,6 +67,7 @@ impl Harness {
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
+            4_096,
         );
         let get = GetNotification::new(
             Arc::new(store.clone()),
@@ -210,6 +211,10 @@ impl Harness {
                 fanout.clone(),
             ),
 
+            // A deployment that runs Web Push, so `GET /push/webpush` has something
+            // to answer; the test for the other case builds its own state.
+            application_server_key: Some(APPLICATION_SERVER_KEY.to_owned()),
+
             accounts: ListServiceAccounts::new(Arc::new(store.clone())),
             create_account: CreateServiceAccount::new(
                 Arc::new(store.clone()),
@@ -293,6 +298,11 @@ macro_rules! service {
 }
 
 const AUTH: (&str, &str) = ("Authorization", "Bearer alice-token");
+
+/// A stand-in for what the composition root derives from the VAPID key. Not a real
+/// point: nothing here decodes it, and the property under test is that it reaches a
+/// browser unchanged.
+const APPLICATION_SERVER_KEY: &str = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkFbx4gpXYm";
 
 #[actix_web::test]
 async fn nothing_is_reachable_without_a_credential() {
@@ -1234,4 +1244,40 @@ async fn a_do_not_disturb_needs_a_credential() {
         test::call_service(&app, request).await.status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[actix_web::test]
+async fn a_browser_is_told_the_key_it_has_to_subscribe_with() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/push/webpush")
+        .insert_header(AUTH)
+        .to_request();
+    let body: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert_eq!(
+        body["application_server_key"], APPLICATION_SERVER_KEY,
+        "verbatim: it is passed straight to `pushManager.subscribe()`"
+    );
+}
+
+#[actix_web::test]
+async fn a_deployment_without_web_push_says_so_instead_of_inventing_a_key() {
+    let (harness, mut state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    state.application_server_key = None;
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/push/webpush")
+        .insert_header(AUTH)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    // The same answer every unconfigured capability gives (§14.3), so a PWA can
+    // skip the subscription rather than retry a key that will never come.
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 }

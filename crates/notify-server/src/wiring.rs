@@ -29,6 +29,7 @@ use notify_http_actix::ApiState;
 use notify_oidc::{Argon2SecretHasher, OidcConfig, OidcVerifier};
 use notify_persistence_pg::{PgLeaderElection, PgStore};
 use notify_ports::{AttachmentStore, EventBus, SystemClock};
+use notify_push_webpush::{WebPush, WebPushConfig};
 
 use crate::bus::SharedBus;
 use crate::config::Config;
@@ -51,7 +52,8 @@ pub(crate) struct Application {
     pub digests: SendDndDigests,
     /// GitOps reconciliation.
     pub reconciler: Reconciler,
-    /// The push transports this deployment has — none in M1.
+    /// The push transports this deployment configured, for `/readyz` and the
+    /// startup log.
     pub transports: TransportRegistry,
 }
 
@@ -96,7 +98,10 @@ impl Application {
         let verifier = Arc::new(OidcVerifier::new(oidc, clock.clone())?);
         let hasher = Arc::new(Argon2SecretHasher);
 
-        let transports = TransportRegistry::empty();
+        // The transports `[push.*]` asks for. Nothing above this line knows which
+        // ones there are: a deployment with no `[push.webpush]` gets a registry that
+        // names the missing capability, and the fan-out carries on (§14.3).
+        let (transports, application_server_key) = push_transports(config)?;
         let dispatcher = Arc::new(transports.clone());
 
         // The object store. Absent from the configuration means absent from the
@@ -124,6 +129,11 @@ impl Application {
             repository.clone(),
             repository.clone(),
             clock.clone(),
+            // What the configured transports will actually carry, rather than a
+            // constant chosen when none of them existed: Web Push allows just over
+            // 4 KiB (RFC 8291), and a deployment with no transport allows nothing,
+            // so every message it produces is a poke.
+            transports.max_payload_bytes(),
         );
 
         // Shared by everything that has to answer "is this notification still
@@ -253,6 +263,8 @@ impl Application {
             dnd: ReadDnd::new(repository.clone()),
             set_dnd: SetDnd::new(repository.clone(), clock.clone(), fanout.clone()),
 
+            application_server_key,
+
             accounts: ListServiceAccounts::new(repository.clone()),
             create_account: CreateServiceAccount::new(
                 repository.clone(),
@@ -298,6 +310,45 @@ impl Application {
             transports,
         })
     }
+}
+
+/// The push transports this deployment configured, and the key a browser needs to
+/// subscribe to the first of them (design §6.2, §11).
+///
+/// The key is returned rather than read back off the registry because the registry
+/// holds `dyn PushTransport`, which is the right shape for the fan-out — it delivers
+/// and says nothing else — and the wrong one for a value only Web Push has.
+///
+/// Every failure here is an operator's, and every one of them is answered at startup
+/// rather than at the first push: a key file that cannot be read, a key that is not
+/// P-256, a contact no relay would accept. Finding out because somebody's phone
+/// stayed silent is the failure this refuses.
+fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option<String>)> {
+    let mut registry = TransportRegistry::empty();
+
+    let Some(settings) = &config.push.webpush else {
+        return Ok((registry, None));
+    };
+
+    // The key is a path in the configuration and not the key itself (§11), so it can
+    // be mounted from whatever the cluster keeps secrets in without passing through
+    // a file that gets committed by accident.
+    let pem = std::fs::read_to_string(&settings.vapid_key_file).map_err(|error| {
+        anyhow::anyhow!(
+            "[push.webpush] vapid_key_file `{}` cannot be read: {error}",
+            settings.vapid_key_file.display()
+        )
+    })?;
+
+    let webpush = WebPush::new(&WebPushConfig {
+        private_key_pem: pem,
+        contact: settings.contact.clone(),
+    })?;
+
+    let key = webpush.public_key().to_owned();
+    registry = registry.with(Arc::new(webpush));
+
+    Ok((registry, Some(key)))
 }
 
 /// The object store a deployment without one gets.
@@ -362,5 +413,90 @@ impl AttachmentStore for NoAttachments {
 const fn unconfigured() -> notify_ports::PortError {
     notify_ports::PortError::NotConfigured {
         what: "attachments",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a failing assertion is a failing test"
+    )]
+
+    use super::*;
+
+    /// Write a key somewhere only this test will look.
+    fn key_file(test: &str, contents: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("wnk-vapid-{}-{test}.pem", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn configured(vapid_key_file: std::path::PathBuf) -> Config {
+        Config {
+            push: crate::config::Push {
+                webpush: Some(crate::config::WebPush {
+                    vapid_key_file,
+                    contact: "mailto:ops@weebo.poc".to_owned(),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_deployment_with_no_push_section_gets_the_empty_registry() {
+        let (registry, key) = push_transports(&Config::default()).unwrap();
+
+        assert!(registry.names().is_empty());
+        assert_eq!(
+            registry.max_payload_bytes(),
+            0,
+            "with no transport there is no payload that fits"
+        );
+        assert!(
+            key.is_none(),
+            "`GET /push/webpush` answers 501 rather than handing out a key that is not there"
+        );
+    }
+
+    #[test]
+    fn a_configured_key_registers_the_transport_and_yields_what_a_browser_subscribes_with() {
+        let config = configured(key_file("ok", &notify_push_webpush::test_vapid_key()));
+
+        let (registry, key) = push_transports(&config).unwrap();
+
+        assert_eq!(registry.names(), vec!["webpush"]);
+        assert!(
+            registry.max_payload_bytes() > 3_000,
+            "the fan-out's payload budget now comes from the transport itself"
+        );
+        assert_eq!(
+            key.unwrap().len(),
+            87,
+            "65 octets of uncompressed point, base64url"
+        );
+    }
+
+    #[test]
+    fn a_key_file_that_is_not_there_stops_the_process_instead_of_starting_mute() {
+        let config = configured("/nowhere/vapid.pem".into());
+
+        let error = push_transports(&config).unwrap_err().to_string();
+
+        assert!(
+            error.contains("vapid_key_file"),
+            "an operator has to be told which key, not that push failed: {error}"
+        );
+    }
+
+    #[test]
+    fn a_key_file_that_is_not_a_key_is_refused_at_startup_and_not_at_the_first_push() {
+        let config = configured(key_file("garbage", "not a key at all\n"));
+
+        assert!(push_transports(&config).is_err());
     }
 }

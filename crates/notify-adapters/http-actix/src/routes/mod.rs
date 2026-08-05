@@ -7,6 +7,7 @@ pub(crate) mod interactions;
 pub(crate) mod notifications;
 pub(crate) mod preferences;
 pub(crate) mod profile;
+pub(crate) mod push;
 pub(crate) mod stream;
 pub(crate) mod sync;
 
@@ -48,6 +49,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(identity::create_key)
             .service(identity::list_keys)
             .service(identity::revoke_key)
+            .service(push::webpush_key)
             .service(preferences::read_dnd)
             .service(preferences::set_dnd)
             .service(profile::read_profile)

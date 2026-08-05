@@ -16,6 +16,7 @@ workspace = true
 notify-attachments-s3.workspace = true
 notify-avatars.workspace = true
 notify-http-actix.workspace = true
+notify-push-webpush.workspace = true
 
 actix-web.workspace = true
 anyhow.workspace = true
@@ -43,4 +44,5 @@ futures.workspace = true
 
 [dev-dependencies]
 notify-ports = { workspace = true, features = ["test-utils"] }
+notify-push-webpush = { workspace = true, features = ["test-utils"] }
 sqlx = { workspace = true }

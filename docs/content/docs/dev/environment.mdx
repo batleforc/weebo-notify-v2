@@ -12,7 +12,7 @@ code.
 ## Getting started
 
 ```bash
-task init                     # toolchain (mise) + git hooks (cocogitto)
+task init                     # toolchain (mise) + git hooks (cocogitto) + local secrets
 task dev:up                   # Postgres + RustFS, ~20 s
 task dev:seed                 # migrations, attachment bucket, IdP identities
 task dev:oidc                 # the identity provider, on :9110
@@ -121,6 +121,41 @@ Everything under `dev/` is committed on purpose: the stack is disposable, holds 
 production value, and `dev/` is allowlisted in the gitleaks configuration. That is
 what makes "clone and log in" work with no setup step.
 
-The one exception is `dev/.env.local`, where `task dev:env` generates the Authentik
-admin bootstrap credentials. It is gitignored, printed exactly once, and never
-committed.
+Two things cannot be, and `task dev:setup` creates both:
+
+| File | What it holds | Created by |
+| --- | --- | --- |
+| `dev/.env.local` | Authentik admin bootstrap, printed exactly once | `task dev:env` |
+| `dev/secrets/vapid.pem` | The P-256 VAPID key `[push.webpush]` reads | `task dev:vapid` |
+
+`task init` finishes with `dev:setup`, and `dev:up`, `dev:core`, `dev:auth`,
+`dev:sinks` and `dev:run` all depend on it — so there is no order to remember and no
+step to forget. Each part is guarded by its own `status:`, so re-running it costs
+nothing and never replaces what is already there.
+
+<Callout type="warn">
+  `dev/secrets/` is gitignored and deliberately **not** allowlisted for gitleaks. It
+  holds real key material rather than a disposable value, and an allowlist written
+  for a development key would go on covering that path the day a production one
+  lands in it.
+</Callout>
+
+## Web Push in development
+
+`task dev:vapid` mints the key and prints the `applicationServerKey` — the value a
+browser passes to `pushManager.subscribe()`. You rarely need to keep it: the server
+serves it at `GET /api/v1/push/webpush`, so the frontend asks rather than hardcodes,
+and rotating the key needs no rebuild.
+
+```bash
+cargo run -p xtask -- vapid-key --output dev/secrets/vapid.pem   # what dev:vapid runs
+```
+
+It refuses to overwrite an existing key without `--force`, and that refusal is the
+point: regenerating one fails silently. The server starts, the relay accepts the
+assertion, and every subscription taken out under the old key simply stops being
+delivered.
+
+A deployment with no `[push.webpush]` at all is a valid one — `GET /push/webpush`
+answers `501`, the transport registry stays empty, and every push degrades to a poke
+the client fetches over TLS.

@@ -61,6 +61,15 @@ components:
   - name: rustfs-data
     volume: {size: 2Gi}
 commands:
+  # What a freshly created workspace has to create before anything runs: the
+  # Authentik bootstrap and the VAPID key `[push.webpush]` reads. Idempotent, and
+  # `dev-seed` below is the step that needs the services to be up.
+  - id: dev-setup
+    exec:
+      component: tools
+      commandLine: "task dev:setup"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: build}
   - id: dev-seed
     exec:
       component: tools

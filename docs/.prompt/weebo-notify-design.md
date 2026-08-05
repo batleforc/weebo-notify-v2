@@ -132,7 +132,7 @@ Workflow d'initialisation inchangé :
 
 ```bash
 # après création du repo depuis le template
-task init          # mise upgrade + cog install-hook -a -o
+task init          # mise upgrade + cog install-hook -a -o + task dev:setup (§12.7)
 ```
 
 ### 3.2 CI (Forgejo Actions, miroir GitHub)
@@ -474,6 +474,7 @@ GET    /api/v1/sync?cursor=...                # backlog offline
 GET    /api/v1/stream                         # SSE (contrat §8.1)
 GET    /api/v1/ws                             # WebSocket (mêmes événements, frames JSON)
 POST   /api/v1/receipts                       # delivered/seen
+GET    /api/v1/push/webpush                   # clé publique VAPID (`applicationServerKey`, RFC 8292) — 501 si ce déploiement ne fait pas de Web Push
 GET    /api/v1/preferences/dnd                # préférences DND du user (§7.4)
 PUT    /api/v1/preferences/dnd                # quiet hours, exceptions par canal, bypass urgent
 GET    /api/v1/devices                        # devices du principal
@@ -903,6 +904,7 @@ bucket   = "weebo-notify-attachments"
 
 [push.webpush]
 vapid_key_file = "/secrets/vapid.pem"
+contact = "mailto:ops@weebo.poc"      # RFC 8292 `sub` — un relais refuse une assertion sans lui (M3.5)
 
 [push.apns]
 key_file = "/secrets/apns.p8"
@@ -1046,6 +1048,8 @@ dev/
 ├── compose.yaml                 # docker compose -f dev/compose.yaml
 ├── .env                         # credentials dev partagés (commité, valeurs jetables)
 ├── .env.local                   # credentials générés (bootstrap Authentik, §12.5) — gitignoré
+├── secrets/                     # matière clé générée par `task dev:setup` (§12.7) — gitignoré
+│   └── vapid.pem                # clé VAPID P-256, lue par [push.webpush] de config/dev.toml
 ├── postgres/
 │   └── init/01-databases.sql    # crée weebo_notify + authentik (user/db dédiés)
 ├── oidc-mock/
@@ -1206,6 +1210,8 @@ components:
     volume: { size: 2Gi }
 
 commands:
+  - id: dev-setup
+    exec: { component: tools, commandLine: "task dev:setup", workingDir: "${PROJECT_SOURCE}" }
   - id: dev-seed
     exec: { component: tools, commandLine: "task dev:seed", workingDir: "${PROJECT_SOURCE}" }
   - id: run-oidc
@@ -1268,6 +1274,10 @@ secret_key = "weebo-dev-secret"
 ### 12.6 Workflow quotidien (Taskfile, namespace `dev:`)
 
 ```yaml
+dev:setup:   # tout ce qu'un clone frais doit créer avant de lancer quoi que ce soit (§12.7)
+             task dev:env && task dev:vapid
+dev:env:     # bootstrap Authentik dans dev/.env.local (§12.5), si absent
+dev:vapid:   cargo run -p xtask -- vapid-key --output dev/secrets/vapid.pem   # si absente
 dev:up:      docker compose -f dev/compose.yaml --env-file dev/.env.local up -d --wait   # pg + rustfs
 dev:oidc:    cargo run -p notify-oidc-mock -- --identities dev/oidc-mock/identities.toml  # :9110, provider du quotidien (ADR-0014)
 dev:auth:    # génère dev/.env.local si absent (bootstrap Authentik, §12.5) puis :
@@ -1286,6 +1296,18 @@ dev:logs:    docker compose -f dev/compose.yaml --env-file dev/.env.local logs -
 - **Che** : le workspace démarre les sidecars tout seul ; `task dev:seed` puis les commandes `run-oidc` et `run-server` du devfile. `dev:up`/`dev:down` détectent `$DEVWORKSPACE_ID` et no-opent proprement.
 - `dev:seed` est **idempotent** (rejouable après `dev:reset` ou sur un workspace recréé).
 - Les tests E2E (testcontainers) restent autonomes : ils ne dépendent pas de cet env, qui sert au run interactif.
+
+### 12.7 `task dev:setup` — ce qu'un clone ne peut pas contenir
+
+Deux choses ne peuvent pas être dans le dépôt et doivent pourtant exister avant que quoi que ce soit tourne : le bootstrap Authentik (§12.5) et, depuis M3.5, la **clé VAPID** que `[push.webpush]` lit. `task dev:setup` les crée, et c'est le seul point d'entrée — `dev:up`, `dev:core`, `dev:auth`, `dev:sinks` et `dev:run` en dépendent, et `task init` le termine.
+
+Le raisonnement est le même que celui de `dev:seed` : **une étape de setup qu'il faut penser à faire est une étape que quelqu'un ne fera pas**, et le symptôme atterrit ailleurs — ici, un serveur qui refuse de démarrer sur une clé absente, ce qui est le bon comportement (§14.3) mais une mauvaise première impression. Chaque étape porte son propre `status:`, donc la relancer est gratuit et `dev:up` peut en dépendre sans coûter une seconde.
+
+Trois décisions, notées parce qu'elles se relisent mal :
+
+- **la clé est générée par `cargo run -p xtask -- vapid-key`, pas par `openssl`.** Ce workspace a refusé OpenSSL comme dépendance de build en M1 (toolchain C, cross-compilations Tauri) ; l'assumer comme *outil présent sur la machine* est le même pari sous un autre nom, et une image Che qui ne l'embarque pas transformerait `dev:setup` en question de support. Ce que cargo sait lancer, tous les mondes visés savent le lancer. En prime, le générateur affiche l'`applicationServerKey` — ce qu'`openssl` ne fait pas en une commande, et c'est la valeur que quelqu'un qui câble le push veut voir ;
+- **elle refuse d'écraser une clé existante** sans `--force`. Une clé VAPID régénérée n'échoue pas bruyamment : le serveur démarre, le relais accepte l'assertion, et toutes les subscriptions prises sous l'ancienne cessent d'être livrables — en silence, sur la machine de quelqu'un d'autre ;
+- **`dev/secrets/` est gitignoré et *n'est pas* allowlisté pour gitleaks.** C'est de la vraie matière clé, pas une valeur jetable comme `dev/.env` : l'exception de §12.1 (« les credentials de dev sont commités exprès ») s'arrête ici, et pour la raison exacte donnée en M3.5 — une allowlist écrite pour une clé de développement couvrirait aussi celle de production qui atterrirait au même endroit.
 
 ---
 
@@ -1322,8 +1344,9 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 |---|---|
 | **M0 — Socle** | ✅ commité (`240ff36`) |
 | **M1 — Cœur + web v0** | ✅ commité (`9cd9414`, `aef4844`) — détail ci-dessous |
-| **M2 — Sync, offline & TUI** | 🟡 les huit incréments et les quatre manques commités (`e6a6b2e`) ; D1 et D3 **écrits**, pas encore commités — ci-dessous |
-| M3 → M7 | ⬜ non commencés |
+| **M2 — Sync, offline & TUI** | ✅ commité (`e6a6b2e`, `731e795`) — les huit incréments, les quatre manques, puis D1 et D3 |
+| **M3 — Push web & PWA** | 🟡 M3.1 à M3.4 commités (`731e795`) ; M3.5 **écrit** ; M3.6 et M3.7 à faire — ci-dessous |
+| M4 → M7 | ⬜ non commencés |
 
 **Découpage de M1** :
 
@@ -1517,7 +1540,7 @@ Portes au vert à la fin de M2 : `task lint:check`, `task test` (482 Rust + 52 w
 | M3.2 | `GET/PUT /preferences/dnd` (§8), le DND porté par l'événement `preference` (§8.1), et `notify dnd` — la commande de §9.1 qui attendait son endpoint | ✅ écrit |
 | M3.3 | Suppression des push pendant une période DND, `deferred_by_dnd` au sync (§7.2, T10 et T19) | ✅ écrit |
 | M3.4 | Digest de sortie — **un** push, pas une rafale ; job leader-only (§11) | ✅ écrit |
-| M3.5 | `push-webpush` — RFC 8030/8291 (VAPID), premier adapter de production de `PushDispatcher` (§14.3), config `[push.webpush]` | ⬜ |
+| M3.5 | `push-webpush` — RFC 8030/8291 (VAPID), premier adapter de production de `PushDispatcher` (§14.3), config `[push.webpush]` | ✅ écrit — câblé dans la composition root, plus `GET /push/webpush` |
 | M3.6 | Web : PWA installable + service worker, abonnement Web Push, enrôlement device, DND respecté localement | ⬜ |
 | M3.7 | Receipts : « vu par 3/5 » en `HoverCard` (§7.3, §10.3), compté en users | ⬜ |
 
@@ -1581,6 +1604,27 @@ Trois décisions notées là où elles se voient :
 - **un digest n'est jamais `urgent`**, quoi qu'il contienne. Il arrive *après* une période de calme, donc rien dedans n'est une nouvelle qui ne pouvait pas attendre — et ce qui a attendu huit heures sur demande ne doit pas ensuite sonner comme une alarme ;
 - **le tally est vidé même si l'envoi échoue.** Quelqu'un qui rate un résumé a une inbox ; quelqu'un qui reçoit le même résumé toutes les minutes a un bug — et c'est précisément la rafale que §7.4 veut éviter. De même, **redéfinir sa préférence vide le tally** : un digest qui compterait une période de calme qu'on vient de réécrire rapporterait quelque chose qui n'a pas eu lieu.
 
+**M3.5 en détail.** Le premier transport de production, et le premier moment où le registre vide de §14.3 cesse d'être la bonne réponse pour un déploiement qui a une clé.
+
+**Ce qui est pris à une bibliothèque, et laquelle.** Le chiffrement RFC 8291 vient de `web-push-native`, **sans sa feature `vapid`**, et le choix s'est décidé sur une dépendance transitive : le crate évident, `web-push`, atteint `ece`, qui atteint **OpenSSL** — la toolchain C que ce workspace a refusée en M1 pour que l'image se construise depuis un `cargo build` nu et que les cross-compilations Tauri de M5–M7 restent possibles. La feature `vapid`, elle, tirerait une **seconde** bibliothèque JWT dans un workspace qui en a déjà une ; l'assertion RFC 8292 est donc signée avec `jsonwebtoken`, celui que `notify-oidc` vérifie. Le prix est écrit dans le manifeste plutôt que découvert plus tard : `web-push-native` est bâti contre **p256 0.13** quand le workspace est en 0.14, les deux étaient déjà dans le lockfile, et une montée de version devra les déplacer ensemble.
+
+**Le payload est un contrat avec le service worker.** Rien dans le document OpenAPI ne le décrit — ce n'est pas une réponse HTTP —, donc `Envelope` est l'endroit où ce contrat vit, et son `kind` est le mot qu'emploie déjà `PushMessage` : un client qui sait lire le flux le lit avec le même `switch`. Le changer casse le fil avec tous les clients installés, exactement comme changer §8.1.
+
+**Câbler le transport a sorti deux choses que le crate seul ne montrait pas** :
+
+- **Le plafond de payload était une constante choisie quand aucun transport n'existait.** `notify-app` décidait entre charge utile et poke sur un `PUSH_PAYLOAD_HINT = 3000` écrit à la main, alors que `TransportRegistry::max_payload_bytes` — qui existait déjà — n'était appelé par personne. C'était un garde-fou qui ne gardait rien, et le genre exact que §14 dénonce ailleurs. Le budget descend maintenant de la composition root dans le `Fanout` : Web Push annonce ses 4 000 octets (RFC 8291 moins le cadre `aes128gcm`), et un déploiement **sans** transport annonce zéro — ce qui n'est pas un budget dégénéré mais la bonne réponse, puisque sans transport aucune charge utile ne passe et que sérialiser un `Content` pour le tendre à un dispatcher qui va refuser est du travail que personne n'a demandé.
+- **`§8 n'avait pas d'endpoint pour la clé publique.`** RFC 8292 en fait un argument de `pushManager.subscribe()` : sans elle une PWA n'obtient **aucune** subscription, donc M3.6 était bloqué par un trou entre le transport et la configuration. L'alternative était un argument de build dans `web/`, et elle est pire là où ça compte — une rotation de clé VAPID demanderait un frontend reconstruit pour que les push continuent d'arriver, et ADR-0009 (« un client se dérive du contrat ») serait enfreint par la seule valeur qui décide si un push part. D'où `GET /api/v1/push/webpush`, ajouté à §8 ci-dessus. Il répond **501** quand le déploiement ne fait pas de Web Push : c'est `PortError::NotConfigured` épelé par la même table que toutes les capacités absentes (§14.3), donc une PWA sait *sauter* l'abonnement au lieu de réessayer une clé qui ne viendra jamais.
+
+**Et l'environnement de dev a maintenant une clé**, parce qu'un transport câblé que personne ne peut faire tourner localement n'est pas câblé. `config/dev.toml` déclare `[push.webpush]`, la clé est mintée par `task dev:setup` dans `dev/secrets/` (gitignoré), et le raisonnement complet — pourquoi `xtask` plutôt qu'`openssl`, pourquoi un refus d'écraser, pourquoi *pas* d'allowlist gitleaks — est en §12.7. Vérifié en lançant le serveur : `/readyz` rend `{"name":"webpush","healthy":true}`, et `[push.*]` a disparu de la liste des clés non honorées au démarrage.
+
+Deux choix mineurs, notés parce qu'ils se relisent mal plus tard : la clé publique est **derrière l'authentification** alors qu'elle est publique par définition — rien n'est protégé par là, mais rien de ce qui est sous `/api/v1` ne s'ouvre sans raison (§5.1) et le seul appelant s'abonne après login ; et c'est la seule valeur de `ApiState` qui ne soit pas un use case, parce qu'il n'y a rien à décider et qu'elle n'atteint aucun port — la règle qu'elle plie existe pour empêcher un handler d'atteindre un *repository*, ce qu'un `String` ne peut pas.
+
+**`task audit` était rouge, et le corriger a écarté une exception plutôt que d'en écrire une.** Le scanner de secrets de trivy — et le hook gitleaks — voyaient une clé privée P-256 en dur dans les tests de `push-webpush`, ce qui est exactement ce pour quoi ils existent. La réponse réflexe était une allowlist sur ce chemin, et elle est mauvaise pour une raison qui ne se voit qu'après : une exception écrite pour une clé *de test* continue de couvrir le fichier le jour où une vraie y atterrit. La clé est donc **construite** à partir d'un scalaire fixe (`notify-push-webpush/test-utils`, la convention `notify-ports/test-utils` du workspace), ce qui la rend déterministe, valide, et secrète en aucun sens qu'un scanner ou une lectrice puissent confondre. Il ne reste plus une seule clé dans l'arbre — celle du commit `731e795` reste dans l'historique, ce qui est le prix d'un commit passé sans hooks.
+
+**Une chose trouvée en ouvrant le chantier plutôt qu'en le faisant** : le commit `731e795` ne compilait pas. Huit lignes d'une édition inachevée étaient collées **avant** l'en-tête de `crates/notify-server/src/config.rs`, et le `PathBuf` de `vapid_key_file` n'avait pas d'import. Les hooks de pre-commit (`task recu`, `task lint`) auraient arrêté les deux ; ils n'ont donc pas tourné. C'est le mode d'échec de D8 sous un autre angle — là, une vérification passait sans travail ; ici, le travail est passé sans vérification. La leçon est déjà écrite en §14.4 et n'a pas besoin d'une dette de plus : elle a besoin que les hooks soient installés (`task init`), et le fait qu'un commit ait pu atterrir sans eux est ce qui vaut d'être noté.
+
+Portes au vert à la fin de M3.5 : `task lint:check`, `task test` (602 Rust + 52 web), `task test:critical` (85), `task test:e2e` (54, contre un vrai Postgres — 54 exécutés, zéro sauté, ce que le compte prouve), `task test:oidc-compat` (leg `mock`, 3 exécutés et 0 sauté), `task audit` (cargo + deny + pnpm + trivy, redevenu vert), et `task recu` idempotent — l'idempotence contrôlée **après** avoir vu la génération produire `generated.rs`, ce que D8 exige. Couverture domaine+app à **91,4 %** pour un plancher à 90 % : en baisse sur les 96,2 % de la fin de M2, et la baisse est le code M3 arrivé avec `731e795` — `dnd`, `digest` et `preferences` sont moins couverts que ce qui les précède. Au-dessus du plancher, donc pas un blocage ; noté ici parce qu'une couverture qui glisse sans que personne l'écrive finit sous le plancher entre deux milestones.
+
 ### 14.2 Accès par groupe OIDC — le modèle dérivé
 
 Découvert en câblant M1.8 : `VerifiedClaims.groups` était extrait du token et **jeté**. `Authenticate::bearer` construisait `Caller::member(principal)` et `Authorizer` ne résolvait que par `Membership` stocké, donc tous les bindings `[[channels.managed.access]] oidc_group` de §11 n'accordaient rien — alice se connectait et ne voyait aucun canal.
@@ -1609,7 +1653,7 @@ Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est u
 | Port | Double in-memory | Adapter de production | Conséquence |
 |---|---|---|---|
 | `AuditLog` | ✅ | ✅ `PgStore` (M1.8) | Vocabulaire d'actions fermé — une valeur inconnue en base est signalée, jamais renommée en silence. |
-| `PushDispatcher` | ✅ | ✅ `TransportRegistry` (M1.8) | Vide en M1, ce qui est le comportement correct : `Fanout` saute déjà les devices `stream`, donc le registre n'est atteint que par un device enrôlé sur un transport que cette instance ne sert pas — il répond `NotConfigured` en nommant la capacité. |
+| `PushDispatcher` | ✅ | ✅ `TransportRegistry` (M1.8) + `WebPush` (M3.5) | Le registre reste vide sur un déploiement sans `[push.webpush]`, et c'est le comportement correct : `Fanout` saute déjà les devices `stream`, donc il n'est atteint que par un device enrôlé sur un transport que cette instance ne sert pas — il répond `NotConfigured` en nommant la capacité. Il dit aussi ce que ses transports portent, et c'est ce plafond qui décide charge utile ou poke (M3.5). |
 | `AttachmentStore` | ✅ | ✅ `S3Attachments` (M2.2) | Conformité passée contre un vrai RustFS. Un déploiement sans `[attachments]` reçoit un double qui **refuse** (`NotConfigured`) au lieu de réussir dans le vide. |
 | `AvatarProcessor` | — | ✅ `notify-avatars` (M2.2) | Seule surface de décodage média du serveur (§15) : taille, format d'après les octets, dimensions **avant** décodage, ré-encodage qui strippe les métadonnées. |
 | `SinkDispatcher` / `SinkQueue` | ✅ | ⬜ | Hors périmètre M1 (§7.1bis). |

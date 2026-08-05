@@ -36,6 +36,13 @@ bucket = "weebo-notify-attachments"
 access_key = "weebo-dev"
 secret_key = "weebo-dev-secret"
 
+[push.webpush]
+# Minted by `task dev:setup`, gitignored, and read at startup — a key the server
+# cannot read stops it rather than letting it run mute (§6.2, M3.5). The path is
+# relative to the repository root, which is where every dev task runs from.
+vapid_key_file = "dev/secrets/vapid.pem"
+contact = "mailto:dev@weebo.local"
+
 [retention]
 default_ttl = "7d"
 max_ttl = "90d"

@@ -61,6 +61,7 @@ pub mod dto {
     pub use crate::routes::interactions::{ReceiptBody, RecordedInteraction, SilenceBody};
     pub use crate::routes::notifications::{InboxParams, PageParams, PublishBody, SearchParams};
     pub use crate::routes::profile::{AvatarUpload, ProfileBody};
+    pub use crate::routes::push::WebPushKey;
     pub use crate::routes::stream::StreamParams;
     pub use crate::routes::sync::SyncParams;
 }

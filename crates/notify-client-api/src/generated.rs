@@ -6979,6 +6979,35 @@ form every comparison here wants, and rendered `HH:MM` because that is the form
             self.0.fmt(f)
         }
     }
+    ///The identity of this server, as a push service knows it.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The identity of this server, as a push service knows it.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "application_server_key"
+    ///  ],
+    ///  "properties": {
+    ///    "application_server_key": {
+    ///      "description": "The uncompressed P-256 public point, base64url — passed verbatim as\n`applicationServerKey` (RFC 8292).",
+    ///      "examples": [
+    ///        "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkFbx4gpXYm…"
+    ///      ],
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct WebPushKey {
+        /**The uncompressed P-256 public point, base64url — passed verbatim as
+`applicationServerKey` (RFC 8292).*/
+        pub application_server_key: ::std::string::String,
+    }
 }
 #[derive(Clone, Debug)]
 /**Client for weebo-notify
@@ -8314,6 +8343,49 @@ Sends a `PUT` request to `/api/v1/preferences/dnd`
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The key this server subscribes browsers with
+
+Sends a `GET` request to `/api/v1/push/webpush`
+
+*/
+    pub async fn webpush_key<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<types::WebPushKey>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/push/webpush", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "webpush_key",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            501u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

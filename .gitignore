@@ -21,5 +21,10 @@ web/coverage/
 # the Authentik admin bootstrap there, and that one is never committed.
 !dev/.env
 
+# Real key material minted by `task dev:setup` — never committed, and deliberately
+# NOT allowlisted for gitleaks: an exception written for a development key would go
+# on covering this path the day a production one lands in it (design §12.5, M3.5).
+dev/secrets/
+
 # nextest JUnit output
 junit*.xml

@@ -1801,6 +1801,17 @@ export type UserId = string;
  */
 export type WallClock = string;
 
+/**
+ * The identity of this server, as a push service knows it.
+ */
+export type WebPushKey = {
+    /**
+     * The uncompressed P-256 public point, base64url — passed verbatim as
+     * `applicationServerKey` (RFC 8292).
+     */
+    application_server_key: string;
+};
+
 export type ListKeysData = {
     body?: never;
     path?: never;
@@ -2740,6 +2751,35 @@ export type SetDndResponses = {
 };
 
 export type SetDndResponse = SetDndResponses[keyof SetDndResponses];
+
+export type WebpushKeyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/push/webpush';
+};
+
+export type WebpushKeyErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This deployment runs no Web Push transport
+     */
+    501: Problem;
+};
+
+export type WebpushKeyError = WebpushKeyErrors[keyof WebpushKeyErrors];
+
+export type WebpushKeyResponses = {
+    /**
+     * The `applicationServerKey` for `pushManager.subscribe()`
+     */
+    200: WebPushKey;
+};
+
+export type WebpushKeyResponse = WebpushKeyResponses[keyof WebpushKeyResponses];
 
 export type ReceiptData = {
     body: ReceiptBody;

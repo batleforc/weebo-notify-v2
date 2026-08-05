@@ -34,6 +34,15 @@ pub struct Fanout {
     interactions: Arc<dyn InteractionRepository>,
     preferences: Arc<dyn PreferenceRepository>,
     clock: Arc<dyn Clock>,
+    /// The largest payload the configured transports will carry; past it a push
+    /// degrades to a poke and the client fetches over TLS (design §6.3).
+    ///
+    /// It belongs to whoever holds the transports, which is the composition root:
+    /// the figure is a property of what was configured, and a use case has no way
+    /// to know it. Zero on a deployment with no push transport at all, which is the
+    /// right answer rather than a degenerate one — with nothing to carry a payload,
+    /// every message is a poke.
+    payload_budget: usize,
 }
 
 impl core::fmt::Debug for Fanout {
@@ -52,6 +61,7 @@ impl Fanout {
         interactions: Arc<dyn InteractionRepository>,
         preferences: Arc<dyn PreferenceRepository>,
         clock: Arc<dyn Clock>,
+        payload_budget: usize,
     ) -> Self {
         Self {
             bus,
@@ -60,6 +70,7 @@ impl Fanout {
             interactions,
             preferences,
             clock,
+            payload_budget,
         }
     }
 
@@ -91,7 +102,7 @@ impl Fanout {
     /// Errors are logged, never propagated. Reporting a publish as failed because a
     /// push relay was unhappy would make a CI pipeline red for somebody else's
     /// phone.
-    pub async fn push(&self, notification: &Notification, max_payload_hint: usize) {
+    pub async fn push(&self, notification: &Notification) {
         let targets = match self.devices.delivery_targets(&notification.channel).await {
             Ok(targets) => targets,
             Err(error) => {
@@ -110,7 +121,7 @@ impl Fanout {
                 continue;
             }
 
-            let message = Self::message_for(notification, max_payload_hint);
+            let message = Self::message_for(notification, self.payload_budget);
             match self.push.dispatch(&device, &message).await {
                 Ok(PushOutcome::Delivered) => {}
                 Ok(PushOutcome::Expired) => {
@@ -256,6 +267,11 @@ mod tests {
     use super::*;
 
     fn fanout(store: &InMemory, clock: &TestClock) -> Fanout {
+        fanout_carrying(store, clock, 4_096)
+    }
+
+    /// One whose transports carry `budget` bytes, for the tests about the ceiling.
+    fn fanout_carrying(store: &InMemory, clock: &TestClock, budget: usize) -> Fanout {
         Fanout::new(
             Arc::new(store.clone()),
             Arc::new(store.clone()),
@@ -263,6 +279,7 @@ mod tests {
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
+            budget,
         )
     }
 
@@ -339,7 +356,7 @@ mod tests {
         fanout
             .poke_channel(&notification, Cursor::from_sequence(1))
             .await;
-        fanout.push(&notification, 4_096).await;
+        fanout.push(&notification).await;
 
         assert_eq!(store.pokes().len(), 1);
         assert_eq!(store.pushes().len(), 1);
@@ -355,7 +372,7 @@ mod tests {
         seed(&store, &alice, PushTransport::Stream, clock.now());
 
         fanout(&store, &clock)
-            .push(&notification(&alice, None, clock.now()), 4_096)
+            .push(&notification(&alice, None, clock.now()))
             .await;
 
         assert!(
@@ -415,10 +432,7 @@ mod tests {
             .unwrap();
 
         fanout(&store, &clock)
-            .push(
-                &notification(&bob, Some("incident-4521"), clock.now()),
-                4_096,
-            )
+            .push(&notification(&bob, Some("incident-4521"), clock.now()))
             .await;
 
         assert_eq!(
@@ -461,7 +475,7 @@ mod tests {
         fanout
             .poke_channel(&notification, Cursor::from_sequence(1))
             .await;
-        fanout.push(&notification, 4_096).await;
+        fanout.push(&notification).await;
 
         assert!(
             store.pushes().is_empty(),
@@ -502,7 +516,7 @@ mod tests {
         .unwrap();
 
         fanout(&store, &clock)
-            .push(&notification(&alice, None, clock.now()), 4_096)
+            .push(&notification(&alice, None, clock.now()))
             .await;
 
         assert_eq!(store.pushes().len(), 1);
@@ -547,7 +561,7 @@ mod tests {
         .unwrap()
         .0;
 
-        fanout(&store, &clock).push(&urgent, 4_096).await;
+        fanout(&store, &clock).push(&urgent).await;
 
         assert!(
             store.pushes().is_empty(),
@@ -567,7 +581,7 @@ mod tests {
         seed(&store, &bot, webpush(), clock.now());
 
         fanout(&store, &clock)
-            .push(&notification(&bot, None, clock.now()), 4_096)
+            .push(&notification(&bot, None, clock.now()))
             .await;
 
         assert_eq!(store.pushes().len(), 1);
@@ -584,7 +598,7 @@ mod tests {
         store.set_push_outcome(PushOutcome::Expired);
 
         fanout(&store, &clock)
-            .push(&notification(&alice, None, clock.now()), 4_096)
+            .push(&notification(&alice, None, clock.now()))
             .await;
 
         let stored = DeviceRepository::get(&store, device)
@@ -607,8 +621,8 @@ mod tests {
         seed(&store, &alice, webpush(), clock.now());
 
         // A ceiling no real payload fits under.
-        fanout(&store, &clock)
-            .push(&notification(&alice, None, clock.now()), 4)
+        fanout_carrying(&store, &clock, 4)
+            .push(&notification(&alice, None, clock.now()))
             .await;
 
         let (_, message) = store.pushes().into_iter().next().unwrap();
@@ -623,6 +637,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_deployment_with_no_transport_configured_sends_pokes_and_not_payloads() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        seed(&store, &alice, webpush(), clock.now());
+
+        // What `TransportRegistry::max_payload_bytes` answers when nothing is
+        // configured. Zero is not a degenerate budget: with no transport there is no
+        // payload that fits, and serialising one to hand it to a dispatcher that
+        // will refuse is work nobody asked for.
+        fanout_carrying(&store, &clock, 0)
+            .push(&notification(&alice, None, clock.now()))
+            .await;
+
+        let (_, message) = store.pushes().into_iter().next().unwrap();
+        let PushMessage::Notification { body, .. } = message else {
+            panic!("a publish pushes a notification, not a digest");
+        };
+        assert_eq!(body, PushBody::Poke);
+    }
+
+    #[tokio::test]
     async fn a_push_failure_never_reaches_the_publisher() {
         let store = InMemory::new();
         let clock = TestClock::new();
@@ -634,7 +672,7 @@ mod tests {
 
         // The point of the test is that this returns at all.
         fanout(&store, &clock)
-            .push(&notification(&alice, None, clock.now()), 4_096)
+            .push(&notification(&alice, None, clock.now()))
             .await;
         assert_eq!(store.pushes().len(), 1);
     }

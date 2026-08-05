@@ -45,3 +45,33 @@ takes priority over the global `[[trust_policy]]` entries.
   oidc_groups`. No API path grants it. That is deliberate: a role that administers
   the instance should not be reachable by a request to the instance.
 </Callout>
+
+## Web Push
+
+```toml
+[push.webpush]
+vapid_key_file = "/secrets/vapid.pem"   # a path, not the key
+contact        = "mailto:ops@weebo.poc" # RFC 8292 `sub`
+```
+
+A **path** rather than the key itself, so it can be mounted from whatever the cluster
+keeps secrets in without the key passing through a configuration file that gets
+committed by accident. `contact` is not optional: push services refuse a VAPID
+assertion without one, since it is how a relay reaches the operator of a server that
+has started misbehaving.
+
+Both are validated at startup. A key that is not P-256, a file that cannot be read,
+or a contact that is neither `mailto:` nor `https://` stops the process — the
+alternative is finding out because somebody's phone stayed silent.
+
+Omitting the section entirely is a supported deployment, not a broken one: no
+transport is registered, `GET /api/v1/push/webpush` answers `501`, and every push
+degrades to a poke the client fetches over TLS. `[push.apns]` and
+`[push.unifiedpush]` are parsed but not yet honoured — the server says so at startup
+rather than dropping them silently.
+
+<Callout type="info">
+  Rotating the VAPID key invalidates every existing subscription, silently: the
+  server starts, relays accept the new assertion, and pushes stop arriving on devices
+  that subscribed under the old one. Plan a rotation as a re-subscription.
+</Callout>

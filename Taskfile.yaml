@@ -12,7 +12,7 @@ includes:
 
 tasks:
   init:
-    desc: "Install the toolchain and the git hooks — run once after cloning"
+    desc: "Install the toolchain and the git hooks, then create the local secrets — run once after cloning"
     cmds:
       - mise install
       - cog install-hook -a -o
@@ -20,6 +20,10 @@ tasks:
         silent: true
       - cmd: '[ -f web/package.json ] && pnpm -C web install || true'
         silent: true
+      # Last, and part of `init` rather than a step to remember: everything above
+      # is what the repository needs, this is what running it needs, and a setup
+      # split in two is a setup somebody does half of.
+      - task: dev:setup
 
   recu:
     desc: "Recurring job: export the OpenAPI spec, regenerate the derived clients and the sqlx offline data"

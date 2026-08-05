@@ -5,8 +5,11 @@
 //! compile before the file it generates exists. `xtask` is built and run
 //! independently, which breaks that cycle.
 //!
-//! Everything here is invoked by `task recu` and its output is committed, so the
-//! `contract` CI job can prove the clients never drift from the server (design §3.2).
+//! The generators here are invoked by `task recu` and their output is committed, so
+//! the `contract` CI job can prove the clients never drift from the server (design
+//! §3.2). Not everything is: [`vapid`] mints a key for a *developer's* machine and
+//! its output is gitignored — it lives here for the same reason as the rest, that a
+//! chore needing real code should not be a shell one-liner with assumptions in it.
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +18,7 @@ use clap::{Parser, Subcommand};
 
 mod coverage;
 mod downgrade;
+mod vapid;
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask", about = "weebo-notify repository chores")]
@@ -45,12 +49,24 @@ enum Command {
         #[arg(long)]
         base: Option<String>,
     },
+
+    /// Mint the VAPID key `[push.webpush]` reads, for a development deployment.
+    VapidKey {
+        /// Where to write it. Gitignored, and `config/dev.toml` points here.
+        #[arg(long, default_value = "dev/secrets/vapid.pem")]
+        output: PathBuf,
+        /// Replace an existing key. Every subscription taken out under the old one
+        /// stops being deliverable, which is why it is not the default.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::ClientRust { spec, output } => generate_rust_client(&spec, &output),
         Command::CoverageGate { lcov, base } => coverage::gate(&lcov, base.as_deref()),
+        Command::VapidKey { output, force } => vapid::generate(&output, force),
     }
 }
 

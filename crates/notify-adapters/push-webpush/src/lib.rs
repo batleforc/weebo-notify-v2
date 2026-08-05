@@ -16,7 +16,7 @@
 //! it: the obvious crate, `web-push`, reaches `ece` which reaches **OpenSSL**, the C
 //! toolchain this workspace refused for the server in M1 so that the image builds
 //! from a plain `cargo build` and the Tauri cross-compilations of M5–M7 stay
-//! possible. `web-push-native` is RustCrypto throughout. The second is that its
+//! possible. `web-push-native` is `RustCrypto` throughout. The second is that its
 //! `vapid` feature pulls a second JWT library into a workspace that already has one;
 //! the identification header below is signed with `jsonwebtoken`, the same crate
 //! `notify-oidc` verifies with.
@@ -34,7 +34,6 @@
 //! switches on `kind` and renders. Changing it is a wire break with every installed
 //! client, exactly as changing §8.1 would be.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -185,6 +184,8 @@ impl WebPush {
     /// at the first push. An operator finding out about a malformed key because
     /// somebody's phone stayed silent is the failure this refuses.
     pub fn new(config: &WebPushConfig) -> Result<Self, WebPushSetup> {
+        use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+
         if !config.contact.starts_with("mailto:") && !config.contact.starts_with("https://") {
             return Err(WebPushSetup::Contact);
         }
@@ -195,7 +196,6 @@ impl WebPush {
         let signing = jsonwebtoken::EncodingKey::from_ec_pem(config.private_key_pem.as_bytes())
             .map_err(|_| WebPushSetup::Key)?;
 
-        use p256::elliptic_curve::sec1::ToEncodedPoint as _;
         let point = secret.public_key().to_encoded_point(false);
 
         Ok(Self {
@@ -224,19 +224,19 @@ impl WebPush {
     /// RFC 8292 scopes a signature to a push service, so it is one signature per
     /// origin rather than one per subscription.
     fn authorization(&self, endpoint: &url::Url, now: u64) -> PortResult<String> {
-        let Some(host) = endpoint.host_str() else {
-            return Err(PortError::corrupt(
-                "device.transport",
-                "a subscription endpoint with no host",
-            ));
-        };
-
         #[derive(Serialize)]
         struct Vapid<'a> {
             aud: String,
             exp: u64,
             sub: &'a str,
         }
+
+        let Some(host) = endpoint.host_str() else {
+            return Err(PortError::corrupt(
+                "device.transport",
+                "a subscription endpoint with no host",
+            ));
+        };
 
         let claims = Vapid {
             aud: format!("{}://{host}", endpoint.scheme()),
@@ -326,13 +326,33 @@ impl PushDispatcher for WebPush {
     }
 }
 
-/// A registered transport, for the composition root.
+/// A VAPID key for tests, built rather than pasted.
 ///
-/// # Errors
+/// A PEM literal in a source file is exactly what `task audit` (trivy) and the
+/// gitleaks pre-commit hook exist to catch, and the honest way past them is not to
+/// allowlist the path — an exception written for a *test* key would go on covering
+/// the file the day a real one lands in it. So the key is derived from a fixed
+/// scalar: deterministic, valid, and not a secret in any sense a scanner or a reader
+/// could confuse with one.
 ///
-/// As [`WebPush::new`].
-pub fn transport(config: &WebPushConfig) -> Result<Arc<dyn PushTransport>, WebPushSetup> {
-    Ok(Arc::new(WebPush::new(config)?))
+/// A feature rather than a `#[cfg(test)]` helper because the composition root needs
+/// the same key to test that it reads one (`notify-server`), and the convention for
+/// that in this workspace is `notify-ports/test-utils`.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_vapid_key() -> String {
+    use p256::pkcs8::EncodePrivateKey as _;
+
+    #[allow(
+        clippy::expect_used,
+        reason = "a constant scalar that is a valid P-256 key, or this crate cannot \
+                  encode the keys it is built to read"
+    )]
+    p256::SecretKey::from_slice(&[0x2a; 32])
+        .expect("a fixed, valid P-256 scalar")
+        .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+        .expect("PKCS#8 encoding of a key this crate just built")
+        .to_string()
 }
 
 /// Read a P-256 private key in either PEM form an operator is likely to have.
@@ -362,9 +382,7 @@ const fn outcome(status: u16) -> PushOutcome {
         429 => PushOutcome::Failed {
             reason: "rate_limited",
         },
-        400..=499 => PushOutcome::Failed {
-            reason: "rejected",
-        },
+        400..=499 => PushOutcome::Failed { reason: "rejected" },
         _ => PushOutcome::Failed {
             reason: "relay_unavailable",
         },
@@ -411,13 +429,6 @@ mod tests {
 
     use super::*;
 
-    /// A P-256 key generated for this test module and used nowhere else.
-    const KEY: &str = "-----BEGIN PRIVATE KEY-----\n\
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgevZzL1gdAFr88hb2\n\
-OF/2NxApJCzGCEDdfSp6VQO30hyhRANCAAQRWz+jn65BtOMvdyHKcvjBeBSDZH2r\n\
-1RTwjmYSi9R/zpBnuQ4EiMnCqfMPWiZqB4QdbAd0E7oH50VpuZ1P087G\n\
------END PRIVATE KEY-----\n";
-
     /// A subscriber's `auth`: sixteen octets, base64url, as a browser hands it out.
     const AUTH: &str = "tBHItJI5svbpez7KI4CCXg";
 
@@ -428,13 +439,16 @@ OF/2NxApJCzGCEDdfSp6VQO30hyhRANCAAQRWz+jn65BtOMvdyHKcvjBeBSDZH2r\n\
     /// taking the `Expired` shortcut — proving nothing about the encryption.
     fn subscriber_key() -> String {
         use p256::elliptic_curve::sec1::ToEncodedPoint as _;
-        let point = read_key(KEY).unwrap().public_key().to_encoded_point(false);
+        let point = read_key(&test_vapid_key())
+            .unwrap()
+            .public_key()
+            .to_encoded_point(false);
         URL_SAFE_NO_PAD.encode(point.as_bytes())
     }
 
     fn config() -> WebPushConfig {
         WebPushConfig {
-            private_key_pem: KEY.to_owned(),
+            private_key_pem: test_vapid_key(),
             contact: "mailto:ops@weebo.poc".to_owned(),
         }
     }
@@ -463,7 +477,8 @@ OF/2NxApJCzGCEDdfSp6VQO30hyhRANCAAQRWz+jn65BtOMvdyHKcvjBeBSDZH2r\n\
             notification_id: NotificationId::generate(),
             priority: Priority::Default,
             body: PushBody::Payload {
-                bytes: serde_json::to_vec(&serde_json::json!({ "title": "etcd degraded" })).unwrap(),
+                bytes: serde_json::to_vec(&serde_json::json!({ "title": "etcd degraded" }))
+                    .unwrap(),
                 sealed: false,
             },
         }

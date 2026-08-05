@@ -1,11 +1,4 @@
-|| self.push.unifiedpush.is_some() {
-            // Web Push is wired since M3.5; these two are M6 and M7.
-            pending.push(
-                "[push.apns] / [push.unifiedpush] credentials — mobile transports \
-                 land with M6 and M7 (§6.2)"
-                    .to_owned(),
-            );
-        }//! Configuration: defaults < TOML file < `WNK_*` environment (design §11).
+//! Configuration: defaults < TOML file < `WNK_*` environment (design §11).
 //!
 //! **Every key is overridable from the environment, without exception.** The
 //! convention is `WNK_` plus the path in `__`, so `[oidc] issuer` becomes
@@ -17,8 +10,8 @@
 //! # What this build does not act on yet
 //!
 //! The schema below covers the whole of §11, including sections whose behaviour
-//! lands later: trust policies (M4), channel sinks (§7.1bis) and push transport
-//! credentials (M3 onwards). They are parsed rather than ignored, and
+//! lands later: trust policies (M4), channel sinks (§7.1bis) and the relayed push
+//! credentials (M6 and M7). They are parsed rather than ignored, and
 //! [`Config::unhonoured`] reports them at startup — a configuration key that is
 //! silently dropped is how an operator loses an afternoon.
 
@@ -32,7 +25,7 @@
 )]
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use figment::Figment;
 use figment::providers::{Env, Format as _, Serialized, Toml};
@@ -443,12 +436,15 @@ impl Config {
             ));
         }
 
-        if self.push.webpush.is_some()
-            || self.push.apns.is_some()
-            || self.push.unifiedpush.is_some()
-        {
-            pending
-                .push("[push.*] credentials — no push transport is wired in M1 (§6.2)".to_owned());
+        // `[push.webpush]` is honoured since M3.5 and is absent from this list on
+        // purpose: the composition root reads it, and a key it cannot use stops the
+        // process rather than warning here.
+        if self.push.apns.is_some() || self.push.unifiedpush.is_some() {
+            pending.push(
+                "[push.apns] / [push.unifiedpush] credentials — the relayed transports \
+                 land with M6 and M7 (§6.2)"
+                    .to_owned(),
+            );
         }
 
         pending
@@ -581,5 +577,28 @@ mod tests {
         );
         assert!(pending.iter().any(|line| line.contains("trust_policy")));
         assert!(pending.iter().any(|line| line.contains("sinks")));
+    }
+
+    #[test]
+    fn a_web_push_key_is_no_longer_reported_as_a_key_this_build_ignores() {
+        let path = with_config(
+            "webpush-honoured",
+            "[push.webpush]\n\
+             vapid_key_file = \"/secrets/vapid.pem\"\n\
+             contact = \"mailto:ops@weebo.poc\"\n\
+             \n\
+             [push.apns]\n\
+             key_file = \"/secrets/apns.p8\"\n",
+        );
+
+        let pending = Config::load(&path).unwrap().unhonoured();
+
+        // Warning about a section the composition root reads would train an operator
+        // to ignore this list, which is the one thing it cannot afford (M3.5).
+        assert!(
+            !pending.iter().any(|line| line.contains("push.webpush")),
+            "Web Push is wired: {pending:?}"
+        );
+        assert!(pending.iter().any(|line| line.contains("push.apns")));
     }
 }

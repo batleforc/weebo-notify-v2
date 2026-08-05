@@ -12,6 +12,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# A valid VAPID key for tests, built from a fixed scalar. Off by default: nothing in
+# production has any use for it, and the composition root turns it on in its
+# `[dev-dependencies]` only.
+test-utils = []
+
 [dependencies]
 notify-domain = { workspace = true }
 notify-ports = { workspace = true }

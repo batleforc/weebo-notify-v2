@@ -12,7 +12,7 @@ noise.
 ## Getting started
 
 ```bash
-task init        # toolchain (mise) + git hooks (cocogitto)
+task init        # toolchain (mise) + git hooks (cocogitto) + the local secrets
 task dev:up      # Postgres + RustFS, ~20 s
 task dev:seed    # migrations, attachment bucket, test identities
 task dev:oidc    # the development identity provider, on :9110

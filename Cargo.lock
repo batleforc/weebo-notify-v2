@@ -2934,6 +2934,7 @@ dependencies = [
  "notify-oidc",
  "notify-persistence-pg",
  "notify-ports",
+ "notify-push-webpush",
  "serde",
  "serde_json",
  "sqlx",
@@ -6288,7 +6289,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "getrandom 0.3.4",
  "openapiv3",
+ "p256 0.14.0",
  "prettyplease",
  "progenitor",
  "serde_json",

@@ -98,6 +98,16 @@ pub struct ApiState {
     /// `PUT /preferences/dnd`.
     pub set_dnd: SetDnd,
 
+    /// `GET /push/webpush` — the VAPID public key, base64url, or `None` on a
+    /// deployment that runs no Web Push (design §6.2, §11 `[push.webpush]`).
+    ///
+    /// The one field here that is not a use case, and it is not one because there is
+    /// nothing to decide: it is a constant of the deployment, public by definition —
+    /// every subscriber holds a copy — and it reaches no port. A use case wrapping a
+    /// `String` would have been ceremony around a `clone`, and the rule this bends
+    /// exists to stop a handler reaching a *repository*, which this cannot.
+    pub application_server_key: Option<String>,
+
     /// `GET /serviceaccounts`.
     pub accounts: ListServiceAccounts,
     /// `POST /serviceaccounts`.

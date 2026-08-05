@@ -4,26 +4,20 @@
 //! were wired: no APNs key means no APNs, and that is a configuration answer rather
 //! than a code path. This is the registry that answers it.
 //!
-//! # M1 has no transports, and that is the correct behaviour
+//! # An empty registry is a deployment's answer, not a stub
 //!
-//! Web Push lands in M3, UnifiedPush in M6, APNs in M7. Until then the registry is
-//! empty — which is not a stub, because the M1 delivery path is complete without
-//! one: a device enrolled with [`notify_domain::PushTransport::Stream`] is reachable
-//! only while its client holds a stream, and the event-bus poke already covered it
-//! before the dispatcher was consulted (`Fanout::push` skips it).
+//! Web Push is here since M3.5, UnifiedPush lands in M6 and APNs in M7 — but a
+//! deployment with no `[push.webpush]` still gets an empty registry, and the
+//! delivery path is complete without one: a device enrolled with
+//! [`notify_domain::PushTransport::Stream`] is reachable only while its client holds
+//! a stream, and the event-bus poke already covered it before the dispatcher was
+//! consulted (`Fanout::push` skips it).
 //!
 //! So the registry is reached only by a device that enrolled with a transport this
-//! instance cannot serve. Answering [`PortError::NotConfigured`] names the missing
+//! instance does not run. Answering [`PortError::NotConfigured`] names the missing
 //! capability, the fan-out logs it and carries on, and the publish never fails —
-//! a CI job must not go red because somebody's phone chose a transport we do not
-//! run yet.
-
-// Same reason as `config`: the caller is the composition root's `run`, which is
-// blocked on group-based channel access. The registry itself is complete.
-#![allow(
-    dead_code,
-    reason = "the caller of these is the composition root, which is blocked"
-)]
+//! a CI job must not go red because somebody's phone chose a transport this
+//! deployment did not configure.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -48,17 +42,12 @@ impl core::fmt::Debug for TransportRegistry {
 }
 
 impl TransportRegistry {
-    /// An instance with no push transports — every M1 deployment.
+    /// An instance with no push transports.
     pub(crate) fn empty() -> Self {
         Self::default()
     }
 
     /// Register one, replacing any transport already under that name.
-    #[allow(
-        dead_code,
-        reason = "the first caller is the Web Push transport in M3; the registry \
-                  exists now because the composition root needs a dispatcher now"
-    )]
     pub(crate) fn with(mut self, transport: Arc<dyn PushTransport>) -> Self {
         self.transports.insert(transport.name(), transport);
         self

@@ -37,11 +37,6 @@ use crate::fanout::Fanout;
 /// How long a replayed `Idempotency-Key` response stays available (design §8).
 const IDEMPOTENCY_WINDOW: Duration = Duration::hours(24);
 
-/// The largest payload any push transport will carry, used to decide between a
-/// payload and a poke. Conservative on purpose: the cost of guessing low is one
-/// extra fetch, the cost of guessing high is a dropped push.
-const PUSH_PAYLOAD_HINT: usize = 3_000;
-
 /// What a publish produced.
 ///
 /// Serialisable because it *is* the stored idempotency response: replaying a key
@@ -176,7 +171,7 @@ impl Writer {
 
     async fn after_write(&self, notification: &Notification, cursor: Cursor) {
         self.fanout.poke_channel(notification, cursor).await;
-        self.fanout.push(notification, PUSH_PAYLOAD_HINT).await;
+        self.fanout.push(notification).await;
     }
 }
 
@@ -437,6 +432,7 @@ mod tests {
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
+            4_096,
         );
 
         Fixture {

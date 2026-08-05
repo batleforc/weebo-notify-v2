@@ -377,6 +377,7 @@ mod tests {
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
+            4_096,
         );
 
         Fixture {

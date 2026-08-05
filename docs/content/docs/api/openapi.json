@@ -1707,6 +1707,52 @@
         ]
       }
     },
+    "/api/v1/push/webpush": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "The key this server subscribes browsers with.",
+        "operationId": "webpush_key",
+        "responses": {
+          "200": {
+            "description": "The `applicationServerKey` for `pushManager.subscribe()`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebPushKey"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "This deployment runs no Web Push transport",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/receipts": {
       "post": {
         "tags": [
@@ -5336,6 +5382,20 @@
         "type": "string",
         "description": "A time of day on a wall clock, to the minute.\n\nMinutes, not seconds: quiet hours are a human intention (\"ten in the evening\"),\nand a field nobody will ever set to a non-zero value is a field somebody will\neventually set wrong. Stored as minutes since local midnight because that is the\nform every comparison here wants, and rendered `HH:MM` because that is the form\n§7.4 writes it in.",
         "example": "22:00"
+      },
+      "WebPushKey": {
+        "type": "object",
+        "description": "The identity of this server, as a push service knows it.",
+        "required": [
+          "application_server_key"
+        ],
+        "properties": {
+          "application_server_key": {
+            "type": "string",
+            "description": "The uncompressed P-256 public point, base64url — passed verbatim as\n`applicationServerKey` (RFC 8292).",
+            "example": "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkFbx4gpXYm…"
+          }
+        }
       }
     },
     "securitySchemes": {
