@@ -38,7 +38,7 @@ mod e2e {
         Allowance, ApiKeyRepository, AuditEntry, AuditLog, AuditQuery, ChannelRepository, Claim,
         DeviceRepository, EventPayload, EventStore, IdempotencyStore, InboxQuery,
         InteractionRepository, LeaderElection, NotificationRepository, PageRequest,
-        PreferenceRepository, Quota, RateLimiter, ReceiptRepository, SearchQuery,
+        PreferenceRepository, Quota, RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery,
         ServiceAccountRepository, StoredApiKey, SyncQuery, UserRepository,
     };
     use time::{Duration, OffsetDateTime};
@@ -2112,6 +2112,57 @@ mod e2e {
         let _: Arc<dyn ReceiptRepository> = shared.clone();
         let _: Arc<dyn EventStore> = shared.clone();
         let _: Arc<dyn IdempotencyStore> = shared.clone();
+        let _: Arc<dyn ReplayGuard> = shared.clone();
         let _: Arc<dyn RateLimiter> = shared;
+    }
+
+    // --- Federation replay (design §5.3, scenario T11) --------------------
+
+    #[tokio::test]
+    async fn a_federated_token_id_is_remembered_exactly_once() {
+        let store = store!();
+        let jti = format!("tok-{}", ulid_slug());
+        let until = OffsetDateTime::now_utc() + Duration::minutes(15);
+
+        assert!(
+            ReplayGuard::remember(&store, &jti, until).await.unwrap(),
+            "the first exchange of an id has to be allowed"
+        );
+        assert!(
+            !ReplayGuard::remember(&store, &jti, until).await.unwrap(),
+            "a leaked ID token is worth one exchange, and the primary key is what \
+             makes that true even for two requests arriving together"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_purge_drops_ids_whose_token_has_expired_and_keeps_the_rest() {
+        let store = store!();
+        let now = OffsetDateTime::now_utc();
+        let stale = format!("stale-{}", ulid_slug());
+        let live = format!("live-{}", ulid_slug());
+
+        ReplayGuard::remember(&store, &stale, now - Duration::minutes(1))
+            .await
+            .unwrap();
+        ReplayGuard::remember(&store, &live, now + Duration::hours(1))
+            .await
+            .unwrap();
+
+        ReplayGuard::prune(&store, now).await.unwrap();
+
+        assert!(
+            ReplayGuard::remember(&store, &stale, now + Duration::hours(1))
+                .await
+                .unwrap(),
+            "past its token's expiry an id protects against nothing, so keeping it \
+             is storage bought for no security"
+        );
+        assert!(
+            !ReplayGuard::remember(&store, &live, now + Duration::hours(1))
+                .await
+                .unwrap(),
+            "and one still inside its window must survive the sweep"
+        );
     }
 }

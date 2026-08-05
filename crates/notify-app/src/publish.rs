@@ -664,6 +664,7 @@ mod tests {
                 channels: vec![channel_id()],
             },
             groups: Vec::new(),
+            platform_admin: false,
         };
         fixture.limiter.limit(Quota::PublishPerKey {
             key: fixture.alice.reference(),

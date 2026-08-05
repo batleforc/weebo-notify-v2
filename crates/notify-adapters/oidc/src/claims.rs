@@ -202,3 +202,53 @@ mod tests {
         assert_eq!(no_subject, TokenRejection::Malformed);
     }
 }
+
+/// A CI job's ID token, as it arrives (design §5.3).
+///
+/// A separate shape from [`RawClaims`] rather than more optional fields on it: the
+/// two are read by different callers with different rules — this one keeps `aud`
+/// and `jti` and drops email, name and groups — and one struct serving both would
+/// make every field optional and every rule a runtime check.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawFederatedClaims {
+    iss: String,
+    sub: String,
+    exp: i64,
+    /// One string or several; RFC 7519 allows both spellings.
+    aud: Audience,
+    jti: Option<String>,
+}
+
+/// `aud` is either a string or an array, and a verifier that only understood one
+/// of them would refuse half the forges in the world.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl RawFederatedClaims {
+    /// Reduce to what the domain decides on.
+    pub(crate) fn into_federated(self) -> Result<notify_domain::FederatedClaims, TokenRejection> {
+        let expires_at =
+            OffsetDateTime::from_unix_timestamp(self.exp).map_err(|_| TokenRejection::Malformed)?;
+        if self.sub.is_empty() || self.iss.is_empty() {
+            return Err(TokenRejection::Malformed);
+        }
+
+        Ok(notify_domain::FederatedClaims {
+            issuer: self.iss,
+            subject: self.sub,
+            audiences: match self.aud {
+                Audience::One(one) => vec![one],
+                Audience::Many(many) => many,
+            },
+            // Kept even when absent: the domain refuses a token with no id, and
+            // inventing one here would be this layer deciding a rule that belongs
+            // over there (scenario T11).
+            jti: self.jti,
+            expires_at,
+        })
+    }
+}

@@ -43,6 +43,34 @@ secret_key = "weebo-dev-secret"
 vapid_key_file = "dev/secrets/vapid.pem"
 contact = "mailto:dev@weebo.local"
 
+# CI federation (§5.3, M4.2). Same rule as the key above: minted by `task
+# dev:setup`, gitignored, and read at startup — the server refuses to start rather
+# than accept a token it cannot verify. It cannot be generated at boot because two
+# replicas would sign what each other cannot check (§11 `[ha]`).
+#
+# The forge below is not reachable from a dev machine, and that is the point of
+# having it here: it makes `POST /auth/token/exchange` answer, and it makes the
+# issuer allowlist non-empty so the SSRF guard has something to guard.
+[federation]
+signing_key_file = "dev/secrets/federation.pem"
+
+# The development identity provider standing in for a forge (§5.3, §12.1).
+#
+# There is no Forgejo in the dev stack and there does not need to be: what the
+# exchange consumes is an OIDC ID token with `aud`, `exp` and `jti`, which the mock
+# emits exactly like a forge does. So a local run can drive the whole path — sign
+# in as alice, present her ID token, receive a 15-minute weebo-notify token, publish
+# with it — against a real JWKS over a real socket.
+#
+# `subject` is an exact match on purpose. A pattern here would trust every account
+# the dev provider knows, and a dev fixture that is laxer than production teaches
+# the wrong shape.
+[[trust_policy]]
+issuer   = "http://localhost:9110"
+subject  = "alice"
+channels = ["ci-*"]
+scopes   = ["publish"]
+
 [retention]
 default_ttl = "7d"
 max_ttl = "90d"

@@ -140,6 +140,9 @@ const ACTIONS: &[&str] = &[
     "device.enrolled",
     "device.revoked",
     "dlq.requeued",
+    // The platform role reading somebody else's channel (§5.4, T30). Membership
+    // stays the one door to content, and this is the record that the door was used.
+    "platform.channel.self_join",
     "service_account.created",
     "service_account.disabled",
     "trust_policy.changed",

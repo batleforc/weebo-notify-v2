@@ -28,6 +28,7 @@ use notify_domain::{
     ServiceAccountId, TtlPolicy,
 };
 use notify_ports::{ChannelRepository, Clock, ServiceAccountRepository, UserRepository};
+use time::OffsetDateTime;
 
 use crate::config::{Access, Config, ManagedChannel, OnRemoved};
 
@@ -42,6 +43,23 @@ pub(crate) struct ReconcileReport {
     pub removed: usize,
     /// Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
     pub pending: Vec<String>,
+}
+
+impl ReconcileReport {
+    /// The same numbers, in the shape the console reads (design §10.4bis).
+    ///
+    /// The timestamp is passed in rather than taken here: this type is what a pass
+    /// *did*, and when it happened is what the caller observed. It also keeps the
+    /// conversion testable without a clock.
+    pub(crate) fn as_pass(&self, at: OffsetDateTime) -> notify_app::Reconciliation {
+        notify_app::Reconciliation {
+            at,
+            channels: self.channels,
+            accounts: self.accounts,
+            removed: self.removed,
+            pending: self.pending.clone(),
+        }
+    }
 }
 
 /// Puts the database back the way the configuration says.

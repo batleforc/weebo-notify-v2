@@ -33,6 +33,7 @@ pub struct UploadRequest {
 }
 
 /// A signed upload.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresignedUpload {
     /// The id to reference in a payload once the upload succeeds.
@@ -40,7 +41,18 @@ pub struct PresignedUpload {
     /// Where to PUT the bytes.
     pub url: Url,
     /// Headers the client must send verbatim — they are covered by the signature.
-    pub headers: Vec<(String, String)>,
+    ///
+    /// A map and not a `Vec<(String, String)>`, which is what this was until the
+    /// route existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in
+    /// JSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a
+    /// boolean is not something OpenAPI 3.0 can express, so the Rust client stopped
+    /// generating the moment this type reached the document. The same lesson as D1
+    /// and D3: a shape no generator can model is not describable, however natural it
+    /// reads in Rust (ADR-0009).
+    ///
+    /// It is also the better shape here — headers are named, not ordered — and
+    /// `BTreeMap` keeps the document and the response stable across runs.
+    pub headers: std::collections::BTreeMap<String, String>,
     /// When the signature stops working. Short: a presigned URL is a bearer
     /// credential, and one that lives for a day is one that leaks into a log for a
     /// day.

@@ -1,7 +1,10 @@
 //! The route table, and the small conversions the path segments need.
 
 pub(crate) mod accounts;
+pub(crate) mod admin;
+pub(crate) mod attachments;
 pub(crate) mod channels;
+pub(crate) mod federation;
 pub(crate) mod identity;
 pub(crate) mod interactions;
 pub(crate) mod notifications;
@@ -50,6 +53,8 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(identity::create_key)
             .service(identity::list_keys)
             .service(identity::revoke_key)
+            .service(attachments::presign)
+            .service(federation::exchange)
             .service(push::webpush_key)
             .service(preferences::read_dnd)
             .service(preferences::set_dnd)
@@ -59,7 +64,12 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(profile::read_avatar)
             .service(accounts::list_accounts)
             .service(accounts::create_account)
-            .service(accounts::deactivate_account),
+            .service(accounts::deactivate_account)
+            .service(admin::audit)
+            .service(admin::inventory)
+            .service(admin::self_join)
+            .service(admin::trust_policies)
+            .service(admin::reconciliation),
     );
 }
 

@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddMemberData, AddMemberErrors, AddMemberResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors } from './types.gen';
+import type { AddMemberData, AddMemberErrors, AddMemberResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PresignData, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -17,6 +17,55 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * Browse the audit log.
+ */
+export const audit = <ThrowOnError extends boolean = false>(options?: Options<AuditData, ThrowOnError>): RequestResult<AuditResponses, AuditErrors, ThrowOnError> => (options?.client ?? client).get<AuditResponses, AuditErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/audit',
+    ...options
+});
+
+/**
+ * The channel inventory — record cards, never inboxes.
+ */
+export const inventory = <ThrowOnError extends boolean = false>(options?: Options<InventoryData, ThrowOnError>): RequestResult<InventoryResponses, InventoryErrors, ThrowOnError> => (options?.client ?? client).get<InventoryResponses, InventoryErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/channels',
+    ...options
+});
+
+/**
+ * Join a channel as the calling admin — the audited way to content (design §5.4).
+ */
+export const selfJoin = <ThrowOnError extends boolean = false>(options: Options<SelfJoinData, ThrowOnError>): RequestResult<SelfJoinResponses, SelfJoinErrors, ThrowOnError> => (options.client ?? client).post<SelfJoinResponses, SelfJoinErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/channels/{channel}/join',
+    ...options
+});
+
+/**
+ * What the last GitOps pass did on this replica (design §11).
+ */
+export const reconciliation = <ThrowOnError extends boolean = false>(options?: Options<ReconciliationData, ThrowOnError>): RequestResult<ReconciliationResponses, ReconciliationErrors, ThrowOnError> => (options?.client ?? client).get<ReconciliationResponses, ReconciliationErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/reconciliation',
+    ...options
+});
+
+/**
+ * The trust policies this instance was deployed with (design §5.3, §11).
+ */
+export const trustPolicies = <ThrowOnError extends boolean = false>(options?: Options<TrustPoliciesData, ThrowOnError>): RequestResult<TrustPoliciesResponses, TrustPoliciesErrors, ThrowOnError> => (options?.client ?? client).get<TrustPoliciesResponses, TrustPoliciesErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/trust-policies',
+    ...options
+});
 
 /**
  * The caller's keys — metadata only, never a secret.
@@ -49,6 +98,33 @@ export const revokeKey = <ThrowOnError extends boolean = false>(options: Options
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/apikeys/{id}',
     ...options
+});
+
+/**
+ * Sign an upload to the object store.
+ */
+export const presign = <ThrowOnError extends boolean = false>(options: Options<PresignData, ThrowOnError>): RequestResult<PresignResponses, PresignErrors, ThrowOnError> => (options.client ?? client).post<PresignResponses, PresignErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/attachments/presign',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Exchange a forge ID token for a short-lived weebo-notify token.
+ */
+export const exchange = <ThrowOnError extends boolean = false>(options: Options<ExchangeData, ThrowOnError>): RequestResult<ExchangeResponses, ExchangeErrors, ThrowOnError> => (options.client ?? client).post<ExchangeResponses, ExchangeErrors, ThrowOnError>({
+    responseType: 'json',
+    url: '/api/v1/auth/token/exchange',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**

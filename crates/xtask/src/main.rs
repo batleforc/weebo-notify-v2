@@ -18,6 +18,7 @@ use clap::{Parser, Subcommand};
 
 mod coverage;
 mod downgrade;
+mod federation;
 mod vapid;
 
 #[derive(Debug, Parser)]
@@ -60,6 +61,17 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+
+    /// Mint the Ed25519 key `[federation]` signs CI tokens with (design §5.3).
+    FederationKey {
+        /// Where to write it. Gitignored, and `config/dev.toml` points here.
+        #[arg(long, default_value = "dev/secrets/federation.pem")]
+        output: PathBuf,
+        /// Replace an existing key. Every CI token in flight stops verifying,
+        /// which is why it is not the default.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -67,6 +79,7 @@ fn main() -> anyhow::Result<()> {
         Command::ClientRust { spec, output } => generate_rust_client(&spec, &output),
         Command::CoverageGate { lcov, base } => coverage::gate(&lcov, base.as_deref()),
         Command::VapidKey { output, force } => vapid::generate(&output, force),
+        Command::FederationKey { output, force } => federation::generate(&output, force),
     }
 }
 

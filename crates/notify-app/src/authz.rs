@@ -84,6 +84,17 @@ pub struct Caller {
     /// at all — the last is scenario T29, and the required behaviour is that they
     /// reach their individual bindings and nothing else.
     pub groups: Vec<String>,
+    /// Whether this request carries the instance-wide platform role (design §5.4).
+    ///
+    /// **Derived, never stored**, on exactly the same terms as `groups` above and
+    /// for the same reason (§14.2): it is `[admin] oidc_groups` intersected with
+    /// what this token says. Somebody removed from the admin group loses the role on
+    /// their next token, with nothing to reconcile and no row to forget.
+    ///
+    /// Always `false` for an API key, a service account and a CI job. §5.4 reserves
+    /// it to OIDC users: a bot scoped to its channels does not administer the
+    /// platform, and no API path grants this — it comes from GitOps or not at all.
+    pub platform_admin: bool,
 }
 
 impl Caller {
@@ -95,6 +106,7 @@ impl Caller {
             principal,
             grant: Grant::Membership,
             groups: Vec::new(),
+            platform_admin: false,
         }
     }
 
@@ -105,6 +117,20 @@ impl Caller {
             groups,
             ..Self::member(principal)
         }
+    }
+
+    /// Refuse anyone without the platform role (design §5.4, scenario T30).
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotPlatformAdmin`] — a `403`. Not a `404`: the console is not
+    /// a secret, and hiding its existence from an authenticated user buys nothing
+    /// while making "why does this button do nothing" unanswerable.
+    pub const fn ensure_platform_admin(&self) -> Result<(), DomainError> {
+        if self.platform_admin {
+            return Ok(());
+        }
+        Err(DomainError::NotPlatformAdmin)
     }
 }
 
@@ -295,6 +321,7 @@ mod tests {
                 channels: vec![channel_id("ci-infra")],
             },
             groups: Vec::new(),
+            platform_admin: false,
         };
 
         assert!(
@@ -335,6 +362,7 @@ mod tests {
                 channels: vec![channel_id("ci-infra")],
             },
             groups: Vec::new(),
+            platform_admin: false,
         };
         assert!(
             authorizer
@@ -360,6 +388,7 @@ mod tests {
                 channels: vec![channel_id("ci-infra")],
             },
             groups: Vec::new(),
+            platform_admin: false,
         };
         assert!(
             authorizer

@@ -8,7 +8,7 @@
  * to be loaded.
  */
 import { Hash, Moon, Radio, Sun, WifiOff } from "lucide-vue-next";
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 
 import type { Priority, State, Status } from "@/api/generated/types.gen";
 import { useSession } from "@/auth/session";
@@ -19,13 +19,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import { lookOf, priorityLabel, stateLabel } from "@/lib/notification";
 import { useChannels } from "@/stores/channels";
+import { useConsole } from "@/stores/console";
 import { emptyFilters, useInbox } from "@/stores/inbox";
 import { useUi } from "@/stores/ui";
 
 const channels = useChannels();
 const inbox = useInbox();
 const session = useSession();
+const platform = useConsole();
 const ui = useUi();
+
+// One probe per session, at the first render that needs the answer (§10.4bis).
+onMounted(() => {
+  void platform.probe();
+});
 
 const STATES: State[] = ["open", "working", "closed"];
 const STATUSES: Status[] = [
@@ -244,6 +251,19 @@ const connection = computed(() => {
           class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
         >
           Administration
+        </RouterLink>
+        <!--
+          Shown only where the server says so (§10.4bis). The answer comes from one
+          probe rather than from a flag on the session: the role is derived per
+          request from the token's groups (§14.2), so the API is the only thing that
+          can answer, and a copy kept here could drift from it.
+        -->
+        <RouterLink
+          v-if="platform.allowed"
+          to="/console"
+          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+        >
+          Plateforme
         </RouterLink>
         <RouterLink
           to="/"

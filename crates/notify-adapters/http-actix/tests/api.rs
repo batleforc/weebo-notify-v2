@@ -16,12 +16,13 @@ use std::sync::Arc;
 
 use actix_web::{App, http::StatusCode, test, web};
 use notify_app::{
-    Authenticate, Authorizer, CreateApiKey, CreateChannel, CreateServiceAccount,
-    DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
-    GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
-    ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
-    ReadAvatar, ReadDnd, ReadProfile, ReadReceipts, RecordInteraction, ResolveStreamStart,
-    RevokeApiKey, RevokeDevice, SearchNotifications, SetAvatar, SetDnd, SilenceNotification,
+    Authenticate, Authorizer, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel,
+    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
+    Fanout, GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
+    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt,
+    PresignAttachment, PublishNotification, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts,
+    ReadReconciliation, ReconciliationLog, RecordInteraction, ResolveStreamStart, RevokeApiKey,
+    RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification,
     SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_avatars::ImageAvatarProcessor;
@@ -143,6 +144,21 @@ impl Harness {
                 Arc::new(store.clone()),
                 get,
             ),
+            // No `[federation]` in the harness: the exchange answers 501, which is
+            // what a deployment that does not federate is supposed to do.
+            exchange: None,
+            audit: BrowseAudit::new(Arc::new(store.clone())),
+            inventory: ChannelInventory::new(Arc::new(store.clone())),
+            self_join: SelfJoin::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
+            trust_policies: ListTrustPolicies::new(notify_domain::TrustPolicies::default()),
+            // Never reconciled in the harness, which is a state the console has to
+            // render: `null` and not zeroes (§10.4bis).
+            reconciliation: ReadReconciliation::new(ReconciliationLog::new()),
+            presign: PresignAttachment::new(Arc::new(attachments.clone()), authorizer.clone()),
             sync: SyncBacklog::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -1132,6 +1148,13 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
         "/api/v1/ws",
         "/api/v1/receipts",
         "/api/v1/notifications/{id}/receipts",
+        "/api/v1/auth/token/exchange",
+        "/api/v1/admin/audit",
+        "/api/v1/admin/channels",
+        "/api/v1/admin/channels/{channel}/join",
+        "/api/v1/admin/trust-policies",
+        "/api/v1/admin/reconciliation",
+        "/api/v1/attachments/presign",
         "/api/v1/devices",
         "/api/v1/devices/{id}",
         "/api/v1/apikeys",

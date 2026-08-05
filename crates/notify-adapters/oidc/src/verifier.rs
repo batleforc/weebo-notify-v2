@@ -7,11 +7,12 @@ use jsonwebtoken::jwk::{
     AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, PublicKeyUse,
 };
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use notify_domain::FederatedClaims;
 use notify_ports::{Clock, PortError, PortResult, TokenRejection, TokenVerifier, VerifiedClaims};
 use time::OffsetDateTime;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::claims::RawClaims;
+use crate::claims::{RawClaims, RawFederatedClaims};
 use crate::config::OidcConfig;
 use crate::jwks::{DEPENDENCY, DiscoveryError, HttpJwksSource, JwksSource};
 
@@ -101,11 +102,15 @@ impl OidcVerifier {
         tracing::debug!(keys = cache.keys.len(), "refreshed the issuer key set");
         Ok(())
     }
-}
 
-#[async_trait::async_trait]
-impl TokenVerifier for OidcVerifier {
-    async fn verify(&self, token: &str) -> PortResult<Result<VerifiedClaims, TokenRejection>> {
+    /// The key this token names, refreshing once if the `kid` is unknown.
+    ///
+    /// Shared by the two verifications this type performs — a human's access token
+    /// and a CI job's ID token (design §5.3). They differ in what they do with the
+    /// payload and not at all in how a key is found, and every rule that matters is
+    /// here: no algorithm from the header, one refresh per interval, and an unknown
+    /// `kid` after that refresh is a refusal rather than a retry.
+    async fn key_for(&self, token: &str) -> PortResult<Result<VerifyingKey, TokenRejection>> {
         let Ok(header) = decode_header(token) else {
             return Ok(Err(TokenRejection::Malformed));
         };
@@ -116,17 +121,72 @@ impl TokenVerifier for OidcVerifier {
             return Ok(Err(TokenRejection::Malformed));
         };
 
-        let key = if let Some(known) = self.key(&kid).await {
-            known
-        } else {
-            // An unknown kid is the normal shape of a key rotation, and also the
-            // normal shape of a forged token. One refresh per interval serves the
-            // first without letting the second reach the issuer.
-            self.refresh_if_due(self.clock.now()).await?;
-            let Some(rotated) = self.key(&kid).await else {
-                return Ok(Err(TokenRejection::BadSignature));
-            };
-            rotated
+        if let Some(known) = self.key(&kid).await {
+            return Ok(Ok(known));
+        }
+
+        // An unknown kid is the normal shape of a key rotation, and also the normal
+        // shape of a forged token. One refresh per interval serves the first without
+        // letting the second reach the issuer.
+        self.refresh_if_due(self.clock.now()).await?;
+        Ok(self.key(&kid).await.ok_or(TokenRejection::BadSignature))
+    }
+
+    /// Verify a CI job's ID token (design §5.3).
+    ///
+    /// Same keys and same hardening as [`TokenVerifier::verify`]; three differences,
+    /// all of them because a federated token is *reported* rather than *accepted*:
+    ///
+    /// * **the audience is not validated here.** It is carried out to
+    ///   [`notify_domain::TrustPolicies::decide`], which refuses a token minted for
+    ///   somebody else. One place decides, and it is the place with the tests
+    ///   (M4.1);
+    /// * **`jti` is extracted**, because the replay guard needs it and dropping it
+    ///   would make the anti-replay rule unimplementable (scenario T11);
+    /// * **no groups.** A forge has no notion of this instance's identity provider,
+    ///   and a claim called `groups` in a CI token would be somebody else's word for
+    ///   somebody else's directory.
+    pub async fn verify_federated(
+        &self,
+        token: &str,
+    ) -> PortResult<Result<FederatedClaims, TokenRejection>> {
+        let key = match self.key_for(token).await? {
+            Ok(key) => key,
+            Err(rejection) => return Ok(Err(rejection)),
+        };
+        let Some(first) = key.algorithms.first().copied() else {
+            return Ok(Err(TokenRejection::BadSignature));
+        };
+
+        let mut validation = Validation::new(first);
+        validation.algorithms.clone_from(&key.algorithms);
+        validation.set_issuer(&[self.config.issuer.as_str().trim_end_matches('/')]);
+        validation.validate_aud = false;
+        validation.validate_exp = false;
+        validation.required_spec_claims =
+            HashSet::from(["exp".to_owned(), "iss".to_owned(), "aud".to_owned()]);
+
+        let claims = match decode::<RawFederatedClaims>(token, &key.decoding, &validation) {
+            Ok(data) => match data.claims.into_federated() {
+                Ok(claims) => claims,
+                Err(rejection) => return Ok(Err(rejection)),
+            },
+            Err(error) => return Ok(Err(rejection_for(error.kind()))),
+        };
+
+        if claims.expires_at + self.config.leeway < self.clock.now() {
+            return Ok(Err(TokenRejection::Expired));
+        }
+        Ok(Ok(claims))
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenVerifier for OidcVerifier {
+    async fn verify(&self, token: &str) -> PortResult<Result<VerifiedClaims, TokenRejection>> {
+        let key = match self.key_for(token).await? {
+            Ok(key) => key,
+            Err(rejection) => return Ok(Err(rejection)),
         };
 
         let Some(first) = key.algorithms.first().copied() else {

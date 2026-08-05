@@ -21,6 +21,7 @@ use crate::error::PortResult;
 use crate::pagination::{Page, PageRequest};
 
 /// One administrative act.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {
     /// Who did it.

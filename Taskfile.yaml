@@ -9,6 +9,7 @@ includes:
   audit: ./.tasks/audit.yaml
   adr: ./.tasks/adr.yaml
   release: ./.tasks/release.yaml
+  tauri: ./.tasks/tauri.yaml
 
 tasks:
   init:

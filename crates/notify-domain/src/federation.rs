@@ -223,6 +223,17 @@ impl TrustPolicies {
         Self { policies }
     }
 
+    /// What was configured, for the platform console to display (design §10.4bis).
+    ///
+    /// Read-only by construction, and that is the whole story a console can tell
+    /// about these: they come from GitOps (§11) and no API path edits them. A screen
+    /// showing them is answering "what did we deploy", which is exactly the question
+    /// somebody has after a pipeline is refused.
+    #[must_use]
+    pub fn configured(&self) -> &[TrustPolicy] {
+        &self.policies
+    }
+
     /// Decide what an authenticated set of claims may do.
     ///
     /// # Errors

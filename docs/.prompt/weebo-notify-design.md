@@ -491,8 +491,11 @@ GET    /api/v1/apikeys                        # métadonnées (préfixe, scopes,
 POST   /api/v1/apikeys                        # création — secret retourné une seule fois
 DELETE /api/v1/apikeys/{id}                   # révocation immédiate
 POST   /api/v1/auth/token/exchange            # fédération JWT CI
-POST   /api/v1/attachments/presign            # upload direct au bucket (TTL court, taille/type imposés §6.1)
-GET    /api/v1/admin/audit                    # audit log browsable (filtres principal/action/période) — rôle §5.4 uniquement
+POST   /api/v1/attachments/presign             # upload direct au bucket : le corps nomme le canal (autorisation `publish`), TTL court, taille/type imposés §6.1
+GET    /api/v1/admin/audit                   # audit log browsable (filtres action/canal/période) — rôle §5.4 uniquement
+GET    /api/v1/admin/channels                # inventaire : fiches de métadonnées, jamais de contenu (§5.4, §10.4bis) — rôle §5.4
+POST   /api/v1/admin/channels/{id}/join      # self-join audité : le seul chemin du rôle vers le contenu (§5.4, T30)
+GET    /api/v1/admin/trust-policies          # policies configurées, lecture seule (§5.3, §11) — rôle §5.4
 GET    /api/v1/admin/dlq                      # sinks en souffrance par canal (§7.1bis) — rôle §5.4
 POST   /api/v1/admin/dlq/{id}/requeue         # requeue manuel d'une livraison sink (§7.1bis) — rôle §5.4
 GET    /api/v1/admin/reconciliation           # état GitOps : drift corrigé, dernier SIGHUP, managed vs dynamic (§11) — rôle §5.4
@@ -911,6 +914,10 @@ contact = "mailto:ops@weebo.poc"      # RFC 8292 `sub` — un relais refuse une 
 key_file = "/secrets/apns.p8"
 team_id  = "..."
 
+[federation]                          # fédération CI (§5.3) — absent = pas d'échange, /auth/token/exchange rend 501
+signing_key_file = "/secrets/federation.pem"   # Ed25519 PKCS#8 ; jamais généré au boot (un replica signerait ce qu'un autre ne vérifie pas)
+# audience = "weebo-notify"           # défaut ; à changer si deux instances partagent un ingress
+
 [retention]
 default_ttl = "7d"                    # défaut global, surchargeable par canal puis par message
 max_ttl     = "90d"                   # clamp dur, applicable par canal
@@ -1231,6 +1238,12 @@ Notes Che :
 - Mailpit n'est pas embarqué dans le devfile (rarement utile en Che) ; le sink email se teste côté compose (profile `sinks`).
 - Les exports `WNK_OIDC_MOCK_ISSUER` / `WNK_OIDC__ISSUER` (§12.1) se font dans le terminal du workspace, sur la route que Che propose pour `:9110` — plus besoin de faire fusionner un env par le devfile.
 
+**Ce que l'image `tools` ne porte pas encore, et qui bloque M5.** Tauri v2 se lie sous Linux à une pile GTK/WebKit — `webkit2gtk-4.1`, `javascriptcoregtk-4.1`, `libsoup-3.0`, `gtk+-3.0`, plus `libayatana-appindicator3-dev` pour le tray (§10bis.3ter), `librsvg2-dev` et `patchelf` pour l'empaquetage. Aucune des quatre premières n'est présente dans `che-min-mise`, et **rien dans ce dépôt ne peut y remédier** : ce sont des bibliothèques système, `mise` n'en porte pas (il livre des outils, pas du C), et les installer demande root — ce qu'un workspace Che ne donne pas, à dessein.
+
+Le correctif appartient donc à l'**image**, c'est-à-dire à `batleforc/WeeboDevImage`, ce qui est aussi la règle de §3 : une amélioration générique remonte dans le template plutôt que d'être contournée ici. Une fois les paquets dans l'image, `devfile.yaml` n'a rien à changer — le container `tools` hérite du parent, donc un tag reconstruit est tout le correctif.
+
+En attendant, la question se pose à la machine plutôt qu'au document : `task tauri:doctor` liste ce qui manque et où le réparer. C'est délibérément une commande et pas un paragraphe — la réponse diffère par machine et change au premier rebuild d'image, donc une phrase écrite ici serait fausse le jour où quelqu'un corrige son environnement, et un contrôle qui s'exécute ne l'est jamais.
+
 ### 12.5 Identités de test — mock OIDC & blueprint Authentik
 
 Règle : le mock et Authentik décrivent les **mêmes identités** (users, groupes, client) — tests E2E et manipulations manuelles sont indifférents au provider, et la matrice `oidc-compat` (§3.2, T29) rejoue la même suite sur les deux.
@@ -1347,8 +1360,9 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 | **M1 — Cœur + web v0** | ✅ commité (`9cd9414`, `aef4844`) — détail ci-dessous |
 | **M2 — Sync, offline & TUI** | ✅ commité (`e6a6b2e`, `731e795`) — les huit incréments, les quatre manques, puis D1 et D3 |
 | **M3 — Push web & PWA** | ✅ **écrit** — M3.1 à M3.4 commités (`731e795`), M3.5 commité (`3098ebc`), M3.6 et M3.7 écrits — détail ci-dessous |
-| **M4 — Fédération CI & plateforme** | 🟡 en cours — découpage et M4.1 ci-dessous |
-| M5 → M7 | ⬜ non commencés |
+| **M4 — Fédération CI & plateforme** | 🟡 M4.1 à M4.6 écrits ; M4.7 écrit mais jamais joué contre une vraie forge — détail ci-dessous |
+| **M5 — Tauri desktop** | ⛔ bloqué sur l'image de dev : la pile GTK/WebKit que Tauri lie sous Linux n'est pas dans `che-min-mise` (§12.4, `task tauri:doctor`) |
+| M6 → M7 | ⬜ non commencés |
 
 **Découpage de M1** :
 
@@ -1686,12 +1700,12 @@ C'est le mode d'échec de D8 par le troisième côté : là une vérification pa
 | # | Livrable | État |
 |---|---|---|
 | M4.1 | Fédération dans le domaine (§5.3) — `TrustPolicy`, glob **ancré**, `aud` exigée, anti-replay `jti` (T11) | ✅ écrit |
-| M4.2 | `POST /auth/token/exchange` — jeton Ed25519, TTL ≤ 15 min, quota 10/min par (issuer, subject) (§8.2) | 🟡 use case et chemin d'authentification écrits ; adapter de signature, `ReplayGuard` PG, route et clé restent |
-| M4.3 | Réconciliation des policies : `[[trust_policy]]` globales et `[[channels.managed.publishers]]` scopées au canal, ces dernières prioritaires (§11) | ⬜ |
-| M4.4 | Rôle `platform-admin` (§5.4) — GitOps only, frontière métadonnées/contenu, self-join audité (T30) | ⬜ |
-| M4.5 | Endpoints `/api/v1/admin/*` — audit log, réconciliation, inventaire (§8) | ⬜ |
-| M4.6 | Web : console plateforme v1 (§10.4bis) et UI trust policies | ⬜ |
-| M4.7 | Dogfooding : la CI publie ses statuts vers weebo-notify (§3.2, §3.2bis) | ⬜ |
+| M4.2 | `POST /auth/token/exchange` — jeton Ed25519, TTL ≤ 15 min, quota 10/min par (issuer, subject) (§8.2) | ✅ écrit — route, adapter, `ReplayGuard` PG, clé et env de dev compris |
+| M4.3 | Réconciliation des policies : `[[trust_policy]]` globales et `[[channels.managed.publishers]]` scopées au canal, ces dernières prioritaires (§11) | ✅ écrit — arrivé avec M4.2, qui ne pouvait pas s'échanger sans elles |
+| M4.4 | Rôle `platform-admin` (§5.4) — GitOps only, frontière métadonnées/contenu, self-join audité (T30) | ✅ écrit |
+| M4.5 | Endpoints `/api/v1/admin/*` — audit log, inventaire, self-join, trust policies, réconciliation (§8) | 🟡 écrit sans la DLQ — aucun sink à y mettre (§14.1) |
+| M4.6 | Web : console plateforme v1 (§10.4bis) et UI trust policies | ✅ écrit |
+| M4.7 | Dogfooding : la CI publie ses statuts vers weebo-notify (§3.2, §3.2bis) | 🟡 `notify token exchange` et le workflow écrits ; le workflow n'a jamais tourné contre une vraie Forgejo |
 
 L'ordre n'est pas libre : M4.2 consomme le domaine de M4.1, M4.3 lui donne ses policies, M4.5 consomme le rôle de M4.4, et M4.7 ne peut pas exister avant que M4.2 réponde. Le point de départ est meilleur qu'à M3 : `[[trust_policy]]`, `[[channels.managed.publishers]]` et `[admin] oidc_groups` sont **déjà lus** par la configuration depuis M1.8 et listés par `Config::unhonoured` — le travail est de les honorer, pas de les découvrir.
 
@@ -1728,12 +1742,70 @@ Cela a demandé `ChannelRepository::all_ids`, et sa documentation dit ce qu'il n
 
 Le grant est **lu sur le jeton**, jamais re-dérivé, pour la même raison que la résolution au mint.
 
-**Ce que M4.2 n'a pas encore**, nommé ici plutôt que passé sous silence — il n'y a pas de route, donc rien de tout ceci n'est joignable :
+**L'allowlist d'issuers est une frontière de sécurité, pas une commodité.** Choisir quel JWKS aller chercher oblige à lire `iss` dans un jeton **avant** d'en vérifier la signature — c'est inévitable, on ne vérifie pas une signature sans savoir de quelle clé il s'agit. Ce qui rend ça sûr est que l'ensemble des issuers est **figé au démarrage depuis les trust policies** : un issuer que personne n'a écrit dans la config est refusé avant tout appel réseau. Sans ça, `POST /auth/token/exchange` — accessible **sans credential**, par construction — serait une primitive de SSRF pointée sur tout ce que le cluster peut joindre. Un test le verrouille.
 
-- l'adapter de signature Ed25519 et la vérification JWKS **par issuer** : `notify-oidc` cache le JWKS d'un seul issuer, celui de la configuration ; une instance fédère potentiellement plusieurs forges ;
-- l'adapter `ReplayGuard` sur Postgres, et sa migration ;
-- `POST /api/v1/auth/token/exchange` et sa place dans le document OpenAPI ;
-- **la clé de signature**, qui est une addition à §11 : §5.3 exige de l'Ed25519 et §11 n'a aucun bloc pour dire où vit la clé privée. Elle ne peut pas être générée au démarrage — un replica signerait ce qu'un autre ne saurait pas vérifier —, donc c'est un `[federation] signing_key_file`, sur le modèle du `vapid_key_file` de M3.5, avec le même outillage de dev (`task dev:setup`, `xtask`) et la même exigence de custody que §15 pose déjà pour minisign et cosign.
+Le refus est d'ailleurs le même que pour une mauvaise signature : distinguer « on ne fait pas confiance à cette forge » de « ta signature est fausse » dirait à qui sonde quels issuers sont configurés.
+
+**Ce que l'adapter reprend, et ce qu'il n'a pas réécrit.** Un jeton de forge *est* un jeton OIDC, et §4 met déjà « Authentik **et issuers CI fédérés** » dans le crate `oidc`. Il y a donc un `OidcVerifier` par forge, ce qui hérite gratuitement de tout ce que §5.1 refuse de faire : croire l'`alg` de l'en-tête, refetcher un key set à volonté, suivre un document de découverte qui nomme un autre issuer. La seule chose ajoutée est `verify_federated`, qui diffère en trois points, tous parce qu'un jeton fédéré est **rapporté** et non **accepté** : l'`aud` n'est pas validée là (le domaine refuse), le `jti` est extrait (sans quoi l'anti-replay serait inimplémentable), et les groupes sont ignorés (une forge n'a aucune notion de l'annuaire de cette instance).
+
+**Le `ReplayGuard` Postgres est un `INSERT … ON CONFLICT DO NOTHING`, et c'est tout le mécanisme.** « Lire si l'id est connu, puis l'écrire » fait deux instructions, donc une course : deux jobs présentant le même jeton volé au même instant liraient tous les deux « jamais vu ». Une clé primaire ne se course pas.
+
+**La clé de signature est une addition à §11**, faite ci-dessus : §5.3 exigeait de l'Ed25519 et §11 n'avait aucun bloc pour dire où vit la clé privée. Elle ne peut pas être générée au démarrage — un replica signerait ce qu'un autre ne saurait pas vérifier, et la panne serait intermittente, dépendante du load balancer, et ressemblerait à un pipeline instable. D'où `[federation] signing_key_file`, sur le modèle exact du `vapid_key_file` de M3.5 : minté par `task dev:setup` via `xtask`, gitignoré, refus de démarrer si le bloc est là et la clé illisible. La moitié publique est **dérivée de la privée** plutôt que configurée à côté : deux fichiers qui doivent correspondre sont deux fichiers qui peuvent cesser de correspondre.
+
+**Vérifié en le lançant**, contre un vrai Postgres et le provider de dev — qui tient lieu de forge, parce que ce que l'échange consomme est un ID token avec `aud`, `exp` et `jti`, et que le mock en émet exactement comme une forge. Le chemin complet : login PKCE → `POST /auth/token/exchange` → jeton EdDSA de 15 minutes nommant `ci-infra` → publish, avec un `author` `ci_job` portant l'issuer et le subject. Et les trois refus : **rejouer le même ID token → 401**, publier dans un canal hors policy → **403**, lire l'inbox avec un jeton `publish` seul → une page **vide** (0 entrée, là où alice en voit 8) — c'est-à-dire la clause T12 tenue pour un jeton fédéré, et pas un refus qui aurait pu cacher une lecture.
+
+Une trouvaille mineure du même passage : `[[channels.managed.publishers]]` continuait d'être annoncé « non honoré » au démarrage alors qu'il l'était. Un avertissement qui ment sur ce que le build fait est exactement ce que `Config::unhonoured` existe pour empêcher.
+
+**M4.3 est arrivé avec M4.2**, parce qu'un échange sans policies n'échange rien. La seule décision qui valait d'être prise est celle que §11 laissait implicite : un bloc `publishers` devient une policy **sur le canal sous lequel il est écrit**, et rien d'autre. Un `publishers` capable de nommer d'autres canaux serait une policy globale déguisée en locale, et la précédence de §11 n'aurait plus de sens.
+
+**M4.4 en détail.** Le rôle plateforme, et la frontière qu'il ne franchit pas.
+
+**Il est dérivé, jamais stocké** — exactement comme l'accès par groupe de §14.2 et pour la même raison : c'est `[admin] oidc_groups` intersecté avec ce que ce jeton-ci dit. Quelqu'un retiré du groupe perd le rôle à son prochain jeton, sans rien à réconcilier et sans ligne à oublier. Et il vaut `false` pour une clé d'API, un service account et un job CI, pas par un contrôle que chaque handler doit penser à écrire mais parce que les trois constructeurs de `Caller` l'écrivent : §5.4 le réserve aux users OIDC, donc la clé personnelle d'un admin administre ses canaux et jamais l'instance.
+
+**Une liste vide n'accorde rien**, ce qui fait qu'un opérateur qui n'a pas dit qui administre la plateforme n'a pas dit « tout le monde ». Même propriété que T29 côté canaux.
+
+**La frontière est le sujet, et « les admins voient tout » en est l'inverse.** §5.4 la pose en une phrase — métadonnées et opérations, jamais le contenu — et ce n'est pas de la prudence : c'est la seule ligne qui garde vraie la règle de §2.4. Les profils ne sont visibles « qu'à travers un canal commun », donc un rôle capable de lire n'importe quel canal rendrait cette phrase fausse pour tout le monde à la fois, en silence, aussi longtemps que quelqu'un porte le rôle. L'inventaire rend donc des **fiches** — id, origine, compteurs — et le type est la garantie : `ChannelCard` n'a aucun champ où une notification pourrait tenir, donc aucune édition future ne l'élargit en inbox par accident. Les membres y sont un **nombre** et pas une liste, pour ne pas mettre l'identité de quelqu'un sur l'écran d'un canal qu'il ne partage pas avec le lecteur.
+
+**Le self-join est l'échappatoire qui rend la frontière tenable**, et sa valeur est d'être écrite. Un admin en incident a parfois besoin de lire le canal ; en faire un **acte délibéré et enregistré** est toute la différence entre un rôle qui lit tout sans bruit et un rôle qui lit ce qu'il a demandé, noir sur blanc. Il n'accorde que `subscribe` : lire un incident n'est pas une licence pour parler au nom d'une équipe. Sur un canal managé la réconciliation reprendra le membership (§11), et c'est le résultat honnête — la config possède la liste, donc un accès durable s'écrit dans la config, pendant que l'entrée d'audit garde trace du regard.
+
+Chaque use case revérifie le rôle, non parce que la couche HTTP l'oublierait mais parce qu'un contrôle qui n'existe que dans une table de routes est un contrôle qu'une seconde table de routes peut ignorer.
+
+**Vérifié en le lançant** (alice dans `platform-admins`, bob dans `dev-team`) : inventaire à 200 pour alice et **403 `platform.role_required`** pour bob ; un canal de bob qu'alice ne rejoint pas apparaît dans son inventaire comme fiche et lui rend **zéro notification** là où bob en voit une ; self-join refusé à bob, **204** pour alice, après quoi elle lit la notification — et **403 quand elle essaie d'y publier**. L'entrée `platform.channel.self_join` est dans l'audit log.
+
+**M4.6 en détail.** Trois panneaux, chacun répondant à une question avec laquelle quelqu'un arrive vraiment : *cette instance est-elle configurée comme on le croit* (canaux), *pourquoi ce pipeline a-t-il été refusé* (trust policies), *que s'est-il passé et qui l'a fait* (audit). Pas de séries temporelles : §13 les laisse à Grafana, et les dupliquer donnerait un écran auquel personne ne se fie parce qu'il contredit celui qui a les données.
+
+**Comment l'app apprend qu'elle a le droit d'afficher ça.** Par **une sonde**, et délibérément pas par un drapeau posé sur la session. Le serveur dérive le rôle par requête (§14.2), donc il est la seule chose capable de répondre ; demander une fois à l'ouverture est à la fois le moins cher et le plus honnête — ce que la navigation montre est alors exactement ce que l'API autorise, et non une copie qui peut dériver. Le `403` que reçoit presque tout le monde **est la réponse** et non une erreur à afficher, ce qu'un test verrouille dans les deux sens : un 403 se lit « pas admin » sans message, un 503 ne se lit **pas** comme un refus de rôle.
+
+Un troisième état existe et compte : `null`, « on n'a pas encore demandé ». Une entrée de menu qui clignote entre absente et présente est pire qu'une qui attend.
+
+**Les trust policies sont en lecture seule, et c'est tout ce qu'un écran peut honnêtement en dire** : §11 les possède, donc un bouton d'édition proposerait ce que la prochaine réconciliation reprendrait. Ce que la table montre en revanche est ce qui manquait pour diagnostiquer un refus : le badge `canal` vs `globale`, c'est-à-dire la précédence de §11 — la première chose à regarder quand une policy « devrait » matcher et ne matche pas.
+
+Une trouvaille en câblant le client : `GET /admin/audit` acceptait quatre filtres que **le document OpenAPI ne décrivait pas**, parce qu'ils étaient déclarés sur le handler (`web::Query`) et pas dans `#[utoipa::path]`. Le client généré rendait donc `query?: never` : un filtre que le serveur accepte et que le document tait est un filtre qu'aucun client ne peut envoyer. C'est ADR-0009 pris à revers — les clients viennent du contrat, donc le contrat doit décrire ce qui est servi.
+
+**`GET /admin/reconciliation` a demandé une décision de forme.** L'état d'une passe n'est ni du stockage ni un système externe : c'est ce que *ce processus* a fait il y a une minute, dans sa propre mémoire. Un port aurait voulu dire un adapter, un double et un trait pour une valeur qui ne quitte jamais le replica — d'où un simple emplacement partagé, écrit par la boucle de fond et lu par la console.
+
+Écrit par la **boucle** et non par le réconciliateur, et c'est la moitié qui compte : une passe qui échoue ne doit pas remplacer la dernière qui a marché par rien du tout, et seul l'appelant sait laquelle des deux vient de se produire.
+
+**Et c'est par replica, ce que l'écran dit.** Contrairement à la purge, §11 ne réserve pas la réconciliation au leader : *tous* les replicas l'appliquent. Derrière un load balancer, deux lectures peuvent donc légitimement différer d'un tick. L'annoncer comme un état d'instance aurait été le mensonge confortable ; le champ est documenté comme la réponse d'un replica, et la console le répète.
+
+`null` quand aucune passe n'a fini, plutôt que des zéros : la passe de démarrage tourne avant l'ouverture du socket, donc un appelant ne devrait jamais le voir — ce qui est précisément pourquoi c'est modélisé. « 0 canaux, 0 comptes » se lit comme une instance saine qui a appliqué sa configuration, c'est-à-dire l'inverse de ce que cet état veut dire.
+
+Le seul chiffre **actionnable et silencieux autrement** y est aussi : les liaisons par `email` ou `oidc_sub` en attente d'une première connexion (§14.1, M1.8). Sans un endroit où les voir, le symptôme est « alice dit qu'elle ne voit pas le canal » et rien pour le relier à sa cause.
+
+**Ce que M4.5 ne sert pas**, et c'est délibéré : la **DLQ des sinks**. §10.4bis en fait un des quatre objets de la console et §8 lui donne deux routes, mais aucun sink n'existe (§14.1) — servir un endpoint qui répondrait « rien n'est en souffrance » depuis une file que personne ne remplit est un voyant vert câblé sur rien, ce qui est pire que pas de voyant. `GET /admin/reconciliation` manque aussi et pour une raison plus banale : l'état du réconciliateur n'est pas encore exposé hors de la boucle qui le calcule.
+
+**M4.7 en détail, et sa limite d'abord.** Le workflow existe et **n'a jamais tourné contre une vraie Forgejo** — il n'y en a pas dans cet environnement. C'est écrit ici, en tête, parce que le reste du document passe son temps à dénoncer les tics verts qui ne prouvent rien (D7, D8, D10) et qu'un fichier de CI commité sans avoir jamais tourné en est un candidat naturel.
+
+Ce qui est vérifié est la moitié qui compte : **les deux commandes que le workflow lance**. `notify token exchange` et `notify update` ont été exécutées contre un vrai serveur et un vrai provider, avec un jeton frappé, un `author` `ci_job` et une notification qui atterrit. Ce qui reste non observé tient en deux lignes que seule une forge peut répondre : que `id-token: write` rende un jeton, et que son `aud` nomme weebo-notify. **Les deux échouent bruyamment** si elles sont fausses — pas de jeton donne une variable vide et une étape en échec, et un mauvais `aud` est précisément ce que §5.3 refuse en 401. La première exécution sur une vraie forge est le test.
+
+**La démonstration est l'absence de secret.** Il n'y a pas de clé d'API dans le dépôt, pas dans le coffre de la forge, et rien à faire tourner : le runner détient déjà un jeton disant quel dépôt et quelle ref il est, et l'échange en fait quinze minutes de droit de publier sur un canal. Côté instance réceptrice, le travail d'un opérateur est un bloc de TOML.
+
+Deux formes valent d'être notées :
+
+- **`update` et pas `publish`**, sur l'id du run : le même appel crée au premier passage et révise au re-run, donc un pipeline relancé amende sa propre notification au lieu d'en ouvrir une seconde (§2.2). C'est le cas d'usage que §2.2 décrit en premier, et il tombe juste sans que le workflow ait à savoir dans lequel des deux cas il est ;
+- **le job entier est sauté quand l'instance n'est pas configurée** (`vars.WNK_URL`), parce que c'est l'état normal d'un fork et qu'échouer le pipeline de quelqu'un d'autre pour une notification qu'il n'a pas demandée serait le mauvais défaut.
+
+**Un manque de §9.1 nommé, puis soldé** : le croquis y écrit `notify publish --action "view:Runbook:https://…"`, et le drapeau n'existait pas. Le workflow est parti sans bouton « voir le run » plutôt qu'avec un drapeau imaginaire, puis D11 l'a ajouté et le workflow l'a récupéré. `--image` a suivi, et a fait tomber D14 : au-dessus de 48 KiB il n'y a aucun chemin, pour personne.
 
 ### 14.2 Accès par groupe OIDC — le modèle dérivé
 
@@ -1767,8 +1839,8 @@ Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est u
 | `AttachmentStore` | ✅ | ✅ `S3Attachments` (M2.2) | Conformité passée contre un vrai RustFS. Un déploiement sans `[attachments]` reçoit un double qui **refuse** (`NotConfigured`) au lieu de réussir dans le vide. |
 | `AvatarProcessor` | — | ✅ `notify-avatars` (M2.2) | Seule surface de décodage média du serveur (§15) : taille, format d'après les octets, dimensions **avant** décodage, ré-encodage qui strippe les métadonnées. |
 | `SinkDispatcher` / `SinkQueue` | ✅ | ⬜ | Hors périmètre M1 (§7.1bis). |
-| `FederationVerifier` | ✅ `StaticFederationVerifier` (M4.1) | ⬜ | M4.2. Le port rend désormais des `FederatedClaims` — il rendait des `VerifiedClaims`, qui ne portent ni `aud` ni `jti`, donc les deux contrôles que sa doc promettait étaient **irreprésentables** (M4.1). |
-| `ReplayGuard` | ✅ `InMemoryReplayGuard` (M4.1) | ⬜ | M4.2. Port à part et non `IdempotencyStore` : celui-ci **rejoue** la réponse stockée, ce qui rendrait une seconde copie du jeton à qui rejoue un ID token volé. Un `jti` déjà vu se refuse. |
+| `FederationVerifier` | ✅ `StaticFederationVerifier` (M4.1) | ✅ `FederationTokens` (M4.2) | Un `OidcVerifier` par forge, donc tout le durcissement JWKS de §5.1 hérité ; l'allowlist d'issuers vient des trust policies et **est** la protection anti-SSRF d'un endpoint sans credential. Le port rend des `FederatedClaims` — il rendait des `VerifiedClaims`, qui ne portent ni `aud` ni `jti`, donc les deux contrôles que sa doc promettait étaient **irreprésentables** (M4.1). |
+| `ReplayGuard` | ✅ `InMemoryReplayGuard` (M4.1) | ✅ `PgStore` (M4.2) | Un `INSERT … ON CONFLICT DO NOTHING` : « lire puis écrire » est une course que deux jobs gagnent tous les deux. Port à part et non `IdempotencyStore`, qui **rejoue** la réponse stockée — ce qui rendrait une seconde copie du jeton à qui rejoue un ID token volé. |
 | `TokenVerifier` | ✅ | ✅ `notify-oidc` | |
 | `SecretHasher` | ✅ | ✅ `notify-oidc` (Argon2id) | |
 | `KeyGenerator` | ✅ | ✅ `UlidKeyGenerator` (`notify-app`) | Dérive préfixe et secret de ULID — 160 bits d'aléa CSPRNG. |
@@ -1793,8 +1865,12 @@ Tout ce qui suit est connu, écrit et chiffré en effort. Une dette sans solutio
 | D8 | Une vérification qui passe sans rien exécuter | — | S | ✅ règle appliquée |
 | D9 | Refresh token en `sessionStorage` (ADR-0016) | lisible par un XSS aussi longtemps qu'il vit | M | ⬜ ouverte — le déplacer dans le worker n'achète rien tant qu'il passe par IndexedDB (M3.6) |
 | D10 | `task test:cover:domain` mesurait autre chose que son gate | — | S | ✅ soldée en fermant M3 |
+| D11 | `--action` et `--image` promis par §9.1, absents de la CLI | — | S | ✅ soldée |
+| D12 | Le workflow de dogfooding n'a jamais tourné contre une vraie forge | deux lignes non observées, toutes deux bruyantes si fausses (M4.7) | S | ⬜ ouverte |
+| D13 | L'image de dev ne porte pas la pile GTK/WebKit | M5 ne peut pas être compilé, encore moins lancé (§12.4) | S | ⬜ ouverte |
+| D14 | `POST /attachments/presign` listé par §8 et servi par aucun build | — | M | ✅ soldée |
 
-Les sept entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
+Les neuf entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
 
 **D1 — `Event` rendu en type inhabité.** progenitor voyait `allOf[Audience(oneOf), EventPayload(oneOf), {cursor, logged_at}]` et produisait `pub enum EventVariant0 {}` : la désérialisation d'une page de sync ne marchait que tant qu'elle était vide. `notify-client-core` contournait avec son propre modèle minimal (documenté dans le module), donc rien n'était cassé — mais la promesse d'ADR-0009, « les clients viennent du contrat », avait un trou.
 
@@ -1845,6 +1921,46 @@ Le retard est `delivered_at - created_at`, au-delà d'un seuil de cinq minutes e
 *Solution, faite* : la tâche **exécute le gate** (`xtask coverage-gate` sur le LCOV du run workspace) plutôt que d'approximer ce qu'il ferait. Le raisonnement vit dans `.tasks/test.yaml`, au-dessus des commandes, pour que le prochain à vouloir la rendre plus rapide voie d'abord pourquoi elle ne l'est pas.
 
 La règle générale, à côté de celle de D8 : **une vérification locale qui nomme un gate doit lancer ce gate.** Une approximation qui se trompe vers le haut cache un échec ; une qui se trompe vers le bas fabrique du travail — et coûte la confiance qu'on accorde au chiffre la fois d'après.
+
+**D11 — deux drapeaux que §9.1 promet et que la CLI n'avait pas.** Le coût s'est vu en écrivant M4.7 : une notification de CI sans bouton « voir le run » est précisément celle qui en voudrait un, et §2.3 fait de `view` la première des cinq actions.
+
+*Solution, faite* : `--action "type:label:argument"` et `--image ./graph.png`. Trois décisions valent d'être relues.
+
+**Le découpage s'arrête à trois morceaux**, ce qui laisse l'argument contenir des `:` — et il en contient toujours, puisque le cas courant est une URL. Ce que cette forme ne sait pas dire est un *label* contenant un `:`, et c'est le bon abandon : une légende de bouton est courte et se renomme, une URL ne se réécrit pas pour éviter son schéma.
+
+**`choice` et `silence` sont refusés plutôt que tordus.** L'un porte une liste d'options, l'autre une portée et une durée ; les aplatir dans un champ séparé par des `:` aurait inventé une syntaxe que ce document n'a pas. Le refus dit où la forme rentre : l'API.
+
+**Aucun `--action` laisse les boutons tranquilles.** §2.3 remplace les actions **intégralement** à chaque révision, donc envoyer une liste vide *effacerait* les boutons d'une notification révisée pour une raison sans rapport — exactement ce qu'un `notify update --status success` fait tout le temps en CI. Le champ part donc absent et pas vide, et un test le verrouille parce que la différence est invisible à la lecture.
+
+Et `--image` a trouvé autre chose, qui est D14.
+
+**D14 — `POST /attachments/presign` n'est servi par aucun build.** §8 le liste, §6.1 en décrit le contrat (TTL court, `content-length-range` et content-type imposés, upload direct au bucket), `AttachmentStore::presign_upload` existe comme port et `S3Attachments` l'implémente depuis M2.2 — **et aucune route ne l'expose**. Découvert en câblant `--image` : au-dessus de 48 KiB, §2.3 dit « passer par un attachment », et il n'y a pas de chemin.
+
+La conséquence n'est pas propre à la CLI : *personne* ne peut publier une image de plus de 48 KiB, quel que soit le client, parce que le seul moyen d'en déposer une n'existe pas. C'est la même famille que le port `PushDispatcher` sans registre de M1 — un port de production complet dont rien n'atteint la porte.
+
+*Solution, faite* : `POST /api/v1/attachments/presign`. Quatre choses valent d'être relues.
+
+**Le corps nomme un canal, et c'est l'autorisation.** Uploader est l'acte d'un publisher, donc la route exige `Scope::Publish` sur le canal visé. L'alternative — « tout principal authentifié » — donnerait à un membre en lecture seule, c'est-à-dire à peu près à tout le monde, de quoi écrire des octets arbitraires dans notre object store : une primitive de remplissage de disque offerte au public le plus large de l'API, en échange d'un champ de moins sur un corps de requête. L'attachment n'est pas *lié* au canal pour autant : le lier voudrait dire décider ce qu'il devient quand le canal est archivé, ce que §7.2bis ne demande pas.
+
+**Tout est vérifié avant de signer**, parce que §6.1 fait de la signature *l'*accès : après elle, le client parle au bucket et plus à nous, et il n'y a pas de second contrôle. Les 25 MiB de §8.2 sont donc refusés avant qu'une URL existe — une URL signée pour un objet trop gros est une URL émise contre notre propre règle, et qu'on ne peut pas reprendre.
+
+**Le type est normalisé puis épinglé.** `IMAGE/PNG; charset=binary` est accepté — refuser un client pour de la ponctuation est un ticket de support, pas une défense — et c'est la forme *normalisée* qui part dans la signature, sans quoi `image/png; x=<n'importe quoi>` serait validé comme une chose et imposé comme une autre.
+
+**Et la CLI traverse le plafond toute seule** : `--image ./graph.png` inline en dessous de 48 KiB et passe par le bucket au-dessus, sans que personne ait à savoir de quel côté sa capture d'écran tombe. Exposer une limite d'implémentation sous forme de drapeau aurait été la faire porter à l'utilisateur.
+
+**Une trouvaille en le branchant, et c'est encore D1/D3** : `PresignedUpload.headers` était un `Vec<(String, String)>`. Un tuple Rust est un **tableau de longueur fixe** en JSON Schema — `prefixItems` plus `items: false` en 2020-12 — et un `items` booléen n'est pas exprimable en OpenAPI 3.0, donc la génération du client Rust s'est arrêtée net à la seconde où ce type a atteint le document. C'est le même enseignement pour la troisième fois : une forme qu'aucun générateur ne sait modéliser n'est pas descriptible, si naturelle soit-elle à lire en Rust (ADR-0009). C'est devenu une map, ce qui est de toute façon la bonne forme — des en-têtes sont nommés, pas ordonnés.
+
+**Vérifié en le lançant**, contre le vrai RustFS de l'env de dev : presign → `PUT` signé accepté par le bucket (200) → publish référençant l'`att_…`. Et les refus : 413 au-dessus de 25 MiB, 422 pour un type non servi et pour une longueur nulle, 403 pour qui ne peut pas publier là. Côté CLI, une image de 4 KiB part en `data_uri` et une de 200 KiB en `attachment`.
+
+**D12 — un workflow commité qui n'a jamais tourné.** `.forgejo/workflows/notify.yaml` est écrit contre le contrat de §5.3 et les deux commandes qu'il lance sont vérifiées contre un vrai serveur, mais aucune forge n'existe ici pour répondre des deux dernières lignes : que `id-token: write` rende un jeton, et que son `aud` nomme weebo-notify.
+
+*Solution* : le pousser sur la forge principale et regarder. C'est la seule façon, et le risque est borné pour une raison qui vaut d'être dite — **les deux inconnues échouent bruyamment** : pas de jeton donne une variable vide et une étape rouge, un mauvais `aud` donne le 401 que §5.3 est fait pour rendre. Aucune des deux ne peut produire un tick vert qui ne veut rien dire, ce qui est la propriété que D7 et D8 réclament partout ailleurs.
+
+**D13 — l'image de dev ne porte pas de quoi construire M5.** Tauri v2 se lie sous Linux à `webkit2gtk-4.1`, `javascriptcoregtk-4.1`, `libsoup-3.0` et `gtk+-3.0`, plus `libayatana-appindicator3-dev` pour le tray, `librsvg2-dev` et `patchelf` pour l'empaquetage. Aucune des quatre premières n'est dans `che-min-mise`. La conséquence n'est pas « le build échoue » mais quelque chose de plus large : **la coquille ne peut pas être compilée du tout**, donc rien de M5 ne peut être vérifié ici — pas même à la relecture d'un `cargo check`. Écrire un milestone entier dans ces conditions produirait la plus grande surface non vérifiée du projet, très au-delà de D12 qui compte deux lignes.
+
+*Solution* : ajouter les paquets à `batleforc/WeeboDevImage` — c'est là qu'ils appartiennent, et §3 le dit déjà pour tout le reste (une amélioration générique remonte dans le template plutôt que d'être contournée dans un dépôt). Ce dépôt-ci n'a rien à changer : le container `tools` hérite du parent, donc un tag reconstruit est tout le correctif, et `devfile.yaml` reste tel quel.
+
+En attendant, la question se pose à la machine et pas au document : `task tauri:doctor` liste ce qui manque et où le réparer. Une commande plutôt qu'un paragraphe, pour la raison habituelle ici — une phrase écrite devient fausse le jour où quelqu'un corrige son environnement, un contrôle qui s'exécute jamais.
 
 ---
 

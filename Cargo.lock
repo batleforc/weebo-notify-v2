@@ -2713,6 +2713,7 @@ name = "notify-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "clap_complete",
@@ -2816,6 +2817,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64",
+ "ed25519-dalek",
  "jsonwebtoken",
  "notify-domain",
  "notify-oidc-mock",
@@ -6289,7 +6291,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ed25519-dalek",
  "getrandom 0.3.4",
+ "jsonwebtoken",
  "openapiv3",
  "p256 0.14.0",
  "prettyplease",

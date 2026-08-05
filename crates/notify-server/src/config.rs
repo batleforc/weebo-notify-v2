@@ -53,8 +53,16 @@ pub(crate) struct Config {
     /// Managed service accounts, reconciled like channels (§5.2bis).
     pub service_accounts: Vec<ManagedServiceAccount>,
 
-    /// Federation trust policies (§5.3). Parsed, not yet honoured — M4.
+    /// Federation trust policies (§5.3).
     pub trust_policy: Vec<TrustPolicy>,
+
+    /// `[federation]` — where the Ed25519 signing key lives (§5.3, §11).
+    ///
+    /// Absent means this deployment does not federate: `POST /auth/token/exchange`
+    /// answers `501` and no CI token is accepted. Present with no readable key is a
+    /// startup failure, not a silent downgrade — the same rule `[push.webpush]` set
+    /// in M3.5.
+    pub federation: Option<Federation>,
 
     /// Push transport credentials (§11). Parsed, not yet honoured — M3 onwards.
     pub push: Push,
@@ -242,7 +250,7 @@ pub(crate) struct ManagedChannel {
     pub receipts: bool,
     pub limits: Option<ChannelLimits>,
     pub access: Vec<Access>,
-    /// Channel-scoped federation publishers (§5.3). Parsed, not yet honoured — M4.
+    /// Channel-scoped federation publishers (§5.3).
     pub publishers: Vec<Publisher>,
     /// Outbound sinks (§7.1bis). Parsed, not yet honoured.
     pub sinks: Vec<Sink>,
@@ -307,6 +315,27 @@ pub(crate) struct TrustPolicy {
     pub subject: String,
     pub channels: Vec<String>,
     pub scopes: Vec<Scope>,
+}
+
+/// `[federation]` — signing the CI tokens this instance mints (design §5.3, §11).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Federation {
+    /// Where the Ed25519 private key lives.
+    ///
+    /// A path and not the key, like `[push.webpush] vapid_key_file`, so it is
+    /// mounted from whatever the cluster uses for secrets and never passes through
+    /// a file somebody commits by accident (§15).
+    ///
+    /// It cannot be generated at boot: a replica would sign what its neighbours
+    /// cannot verify, and the failure would be intermittent and look like a flaky
+    /// pipeline (§11 `[ha]`).
+    pub signing_key_file: PathBuf,
+    /// What the minted tokens name as their audience.
+    ///
+    /// Defaults to `weebo-notify`. Worth configuring only where two instances share
+    /// an ingress and a token for one must not be usable on the other.
+    pub audience: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -405,9 +434,10 @@ impl Config {
     pub(crate) fn unhonoured(&self) -> Vec<String> {
         let mut pending = Vec::new();
 
-        if !self.trust_policy.is_empty() {
+        if !self.trust_policy.is_empty() && self.federation.is_none() {
             pending.push(format!(
-                "{} [[trust_policy]] entries — JWT federation lands in M4 (§5.3)",
+                "{} [[trust_policy]] entries — no [federation] block, so nothing \
+                 can be exchanged against them (§5.3)",
                 self.trust_policy.len()
             ));
         }
@@ -418,9 +448,10 @@ impl Config {
             .iter()
             .map(|channel| channel.publishers.len())
             .sum();
-        if publishers > 0 {
+        if publishers > 0 && self.federation.is_none() {
             pending.push(format!(
-                "{publishers} [[channels.managed.publishers]] entries — M4 (§5.3)"
+                "{publishers} [[channels.managed.publishers]] entries — no [federation] \
+                 block, so nothing can be exchanged against them (§5.3)"
             ));
         }
 

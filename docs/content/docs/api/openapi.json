@@ -14,6 +14,293 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/admin/audit": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Browse the audit log.",
+        "operationId": "audit",
+        "parameters": [
+          {
+            "name": "action",
+            "in": "query",
+            "description": "One action, e.g. `apikey.revoked`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "description": "One channel",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque page cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped server-side",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit entries, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AuditEntry"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/channels": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The channel inventory — record cards, never inboxes.",
+        "operationId": "inventory",
+        "responses": {
+          "200": {
+            "description": "Every channel, as metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelCard"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/channels/{channel}/join": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Join a channel as the calling admin — the audited way to content (design §5.4).",
+        "operationId": "self_join",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "description": "Channel id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Joined, and recorded in the audit log"
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/reconciliation": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "What the last GitOps pass did on this replica (design §11).",
+        "operationId": "reconciliation",
+        "responses": {
+          "200": {
+            "description": "The last pass, or `null` if none has finished on this replica",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Reconciliation"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/trust-policies": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The trust policies this instance was deployed with (design §5.3, §11).",
+        "operationId": "trust_policies",
+        "responses": {
+          "200": {
+            "description": "Configured policies, read-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrustPolicyCard"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/apikeys": {
       "get": {
         "tags": [
@@ -155,6 +442,153 @@
             "bearer": []
           }
         ]
+      }
+    },
+    "/api/v1/attachments/presign": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Sign an upload to the object store.",
+        "operationId": "presign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresignBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A short-lived signed upload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresignedUpload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Cannot publish in that channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Over the 25 MiB ceiling (§8.2)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not a supported image type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "This deployment has no object store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/token/exchange": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Exchange a forge ID token for a short-lived weebo-notify token.",
+        "operationId": "exchange",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExchangeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A token valid for at most 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MintedToken"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unverifiable, replayed, or matched by no policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Over the per-(issuer, subject) budget",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "This deployment does not federate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/avatars/{id}": {
@@ -2958,6 +3392,51 @@
         "type": "string",
         "description": "An uploaded attachment, referenced by a payload rather than embedded in it\n(design §2.3)."
       },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One administrative act.",
+        "required": [
+          "actor",
+          "action",
+          "at"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "What they did, in a stable dotted vocabulary: `apikey.created`,\n`channel.member_added`, `service_account.disabled`, `dlq.requeued`.\n\nA closed set rather than free text, because this is what an incident review\nfilters on."
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Principal",
+            "description": "Who did it."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When."
+          },
+          "channel": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ChannelId",
+                "description": "Which channel it concerned, when it concerned one."
+              }
+            ]
+          },
+          "detail": {
+            "description": "Extra context: the scopes granted, the previous value.\n\nNever secrets, never payloads. An audit log that quotes an API key is worse\nthan no audit log, because it is a credential store nobody thinks of as one."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it was done to, e.g. an id. Absent when the action has no single\ntarget."
+          }
+        }
+      },
       "Author": {
         "allOf": [
           {
@@ -3026,6 +3505,41 @@
           "policy": {
             "$ref": "#/components/schemas/ChannelPolicy",
             "description": "Its policy."
+          }
+        }
+      },
+      "ChannelCard": {
+        "type": "object",
+        "description": "What the console shows for one channel.\n\nCounts rather than lists for members: the console's question is \"is this channel\nconfigured the way we think\", and a name here would put somebody's identity on a\nscreen belonging to a channel they may not share with the reader (§2.4).",
+        "required": [
+          "id",
+          "origin_managed",
+          "members",
+          "group_bindings",
+          "receipts_enabled"
+        ],
+        "properties": {
+          "group_bindings": {
+            "type": "integer",
+            "description": "How many identity-provider groups are bound to it.",
+            "minimum": 0
+          },
+          "id": {
+            "$ref": "#/components/schemas/ChannelId",
+            "description": "Which channel."
+          },
+          "members": {
+            "type": "integer",
+            "description": "How many members it has.",
+            "minimum": 0
+          },
+          "origin_managed": {
+            "type": "boolean",
+            "description": "Whether GitOps owns it (§11) — the badge that makes the UI read-only."
+          },
+          "receipts_enabled": {
+            "type": "boolean",
+            "description": "Whether it collects receipts (§7.3)."
           }
         }
       },
@@ -3844,6 +4358,19 @@
         ],
         "description": "One row of the event log, flattened as design §8.1 puts it on the wire: the envelope, the audience and the payload share one object."
       },
+      "ExchangeBody": {
+        "type": "object",
+        "description": "The forge's ID token, presented for exchange.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The OIDC ID token the CI runner was given by its forge.\n\nIn the body rather than in `Authorization`, deliberately: it is not a\ncredential for *this* API — sending it as a bearer would invite a proxy or a\nlog to treat it as one, and would make this the one endpoint where the\nheader means something different."
+          }
+        }
+      },
       "ExpiredWhileAway": {
         "type": "object",
         "description": "\"3 notifications expired in `ci-infra` while you were away.\"",
@@ -4111,6 +4638,41 @@
         ],
         "description": "A newly minted key — the only time its secret exists outside the caller.\n\nA DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no\nfield that could carry a secret, and that is the property worth keeping\n(scenario T12). The secret lives here, in the one response that returns it, and\nnowhere else."
       },
+      "MintedToken": {
+        "type": "object",
+        "description": "A minted CI token.",
+        "required": [
+          "token",
+          "expires_at",
+          "channels",
+          "scopes"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            },
+            "description": "The channels it resolved to, so the caller can be told what it actually got\nrather than having to decode its own token to find out."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it expires — 15 minutes at most (design §5.3)."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Scope"
+            },
+            "description": "The scopes it resolved to."
+          },
+          "token": {
+            "type": "string",
+            "description": "The token itself, Ed25519-signed by us."
+          }
+        }
+      },
       "Notification": {
         "type": "object",
         "description": "A notification and its current state.",
@@ -4210,6 +4772,33 @@
           "managed",
           "dynamic"
         ]
+      },
+      "Page_AuditEntry": {
+        "type": "object",
+        "description": "What a caller gets.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            },
+            "description": "The rows, in the ordering of the endpoint."
+          },
+          "next": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Cursor"
+              }
+            ],
+            "description": "Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short."
+          }
+        }
       },
       "Page_Channel": {
         "type": "object",
@@ -4315,6 +4904,67 @@
           "user": {
             "$ref": "#/components/schemas/UserId",
             "description": "Whose preferences these are."
+          }
+        }
+      },
+      "PresignBody": {
+        "type": "object",
+        "description": "What a client asks to upload.",
+        "required": [
+          "channel",
+          "content_type",
+          "content_length"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "Where the publisher intends to publish it.\n\nRequired, and it is the authorisation: uploading is a publisher's act, not\nsomething every authenticated principal may do. The attachment itself is not\nbound to the channel afterwards (design §6.1)."
+          },
+          "content_length": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The declared size, checked against §8.2's ceiling **before** signing.",
+            "minimum": 0
+          },
+          "content_type": {
+            "type": "string",
+            "description": "The declared media type. Imposed in the signature, so an upload that lies is\nrefused by the bucket rather than discovered later."
+          }
+        }
+      },
+      "PresignedUpload": {
+        "type": "object",
+        "description": "A signed upload.",
+        "required": [
+          "id",
+          "url",
+          "headers",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the signature stops working. Short: a presigned URL is a bearer\ncredential, and one that lives for a day is one that leaks into a log for a\nday."
+          },
+          "headers": {
+            "type": "object",
+            "description": "Headers the client must send verbatim — they are covered by the signature.\n\nA map and not a `Vec<(String, String)>`, which is what this was until the\nroute existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in\nJSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a\nboolean is not something OpenAPI 3.0 can express, so the Rust client stopped\ngenerating the moment this type reached the document. The same lesson as D1\nand D3: a shape no generator can model is not describable, however natural it\nreads in Rust (ADR-0009).\n\nIt is also the better shape here — headers are named, not ordered — and\n`BTreeMap` keeps the document and the response stable across runs.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "$ref": "#/components/schemas/AttachmentId",
+            "description": "The id to reference in a payload once the upload succeeds."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where to PUT the bytes."
           }
         }
       },
@@ -4945,6 +5595,46 @@
           "seen"
         ]
       },
+      "Reconciliation": {
+        "type": "object",
+        "description": "What the last GitOps pass did (design §11, §10.4bis).",
+        "required": [
+          "at",
+          "channels",
+          "accounts",
+          "removed",
+          "pending"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "integer",
+            "description": "Managed service accounts written.",
+            "minimum": 0
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this replica last applied the configuration."
+          },
+          "channels": {
+            "type": "integer",
+            "description": "Managed channels written.",
+            "minimum": 0
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bindings by `oidc_sub` or `email` naming somebody who has never logged in.\n\nThe one thing on this screen that is *actionable and quiet otherwise*: such a\nbinding grants nothing until that person's first login (§14.1, M1.8), and\nwithout a place to see it the symptom is \"alice says she cannot see the\nchannel\" with nothing to connect it to."
+          },
+          "removed": {
+            "type": "integer",
+            "description": "Channels that left the configuration and were archived or deleted.",
+            "minimum": 0
+          }
+        }
+      },
       "RecordedInteraction": {
         "type": "object",
         "description": "What recording an interaction did.\n\nA DTO rather than the domain's [`Recorded`], because the distinction the domain\ndraws — did this change anything worth broadcasting — is exactly what a client\nneeds to hear, and the enum's shape (a tuple variant, a bare id) is not a good\nJSON contract.",
@@ -5426,6 +6116,45 @@
           "deleted",
           "expired"
         ]
+      },
+      "TrustPolicyCard": {
+        "type": "object",
+        "description": "One trust policy as the console shows it.",
+        "required": [
+          "issuer",
+          "subject",
+          "channels",
+          "scopes",
+          "channel_scoped"
+        ],
+        "properties": {
+          "channel_scoped": {
+            "type": "boolean",
+            "description": "Whether it came from a channel's own `publishers` block, which §11 makes win\nover a global one — the thing to look at first when a policy \"should\" match\nand does not."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The channel patterns it grants."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The forge it trusts."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Scope"
+            },
+            "description": "What it grants there."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The anchored subject pattern (§5.3)."
+          }
+        }
       },
       "Ttl": {
         "type": "string",

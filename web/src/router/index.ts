@@ -12,6 +12,7 @@ import { useSession } from "@/auth/session";
 import AdminView from "@/views/AdminView.vue";
 import AppLayout from "@/views/AppLayout.vue";
 import CallbackView from "@/views/CallbackView.vue";
+import ConsoleView from "@/views/ConsoleView.vue";
 import InboxView from "@/views/InboxView.vue";
 import LoginView from "@/views/LoginView.vue";
 import SettingsView from "@/views/SettingsView.vue";
@@ -28,6 +29,7 @@ export const router = createRouter({
         { path: "c/:id", name: "channel", component: InboxView },
         { path: "settings", name: "settings", component: SettingsView },
         { path: "admin", name: "admin", component: AdminView },
+        { path: "console", name: "console", component: ConsoleView },
       ],
     },
     { path: "/login", name: "login", component: LoginView },

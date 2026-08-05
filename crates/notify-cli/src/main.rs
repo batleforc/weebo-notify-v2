@@ -124,6 +124,12 @@ pub(crate) enum Command {
         command: manage::DeviceCommand,
     },
 
+    /// Tokens: the CI federation exchange (design §5.3).
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
+
     /// Open the terminal UI. Explicit alias of running `notify` with no subcommand.
     Watch,
 
@@ -131,6 +137,22 @@ pub(crate) enum Command {
     Completions {
         /// Shell to generate completions for.
         shell: clap_complete::Shell,
+    },
+}
+
+/// The federation exchange (design §5.3, §9.1).
+#[derive(Debug, Subcommand)]
+pub(crate) enum TokenCommand {
+    /// Trade a forge ID token for a short-lived weebo-notify token.
+    ///
+    /// The whole reason CI holds no long-lived secret: a pipeline already has a
+    /// token saying who it is, and this turns it into fifteen minutes of publish
+    /// rights. Prints the token alone, so a shell can capture it.
+    Exchange {
+        /// The forge ID token. Prefer the environment: an argument lands in `ps`
+        /// and in the shell history of whoever is debugging the runner.
+        #[arg(long, env = "WNK_CI_TOKEN", hide_env_values = true)]
+        token: String,
     },
 }
 
@@ -210,6 +232,14 @@ pub(crate) async fn execute(
         Command::Channel { command } => manage::channel(session, command, output).await,
         Command::Device { command } => manage::device(session, command, profile, output).await,
         Command::Dnd { command } => manage::dnd(session, command, output).await,
+        Command::Token {
+            command: TokenCommand::Exchange { token },
+        } => {
+            let minted = session.exchange(&token).await?;
+            // The token and nothing else on stdout: `T=$(notify token exchange)` is
+            // the shape a pipeline uses, and a banner would end up in the variable.
+            Ok(minted.token)
+        }
         Command::Completions { shell } => Ok(completions(shell)),
         // Refused rather than ignored: from the shell this is handled before a
         // session is opened, and from inside the TUI it can only mean somebody typed

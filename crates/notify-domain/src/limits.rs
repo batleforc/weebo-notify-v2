@@ -24,6 +24,14 @@ pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 /// attachment and reference it instead.
 pub const MAX_DATA_URI_BYTES: usize = 48 * 1024;
 
+/// Attachment ceiling (design §8.2): a presign asked for more is refused.
+///
+/// Checked **before** signing rather than after uploading, which is the whole
+/// difference between a limit and a wish: a presigned URL is a bearer credential
+/// for the bucket, so one issued for an oversized object is one we handed out
+/// against our own rule and cannot take back.
+pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+
 /// Actions per notification. The array order is display priority: mobile push
 /// transports only surface the first two or three (design §2.3).
 pub const MAX_ACTIONS: usize = 5;

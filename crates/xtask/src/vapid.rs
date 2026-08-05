@@ -89,7 +89,7 @@ fn random_key() -> anyhow::Result<p256::SecretKey> {
 /// writes one does. A no-op off Unix, where the equivalent is an ACL this chore has
 /// no business editing.
 #[cfg(unix)]
-fn restrict(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn restrict(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
 
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
@@ -97,7 +97,7 @@ fn restrict(path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn restrict(_path: &Path) -> anyhow::Result<()> {
+pub(crate) fn restrict(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 

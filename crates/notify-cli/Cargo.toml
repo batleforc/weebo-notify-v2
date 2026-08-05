@@ -23,6 +23,7 @@ anyhow.workspace = true
 # For the "arrived late" badge (§7.2): the same date type the generated client and
 # the local store already speak, rather than a third one to convert between.
 chrono.workspace = true
+base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true

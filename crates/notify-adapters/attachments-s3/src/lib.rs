@@ -131,13 +131,14 @@ impl AttachmentStore for S3Attachments {
         Ok(PresignedUpload {
             id,
             url: Url::parse(&url).map_err(|error| PortError::corrupt("attachment.url", error))?,
-            headers: vec![
+            headers: [
                 ("content-type".to_owned(), request.content_type.clone()),
                 (
                     "content-length".to_owned(),
                     request.content_length.to_string(),
                 ),
-            ],
+            ]
+            .into(),
             expires_at: OffsetDateTime::now_utc() + PRESIGN_TTL,
         })
     }

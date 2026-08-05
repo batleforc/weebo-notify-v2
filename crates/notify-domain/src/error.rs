@@ -217,6 +217,17 @@ pub enum DomainError {
     /// paths: the first is worth asking an admin about, the second never will be.
     #[error("this principal has no profile of its own")]
     NotAPerson,
+
+    /// The instance-wide platform role is required and this caller does not hold it
+    /// (design §5.4, scenario T30).
+    ///
+    /// Its own code rather than [`Self::ScopeMissing`], because they are answers to
+    /// different questions: a missing scope is about *one channel* and is fixed by
+    /// its manager, whereas this one is instance-wide, comes from GitOps only, and
+    /// no API path can grant it. Telling a client to go ask for a scope would send
+    /// them somewhere nobody can help.
+    #[error("this action needs the platform role")]
+    NotPlatformAdmin,
 }
 
 impl DomainError {
@@ -246,6 +257,7 @@ impl DomainError {
             Self::ServiceAccountDisabled => "service_account.disabled",
             Self::ScopeMissing { .. } => "scope.missing",
             Self::NotAPerson => "principal.not_a_person",
+            Self::NotPlatformAdmin => "platform.role_required",
         }
     }
 
@@ -272,7 +284,9 @@ impl DomainError {
             | Self::ApiKeyExpired
             | Self::ApiKeyRevoked
             | Self::ServiceAccountDisabled => ErrorKind::Unauthenticated,
-            Self::ScopeMissing { .. } | Self::NotAPerson => ErrorKind::Forbidden,
+            Self::ScopeMissing { .. } | Self::NotAPerson | Self::NotPlatformAdmin => {
+                ErrorKind::Forbidden
+            }
         }
     }
 }

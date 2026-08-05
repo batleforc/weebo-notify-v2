@@ -7,7 +7,9 @@
 use std::io::Read as _;
 
 use clap::{Args, ValueEnum};
-use notify_client_core::types::{Priority, Published, State, Status, Ttl};
+use notify_client_core::types::{
+    Action, ActionKey, Actions, Image, Priority, Published, State, Status, Ttl,
+};
 use notify_client_core::{Revision, Session};
 
 use crate::{CliError, OutputFormat};
@@ -45,16 +47,215 @@ pub(crate) struct Content {
     /// A tag. Repeat the flag for several.
     #[arg(long = "tag")]
     pub tags: Vec<String>,
+
+    /// A button, as `type:label:argument`. Repeat the flag for several, up to five.
+    ///
+    /// `view:Runbook:https://…` opens a link, `ack:Ack:incident` acknowledges,
+    /// `reply:Comment:Notes…` asks for text (the placeholder is optional).
+    #[arg(long = "action", value_name = "TYPE:LABEL:ARG")]
+    pub actions: Vec<String>,
+
+    /// An image to inline, e.g. `./graph.png`.
+    #[arg(long, value_name = "PATH")]
+    pub image: Option<std::path::PathBuf>,
 }
 
+/// One `--action` flag.
+///
+/// # Why a colon-separated string rather than repeated typed flags
+///
+/// Because the alternative is `--action-type view --action-label Runbook
+/// --action-url …` repeated five times, with nothing tying a triple together and
+/// nothing stopping a half-written one. §9.1 sketches this spelling, and it is the
+/// one that survives being written inside a CI YAML on one line.
+///
+/// Split into **three** parts at most, so the argument may contain colons — which
+/// it always does, since the common case is a URL. A *label* containing a colon is
+/// the case this cannot express, and it is the right one to give up: a button
+/// caption is short and a publisher can rename it, whereas a URL cannot be rewritten
+/// to avoid its scheme.
+fn parse_action(raw: &str) -> Result<Action, CliError> {
+    let mut parts = raw.splitn(3, ':');
+    let kind = parts.next().unwrap_or_default();
+    let label = parts.next().unwrap_or_default().to_owned();
+    let argument = parts.next();
+
+    if label.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "`--action {raw}`: every button needs a label — `type:label:argument`"
+        )));
+    }
+
+    match kind {
+        "view" => {
+            let url = argument.ok_or_else(|| {
+                CliError::Usage(format!("`--action {raw}`: a `view` button needs a URL"))
+            })?;
+            // Not validated here beyond being present: the server checks the scheme
+            // at ingestion and the client checks it again before opening (§2.3), and
+            // a third opinion in the CLI would be a third place to disagree.
+            Ok(Action::View {
+                label,
+                url: url.to_owned(),
+            })
+        }
+        "ack" => {
+            let key = argument.ok_or_else(|| {
+                CliError::Usage(format!(
+                    "`--action {raw}`: an `ack` button needs a key — it is what makes \
+                     it idempotent per user (§2.3)"
+                ))
+            })?;
+            Ok(Action::Ack {
+                key: ActionKey::from(key.to_owned()),
+                label,
+            })
+        }
+        "reply" => Ok(Action::Reply {
+            label,
+            placeholder: argument.map(ToOwned::to_owned),
+        }),
+        // Refused rather than half-supported: a `choice` carries a list of options
+        // and a `silence` a scope and a duration, and flattening either into one
+        // colon-separated field would invent a syntax this document does not have.
+        // They go through the API, where the shape is the schema's (§2.3).
+        "choice" | "silence" => Err(CliError::Usage(format!(
+            "`--action {raw}`: `{kind}` carries more than a label and one argument, \
+             so it has no flag spelling — publish it through the API (§2.3)"
+        ))),
+        other => Err(CliError::Usage(format!(
+            "`--action {raw}`: `{other}` is not an action type; \
+             expected view, ack or reply"
+        ))),
+    }
+}
+
+/// Turn a file into what a payload carries: inline, or an uploaded reference.
+///
+/// # The cap decides which, and the caller never has to
+///
+/// §2.3 allows an inline image up to 48 KiB and says that past it a publisher
+/// uploads an attachment instead. Both are `--image ./graph.png` here: below the
+/// cap the bytes travel in the payload, above it they go to the bucket and the
+/// payload carries the id. Making a person know which side of 48 KiB their
+/// screenshot falls on would be exposing an implementation limit as a flag.
+async fn resolve_image(
+    session: &Session,
+    channel: &str,
+    path: &std::path::Path,
+) -> Result<Image, CliError> {
+    match read_image(path)? {
+        Inlined::Small(image) => Ok(image),
+        Inlined::TooBig {
+            bytes,
+            content_type,
+        } => {
+            let id = session
+                .upload_attachment(channel, content_type, bytes)
+                .await?;
+            Ok(Image::Attachment { ref_: id })
+        }
+    }
+}
+
+/// Parse every `--action` flag into what a revision carries.
+///
+/// `None` and not an empty list when there are no flags: §2.3 replaces the actions
+/// **wholesale** on every revision, so an empty `Some` would *clear* the buttons of
+/// a notification being revised for an unrelated reason — which is exactly what
+/// `notify update --status success` does all day in CI.
+fn fold_actions(raw: &[String]) -> Result<Option<Actions>, CliError> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    let parsed = raw
+        .iter()
+        .map(|one| parse_action(one))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(Actions::from(parsed)))
+}
+
+/// What reading a file decided.
+enum Inlined {
+    /// Small enough to travel in the payload.
+    Small(Image),
+    /// Past the cap: these bytes need the bucket.
+    TooBig {
+        bytes: Vec<u8>,
+        content_type: &'static str,
+    },
+}
+
+/// Read an image and say which side of the inline cap it falls on (design §2.3).
+fn read_image(path: &std::path::Path) -> Result<Inlined, CliError> {
+    use base64::Engine as _;
+
+    let bytes = std::fs::read(path)
+        .map_err(|error| CliError::Usage(format!("could not read {}: {error}", path.display())))?;
+
+    let media_type = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        // Guessed from the name and not from the bytes, deliberately: the server
+        // is the one that decides what it accepts, and a CLI sniffing magic numbers
+        // would be a second opinion that can differ from the one that matters.
+        other => {
+            return Err(CliError::Usage(format!(
+                "{}: unsupported image extension {}",
+                path.display(),
+                other.unwrap_or("(none)")
+            )));
+        }
+    };
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let uri = format!("data:{media_type};base64,{encoded}");
+
+    // Measured on the URI and not on the file: the cap is on what travels in the
+    // payload, and base64 is a third larger than what it encodes.
+    if uri.len() > MAX_DATA_URI_BYTES {
+        return Ok(Inlined::TooBig {
+            bytes,
+            content_type: media_type,
+        });
+    }
+
+    Ok(Inlined::Small(Image::DataUri { uri }))
+}
+
+/// What §2.3 allows inline. Mirrors `notify_domain::limits::MAX_DATA_URI_BYTES`,
+/// which the CLI does not depend on.
+const MAX_DATA_URI_BYTES: usize = 48 * 1024;
+
 impl Content {
-    /// Turn the flags into a revision, reading stdin if asked to.
-    pub(crate) fn into_revision(self) -> Result<Revision, CliError> {
+    /// Turn the flags into a revision, reading stdin and uploading if asked to.
+    ///
+    /// Takes the session because `--image` may have to reach the bucket first
+    /// (§6.1). That is the one thing in this file that is not pure parsing, and it
+    /// is here rather than in `notify-client-core` only as a *sequence* — the two
+    /// calls it makes both live down there (§9.3).
+    pub(crate) async fn into_revision(
+        self,
+        session: &Session,
+        channel: &str,
+    ) -> Result<Revision, CliError> {
         let body = match self.body.as_deref() {
             Some("-") => Some(read_stdin()?),
             other => other.map(ToOwned::to_owned),
         };
 
+        let image = match self.image.as_deref() {
+            Some(path) => Some(resolve_image(session, channel, path).await?),
+            None => None,
+        };
         Ok(Revision {
             title: self.title,
             body,
@@ -63,6 +264,8 @@ impl Content {
             priority: self.priority.map(Into::into),
             ttl: self.ttl.map(Ttl::from),
             tags: self.tags,
+            actions: fold_actions(&self.actions)?,
+            image,
             ..Revision::default()
         })
     }
@@ -85,7 +288,11 @@ pub(crate) async fn publish(
     output: OutputFormat,
 ) -> Result<String, CliError> {
     let published = session
-        .publish(channel, content.into_revision()?, idempotency_key)
+        .publish(
+            channel,
+            content.into_revision(session, channel).await?,
+            idempotency_key,
+        )
         .await?;
 
     render(&published, output)
@@ -100,7 +307,11 @@ pub(crate) async fn update(
     output: OutputFormat,
 ) -> Result<String, CliError> {
     let published = session
-        .update(channel, external_id, content.into_revision()?)
+        .update(
+            channel,
+            external_id,
+            content.into_revision(session, channel).await?,
+        )
         .await?;
 
     render(&published, output)
@@ -176,3 +387,119 @@ macro_rules! value_enum {
 value_enum!(StateArg => State { Open, Working, Closed });
 value_enum!(StatusArg => Status { Success, Failure, Warning, Info, Cancelled });
 value_enum!(PriorityArg => Priority { Min, Low, Default, High, Urgent });
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
+    use super::*;
+
+    #[test]
+    fn a_view_button_keeps_the_colons_in_its_url() {
+        // The whole reason the split is bounded at three: the common argument is a
+        // URL, and a URL always contains the colon of its scheme.
+        let action = parse_action("view:Voir le run:https://forge.example/runs/42").unwrap();
+
+        assert!(matches!(
+            action,
+            Action::View { ref label, ref url }
+                if label == "Voir le run" && url == "https://forge.example/runs/42"
+        ));
+    }
+
+    #[test]
+    fn an_ack_without_a_key_is_refused_rather_than_defaulted() {
+        // A generated key would make the button idempotent per *invocation* instead
+        // of per user, which is the opposite of what §2.3 promises.
+        assert!(parse_action("ack:Ack").is_err());
+        assert!(parse_action("ack:Ack:incident-4521").is_ok());
+    }
+
+    #[test]
+    fn a_reply_placeholder_is_optional() {
+        assert!(matches!(
+            parse_action("reply:Comment").unwrap(),
+            Action::Reply {
+                placeholder: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse_action("reply:Comment:Notes d'incident").unwrap(),
+            Action::Reply {
+                placeholder: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_two_shapes_a_flag_cannot_express_say_so() {
+        for raw in ["choice:Escalade:oncall", "silence:Silence 4h:group"] {
+            let error = parse_action(raw).unwrap_err().to_string();
+            assert!(
+                error.contains("API"),
+                "a refusal has to say where the shape does fit: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_button_with_no_label_is_refused() {
+        assert!(parse_action("view::https://example.com").is_err());
+        assert!(parse_action("view").is_err());
+    }
+
+    #[test]
+    fn an_unknown_type_names_the_ones_that_exist() {
+        let error = parse_action("explode:Boom:now").unwrap_err().to_string();
+        assert!(error.contains("view"), "{error}");
+    }
+
+    #[test]
+    fn no_action_flag_leaves_the_buttons_alone() {
+        // `Some(vec![])` would *clear* the buttons of a notification revised for an
+        // unrelated reason, because §2.3 replaces them wholesale.
+        assert!(fold_actions(&[]).unwrap().is_none());
+        assert_eq!(
+            fold_actions(&["view:Run:https://example.com".to_owned()])
+                .unwrap()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_image_too_big_to_inline_becomes_an_upload() {
+        let dir = std::env::temp_dir().join(format!("wnk-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.png");
+        std::fs::write(&path, vec![0u8; 64 * 1024]).unwrap();
+
+        // Past the cap it is not a refusal any more: the bytes come back so the
+        // caller can put them in the bucket instead (§2.3).
+        assert!(matches!(read_image(&path).unwrap(), Inlined::TooBig { .. }));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_small_image_inlines_with_its_media_type() {
+        let dir = std::env::temp_dir().join(format!("wnk-img-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("graph.png");
+        std::fs::write(&path, b"not really a png, but small").unwrap();
+
+        let inlined = read_image(&path).unwrap();
+
+        assert!(
+            matches!(
+                inlined,
+                Inlined::Small(Image::DataUri { ref uri })
+                    if uri.starts_with("data:image/png;base64,")
+            ),
+            "a small file inlines, carrying the media type its extension implies"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

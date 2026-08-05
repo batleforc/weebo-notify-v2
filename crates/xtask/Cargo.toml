@@ -18,6 +18,11 @@ clap.workspace = true
 # The VAPID key generator: `pkcs8` on top of the workspace's features, because the
 # key is written in the PKCS#8 PEM form `[push.webpush]` reads.
 getrandom = "0.3"
+# The federation signing key (design §5.3): Ed25519 in the PKCS#8 PEM form
+# `jsonwebtoken` loads. Both are already in the graph through that crate's
+# `rust_crypto` feature, so this adds a name to a manifest and nothing to a build.
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+jsonwebtoken.workspace = true
 openapiv3 = "2.2"
 p256 = { workspace = true, features = ["pkcs8"] }
 prettyplease = "0.2"

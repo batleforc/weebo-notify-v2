@@ -21,7 +21,7 @@ vars:
 
 tasks:
   setup:
-    desc: "Create everything a fresh clone needs before the stack runs: Authentik credentials, VAPID key"
+    desc: "Create everything a fresh clone needs before the stack runs: Authentik credentials, VAPID and federation keys"
     # The single entry point, and every task that needs any of it depends on this
     # one rather than on a piece of it. Each step below is idempotent and guarded
     # by its own `status:`, so running it on every `dev:up` costs nothing and
@@ -30,6 +30,7 @@ tasks:
     cmds:
       - task: env
       - task: vapid
+      - task: federation-key
 
   env:
     desc: "Create dev/.env.local with freshly generated Authentik bootstrap credentials (gitignored)"
@@ -61,6 +62,16 @@ tasks:
       - test -f dev/secrets/vapid.pem
     cmds:
       - cargo run --quiet -p xtask -- vapid-key --output dev/secrets/vapid.pem
+
+  federation-key:
+    desc: "Mint the Ed25519 key that [federation] signs CI tokens with, into dev/secrets/ (gitignored)"
+    # Same reasoning as `vapid`, and one more: this key cannot be generated at boot
+    # because a replica would sign what its neighbour cannot verify (§11 `[ha]`), so
+    # it has to exist on disk before the server starts.
+    status:
+      - test -f dev/secrets/federation.pem
+    cmds:
+      - cargo run --quiet -p xtask -- federation-key --output dev/secrets/federation.pem
 
   up:
     desc: "Start the everyday dev stack: Postgres + RustFS (~20s, no Authentik)"

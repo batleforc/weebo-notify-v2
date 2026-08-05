@@ -1,0 +1,106 @@
+name: notify
+
+# Dogfooding: this project tells its own weebo-notify instance how its CI went
+# (design §3.2, §3.2bis, §5.3).
+#
+# It is the smallest complete demonstration of the federation model, which is why
+# it is worth having beyond the notification itself: **no secret is configured
+# here**. There is no API key in the repository, none in the forge's secret store,
+# and nothing to rotate. The runner already holds an ID token saying which
+# repository and which ref it is, and `notify token exchange` turns that into
+# fifteen minutes of publish rights on one channel.
+#
+# What an operator has to do on the receiving instance is one block of TOML (§11):
+#
+#     [[trust_policy]]
+#     issuer   = "https://forgejo.weebo.poc"
+#     subject  = "repo:weebo/weebo-notify:ref:refs/heads/main"
+#     channels = ["ci-infra"]
+#     scopes   = ["publish"]
+#
+# ── What this workflow has NOT been run against ────────────────────────────────
+#
+# A real Forgejo. It was written against the design's contract and the CLI it
+# calls was exercised end to end against a live server (M4.7), but the two lines
+# only a forge can answer — that `id-token: write` yields a token, and that its
+# `aud` names weebo-notify — have not been observed here. Both fail loudly rather
+# than quietly if they are wrong: no token means an empty variable and a failed
+# step, and a wrong `aud` is exactly what §5.3 refuses with a 401. The first run
+# on a real forge is the test.
+
+on:
+  workflow_run:
+    workflows: [check]
+    types: [completed]
+
+permissions:
+  # The whole mechanism. Without it the runner has no ID token to exchange, and
+  # the step below fails rather than falling back to something longer-lived.
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+    # An instance that is not configured is the normal state of a fork, so the
+    # whole job is skipped rather than failing somebody else's pipeline.
+    if: vars.WNK_URL != ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the client
+        run: |
+          mise install
+          mise exec -- cargo build --quiet --release -p notify-cli
+
+      - name: Exchange the runner's identity for a short-lived token
+        id: token
+        env:
+          WNK_URL: ${{ vars.WNK_URL }}
+        run: |
+          set -euo pipefail
+
+          # The forge mints this on demand; `aud` has to name the receiving
+          # instance, which is what stops a token minted for another service from
+          # being replayed here (§5.3, scenario T11).
+          id_token=$(curl -fsSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=weebo-notify" \
+            | jq -r '.value')
+
+          # Written to the step output rather than echoed: it is a credential for
+          # the next fifteen minutes, and a `set -x` left on by somebody debugging
+          # would otherwise put it in the log.
+          echo "::add-mask::$id_token"
+          minted=$(WNK_CI_TOKEN="$id_token" \
+            ./target/release/notify token exchange)
+          echo "::add-mask::$minted"
+          echo "token=$minted" >> "$GITHUB_OUTPUT"
+
+      - name: Say how it went
+        env:
+          WNK_URL: ${{ vars.WNK_URL }}
+          WNK_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # `update` and not `publish`, keyed on the run id: the same call creates
+          # on the first invocation and revises on a re-run, so a retried pipeline
+          # amends its own notification instead of opening a second one (§2.2).
+          ./target/release/notify update \
+            --channel ci-infra \
+            --id "run-${{ github.run_id }}" \
+            --title "${{ github.repository }} · ${{ github.ref_name }}" \
+            --body "check: ${{ github.event.workflow_run.conclusion }} — ${{ github.sha }}" \
+            --state closed \
+            --status "${{ github.event.workflow_run.conclusion == 'success' && 'success' || 'failure' }}" \
+            --action "view:Voir le run:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

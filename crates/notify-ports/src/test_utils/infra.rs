@@ -404,13 +404,14 @@ impl AttachmentStore for InMemoryAttachments {
         Ok(PresignedUpload {
             id,
             url,
-            headers: vec![
+            headers: [
                 ("content-type".to_owned(), request.content_type.clone()),
                 (
                     "content-length".to_owned(),
                     request.content_length.to_string(),
                 ),
-            ],
+            ]
+            .into(),
             expires_at: OffsetDateTime::now_utc() + Duration::minutes(15),
         })
     }

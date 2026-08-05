@@ -36,6 +36,7 @@
 //! | Background | [`PurgeExpired`] |
 
 pub mod accounts;
+pub mod attachments;
 pub mod auth;
 pub mod authz;
 pub mod channels;
@@ -46,6 +47,7 @@ pub mod federate;
 pub mod interact;
 pub mod keys;
 pub mod maintenance;
+pub mod platform;
 pub mod preferences;
 pub mod profiles;
 pub mod publish;
@@ -53,6 +55,7 @@ pub mod read;
 pub mod sync;
 
 pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
+pub use attachments::PresignAttachment;
 pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{CreateChannel, DeleteChannel, ListChannels, ManageMembers, UpdateChannel};
@@ -67,6 +70,10 @@ pub use keys::{
     CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, RevokeApiKey, UlidKeyGenerator,
 };
 pub use maintenance::{PurgeExpired, PurgeReport};
+pub use platform::{
+    BrowseAudit, ChannelCard, ChannelInventory, ListTrustPolicies, ReadReconciliation,
+    Reconciliation, ReconciliationLog, SelfJoin, TrustPolicyCard,
+};
 pub use preferences::{ReadDnd, SetDnd};
 pub use profiles::{ReadAvatar, ReadProfile, SetAvatar, UpdateProfile};
 pub use publish::{

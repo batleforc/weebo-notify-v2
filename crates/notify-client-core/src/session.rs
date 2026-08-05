@@ -3,9 +3,10 @@
 
 use notify_client_api::Client;
 use notify_client_api::types::{
-    Actions, AddMemberBody, Channel, ChannelId, ChannelPolicyBody, CreateChannelBody, Device, Dnd,
-    DndDraft, EnrolBody, ExternalId, Image, Notification, Principal, Priority, Progress,
-    PublishBody, Published, PushTransport, RevisionDraft, Scope, State, Status, Ttl,
+    Actions, AddMemberBody, AttachmentId, Channel, ChannelId, ChannelPolicyBody, CreateChannelBody,
+    Device, Dnd, DndDraft, EnrolBody, ExchangeBody, ExternalId, Image, MintedToken, Notification,
+    PresignBody, Principal, Priority, Progress, PublishBody, Published, PushTransport,
+    RevisionDraft, Scope, State, Status, Ttl,
 };
 
 use crate::config::Profile;
@@ -322,6 +323,75 @@ impl Session {
             .map_err(ClientError::from)?;
 
         Ok(response.into_inner().items)
+    }
+}
+
+impl Session {
+    /// Upload an attachment and hand back the reference a payload carries.
+    ///
+    /// Two calls and no bytes through the server (design §6.1): a presign, then a
+    /// `PUT` straight at the bucket with the headers the signature covers. Sending
+    /// them verbatim is not politeness — they are *in* the signature, so a `PUT`
+    /// that omits or edits one is refused by the bucket.
+    pub async fn upload_attachment(
+        &self,
+        channel: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<AttachmentId, ClientError> {
+        let signed = self
+            .api
+            .presign(&PresignBody {
+                channel: channel.to_owned(),
+                content_type: content_type.to_owned(),
+                // `i64` is progenitor's rendering of an unsigned integer; the
+                // cast cannot lose anything for a file that fits in memory.
+                content_length: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            })
+            .await
+            .map_err(ClientError::from)?
+            .into_inner();
+
+        let mut request = self.http.put(signed.url.clone());
+        for (name, value) in &signed.headers {
+            request = request.header(name, value);
+        }
+
+        let response = request
+            .body(bytes)
+            .send()
+            .await
+            .map_err(ClientError::Transport)?;
+
+        if !response.status().is_success() {
+            // The bucket refused, not us — so `Unexpected` and not `Refused`, which
+            // carries a `problem+json` this answer does not have. Its body is S3 XML
+            // that no user wants to read, so the status is what travels.
+            return Err(ClientError::Unexpected {
+                status: response.status().as_u16(),
+            });
+        }
+
+        Ok(signed.id)
+    }
+
+    /// `POST /auth/token/exchange` — a CI job trades its forge ID token for one of
+    /// ours (design §5.3).
+    ///
+    /// The one call on this type that does **not** need the session to be
+    /// authenticated: it is where a credential is obtained. A profile with no token
+    /// is therefore the normal way to reach it, which is exactly the state a CI
+    /// runner starts in.
+    pub async fn exchange(&self, id_token: &str) -> Result<MintedToken, ClientError> {
+        let response = self
+            .api
+            .exchange(&ExchangeBody {
+                token: id_token.to_owned(),
+            })
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(response.into_inner())
     }
 }
 

@@ -34,6 +34,7 @@ mod audit;
 mod channels;
 mod devices;
 mod events;
+mod federation;
 mod idempotency;
 mod identities;
 mod interactions;

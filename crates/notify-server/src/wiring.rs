@@ -13,20 +13,22 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Authenticate, Authorizer, CreateApiKey, CreateChannel, CreateServiceAccount,
-    DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
-    GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
-    ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
-    PurgeExpired, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts, RecordInteraction,
-    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SendDndDigests, SetAvatar,
-    SetDnd, SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel, UpdateProfile,
-    UpsertNotification,
+    Authenticate, Authorizer, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel,
+    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
+    ExchangeToken, Fanout, GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox,
+    ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers,
+    PostReceipt, PresignAttachment, PublishNotification, PurgeExpired, ReadAvatar, ReadDnd,
+    ReadProfile, ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction,
+    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SendDndDigests,
+    SetAvatar, SetDnd, SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel,
+    UpdateProfile, UpsertNotification,
 };
 use notify_attachments_s3::{S3Attachments, S3Config};
 use notify_avatars::ImageAvatarProcessor;
+use notify_domain::{Pattern, TrustPolicies, TrustPolicy as DomainTrustPolicy};
 use notify_eventbus_pg::PgEventBus;
 use notify_http_actix::ApiState;
-use notify_oidc::{Argon2SecretHasher, OidcConfig, OidcVerifier};
+use notify_oidc::{Argon2SecretHasher, FederationTokens, OidcConfig, OidcVerifier};
 use notify_persistence_pg::{PgLeaderElection, PgStore};
 use notify_ports::{AttachmentStore, EventBus, SystemClock};
 use notify_push_webpush::{WebPush, WebPushConfig};
@@ -52,6 +54,12 @@ pub(crate) struct Application {
     pub digests: SendDndDigests,
     /// GitOps reconciliation.
     pub reconciler: Reconciler,
+    /// Where each pass is left for `GET /admin/reconciliation` to read (§10.4bis).
+    ///
+    /// Handed back rather than kept inside the reconciler because the *writer* is
+    /// the run loop, not the reconciler: a pass that failed must not overwrite the
+    /// last one that worked, and only the caller knows which happened.
+    pub reconciliation_log: ReconciliationLog,
     /// The push transports this deployment configured, for `/readyz` and the
     /// startup log.
     pub transports: TransportRegistry,
@@ -140,16 +148,44 @@ impl Application {
         // there, and may this caller see it".
         let get = GetNotification::new(repository.clone(), authorizer.clone(), clock.clone());
 
+        // Federation (§5.3). `None` here is what makes the exchange answer 501 and
+        // every CI token fail to authenticate — one absent block, one behaviour.
+        let federation = federation_tokens(config, clock.clone())?;
+        let policies = trust_policies(config)?;
+        // Built twice rather than shared: the exchange consumes its copy by value,
+        // and handing the console an `Arc` of the same thing would tie a read-only
+        // screen to the lifetime of an authentication path.
+        let console_policies = trust_policies(config)?;
+        // Written by the reconcile loop, read by the console. Cloned rather than
+        // shared by reference because both halves outlive this function.
+        let reconciliation_log = ReconciliationLog::new();
+        let audience = config
+            .federation
+            .as_ref()
+            .and_then(|settings| settings.audience.clone())
+            .unwrap_or_else(|| "weebo-notify".to_owned());
+
         let state = ApiState {
             bus: bus.clone(),
-            authenticate: Authenticate::new(
-                verifier,
-                repository.clone(),
-                repository.clone(),
-                repository.clone(),
-                hasher.clone(),
-                clock.clone(),
-            ),
+            authenticate: {
+                let base = Authenticate::new(
+                    verifier,
+                    repository.clone(),
+                    repository.clone(),
+                    repository.clone(),
+                    hasher.clone(),
+                    clock.clone(),
+                )
+                // GitOps and nowhere else (§5.4). An empty list means the instance
+                // has no platform admins, which is the right reading of an operator
+                // who never said who administers it.
+                .with_platform_admins(config.admin.oidc_groups.clone());
+
+                match federation.clone() {
+                    Some(tokens) => base.with_federation(tokens),
+                    None => base,
+                }
+            },
 
             publish: PublishNotification::new(
                 repository.clone(),
@@ -211,6 +247,24 @@ impl Application {
                 repository.clone(),
                 get,
             ),
+            exchange: federation.map(|tokens| {
+                ExchangeToken::new(
+                    tokens,
+                    repository.clone(),
+                    repository.clone(),
+                    repository.clone(),
+                    clock.clone(),
+                    policies,
+                    audience,
+                )
+            }),
+
+            audit: BrowseAudit::new(repository.clone()),
+            inventory: ChannelInventory::new(repository.clone()),
+            self_join: SelfJoin::new(repository.clone(), repository.clone(), clock.clone()),
+            trust_policies: ListTrustPolicies::new(console_policies),
+            reconciliation: ReadReconciliation::new(reconciliation_log.clone()),
+            presign: PresignAttachment::new(attachments.clone(), authorizer.clone()),
 
             sync: SyncBacklog::new(
                 repository.clone(),
@@ -313,6 +367,7 @@ impl Application {
             purge,
             digests,
             reconciler,
+            reconciliation_log,
             transports,
         })
     }
@@ -355,6 +410,98 @@ fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option
     registry = registry.with(Arc::new(webpush));
 
     Ok((registry, Some(key)))
+}
+
+/// The federation adapter, when `[federation]` says there is one.
+///
+/// Returns `None` for a deployment that does not federate, which is what makes
+/// `POST /auth/token/exchange` answer `501` and every CI token fail to
+/// authenticate. Returns an **error** when the block is present and the key is not
+/// usable: starting mute would mean a pipeline failing on credentials that are
+/// fine, hours after somebody mistyped a path (the rule M3.5 set for VAPID).
+///
+/// The issuer allowlist is built from the trust policies, global and channel-scoped
+/// alike — see [`notify_oidc::FederationTokens`] for why that list is a security
+/// boundary and not a convenience.
+fn federation_tokens(
+    config: &Config,
+    clock: Arc<SystemClock>,
+) -> anyhow::Result<Option<Arc<FederationTokens>>> {
+    let Some(settings) = &config.federation else {
+        return Ok(None);
+    };
+
+    let pem = std::fs::read(&settings.signing_key_file).map_err(|error| {
+        anyhow::anyhow!(
+            "[federation] signing_key_file `{}` cannot be read: {error}",
+            settings.signing_key_file.display()
+        )
+    })?;
+
+    let global = config.trust_policy.iter().map(|policy| &policy.issuer);
+    let scoped = config
+        .channels
+        .managed
+        .iter()
+        .flat_map(|channel| channel.publishers.iter())
+        .map(|publisher| &publisher.issuer);
+
+    let mut issuers: Vec<String> = Vec::new();
+    for issuer in global.chain(scoped) {
+        if !issuer.is_empty() && !issuers.contains(issuer) {
+            issuers.push(issuer.clone());
+        }
+    }
+
+    Ok(Some(Arc::new(FederationTokens::new(
+        &pem,
+        &issuers,
+        settings
+            .audience
+            .clone()
+            .unwrap_or_else(|| "weebo-notify".to_owned()),
+        clock,
+    )?)))
+}
+
+/// The trust policies, global and channel-scoped, as the domain wants them.
+///
+/// A channel's `publishers` block becomes a policy over that one channel, marked
+/// `channel_scoped` so §11's precedence is a fact the domain reads rather than a
+/// shape it has to infer (M4.1).
+fn trust_policies(config: &Config) -> anyhow::Result<TrustPolicies> {
+    let mut policies = Vec::new();
+
+    for policy in &config.trust_policy {
+        policies.push(DomainTrustPolicy {
+            issuer: policy.issuer.clone(),
+            subject: Pattern::parse(&policy.subject)?,
+            channels: policy
+                .channels
+                .iter()
+                .map(|one| Pattern::parse(one))
+                .collect::<Result<_, _>>()?,
+            scopes: policy.scopes.clone(),
+            channel_scoped: false,
+        });
+    }
+
+    for channel in &config.channels.managed {
+        for publisher in &channel.publishers {
+            policies.push(DomainTrustPolicy {
+                issuer: publisher.issuer.clone(),
+                subject: Pattern::parse(&publisher.subject)?,
+                // The channel it is written under, and nothing else. A `publishers`
+                // block that could name other channels would be a global policy
+                // wearing a local name.
+                channels: vec![Pattern::parse(&channel.id)?],
+                scopes: publisher.scopes.clone(),
+                channel_scoped: true,
+            });
+        }
+    }
+
+    Ok(TrustPolicies::new(policies))
 }
 
 /// The object store a deployment without one gets.

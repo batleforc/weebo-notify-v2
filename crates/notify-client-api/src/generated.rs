@@ -731,6 +731,73 @@ on, or offboarding that human kills the bot (design §5.2).*/
             self.0.fmt(f)
         }
     }
+    ///One administrative act.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One administrative act.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "action",
+    ///    "actor",
+    ///    "at"
+    ///  ],
+    ///  "properties": {
+    ///    "action": {
+    ///      "description": "What they did, in a stable dotted vocabulary: `apikey.created`,\n`channel.member_added`, `service_account.disabled`, `dlq.requeued`.\n\nA closed set rather than free text, because this is what an incident review\nfilters on.",
+    ///      "type": "string"
+    ///    },
+    ///    "actor": {
+    ///      "$ref": "#/components/schemas/Principal"
+    ///    },
+    ///    "at": {
+    ///      "description": "When.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "channel": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "detail": {
+    ///      "description": "Extra context: the scopes granted, the previous value.\n\nNever secrets, never payloads. An audit log that quotes an API key is worse\nthan no audit log, because it is a credential store nobody thinks of as one."
+    ///    },
+    ///    "target": {
+    ///      "description": "What it was done to, e.g. an id. Absent when the action has no single\ntarget.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AuditEntry {
+        /**What they did, in a stable dotted vocabulary: `apikey.created`,
+`channel.member_added`, `service_account.disabled`, `dlq.requeued`.
+
+A closed set rather than free text, because this is what an incident review
+filters on.*/
+        pub action: ::std::string::String,
+        pub actor: Principal,
+        ///When.
+        pub at: ::chrono::DateTime<::chrono::offset::Utc>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub channel: ::std::option::Option<ChannelId>,
+        /**Extra context: the scopes granted, the previous value.
+
+Never secrets, never payloads. An audit log that quotes an API key is worse
+than no audit log, because it is a credential store nobody thinks of as one.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub detail: ::std::option::Option<::serde_json::Value>,
+        /**What it was done to, e.g. an id. Absent when the action has no single
+target.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub target: ::std::option::Option<::std::string::String>,
+    }
     /**A principal as it is *rendered*: the identity plus the label a client shows
 next to a revision, an interaction or a receipt (design §2.4, §8.1).
 
@@ -1215,6 +1282,63 @@ against an older build still parses a channel.*/
         pub members: ::std::vec::Vec<Membership>,
         pub origin: Origin,
         pub policy: ChannelPolicy,
+    }
+    /**What the console shows for one channel.
+
+Counts rather than lists for members: the console's question is "is this channel
+configured the way we think", and a name here would put somebody's identity on a
+screen belonging to a channel they may not share with the reader (§2.4).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What the console shows for one channel.\n\nCounts rather than lists for members: the console's question is \"is this channel\nconfigured the way we think\", and a name here would put somebody's identity on a\nscreen belonging to a channel they may not share with the reader (§2.4).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "group_bindings",
+    ///    "id",
+    ///    "members",
+    ///    "origin_managed",
+    ///    "receipts_enabled"
+    ///  ],
+    ///  "properties": {
+    ///    "group_bindings": {
+    ///      "description": "How many identity-provider groups are bound to it.",
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "members": {
+    ///      "description": "How many members it has.",
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "origin_managed": {
+    ///      "description": "Whether GitOps owns it (§11) — the badge that makes the UI read-only.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "receipts_enabled": {
+    ///      "description": "Whether it collects receipts (§7.3).",
+    ///      "type": "boolean"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ChannelCard {
+        ///How many identity-provider groups are bound to it.
+        pub group_bindings: u64,
+        pub id: ChannelId,
+        ///How many members it has.
+        pub members: u64,
+        ///Whether GitOps owns it (§11) — the badge that makes the UI read-only.
+        pub origin_managed: bool,
+        ///Whether it collects receipts (§7.3).
+        pub receipts_enabled: bool,
     }
     ///A channel, named by the operator: `ci-infra`, `cluster-ovh-1`.
     ///
@@ -2741,6 +2865,36 @@ last-write-wins (design §2.2).*/
             user_id: UserId,
         },
     }
+    ///The forge's ID token, presented for exchange.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The forge's ID token, presented for exchange.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "token"
+    ///  ],
+    ///  "properties": {
+    ///    "token": {
+    ///      "description": "The OIDC ID token the CI runner was given by its forge.\n\nIn the body rather than in `Authorization`, deliberately: it is not a\ncredential for *this* API — sending it as a bearer would invite a proxy or a\nlog to treat it as one, and would make this the one endpoint where the\nheader means something different.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ExchangeBody {
+        /**The OIDC ID token the CI runner was given by its forge.
+
+In the body rather than in `Authorization`, deliberately: it is not a
+credential for *this* API — sending it as a bearer would invite a proxy or a
+log to treat it as one, and would make this the one endpoint where the
+header means something different.*/
+        pub token: ::std::string::String,
+    }
     ///"3 notifications expired in `ci-infra` while you were away."
     ///
     /// <details><summary>JSON schema</summary>
@@ -4061,6 +4215,60 @@ answerable before a revocation.*/
         ///`wnk_<prefix>_<secret>`. Store it now; no endpoint can show it again.
         pub secret: ::std::string::String,
     }
+    ///A minted CI token.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A minted CI token.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channels",
+    ///    "expires_at",
+    ///    "scopes",
+    ///    "token"
+    ///  ],
+    ///  "properties": {
+    ///    "channels": {
+    ///      "description": "The channels it resolved to, so the caller can be told what it actually got\nrather than having to decode its own token to find out.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ChannelId"
+    ///      }
+    ///    },
+    ///    "expires_at": {
+    ///      "description": "When it expires — 15 minutes at most (design §5.3).",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "scopes": {
+    ///      "description": "The scopes it resolved to.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Scope"
+    ///      }
+    ///    },
+    ///    "token": {
+    ///      "description": "The token itself, Ed25519-signed by us.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MintedToken {
+        /**The channels it resolved to, so the caller can be told what it actually got
+rather than having to decode its own token to find out.*/
+        pub channels: ::std::vec::Vec<ChannelId>,
+        ///When it expires — 15 minutes at most (design §5.3).
+        pub expires_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///The scopes it resolved to.
+        pub scopes: ::std::vec::Vec<Scope>,
+        ///The token itself, Ed25519-signed by us.
+        pub token: ::std::string::String,
+    }
     ///A notification and its current state.
     ///
     /// <details><summary>JSON schema</summary>
@@ -4382,6 +4590,39 @@ aggregate was rehydrated from a partial history.*/
     ///      "description": "The rows, in the ordering of the endpoint.",
     ///      "type": "array",
     ///      "items": {
+    ///        "$ref": "#/components/schemas/AuditEntry"
+    ///      }
+    ///    },
+    ///    "next": {
+    ///      "$ref": "#/components/schemas/Cursor"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageAuditEntry {
+        ///The rows, in the ordering of the endpoint.
+        pub items: ::std::vec::Vec<AuditEntry>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub next: ::std::option::Option<Cursor>,
+    }
+    ///What a caller gets.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a caller gets.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "items"
+    ///  ],
+    ///  "properties": {
+    ///    "items": {
+    ///      "description": "The rows, in the ordering of the endpoint.",
+    ///      "type": "array",
+    ///      "items": {
     ///        "$ref": "#/components/schemas/Channel"
     ///      }
     ///    },
@@ -4511,6 +4752,117 @@ where it holds one and not the other.*/
         ///Every silence currently in force for them.
         pub silences: ::std::vec::Vec<Silence>,
         pub user: UserId,
+    }
+    ///What a client asks to upload.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a client asks to upload.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channel",
+    ///    "content_length",
+    ///    "content_type"
+    ///  ],
+    ///  "properties": {
+    ///    "channel": {
+    ///      "description": "Where the publisher intends to publish it.\n\nRequired, and it is the authorisation: uploading is a publisher's act, not\nsomething every authenticated principal may do. The attachment itself is not\nbound to the channel afterwards (design §6.1).",
+    ///      "type": "string"
+    ///    },
+    ///    "content_length": {
+    ///      "description": "The declared size, checked against §8.2's ceiling **before** signing.",
+    ///      "type": "integer",
+    ///      "format": "int64",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "content_type": {
+    ///      "description": "The declared media type. Imposed in the signature, so an upload that lies is\nrefused by the bucket rather than discovered later.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PresignBody {
+        /**Where the publisher intends to publish it.
+
+Required, and it is the authorisation: uploading is a publisher's act, not
+something every authenticated principal may do. The attachment itself is not
+bound to the channel afterwards (design §6.1).*/
+        pub channel: ::std::string::String,
+        ///The declared size, checked against §8.2's ceiling **before** signing.
+        pub content_length: i64,
+        /**The declared media type. Imposed in the signature, so an upload that lies is
+refused by the bucket rather than discovered later.*/
+        pub content_type: ::std::string::String,
+    }
+    ///A signed upload.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A signed upload.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "expires_at",
+    ///    "headers",
+    ///    "id",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "expires_at": {
+    ///      "description": "When the signature stops working. Short: a presigned URL is a bearer\ncredential, and one that lives for a day is one that leaks into a log for a\nday.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "headers": {
+    ///      "description": "Headers the client must send verbatim — they are covered by the signature.\n\nA map and not a `Vec<(String, String)>`, which is what this was until the\nroute existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in\nJSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a\nboolean is not something OpenAPI 3.0 can express, so the Rust client stopped\ngenerating the moment this type reached the document. The same lesson as D1\nand D3: a shape no generator can model is not describable, however natural it\nreads in Rust (ADR-0009).\n\nIt is also the better shape here — headers are named, not ordered — and\n`BTreeMap` keeps the document and the response stable across runs.",
+    ///      "type": "object",
+    ///      "additionalProperties": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/AttachmentId"
+    ///    },
+    ///    "url": {
+    ///      "description": "Where to PUT the bytes.",
+    ///      "type": "string",
+    ///      "format": "uri"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PresignedUpload {
+        /**When the signature stops working. Short: a presigned URL is a bearer
+credential, and one that lives for a day is one that leaks into a log for a
+day.*/
+        pub expires_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        /**Headers the client must send verbatim — they are covered by the signature.
+
+A map and not a `Vec<(String, String)>`, which is what this was until the
+route existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in
+JSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a
+boolean is not something OpenAPI 3.0 can express, so the Rust client stopped
+generating the moment this type reached the document. The same lesson as D1
+and D3: a shape no generator can model is not describable, however natural it
+reads in Rust (ADR-0009).
+
+It is also the better shape here — headers are named, not ordered — and
+`BTreeMap` keeps the document and the response stable across runs.*/
+        pub headers: ::std::collections::HashMap<
+            ::std::string::String,
+            ::std::string::String,
+        >,
+        pub id: AttachmentId,
+        ///Where to PUT the bytes.
+        pub url: ::std::string::String,
     }
     ///The identity behind a request, after authentication.
     ///
@@ -5707,6 +6059,71 @@ operator needs to know *which* dependency is holding the replica back.*/
             value.parse()
         }
     }
+    ///What the last GitOps pass did (design §11, §10.4bis).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What the last GitOps pass did (design §11, §10.4bis).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "accounts",
+    ///    "at",
+    ///    "channels",
+    ///    "pending",
+    ///    "removed"
+    ///  ],
+    ///  "properties": {
+    ///    "accounts": {
+    ///      "description": "Managed service accounts written.",
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "at": {
+    ///      "description": "When this replica last applied the configuration.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "channels": {
+    ///      "description": "Managed channels written.",
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "pending": {
+    ///      "description": "Bindings by `oidc_sub` or `email` naming somebody who has never logged in.\n\nThe one thing on this screen that is *actionable and quiet otherwise*: such a\nbinding grants nothing until that person's first login (§14.1, M1.8), and\nwithout a place to see it the symptom is \"alice says she cannot see the\nchannel\" with nothing to connect it to.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "removed": {
+    ///      "description": "Channels that left the configuration and were archived or deleted.",
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Reconciliation {
+        ///Managed service accounts written.
+        pub accounts: u64,
+        ///When this replica last applied the configuration.
+        pub at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///Managed channels written.
+        pub channels: u64,
+        /**Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
+
+The one thing on this screen that is *actionable and quiet otherwise*: such a
+binding grants nothing until that person's first login (§14.1, M1.8), and
+without a place to see it the symptom is "alice says she cannot see the
+channel" with nothing to connect it to.*/
+        pub pending: ::std::vec::Vec<::std::string::String>,
+        ///Channels that left the configuration and were archived or deleted.
+        pub removed: u64,
+    }
     /**What recording an interaction did.
 
 A DTO rather than the domain's [`Recorded`], because the distinction the domain
@@ -6846,6 +7263,67 @@ not — the stream and the backlog carry identical events. It sits here with
             value.parse()
         }
     }
+    ///One trust policy as the console shows it.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One trust policy as the console shows it.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channel_scoped",
+    ///    "channels",
+    ///    "issuer",
+    ///    "scopes",
+    ///    "subject"
+    ///  ],
+    ///  "properties": {
+    ///    "channel_scoped": {
+    ///      "description": "Whether it came from a channel's own `publishers` block, which §11 makes win\nover a global one — the thing to look at first when a policy \"should\" match\nand does not.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "channels": {
+    ///      "description": "The channel patterns it grants.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "issuer": {
+    ///      "description": "The forge it trusts.",
+    ///      "type": "string"
+    ///    },
+    ///    "scopes": {
+    ///      "description": "What it grants there.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Scope"
+    ///      }
+    ///    },
+    ///    "subject": {
+    ///      "description": "The anchored subject pattern (§5.3).",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TrustPolicyCard {
+        /**Whether it came from a channel's own `publishers` block, which §11 makes win
+over a global one — the thing to look at first when a policy "should" match
+and does not.*/
+        pub channel_scoped: bool,
+        ///The channel patterns it grants.
+        pub channels: ::std::vec::Vec<::std::string::String>,
+        ///The forge it trusts.
+        pub issuer: ::std::string::String,
+        ///What it grants there.
+        pub scopes: ::std::vec::Vec<Scope>,
+        ///The anchored subject pattern (§5.3).
+        pub subject: ::std::string::String,
+    }
     ///How long to keep it: a single-unit duration such as `48h`, or `0` for forever.
     ///
     /// <details><summary>JSON schema</summary>
@@ -7158,6 +7636,246 @@ impl ClientInfo<()> for Client {
 impl ClientHooks<()> for &Client {}
 #[allow(clippy::all)]
 impl Client {
+    /**Browse the audit log
+
+Sends a `GET` request to `/api/v1/admin/audit`
+
+Arguments:
+- `action`: One action, e.g. `apikey.revoked`
+- `channel`: One channel
+- `cursor`: Opaque page cursor
+- `limit`: Page size, clamped server-side
+*/
+    pub async fn audit<'a>(
+        &'a self,
+        action: Option<&'a str>,
+        channel: Option<&'a str>,
+        cursor: Option<&'a str>,
+        limit: Option<i32>,
+    ) -> Result<ResponseValue<types::PageAuditEntry>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/admin/audit", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("action", &action))
+            .query(&progenitor_client::QueryParam::new("channel", &channel))
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "audit",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The channel inventory — record cards, never inboxes
+
+Sends a `GET` request to `/api/v1/admin/channels`
+
+*/
+    pub async fn inventory<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::ChannelCard>>,
+        Error<types::Problem>,
+    > {
+        let url = format!("{}/api/v1/admin/channels", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "inventory",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Join a channel as the calling admin — the audited way to content (design §5.4)
+
+Sends a `POST` request to `/api/v1/admin/channels/{channel}/join`
+
+Arguments:
+- `channel`: Channel id
+*/
+    pub async fn self_join<'a>(
+        &'a self,
+        channel: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/admin/channels/{}/join", self.baseurl, encode_path(& channel
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "self_join",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**What the last GitOps pass did on this replica (design §11)
+
+Sends a `GET` request to `/api/v1/admin/reconciliation`
+
+*/
+    pub async fn reconciliation<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<types::Reconciliation>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/admin/reconciliation", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "reconciliation",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The trust policies this instance was deployed with (design §5.3, §11)
+
+Sends a `GET` request to `/api/v1/admin/trust-policies`
+
+*/
+    pub async fn trust_policies<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::TrustPolicyCard>>,
+        Error<types::Problem>,
+    > {
+        let url = format!("{}/api/v1/admin/trust-policies", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "trust_policies",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /**The caller's keys — metadata only, never a secret
 
 Sends a `GET` request to `/api/v1/apikeys`
@@ -7286,6 +8004,108 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Sign an upload to the object store
+
+Sends a `POST` request to `/api/v1/attachments/presign`
+
+*/
+    pub async fn presign<'a>(
+        &'a self,
+        body: &'a types::PresignBody,
+    ) -> Result<ResponseValue<types::PresignedUpload>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/attachments/presign", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "presign",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            413u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            501u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Exchange a forge ID token for a short-lived weebo-notify token
+
+Sends a `POST` request to `/api/v1/auth/token/exchange`
+
+*/
+    pub async fn exchange<'a>(
+        &'a self,
+        body: &'a types::ExchangeBody,
+    ) -> Result<ResponseValue<types::MintedToken>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/auth/token/exchange", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "exchange",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            501u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

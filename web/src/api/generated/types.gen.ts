@@ -192,6 +192,41 @@ export type ApiKeyPrefix = string;
 export type AttachmentId = string;
 
 /**
+ * One administrative act.
+ */
+export type AuditEntry = {
+    /**
+     * What they did, in a stable dotted vocabulary: `apikey.created`,
+     * `channel.member_added`, `service_account.disabled`, `dlq.requeued`.
+     *
+     * A closed set rather than free text, because this is what an incident review
+     * filters on.
+     */
+    action: string;
+    /**
+     * Who did it.
+     */
+    actor: Principal;
+    /**
+     * When.
+     */
+    at: string;
+    channel?: null | ChannelId;
+    /**
+     * Extra context: the scopes granted, the previous value.
+     *
+     * Never secrets, never payloads. An audit log that quotes an API key is worse
+     * than no audit log, because it is a credential store nobody thinks of as one.
+     */
+    detail?: unknown;
+    /**
+     * What it was done to, e.g. an id. Absent when the action has no single
+     * target.
+     */
+    target?: string | null;
+};
+
+/**
  * A principal as it is *rendered*: the identity plus the label a client shows
  * next to a revision, an interaction or a receipt (design §2.4, §8.1).
  *
@@ -254,6 +289,36 @@ export type Channel = {
      * Its policy.
      */
     policy: ChannelPolicy;
+};
+
+/**
+ * What the console shows for one channel.
+ *
+ * Counts rather than lists for members: the console's question is "is this channel
+ * configured the way we think", and a name here would put somebody's identity on a
+ * screen belonging to a channel they may not share with the reader (§2.4).
+ */
+export type ChannelCard = {
+    /**
+     * How many identity-provider groups are bound to it.
+     */
+    group_bindings: number;
+    /**
+     * Which channel.
+     */
+    id: ChannelId;
+    /**
+     * How many members it has.
+     */
+    members: number;
+    /**
+     * Whether GitOps owns it (§11) — the badge that makes the UI read-only.
+     */
+    origin_managed: boolean;
+    /**
+     * Whether it collects receipts (§7.3).
+     */
+    receipts_enabled: boolean;
 };
 
 /**
@@ -726,6 +791,21 @@ export type Event = (RevisionEvent & {
 });
 
 /**
+ * The forge's ID token, presented for exchange.
+ */
+export type ExchangeBody = {
+    /**
+     * The OIDC ID token the CI runner was given by its forge.
+     *
+     * In the body rather than in `Authorization`, deliberately: it is not a
+     * credential for *this* API — sending it as a bearer would invite a proxy or a
+     * log to treat it as one, and would make this the one endpoint where the
+     * header means something different.
+     */
+    token: string;
+};
+
+/**
  * "3 notifications expired in `ci-infra` while you were away."
  */
 export type ExpiredWhileAway = {
@@ -908,6 +988,29 @@ export type MintedKey = ApiKey & {
 };
 
 /**
+ * A minted CI token.
+ */
+export type MintedToken = {
+    /**
+     * The channels it resolved to, so the caller can be told what it actually got
+     * rather than having to decode its own token to find out.
+     */
+    channels: Array<ChannelId>;
+    /**
+     * When it expires — 15 minutes at most (design §5.3).
+     */
+    expires_at: string;
+    /**
+     * The scopes it resolved to.
+     */
+    scopes: Array<Scope>;
+    /**
+     * The token itself, Ed25519-signed by us.
+     */
+    token: string;
+};
+
+/**
  * A notification and its current state.
  */
 export type Notification = {
@@ -986,6 +1089,20 @@ export type Origin = typeof Origin[keyof typeof Origin];
 /**
  * What a caller gets.
  */
+export type PageAuditEntry = {
+    /**
+     * The rows, in the ordering of the endpoint.
+     */
+    items: Array<AuditEntry>;
+    /**
+     * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
+     */
+    next?: null | Cursor;
+};
+
+/**
+ * What a caller gets.
+ */
 export type PageChannel = {
     /**
      * The rows, in the ordering of the endpoint.
@@ -1050,6 +1167,66 @@ export type PreferenceEvent = {
      * Whose preferences these are.
      */
     user: UserId;
+};
+
+/**
+ * What a client asks to upload.
+ */
+export type PresignBody = {
+    /**
+     * Where the publisher intends to publish it.
+     *
+     * Required, and it is the authorisation: uploading is a publisher's act, not
+     * something every authenticated principal may do. The attachment itself is not
+     * bound to the channel afterwards (design §6.1).
+     */
+    channel: string;
+    /**
+     * The declared size, checked against §8.2's ceiling **before** signing.
+     */
+    content_length: number;
+    /**
+     * The declared media type. Imposed in the signature, so an upload that lies is
+     * refused by the bucket rather than discovered later.
+     */
+    content_type: string;
+};
+
+/**
+ * A signed upload.
+ */
+export type PresignedUpload = {
+    /**
+     * When the signature stops working. Short: a presigned URL is a bearer
+     * credential, and one that lives for a day is one that leaks into a log for a
+     * day.
+     */
+    expires_at: string;
+    /**
+     * Headers the client must send verbatim — they are covered by the signature.
+     *
+     * A map and not a `Vec<(String, String)>`, which is what this was until the
+     * route existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in
+     * JSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a
+     * boolean is not something OpenAPI 3.0 can express, so the Rust client stopped
+     * generating the moment this type reached the document. The same lesson as D1
+     * and D3: a shape no generator can model is not describable, however natural it
+     * reads in Rust (ADR-0009).
+     *
+     * It is also the better shape here — headers are named, not ordered — and
+     * `BTreeMap` keeps the document and the response stable across runs.
+     */
+    headers: {
+        [key: string]: string;
+    };
+    /**
+     * The id to reference in a payload once the upload succeeds.
+     */
+    id: AttachmentId;
+    /**
+     * Where to PUT the bytes.
+     */
+    url: string;
 };
 
 /**
@@ -1453,6 +1630,37 @@ export const ReceiptKind = { DELIVERED: 'delivered', SEEN: 'seen' } as const;
 export type ReceiptKind = typeof ReceiptKind[keyof typeof ReceiptKind];
 
 /**
+ * What the last GitOps pass did (design §11, §10.4bis).
+ */
+export type Reconciliation = {
+    /**
+     * Managed service accounts written.
+     */
+    accounts: number;
+    /**
+     * When this replica last applied the configuration.
+     */
+    at: string;
+    /**
+     * Managed channels written.
+     */
+    channels: number;
+    /**
+     * Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
+     *
+     * The one thing on this screen that is *actionable and quiet otherwise*: such a
+     * binding grants nothing until that person's first login (§14.1, M1.8), and
+     * without a place to see it the symptom is "alice says she cannot see the
+     * channel" with nothing to connect it to.
+     */
+    pending: Array<string>;
+    /**
+     * Channels that left the configuration and were archived or deleted.
+     */
+    removed: number;
+};
+
+/**
  * What recording an interaction did.
  *
  * A DTO rather than the domain's [`Recorded`], because the distinction the domain
@@ -1803,6 +2011,34 @@ export const TombstoneReason = { DELETED: 'deleted', EXPIRED: 'expired' } as con
 export type TombstoneReason = typeof TombstoneReason[keyof typeof TombstoneReason];
 
 /**
+ * One trust policy as the console shows it.
+ */
+export type TrustPolicyCard = {
+    /**
+     * Whether it came from a channel's own `publishers` block, which §11 makes win
+     * over a global one — the thing to look at first when a policy "should" match
+     * and does not.
+     */
+    channel_scoped: boolean;
+    /**
+     * The channel patterns it grants.
+     */
+    channels: Array<string>;
+    /**
+     * The forge it trusts.
+     */
+    issuer: string;
+    /**
+     * What it grants there.
+     */
+    scopes: Array<Scope>;
+    /**
+     * The anchored subject pattern (§5.3).
+     */
+    subject: string;
+};
+
+/**
  * How long to keep it: a single-unit duration such as `48h`, or `0` for forever.
  */
 export type Ttl = string;
@@ -1860,6 +2096,173 @@ export type WebPushKey = {
      */
     application_server_key: string;
 };
+
+export type AuditData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * One action, e.g. `apikey.revoked`
+         */
+        action?: string;
+        /**
+         * One channel
+         */
+        channel?: string;
+        /**
+         * Opaque page cursor
+         */
+        cursor?: string;
+        /**
+         * Page size, clamped server-side
+         */
+        limit?: number;
+    };
+    url: '/api/v1/admin/audit';
+};
+
+export type AuditErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+};
+
+export type AuditError = AuditErrors[keyof AuditErrors];
+
+export type AuditResponses = {
+    /**
+     * Audit entries, newest first
+     */
+    200: PageAuditEntry;
+};
+
+export type AuditResponse = AuditResponses[keyof AuditResponses];
+
+export type InventoryData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/admin/channels';
+};
+
+export type InventoryErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+};
+
+export type InventoryError = InventoryErrors[keyof InventoryErrors];
+
+export type InventoryResponses = {
+    /**
+     * Every channel, as metadata
+     */
+    200: Array<ChannelCard>;
+};
+
+export type InventoryResponse = InventoryResponses[keyof InventoryResponses];
+
+export type SelfJoinData = {
+    body?: never;
+    path: {
+        /**
+         * Channel id
+         */
+        channel: string;
+    };
+    query?: never;
+    url: '/api/v1/admin/channels/{channel}/join';
+};
+
+export type SelfJoinErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+};
+
+export type SelfJoinError = SelfJoinErrors[keyof SelfJoinErrors];
+
+export type SelfJoinResponses = {
+    /**
+     * Joined, and recorded in the audit log
+     */
+    204: void;
+};
+
+export type SelfJoinResponse = SelfJoinResponses[keyof SelfJoinResponses];
+
+export type ReconciliationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/admin/reconciliation';
+};
+
+export type ReconciliationErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+};
+
+export type ReconciliationError = ReconciliationErrors[keyof ReconciliationErrors];
+
+export type ReconciliationResponses = {
+    /**
+     * The last pass, or `null` if none has finished on this replica
+     */
+    200: null | Reconciliation;
+};
+
+export type ReconciliationResponse = ReconciliationResponses[keyof ReconciliationResponses];
+
+export type TrustPoliciesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/admin/trust-policies';
+};
+
+export type TrustPoliciesErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+};
+
+export type TrustPoliciesError = TrustPoliciesErrors[keyof TrustPoliciesErrors];
+
+export type TrustPoliciesResponses = {
+    /**
+     * Configured policies, read-only
+     */
+    200: Array<TrustPolicyCard>;
+};
+
+export type TrustPoliciesResponse = TrustPoliciesResponses[keyof TrustPoliciesResponses];
 
 export type ListKeysData = {
     body?: never;
@@ -1948,6 +2351,80 @@ export type RevokeKeyResponses = {
 };
 
 export type RevokeKeyResponse = RevokeKeyResponses[keyof RevokeKeyResponses];
+
+export type PresignData = {
+    body: PresignBody;
+    path?: never;
+    query?: never;
+    url: '/api/v1/attachments/presign';
+};
+
+export type PresignErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Cannot publish in that channel
+     */
+    403: Problem;
+    /**
+     * Over the 25 MiB ceiling (§8.2)
+     */
+    413: Problem;
+    /**
+     * Not a supported image type
+     */
+    422: Problem;
+    /**
+     * This deployment has no object store
+     */
+    501: Problem;
+};
+
+export type PresignError = PresignErrors[keyof PresignErrors];
+
+export type PresignResponses = {
+    /**
+     * A short-lived signed upload
+     */
+    200: PresignedUpload;
+};
+
+export type PresignResponse = PresignResponses[keyof PresignResponses];
+
+export type ExchangeData = {
+    body: ExchangeBody;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/token/exchange';
+};
+
+export type ExchangeErrors = {
+    /**
+     * Unverifiable, replayed, or matched by no policy
+     */
+    401: Problem;
+    /**
+     * Over the per-(issuer, subject) budget
+     */
+    429: Problem;
+    /**
+     * This deployment does not federate
+     */
+    501: Problem;
+};
+
+export type ExchangeError = ExchangeErrors[keyof ExchangeErrors];
+
+export type ExchangeResponses = {
+    /**
+     * A token valid for at most 15 minutes
+     */
+    200: MintedToken;
+};
+
+export type ExchangeResponse = ExchangeResponses[keyof ExchangeResponses];
 
 export type ReadAvatarData = {
     body?: never;

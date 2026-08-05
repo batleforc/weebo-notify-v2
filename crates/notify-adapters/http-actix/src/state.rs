@@ -8,13 +8,14 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Authenticate, CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount,
-    DeleteChannel, DeleteNotification, EnrolDevice, GetNotification, ListApiKeys, ListChannels,
-    ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts, ManageMembers,
-    PostReceipt, PublishNotification, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts,
-    RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
-    SetAvatar, SetDnd, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile,
-    UpsertNotification,
+    Authenticate, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel, CreateServiceAccount,
+    DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, ExchangeToken,
+    GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
+    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt,
+    PresignAttachment, PublishNotification, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts,
+    ReadReconciliation, RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice,
+    SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
+    UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_ports::EventBus;
 
@@ -56,6 +57,24 @@ pub struct ApiState {
     pub receipt: PostReceipt,
     /// `GET /notifications/{id}/receipts`.
     pub readership: ReadReceipts,
+
+    /// `POST /auth/token/exchange` — absent on a deployment with no `[federation]`
+    /// block, which the route reports as `501` rather than as a bad token.
+    pub exchange: Option<ExchangeToken>,
+
+    /// `GET /admin/audit`.
+    pub audit: BrowseAudit,
+    /// `GET /admin/channels`.
+    pub inventory: ChannelInventory,
+    /// `POST /admin/channels/{channel}/join`.
+    pub self_join: SelfJoin,
+    /// `GET /admin/trust-policies`.
+    pub trust_policies: ListTrustPolicies,
+    /// `GET /admin/reconciliation`.
+    pub reconciliation: ReadReconciliation,
+
+    /// `POST /attachments/presign`.
+    pub presign: PresignAttachment,
 
     /// `GET /sync`.
     pub sync: SyncBacklog,

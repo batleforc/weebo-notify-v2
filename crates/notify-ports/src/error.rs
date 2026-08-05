@@ -41,8 +41,9 @@ pub enum PortError {
         what: &'static str,
     },
 
-    /// The stored data does not fit the domain any more: a row written by an older
-    /// build, a column holding something no current type accepts.
+    /// Something this deployment owns cannot be read back: a row written by an older
+    /// build, a column holding something no current type accepts, or a key file the
+    /// operator mounted that no loader here accepts (design §5.3, §11).
     ///
     /// Never a client's fault, always ours — which is why it is here and not in
     /// [`DomainError`], even though the immediate cause is usually a failed

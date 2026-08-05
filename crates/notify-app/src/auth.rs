@@ -55,6 +55,8 @@ pub struct Authenticate {
     /// use case discovering a missing capability, it is the hot path of every
     /// request deciding whether there is a second door to try at all.
     federation: Option<Arc<dyn FederationVerifier>>,
+    /// The identity-provider groups that carry the platform role (§5.4).
+    platform_admins: Vec<String>,
     users: Arc<dyn UserRepository>,
     accounts: Arc<dyn ServiceAccountRepository>,
     keys: Arc<dyn ApiKeyRepository>,
@@ -82,12 +84,26 @@ impl Authenticate {
         Self {
             tokens,
             federation: None,
+            platform_admins: Vec::new(),
             users,
             accounts,
             keys,
             hasher,
             clock,
         }
+    }
+
+    /// Which identity-provider groups carry the platform role (design §5.4, §11).
+    ///
+    /// Configuration, and only configuration: §5.4 says no API path may grant this,
+    /// so there is nowhere else it could come from. Empty — the default — means the
+    /// instance has no platform admins, and every `/admin/*` call is a `403`. That
+    /// is the right default: an operator who has not said who administers the
+    /// platform has not said "everybody".
+    #[must_use]
+    pub fn with_platform_admins(mut self, groups: Vec<String>) -> Self {
+        self.platform_admins = groups;
+        self
     }
 
     /// Also accept the CI tokens this instance mints (design §5.3, M4.2).
@@ -159,7 +175,11 @@ impl Authenticate {
 
         // The groups ride on the caller rather than being stored: they are a claim
         // this token carries, and the next token may carry different ones (§11).
-        Ok(Caller::member_of(user.principal(), claims.groups))
+        let platform_admin = self.is_platform_admin(&claims.groups);
+        Ok(Caller {
+            platform_admin,
+            ..Caller::member_of(user.principal(), claims.groups)
+        })
     }
 
     /// One of our own CI tokens, if that is what this is (design §5.3).
@@ -195,7 +215,23 @@ impl Authenticate {
             // A CI job carries no groups: its rights come from the trust policy, and
             // a forge's token has no notion of this instance's identity provider.
             groups: Vec::new(),
+            // And never the platform role. §5.4 reserves it to OIDC users, so this
+            // is a `false` the type system keeps rather than a check somebody has to
+            // remember to write in every admin handler.
+            platform_admin: false,
         }))
+    }
+
+    /// Whether this token's groups carry the platform role (design §5.4).
+    ///
+    /// Derived per request from the claim, exactly like channel access (§14.2). An
+    /// empty configured list can never match, which is what makes "no admins
+    /// configured" mean "nobody"; and an issuer that sends no groups at all reaches
+    /// the same answer rather than a default grant (scenario T29).
+    fn is_platform_admin(&self, groups: &[String]) -> bool {
+        groups
+            .iter()
+            .any(|group| self.platform_admins.contains(group))
     }
 
     /// API key: parse, look up by prefix, verify the secret (design §5.2).
@@ -250,8 +286,11 @@ impl Authenticate {
                 channels: stored.key.channels.clone(),
             },
             // A key carries its own scopes and its own channel list (§5.2). Giving
-            // it its owner's groups on top would hand it rights nobody granted it.
+            // it its owner's groups on top would hand it rights nobody granted it —
+            // and the platform role least of all, which is why an admin's personal
+            // key administers channels and never the instance (§5.4).
             groups: Vec::new(),
+            platform_admin: false,
         })
     }
 

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
+use time::OffsetDateTime;
 use utoipa_actix_web::AppExt as _;
 use utoipa_scalar::Servable as _;
 
@@ -129,6 +130,9 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     application.store.migrate().await?;
 
     let report = application.reconciler.execute(&config).await?;
+    application
+        .reconciliation_log
+        .record(report.as_pass(OffsetDateTime::now_utc()));
     tracing::info!(
         channels = report.channels,
         accounts = report.accounts,
@@ -190,6 +194,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         application.purge,
         application.digests,
         application.reconciler,
+        application.reconciliation_log,
         config,
     ));
 
@@ -221,6 +226,7 @@ async fn background(
     purge: notify_app::PurgeExpired,
     digests: notify_app::SendDndDigests,
     reconciler: reconcile::Reconciler,
+    reconciliation_log: notify_app::ReconciliationLog,
     config: config::Config,
 ) {
     let mut purge_tick = actix_web::rt::time::interval(JOB_INTERVAL);
@@ -256,9 +262,15 @@ async fn background(
                 Err(error) => tracing::warn!(?error, "digest pass failed; retrying next tick"),
             },
             _ = reconcile_tick.tick() => match reconciler.execute(&config).await {
-                Ok(report) => for pending in &report.pending {
-                    tracing::warn!(%pending, "access binding is waiting on a first login");
-                },
+                Ok(report) => {
+                    // Recorded only on success, which is why the run loop writes it
+                    // rather than the reconciler: a failed pass must leave the last
+                    // good one on the console, not replace it with nothing.
+                    reconciliation_log.record(report.as_pass(OffsetDateTime::now_utc()));
+                    for pending in &report.pending {
+                        tracing::warn!(%pending, "access binding is waiting on a first login");
+                    }
+                }
                 Err(error) => tracing::warn!(?error, "reconcile pass failed; retrying next tick"),
             },
         }
