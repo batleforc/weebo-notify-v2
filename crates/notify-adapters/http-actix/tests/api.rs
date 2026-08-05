@@ -20,9 +20,9 @@ use notify_app::{
     DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
     GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
     ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
-    ReadAvatar, ReadDnd, ReadProfile, RecordInteraction, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
-    UpdateChannel, UpdateProfile, UpsertNotification,
+    ReadAvatar, ReadDnd, ReadProfile, ReadReceipts, RecordInteraction, ResolveStreamStart,
+    RevokeApiKey, RevokeDevice, SearchNotifications, SetAvatar, SetDnd, SilenceNotification,
+    SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_avatars::ImageAvatarProcessor;
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
@@ -133,9 +133,15 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
-                get,
+                get.clone(),
                 Arc::new(clock.clone()),
                 fanout.clone(),
+            ),
+            readership: ReadReceipts::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                get,
             ),
             sync: SyncBacklog::new(
                 Arc::new(store.clone()),
@@ -1125,6 +1131,7 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
         "/api/v1/stream",
         "/api/v1/ws",
         "/api/v1/receipts",
+        "/api/v1/notifications/{id}/receipts",
         "/api/v1/devices",
         "/api/v1/devices/{id}",
         "/api/v1/apikeys",
@@ -1140,6 +1147,90 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
             "{expected} is served but undocumented; the generated clients would not have it"
         );
     }
+}
+
+// --- Receipts (design §7.3, §10.3) ------------------------------------------
+
+/// Publish one notification into a channel and hand back its id.
+macro_rules! publish_into {
+    ($app:expr, $channel:literal) => {{
+        let request = test::TestRequest::post()
+            .uri("/api/v1/notifications")
+            .insert_header(AUTH)
+            .set_json(json!({ "channel": $channel, "title": "etcd degraded" }))
+            .to_request();
+        let published: Value = test::call_and_read_body_json(&$app, request).await;
+        published["notification"]["id"].as_str().unwrap().to_owned()
+    }};
+}
+
+#[actix_web::test]
+async fn the_roll_names_the_people_who_read_it() {
+    let (harness, state) = Harness::new();
+    let id = harness.with_alice_in("ci-infra").await;
+
+    let mut channel = ChannelRepository::get(&harness.store, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    channel.policy.receipts_enabled = true;
+    ChannelRepository::upsert(&harness.store, &channel)
+        .await
+        .unwrap();
+
+    let app = service!(state);
+    let notification = publish_into!(app, "ci-infra");
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/receipts")
+        .insert_header(AUTH)
+        .set_json(json!({ "notification_id": notification, "kind": "seen" }))
+        .to_request();
+    assert!(
+        test::call_service(&app, request)
+            .await
+            .status()
+            .is_success()
+    );
+
+    let request = test::TestRequest::get()
+        .uri(&format!("/api/v1/notifications/{notification}/receipts"))
+        .insert_header(AUTH)
+        .to_request();
+    let roll: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert_eq!(roll["audience"], 1);
+    assert_eq!(roll["seen"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        roll["seen"][0]["author"]["display_name"], "Alice Martin",
+        "a hover card of raw identifiers answers nothing (§2.4): {roll}"
+    );
+    assert_eq!(roll["seen"][0]["author"]["kind"], "user");
+    assert_eq!(
+        roll["delivered_devices"], 0,
+        "delivery is folded, and nothing delivered here"
+    );
+}
+
+#[actix_web::test]
+async fn a_channel_that_collects_no_receipts_answers_null_rather_than_zero() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+    let notification = publish_into!(app, "ci-infra");
+
+    let request = test::TestRequest::get()
+        .uri(&format!("/api/v1/notifications/{notification}/receipts"))
+        .insert_header(AUTH)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(response).await;
+    assert!(
+        body.is_null(),
+        "\"nobody read it\" and \"we do not record that\" must not render the same: {body}"
+    );
 }
 
 // --- Do not disturb (design §7.4) -------------------------------------------

@@ -17,9 +17,9 @@ use notify_app::{
     DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, Fanout,
     GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
     ListRevisions, ListServiceAccounts, ManageMembers, PostReceipt, PublishNotification,
-    PurgeExpired, ReadAvatar, ReadDnd, ReadProfile, RecordInteraction, ResolveStreamStart,
-    RevokeApiKey, RevokeDevice, SearchNotifications, SendDndDigests, SetAvatar, SetDnd,
-    SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel, UpdateProfile,
+    PurgeExpired, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts, RecordInteraction,
+    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SendDndDigests, SetAvatar,
+    SetDnd, SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel, UpdateProfile,
     UpsertNotification,
 };
 use notify_attachments_s3::{S3Attachments, S3Config};
@@ -201,9 +201,15 @@ impl Application {
                 repository.clone(),
                 repository.clone(),
                 repository.clone(),
-                get,
+                get.clone(),
                 clock.clone(),
                 fanout.clone(),
+            ),
+            readership: ReadReceipts::new(
+                repository.clone(),
+                repository.clone(),
+                repository.clone(),
+                get,
             ),
 
             sync: SyncBacklog::new(

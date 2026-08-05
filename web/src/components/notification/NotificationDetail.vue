@@ -14,11 +14,17 @@ import { computed, ref, watch } from "vue";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HoverCard } from "@/components/ui/hover-card";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
-import { exact } from "@/lib/format";
-import { lookOf, priorityLabel, stateLabel } from "@/lib/notification";
+import { ago, exact } from "@/lib/format";
+import {
+  authorLabel,
+  lookOf,
+  priorityLabel,
+  stateLabel,
+} from "@/lib/notification";
 import { useChannels } from "@/stores/channels";
 import { useDetail } from "@/stores/detail";
 import ActionBar from "./ActionBar.vue";
@@ -34,22 +40,33 @@ const copied = ref(false);
 const head = computed(() => detail.notification?.head ?? null);
 const image = computed(() => head.value?.content.image ?? null);
 
-/** Receipts are opt-in per channel (§7.3): no policy, no counter. */
+/**
+ * Receipts are opt-in per channel (§7.3): no policy, no counter.
+ *
+ * Read from the channel policy rather than from the readership being present,
+ * because this also gates the `seen` receipt this panel posts — asking the channel
+ * first saves a request the server would answer with nothing.
+ */
 const showsReceipts = computed(() =>
   detail.notification
     ? channels.collectsReceipts(detail.notification.channel)
     : false,
 );
 
-/** The audience "vu par 3/5" divides by: members who are people (§7.3). */
-const audience = computed(() => {
-  const channel = detail.notification
-    ? channels.byId.get(detail.notification.channel)
-    : undefined;
-  return (channel?.members ?? []).filter(
-    (member) => member.principal.kind === "user",
-  ).length;
-});
+/**
+ * Who read it, in the words the rest of the app uses for a principal (§2.4).
+ *
+ * `authorLabel` rather than the raw `display_name`: a profile the server could not
+ * name still has to render as something, and it is the same fallback the timeline
+ * and the inbox already show for the same person.
+ */
+const readers = computed(() =>
+  (detail.readership?.seen ?? []).map((sighting, index) => ({
+    key: `${authorLabel(sighting.author)}-${index}`,
+    label: authorLabel(sighting.author),
+    at: sighting.at,
+  })),
+);
 
 async function copyPermalink(): Promise<void> {
   if (!detail.id) {
@@ -161,15 +178,62 @@ watch(
           <Badge v-if="detail.notification.external_id" variant="muted">
             {{ detail.notification.external_id }}
           </Badge>
-          <Tooltip v-if="showsReceipts">
+          <HoverCard v-if="showsReceipts">
             <Badge variant="muted" class="cursor-default">
               <Eye class="size-3" />
-              vu par {{ detail.seenBy }}/{{ audience }}
+              vu par {{ detail.seenBy
+              }}<template v-if="detail.audience !== null"
+                >/{{ detail.audience }}</template
+              >
             </Badge>
             <template #content>
-              Les accusés sont comptés en personnes, jamais en devices (§7.3).
+              <div class="space-y-2 text-xs">
+                <p class="font-medium">
+                  Vu par {{ detail.seenBy }} personne(s)
+                  <template v-if="detail.audience !== null">
+                    sur {{ detail.audience }}
+                  </template>
+                </p>
+                <!--
+                  §14.2: l'accès par groupe OIDC n'est jamais matérialisé, donc
+                  personne ici ne sait combien de gens sont dans le groupe. Un
+                  total inventé à partir des membres stockés dirait « tout le
+                  monde l'a vue » sur un canal que toute une équipe peut lire.
+                -->
+                <p v-if="detail.audience === null" class="text-muted-foreground">
+                  L'accès à ce canal vient d'un groupe : le total n'est pas
+                  connu du serveur (§14.2).
+                </p>
+
+                <ul v-if="readers.length" class="space-y-1">
+                  <li
+                    v-for="reader in readers"
+                    :key="reader.key"
+                    class="flex items-baseline justify-between gap-3"
+                  >
+                    <span class="truncate">{{ reader.label }}</span>
+                    <time
+                      :datetime="reader.at"
+                      :title="exact(reader.at)"
+                      class="shrink-0 text-muted-foreground"
+                    >
+                      {{ ago(reader.at) }}
+                    </time>
+                  </li>
+                </ul>
+                <p v-else class="text-muted-foreground">
+                  Personne ne l'a encore ouverte.
+                </p>
+
+                <!-- Delivery stays folded: it counts screens, not readers (§10.3). -->
+                <p class="border-t border-border pt-2 text-muted-foreground">
+                  Le compte est en personnes, jamais en devices (§7.3) ·
+                  {{ detail.readership?.delivered_devices ?? 0 }} device(s)
+                  l'ont reçue.
+                </p>
+              </div>
             </template>
-          </Tooltip>
+          </HoverCard>
         </div>
 
         <p class="text-xs text-muted-foreground">

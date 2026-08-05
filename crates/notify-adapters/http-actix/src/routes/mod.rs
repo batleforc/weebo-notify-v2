@@ -34,6 +34,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(interactions::list_interactions)
             .service(interactions::silence)
             .service(interactions::receipt)
+            .service(interactions::readership)
             .service(sync::sync)
             .service(stream::stream)
             .service(stream::websocket)

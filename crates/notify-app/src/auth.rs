@@ -2,8 +2,20 @@
 //!
 //! Four identities reach the API and this is the single funnel that collapses them
 //! into one typed value, so no use case ever inspects a header or a token format.
-//! Two doors are wired in M1 — OIDC bearer tokens and API keys — with CI federation
-//! joining them in M4.
+//! Three doors are wired: OIDC bearer tokens and API keys since M1, and CI
+//! federation since M4.2.
+//!
+//! # Two kinds of bearer token, told apart by trying
+//!
+//! An OIDC access token and one of our own minted CI tokens arrive on the same
+//! header, and nothing in the header distinguishes them — an API key at least has a
+//! `wnk_` prefix. So the minted verifier is tried first and the OIDC one second.
+//!
+//! Trying rather than sniffing is deliberate: reading `iss` out of an unverified
+//! JWT to decide which verifier to use means routing on data an attacker supplies.
+//! A failed attempt costs one local Ed25519 header parse, which fails on the
+//! algorithm before it touches a key, and a deployment with no federation
+//! configured skips the attempt entirely.
 //!
 //! # Why a rejected credential is always the same 401
 //!
@@ -18,8 +30,8 @@ use std::sync::Arc;
 
 use notify_domain::{DomainError, PresentedApiKey, Principal, User, UserId};
 use notify_ports::{
-    ApiKeyRepository, Clock, Failure, SecretHasher, ServiceAccountRepository, TokenRejection,
-    TokenVerifier, UserRepository,
+    ApiKeyRepository, Clock, Failure, FederationVerifier, SecretHasher, ServiceAccountRepository,
+    TokenRejection, TokenVerifier, UserRepository,
 };
 
 use crate::authz::{Caller, Grant};
@@ -37,6 +49,12 @@ pub enum Credential {
 #[derive(Clone)]
 pub struct Authenticate {
     tokens: Arc<dyn TokenVerifier>,
+    /// Absent on a deployment with no `[federation]` block.
+    ///
+    /// An `Option` rather than a double that always refuses (§14.3): this is not a
+    /// use case discovering a missing capability, it is the hot path of every
+    /// request deciding whether there is a second door to try at all.
+    federation: Option<Arc<dyn FederationVerifier>>,
     users: Arc<dyn UserRepository>,
     accounts: Arc<dyn ServiceAccountRepository>,
     keys: Arc<dyn ApiKeyRepository>,
@@ -63,12 +81,25 @@ impl Authenticate {
     ) -> Self {
         Self {
             tokens,
+            federation: None,
             users,
             accounts,
             keys,
             hasher,
             clock,
         }
+    }
+
+    /// Also accept the CI tokens this instance mints (design §5.3, M4.2).
+    ///
+    /// Separate from [`new`] so that wiring federation is a visible line in the
+    /// composition root rather than a `None` somebody has to notice.
+    ///
+    /// [`new`]: Authenticate::new
+    #[must_use]
+    pub fn with_federation(mut self, federation: Arc<dyn FederationVerifier>) -> Self {
+        self.federation = Some(federation);
+        self
     }
 
     /// Authenticate.
@@ -84,6 +115,10 @@ impl Authenticate {
     /// No session is stored. The token *is* the session, which is what keeps HA
     /// trivial and means an IdP outage stops new logins rather than stopping work.
     async fn bearer(&self, token: &str) -> Result<Caller, Failure> {
+        if let Some(caller) = self.minted(token).await? {
+            return Ok(caller);
+        }
+
         let claims = match self.tokens.verify(token).await? {
             Ok(claims) => claims,
             Err(rejection) => {
@@ -125,6 +160,42 @@ impl Authenticate {
         // The groups ride on the caller rather than being stored: they are a claim
         // this token carries, and the next token may carry different ones (§11).
         Ok(Caller::member_of(user.principal(), claims.groups))
+    }
+
+    /// One of our own CI tokens, if that is what this is (design §5.3).
+    ///
+    /// `Ok(None)` means "not one of ours" and the caller falls through to OIDC — a
+    /// refusal here would make every human login depend on the federation adapter
+    /// being happy. A token that *is* ours but expired still falls through, and then
+    /// fails as an OIDC token: the answer is `401` either way, and §5.2's exception
+    /// for telling a holder their credential expired is about **API keys**, which a
+    /// person rotates by hand. A CI job re-exchanges; it has nothing to do with the
+    /// information.
+    async fn minted(&self, token: &str) -> Result<Option<Caller>, Failure> {
+        let Some(federation) = &self.federation else {
+            return Ok(None);
+        };
+        let Ok(claims) = federation.verify_minted(token).await? else {
+            return Ok(None);
+        };
+        if claims.expires_at <= self.clock.now() {
+            return Ok(None);
+        }
+
+        // The grant is read off the token, not re-derived: the policies were
+        // resolved once at the exchange, against the configuration of that moment
+        // (§11, `reload`). Re-deriving here would make two requests of one pipeline
+        // able to disagree, which is the whole reason minting exists.
+        Ok(Some(Caller {
+            principal: Principal::ci_job(claims.issuer, &claims.subject)?,
+            grant: Grant::Federated {
+                scopes: claims.scopes,
+                channels: claims.channels,
+            },
+            // A CI job carries no groups: its rights come from the trust policy, and
+            // a forge's token has no notion of this instance's identity provider.
+            groups: Vec::new(),
+        }))
     }
 
     /// API key: parse, look up by prefix, verify the secret (design §5.2).
@@ -199,7 +270,9 @@ mod tests {
         ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, ChannelId, Origin, Scope, ServiceAccount,
         ServiceAccountId,
     };
-    use notify_ports::test_utils::{InMemory, StaticTokenVerifier, StubSecretHasher, TestClock};
+    use notify_ports::test_utils::{
+        InMemory, StaticFederationVerifier, StaticTokenVerifier, StubSecretHasher, TestClock,
+    };
     use notify_ports::{StoredApiKey, VerifiedClaims};
     use time::Duration;
     use url::Url;
@@ -636,6 +709,109 @@ mod tests {
             fixture
                 .auth
                 .execute(Credential::ApiKey("not-a-key".to_owned()))
+                .await
+                .is_err()
+        );
+    }
+    // --- Federated CI tokens (design §5.3, M4.2) -------------------------
+
+    fn federated() -> (Fixture, StaticFederationVerifier) {
+        let fixture = fixture();
+        let federation = StaticFederationVerifier::with_clock(Arc::new(fixture.clock.clone()));
+        let auth = Authenticate::new(
+            Arc::new(fixture.verifier.clone()),
+            Arc::new(fixture.store.clone()),
+            Arc::new(fixture.store.clone()),
+            Arc::new(fixture.store.clone()),
+            Arc::new(StubSecretHasher),
+            Arc::new(fixture.clock.clone()),
+        )
+        .with_federation(Arc::new(federation.clone()));
+        (Fixture { auth, ..fixture }, federation)
+    }
+
+    async fn mint_for(federation: &StaticFederationVerifier, channels: &[&str]) -> String {
+        let grant = notify_domain::FederatedGrant {
+            issuer: "https://forgejo.weebo.poc".to_owned(),
+            subject: "repo:weebo/infra:ref:refs/heads/main".to_owned(),
+            allowances: Vec::new(),
+        };
+        let channels: Vec<ChannelId> = channels
+            .iter()
+            .map(|id| ChannelId::parse(id).unwrap())
+            .collect();
+        notify_ports::FederationVerifier::mint(federation, &grant, &channels, &[Scope::Publish])
+            .await
+            .unwrap()
+            .token
+    }
+
+    #[tokio::test]
+    async fn a_minted_token_authenticates_as_the_ci_job_it_names() {
+        let (fixture, federation) = federated();
+        let token = mint_for(&federation, &["ci-infra"]).await;
+
+        let caller = fixture
+            .auth
+            .execute(Credential::Bearer(token))
+            .await
+            .unwrap();
+
+        assert!(matches!(caller.principal, Principal::CiJob { .. }));
+        assert!(
+            caller
+                .grant
+                .carries(&ChannelId::parse("ci-infra").unwrap(), Scope::Publish),
+            "the grant is read off the token rather than re-derived"
+        );
+        assert!(
+            !caller
+                .grant
+                .carries(&ChannelId::parse("ci-web").unwrap(), Scope::Publish),
+            "and it covers exactly the channels the exchange resolved"
+        );
+        assert!(
+            caller.groups.is_empty(),
+            "a forge token has no notion of this instance's identity provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bearer_that_is_not_one_of_ours_still_reaches_the_oidc_path() {
+        let (fixture, _federation) = federated();
+        fixture.verifier.register(
+            "alice-token",
+            VerifiedClaims {
+                issuer: Url::parse("https://idp.example").unwrap(),
+                subject: "alice".to_owned(),
+                email: None,
+                display_name: None,
+                groups: vec![],
+                expires_at: fixture.clock.now() + Duration::hours(1),
+            },
+        );
+
+        let caller = fixture
+            .auth
+            .execute(Credential::Bearer("alice-token".to_owned()))
+            .await
+            .unwrap();
+
+        assert!(matches!(caller.principal, Principal::User { .. }));
+    }
+
+    #[tokio::test]
+    async fn an_expired_minted_token_is_refused_like_any_other_bad_bearer() {
+        let (fixture, federation) = federated();
+        let token = mint_for(&federation, &["ci-infra"]).await;
+        // Fifteen minutes is the ceiling §5.3 puts on a minted token; a pipeline
+        // that runs longer re-exchanges.
+        fixture.clock.advance(Duration::minutes(16));
+
+        assert!(
+            fixture
+                .auth
+                .execute(Credential::Bearer(token))
                 .await
                 .is_err()
         );

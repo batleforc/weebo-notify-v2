@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use notify_domain::{
-    DomainError, Interaction, InteractionLog, InteractionRecord, NotificationId, Principal,
-    Receipt, ReceiptId, ReceiptKind, Recorded, Silence, SilenceScope, SilenceTarget,
+    Author, DomainError, Interaction, InteractionLog, InteractionRecord, NotificationId, Principal,
+    Readership, Receipt, ReceiptId, ReceiptKind, Recorded, Silence, SilenceScope, SilenceTarget,
 };
 use notify_ports::{
     ChannelRepository, Clock, DeviceRepository, Failure, InteractionRepository, ReceiptRepository,
+    UserRepository,
 };
 
 use crate::authz::Caller;
@@ -280,6 +281,108 @@ impl PostReceipt {
     }
 }
 
+/// `GET /api/v1/notifications/{id}/receipts` — who read it (design §7.3, §10.3).
+///
+/// The badge says "seen by 3/5"; this is what unfolds under it. It exists because
+/// the count cannot be derived client-side: a browser only ever sees the receipts
+/// that arrive on its stream while the panel is open, so anybody who read the
+/// notification yesterday would be invisible.
+#[derive(Clone)]
+pub struct ReadReceipts {
+    receipts: Arc<dyn ReceiptRepository>,
+    channels: Arc<dyn ChannelRepository>,
+    users: Arc<dyn UserRepository>,
+    get: GetNotification,
+}
+
+impl core::fmt::Debug for ReadReceipts {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReadReceipts").finish_non_exhaustive()
+    }
+}
+
+impl ReadReceipts {
+    /// Wire it.
+    #[must_use]
+    pub fn new(
+        receipts: Arc<dyn ReceiptRepository>,
+        channels: Arc<dyn ChannelRepository>,
+        users: Arc<dyn UserRepository>,
+        get: GetNotification,
+    ) -> Self {
+        Self {
+            receipts,
+            channels,
+            users,
+            get,
+        }
+    }
+
+    /// Read the roll, or `None` where the channel does not collect receipts.
+    ///
+    /// `None` rather than an empty roll, and for the same reason [`PostReceipt`]
+    /// answers `None`: "nobody has read this" and "this channel does not record who
+    /// reads things" are different sentences, and rendering the second as "seen by
+    /// 0/5" would be a lie a client cannot detect.
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        notification_id: NotificationId,
+    ) -> Result<Option<Readership>, Failure> {
+        let notification = self.get.execute(caller, notification_id).await?;
+
+        let Some(channel) = self.channels.get(&notification.channel).await? else {
+            return Ok(None);
+        };
+        if !channel.policy.receipts_enabled {
+            return Ok(None);
+        }
+
+        // The denominator exists only where it can be counted. A channel that also
+        // grants access by `groups` has readers nothing in this process knows about
+        // (design §14.2), so it has no total — see [`Readership::of`]. Where it does
+        // have one, service accounts are not in it: a bot holding a subscription was
+        // never going to read anything (design §5.2bis).
+        let audience = channel.group_access.is_empty().then(|| {
+            channel
+                .members
+                .iter()
+                .filter(|member| member.principal.is_human())
+                .count()
+        });
+
+        let mut roll = Readership::of(&self.receipts.list_for(notification_id).await?, audience);
+        self.name(&mut roll).await?;
+        Ok(Some(roll))
+    }
+
+    /// Attach display names to the people in the roll (design §2.4).
+    ///
+    /// One read per person rather than a batch: the list is bounded by the humans
+    /// who opened one notification, and a `find_many` on the port would exist for
+    /// this caller alone. If a channel ever gets big enough for that to hurt, the
+    /// port grows — not this loop.
+    async fn name(&self, roll: &mut Readership) -> Result<(), Failure> {
+        for sighting in &mut roll.seen {
+            let Some(id) = sighting.author.principal.as_user() else {
+                continue;
+            };
+            let Some(user) = self.users.get(id).await? else {
+                // A receipt outliving its user is a broken link, not a broken read:
+                // the reference still says something true about who read it.
+                continue;
+            };
+            if let Some(name) = user.display_name.as_deref() {
+                // A stored name this build refuses to render falls back to the
+                // reference. A hover card is not worth a 500.
+                sighting.author = Author::named(sighting.author.principal.clone(), name)
+                    .unwrap_or_else(|_| Author::anonymous(sighting.author.principal.clone()));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
@@ -303,6 +406,7 @@ mod tests {
         list: ListInteractions,
         silence: SilenceNotification,
         receipt: PostReceipt,
+        readership: ReadReceipts,
         alice: Principal,
     }
 
@@ -384,9 +488,15 @@ mod tests {
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
-                get,
+                get.clone(),
                 Arc::new(clock.clone()),
                 fanout,
+            ),
+            readership: ReadReceipts::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                get,
             ),
             store,
             clock,
@@ -628,6 +738,209 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "\"seen by 3/5\" must not be inflatable by a retry"
+        );
+    }
+
+    // --- The roll behind the badge (design §7.3, §10.3) -------------------
+
+    fn known_as(fixture: &Fixture, principal: &Principal, name: &str) {
+        let id = principal.as_user().unwrap();
+        fixture.store.seed_user(
+            notify_domain::User::from_claims(
+                id,
+                &format!("sub-{id}"),
+                None,
+                Some(name),
+                fixture.clock.now(),
+            )
+            .unwrap(),
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roll_says_who_read_it_and_not_which_identifier_they_are() {
+        let fixture = fixture();
+        let notification = seed(&fixture, None).await;
+        let caller = Caller::member(fixture.alice.clone());
+        known_as(&fixture, &fixture.alice, "Alice Martin");
+
+        fixture
+            .receipt
+            .execute(&caller, notification.id, ReceiptKind::Seen, None)
+            .await
+            .unwrap();
+
+        let roll = fixture
+            .readership
+            .execute(&caller, notification.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(roll.seen_by(), 1);
+        assert_eq!(roll.audience, Some(1));
+        assert_eq!(
+            roll.seen[0].author.display_name.as_deref(),
+            Some("Alice Martin"),
+            "a hover card of raw ULIDs answers nothing (design §2.4)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reader_with_no_profile_is_still_a_reader() {
+        // The user row is missing — nothing seeded it, which is what a receipt
+        // outliving its user looks like. The reference still says something true.
+        let fixture = fixture();
+        let notification = seed(&fixture, None).await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        fixture
+            .receipt
+            .execute(&caller, notification.id, ReceiptKind::Seen, None)
+            .await
+            .unwrap();
+
+        let roll = fixture
+            .readership
+            .execute(&caller, notification.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(roll.seen_by(), 1, "a broken link is not a missing reader");
+        assert_eq!(roll.seen[0].author.display_name, None);
+        assert_eq!(roll.seen[0].author.label(), fixture.alice.reference());
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_does_not_collect_receipts_says_so_rather_than_zero() {
+        let fixture = fixture();
+        let notification = seed(&fixture, None).await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        let mut channel = ChannelRepository::get(&fixture.store, &channel_id())
+            .await
+            .unwrap()
+            .unwrap();
+        channel.policy.receipts_enabled = false;
+        ChannelRepository::upsert(&fixture.store, &channel)
+            .await
+            .unwrap();
+
+        assert!(
+            fixture
+                .readership
+                .execute(&caller, notification.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "\"nobody read it\" and \"we do not record that\" are different sentences"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roll_is_authorised_through_its_notification() {
+        let fixture = fixture();
+        let notification = seed(&fixture, None).await;
+        let stranger = Caller::member(Principal::User {
+            id: UserId::generate(),
+        });
+
+        assert_eq!(
+            fixture
+                .readership
+                .execute(&stranger, notification.id)
+                .await
+                .unwrap_err()
+                .code(),
+            Some("scope.missing"),
+            "who read what is channel content"
+        );
+    }
+
+    #[tokio::test]
+    async fn critical_t25_a_bot_that_read_it_moves_neither_half_of_the_count() {
+        let fixture = fixture();
+        let notification = seed(&fixture, None).await;
+
+        let bot = Principal::ServiceAccount {
+            id: notify_domain::ServiceAccountId::parse("bot-argocd").unwrap(),
+        };
+        let mut channel = ChannelRepository::get(&fixture.store, &channel_id())
+            .await
+            .unwrap()
+            .unwrap();
+        channel.upsert_member(Membership::new(bot.clone(), vec![Scope::Subscribe]).unwrap());
+        ChannelRepository::upsert(&fixture.store, &channel)
+            .await
+            .unwrap();
+
+        fixture
+            .receipt
+            .execute(
+                &Caller::member(bot),
+                notification.id,
+                ReceiptKind::Seen,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let roll = fixture
+            .readership
+            .execute(&Caller::member(fixture.alice.clone()), notification.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            roll.seen_by(),
+            0,
+            "a bot that has read is not a human who has been informed"
+        );
+        assert_eq!(
+            roll.audience,
+            Some(1),
+            "and it is not part of the total either"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_reached_through_a_group_has_no_total_to_divide_by() {
+        let fixture = fixture();
+        let notification = seed(&fixture, None).await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        let mut channel = ChannelRepository::get(&fixture.store, &channel_id())
+            .await
+            .unwrap()
+            .unwrap();
+        channel.group_access.push(
+            notify_domain::GroupBinding::new("infra-admins", vec![Scope::Subscribe]).unwrap(),
+        );
+        ChannelRepository::upsert(&fixture.store, &channel)
+            .await
+            .unwrap();
+
+        fixture
+            .receipt
+            .execute(&caller, notification.id, ReceiptKind::Seen, None)
+            .await
+            .unwrap();
+
+        let roll = fixture
+            .readership
+            .execute(&caller, notification.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(roll.seen_by(), 1);
+        assert_eq!(
+            roll.audience, None,
+            "nothing here knows how many people are in `infra-admins` (§14.2), and \
+             dividing by the member rows that happen to exist would read \"1/1\" on \
+             a channel a whole team can see"
         );
     }
 }

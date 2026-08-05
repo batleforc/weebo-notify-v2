@@ -20,6 +20,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import {
+  readership as fetchReadership,
   revisions as fetchRevisions,
   getOne,
   listInteractions,
@@ -31,7 +32,7 @@ import type {
   Interaction,
   InteractionRecord,
   Notification,
-  Receipt,
+  Readership,
   Revision,
   RevisionId,
   SilenceBody,
@@ -53,7 +54,15 @@ export const useDetail = defineStore("detail", () => {
   const notification = ref<Notification | null>(null);
   const revisions = ref<TimelineRevision[]>([]);
   const interactions = ref<InteractionRecord[]>([]);
-  const receipts = ref<Receipt[]>([]);
+  /**
+   * Who has read it (§7.3) — `null` where the channel does not collect receipts,
+   * which is a different sentence from "nobody has".
+   *
+   * Fetched rather than accumulated from the stream: a tab only ever witnesses the
+   * receipts posted while it was watching, so anybody who read this yesterday would
+   * be missing from a count built that way.
+   */
+  const readership = ref<Readership | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
   /** Set when the notification went away under us — deleted, or expired (§7.2bis). */
@@ -65,15 +74,15 @@ export const useDetail = defineStore("detail", () => {
   const actions = computed(() => head.value?.content.actions ?? []);
 
   /** Distinct people who have seen it — the "vu par 3/5" numerator (§7.3). */
-  const seenBy = computed(() => {
-    const users = new Set<string>();
-    for (const entry of receipts.value) {
-      if (entry.kind === "seen" && entry.principal.kind === "user") {
-        users.add(entry.principal.id);
-      }
-    }
-    return users.size;
-  });
+  const seenBy = computed(() => readership.value?.seen.length ?? 0);
+
+  /**
+   * The denominator — `null` where there is none to have (§14.2).
+   *
+   * A channel reached through an identity-provider group has no countable
+   * audience, so the badge reads "vu par 3" rather than inventing a total.
+   */
+  const audience = computed(() => readership.value?.audience ?? null);
 
   /** Interactions grouped the way the timeline shows them: oldest first. */
   const answers = computed(() =>
@@ -86,7 +95,7 @@ export const useDetail = defineStore("detail", () => {
     notification.value = null;
     revisions.value = [];
     interactions.value = [];
-    receipts.value = [];
+    readership.value = null;
     gone.value = null;
     error.value = null;
   }
@@ -101,9 +110,9 @@ export const useDetail = defineStore("detail", () => {
     loading.value = true;
 
     try {
-      // One round trip per concern, in parallel: the timeline and the answers are
-      // separate endpoints (§8) and neither has to wait for the other.
-      const [one, history, answered] = await Promise.all([
+      // One round trip per concern, in parallel: the timeline, the answers and the
+      // readership are separate endpoints (§8) and none has to wait for another.
+      const [one, history, answered, read] = await Promise.all([
         getOne({ path: { id: next }, throwOnError: true }),
         fetchRevisions({
           path: { id: next },
@@ -111,6 +120,7 @@ export const useDetail = defineStore("detail", () => {
           throwOnError: true,
         }),
         listInteractions({ path: { id: next }, throwOnError: true }),
+        fetchReadership({ path: { id: next }, throwOnError: true }),
       ]);
 
       if (id.value !== next) {
@@ -121,6 +131,7 @@ export const useDetail = defineStore("detail", () => {
       notification.value = one.data;
       revisions.value = [...history.data.items].sort((a, b) => a.seq - b.seq);
       interactions.value = answered.data;
+      readership.value = read.data ?? null;
     } catch (caught) {
       const failure = failureOf(caught);
       if (failure.status === 404 || failure.code === "notification.unknown") {
@@ -139,6 +150,39 @@ export const useDetail = defineStore("detail", () => {
   }
 
   /**
+   * Re-read who has seen it.
+   *
+   * A `receipt` event is treated as a poke rather than as data — the same shape as
+   * the local signal the desktop clients use (§9.3bis): the frame carries a
+   * principal, and what a hover card needs is a *person*, which only the server can
+   * name (§2.4). One request in flight at a time, so a channel where twenty people
+   * open a notification at once does not produce twenty overlapping reads.
+   */
+  let refreshing = false;
+  async function refreshReadership(): Promise<void> {
+    const current = id.value;
+    if (!current || refreshing) {
+      return;
+    }
+    refreshing = true;
+    try {
+      const read = await fetchReadership({
+        path: { id: current },
+        throwOnError: true,
+      });
+      if (id.value === current) {
+        readership.value = read.data ?? null;
+      }
+    } catch (caught) {
+      // A stale count is better than an error banner over a notification that is
+      // perfectly readable.
+      console.debug("readership refused", failureOf(caught).message);
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  /**
    * Tell the server this was read (§7.3).
    *
    * Sent without a device: a browser tab is not an enrolled device in M1, and the
@@ -152,10 +196,15 @@ export const useDetail = defineStore("detail", () => {
       return;
     }
     try {
-      await postReceipt({
+      const recorded = await postReceipt({
         body: { notification_id: current, kind: "seen" },
         throwOnError: true,
       });
+      // Your own name should appear without waiting for your own event to come
+      // back round the stream. `null` means the receipt was already there.
+      if (recorded.data) {
+        await refreshReadership();
+      }
     } catch (caught) {
       // A receipt nobody asked for must never interrupt reading.
       console.debug("seen receipt refused", failureOf(caught).message);
@@ -272,11 +321,11 @@ export const useDetail = defineStore("detail", () => {
         return;
       }
       case "receipt": {
-        if (
-          event.notification_id === current &&
-          !receipts.value.some((one) => one.id === event.id)
-        ) {
-          receipts.value.push(event);
+        // Only where the channel collects them: a `null` readership means the
+        // policy is off, and a receipt event cannot arrive for such a channel — but
+        // checking is cheaper than the request it would otherwise cost.
+        if (event.notification_id === current && readership.value) {
+          void refreshReadership();
         }
         return;
       }
@@ -297,6 +346,7 @@ export const useDetail = defineStore("detail", () => {
     actions,
     acting,
     answers,
+    audience,
     close,
     error,
     gone,
@@ -308,7 +358,7 @@ export const useDetail = defineStore("detail", () => {
     markSeen,
     notification,
     open,
-    receipts,
+    readership,
     revisions,
     seenBy,
     silence,

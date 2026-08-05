@@ -2,8 +2,8 @@
 
 use actix_web::{get, post, web};
 use notify_domain::{
-    DeviceId, HumanDuration, Interaction, InteractionRecord, NotificationId, Receipt, ReceiptKind,
-    Recorded, Silence, SilenceScope,
+    DeviceId, HumanDuration, Interaction, InteractionRecord, NotificationId, Readership, Receipt,
+    ReceiptKind, Recorded, Silence, SilenceScope,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -189,4 +189,32 @@ pub(crate) async fn receipt(
     // than a 204: one status with a nullable body is one branch for the caller,
     // and it keeps the generated clients to a single response type.
     Ok(web::Json(recorded))
+}
+
+/// Who has read a notification — what unfolds under "seen by 3/5".
+#[utoipa::path(
+    get,
+    path = "/notifications/{id}/receipts",
+    tag = "notifications",
+    params(("id" = String, Path, description = "Notification id")),
+    responses(
+        (status = 200,
+         description = "The roll, or `null` when receipts are off on that channel",
+         body = Option<Readership>),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not a member of its channel", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/notifications/{id}/receipts")]
+pub(crate) async fn readership(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+) -> Result<web::Json<Option<Readership>>, ApiError> {
+    let id: NotificationId = path.into_inner().parse()?;
+
+    // `null` for the same reason `POST /receipts` answers `null`, and spelled the
+    // same way on purpose: a client that already handles one handles this.
+    Ok(web::Json(state.readership.execute(&caller.0, id).await?))
 }

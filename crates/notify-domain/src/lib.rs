@@ -43,6 +43,7 @@ pub mod device;
 pub mod dnd;
 pub mod duration;
 pub mod error;
+pub mod federation;
 pub mod hygiene;
 pub mod identity;
 pub mod ids;
@@ -66,6 +67,9 @@ pub use device::{Device, DevicePublicKey, PushTransport};
 pub use dnd::{Day, Dnd, DndDraft, DndScope, QuietHours, WallClock};
 pub use duration::HumanDuration;
 pub use error::{DomainError, ErrorKind, Result};
+pub use federation::{
+    Allowance, FederatedClaims, FederatedGrant, Pattern, TrustPolicies, TrustPolicy,
+};
 pub use identity::{ApiKey, ApiKeyPrefix, PresentedApiKey, ServiceAccount, User};
 pub use ids::{
     ActionKey, ApiKeyId, AttachmentId, ChannelId, ChoiceOptionKey, DeviceId, ExternalId,
@@ -79,6 +83,6 @@ pub use notification::{
 pub use origin::Origin;
 pub use principal::{ApiKeyOwner, Author, Principal, PrincipalKind};
 pub use profile::{FieldEdit, Profile, ProfileEdit, ProfileField};
-pub use receipt::{Receipt, ReceiptKind, SeenTally};
+pub use receipt::{Readership, Receipt, ReceiptKind, Sighting};
 pub use silence::{Silence, SilenceTarget};
 pub use ttl::{Ttl, TtlPolicy, TtlResolution};

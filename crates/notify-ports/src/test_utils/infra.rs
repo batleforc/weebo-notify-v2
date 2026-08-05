@@ -3,7 +3,9 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use notify_domain::{ApiKeyPrefix, AttachmentId, ChannelId, Scope};
+use notify_domain::{
+    ApiKeyPrefix, AttachmentId, ChannelId, FederatedClaims, FederatedGrant, Scope,
+};
 use time::{Duration, OffsetDateTime};
 use url::Url;
 
@@ -16,7 +18,10 @@ use crate::identities::{KeyGenerator, SecretHasher};
 use crate::leader::{LeaderElection, LeaderGuard};
 use crate::quota::{Allowance, Quota, RateLimiter};
 use crate::sinks::{SinkDelivery, SinkDispatcher, SinkOutcome};
-use crate::tokens::{MintedToken, TokenRejection, TokenVerifier, VerifiedClaims};
+use crate::tokens::{
+    FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,
+    VerifiedClaims,
+};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // A poisoned lock in a test means an earlier assertion already failed. Reading
@@ -135,6 +140,165 @@ pub fn minted_token(
         expires_at: now + Duration::minutes(15),
         channels,
         scopes,
+    }
+}
+
+// --- Federation ------------------------------------------------------------
+
+/// A federation verifier a test hands tokens to.
+///
+/// Reports claims and nothing else — same contract as the real one (design §5.3):
+/// the `aud` and the policy match are the domain's decision, so a test that wants
+/// to exercise "token minted for somebody else" registers claims whose audiences
+/// say so, rather than asking this double to refuse.
+#[derive(Clone)]
+pub struct StaticFederationVerifier {
+    tokens: Arc<Mutex<Vec<(String, FederatedClaims)>>>,
+    issued: Arc<Mutex<Vec<(String, MintedClaims)>>>,
+    minted: Arc<Mutex<u32>>,
+    clock: Arc<dyn Clock>,
+}
+
+impl core::fmt::Debug for StaticFederationVerifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StaticFederationVerifier")
+            .finish_non_exhaustive()
+    }
+}
+
+impl StaticFederationVerifier {
+    /// An empty one reading the real clock: every token is unknown.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_clock(Arc::new(crate::clock::SystemClock))
+    }
+
+    /// An empty one reading the clock a test controls.
+    ///
+    /// Minting stamps `expires_at` against it, for the same reason
+    /// [`StaticTokenVerifier::with_clock`] exists: a token minted at the epoch is
+    /// expired in every test that reads a real clock, so a double that ignored time
+    /// would make "this token works" untestable and "this one expired" trivially
+    /// true.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            tokens: Arc::new(Mutex::new(Vec::new())),
+            issued: Arc::new(Mutex::new(Vec::new())),
+            minted: Arc::new(Mutex::new(0)),
+            clock,
+        }
+    }
+
+    /// Teach it one token.
+    pub fn register(&self, token: &str, claims: FederatedClaims) -> &Self {
+        lock(&self.tokens).push((token.to_owned(), claims));
+        self
+    }
+
+    /// How many tokens it has minted, for tests asserting an exchange did not
+    /// happen twice.
+    #[must_use]
+    pub fn minted(&self) -> u32 {
+        *lock(&self.minted)
+    }
+}
+
+impl Default for StaticFederationVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl FederationVerifier for StaticFederationVerifier {
+    async fn verify_ci_token(
+        &self,
+        token: &str,
+    ) -> PortResult<Result<FederatedClaims, TokenRejection>> {
+        Ok(lock(&self.tokens)
+            .iter()
+            .find(|(known, _)| known == token)
+            .map(|(_, claims)| claims.clone())
+            .ok_or(TokenRejection::BadSignature))
+    }
+
+    async fn mint(
+        &self,
+        grant: &FederatedGrant,
+        channels: &[ChannelId],
+        scopes: &[Scope],
+    ) -> PortResult<MintedToken> {
+        let mut minted = lock(&self.minted);
+        *minted += 1;
+        let token = format!("test-ci-token-{minted}");
+        let expires_at = self.clock.now() + Duration::minutes(15);
+
+        // Remembered so `verify_minted` can answer, which is what lets a test walk
+        // the whole path — exchange, then use the token it got back.
+        lock(&self.issued).push((
+            token.clone(),
+            MintedClaims {
+                issuer: Url::parse(&grant.issuer)
+                    .unwrap_or_else(|_| Url::parse("https://forge.invalid").expect("a valid url")),
+                subject: grant.subject.clone(),
+                channels: channels.to_vec(),
+                scopes: scopes.to_vec(),
+                expires_at,
+            },
+        ));
+
+        Ok(MintedToken {
+            token,
+            expires_at,
+            channels: channels.to_vec(),
+            scopes: scopes.to_vec(),
+        })
+    }
+
+    async fn verify_minted(&self, token: &str) -> PortResult<Result<MintedClaims, TokenRejection>> {
+        Ok(lock(&self.issued)
+            .iter()
+            .find(|(known, _)| known == token)
+            .map(|(_, claims)| claims.clone())
+            .ok_or(TokenRejection::BadSignature))
+    }
+}
+
+/// Replay memory in a `Vec`.
+///
+/// Keeps expired entries rather than dropping them on read: pruning is a separate,
+/// leader-only job in production (design §11), and a double that forgot on its own
+/// would let a test pass that the real store would fail.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryReplayGuard {
+    seen: Arc<Mutex<Vec<(String, OffsetDateTime)>>>,
+}
+
+impl InMemoryReplayGuard {
+    /// An empty one.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait::async_trait]
+impl ReplayGuard for InMemoryReplayGuard {
+    async fn remember(&self, jti: &str, until: OffsetDateTime) -> PortResult<bool> {
+        let mut seen = lock(&self.seen);
+        if seen.iter().any(|(known, _)| known == jti) {
+            return Ok(false);
+        }
+        seen.push((jti.to_owned(), until));
+        Ok(true)
+    }
+
+    async fn prune(&self, now: OffsetDateTime) -> PortResult<u64> {
+        let mut seen = lock(&self.seen);
+        let before = seen.len();
+        seen.retain(|(_, until)| *until > now);
+        Ok((before - seen.len()) as u64)
     }
 }
 

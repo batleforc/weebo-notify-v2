@@ -1,0 +1,81 @@
+---
+title: ADR-0017 — A hand-written service worker rather than Workbox
+description: The file that decides what appears on a locked screen ships unbundled, small enough to read, and tested as itself.
+---
+
+Status: accepted (2026-08-05) · Supersedes: — · Superseded by: —
+
+## Context
+
+M3.6 needs a service worker for two things: showing a Web Push when no tab is open
+(§6.2 — only a worker can), and serving the shell offline so an installed PWA opens
+without a network.
+
+The default answer is `vite-plugin-pwa`, which wraps Workbox. It generates a
+precache manifest at build time, versions the caches, and offers routing strategies
+as configuration. It is well-made and it is what most projects reach for.
+
+Two things made it a poor fit here rather than merely unnecessary.
+
+**The worker decides what a person sees on a locked screen.** It renders the
+`Envelope` of `notify-push-webpush` — a wire contract with no OpenAPI entry, because
+a push is not an HTTP response. Changing it breaks every installed client, exactly
+as changing §8.1 would. That is a file to be *read* to be trusted, and a generated
+one is read as a build artefact instead.
+
+**The generated precache manifest is a build coupling.** It lists hashed asset
+names, so the worker changes on every build whether or not its behaviour did — and
+what this project is strict about (`task recu`, the `contract` job) is knowing
+exactly what is derived from what.
+
+Against that, what Workbox actually buys here is small: hashed precaching, cache
+versioning, and a routing DSL for one route.
+
+## Decision
+
+**`web/public/sw.js` is written by hand, served verbatim, and version-stamped by a
+single constant.** No plugin, no bundler step, no generated manifest.
+
+- Caching is network-first with a cache fallback, scoped to this origin and
+  explicitly excluding `/api/` — a cached `GET /sync` would hand the app a backlog
+  the cursor has already moved past.
+- The shell list is the document and the two static assets. Hashed bundles land in
+  the cache on first fetch instead of being enumerated, which is what removes the
+  build coupling; the cost is one online visit before the app works offline.
+- `CACHE` carries the version. Anything under another name is dropped on activate.
+- `src/lib/sw.spec.ts` reads **this file** off disk and evaluates it inside a
+  stubbed worker global. The test exercises the artefact that ships, not a copy of
+  its logic.
+
+The same reasoning as ADR-0004, which vendors shadcn components rather than taking a
+component library: own the small surface that is load-bearing, depend on nothing to
+regenerate it.
+
+## Consequences
+
+**Positive**
+
+- The file that renders a lock-screen notification is thirty lines of logic and
+  reads top to bottom.
+- No build-time coupling: the worker changes when its behaviour changes.
+- Tested as the shipped artefact, which is the only test worth having about a file
+  that is neither bundled nor type-checked.
+- One fewer dependency in the path between a push and a person.
+
+**Negative**
+
+- It is plain JavaScript: no type checking, and no editor help about
+  `ServiceWorkerGlobalScope`. The spec is the safety net, and it is why the spec
+  loads the real file.
+- Cache invalidation is ours. `CACHE` has to be bumped when the shell list changes,
+  and nothing enforces that — a stale shell survives until it is.
+- Offline coverage is weaker on a first visit than a precache would give: assets
+  arrive in the cache as they are fetched, so a browser that installs the PWA and
+  immediately goes offline gets the document and not the bundle.
+
+**Accepted debt**
+
+- No background sync and no periodic sync. Both are plausible later (a queued
+  receipt, a warmed backlog), and both would be new handlers rather than a rewrite.
+- The shell is precached by path, so a deployment serving the app from a sub-path
+  would need those three strings changed. Nothing else in the file assumes the root.

@@ -663,6 +663,19 @@ impl ChannelRepository for InMemory {
             .map(|row| row.value.clone())
             .collect())
     }
+
+    async fn all_ids(&self) -> PortResult<Vec<ChannelId>> {
+        let mut ids: Vec<ChannelId> = self
+            .state()
+            .channels
+            .iter()
+            .map(|row| row.value.id.clone())
+            .collect();
+        // Ordered, like the SQL adapter: a minted token lists its channels, and a
+        // list whose order depends on insertion is a diff that moves for no reason.
+        ids.sort();
+        Ok(ids)
+    }
 }
 
 // --- Devices ---------------------------------------------------------------

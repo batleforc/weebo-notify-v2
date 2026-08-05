@@ -5403,6 +5403,62 @@ person means by "Friday night".*/
 device's.*/
         pub timezone: ::std::string::String,
     }
+    /**What "seen by 3/5" unfolds into (design §7.3, §10.3).
+
+The number on the badge is the headline; the hover card is the answer to the
+question the badge provokes — *who*, and *when*. Delivery stays folded underneath
+as a device count, because "it reached four screens" and "three people read it"
+are different facts and only the second one is about readership.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What \"seen by 3/5\" unfolds into (design §7.3, §10.3).\n\nThe number on the badge is the headline; the hover card is the answer to the\nquestion the badge provokes — *who*, and *when*. Delivery stays folded underneath\nas a device count, because \"it reached four screens\" and \"three people read it\"\nare different facts and only the second one is about readership.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "delivered_devices",
+    ///    "seen"
+    ///  ],
+    ///  "properties": {
+    ///    "audience": {
+    ///      "description": "How many people could see it, where that is a knowable number.\n\n`None` on a channel whose access is derived rather than stored — see\n[`Readership::of`]. A client shows \"vu par 3\" then, not \"vu par 3/3\".",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "minimum": 0.0
+    ///    },
+    ///    "delivered_devices": {
+    ///      "description": "Distinct devices that acknowledged delivery. A receipt without a device is\na logical subscription (design §5.2bis), and a subscription is not a screen.",
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "seen": {
+    ///      "description": "Who saw it, oldest sighting first — reading order, like the timeline.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Sighting"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Readership {
+        /**How many people could see it, where that is a knowable number.
+
+`None` on a channel whose access is derived rather than stored — see
+[`Readership::of`]. A client shows "vu par 3" then, not "vu par 3/3".*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub audience: ::std::option::Option<u64>,
+        /**Distinct devices that acknowledged delivery. A receipt without a device is
+a logical subscription (design §5.2bis), and a subscription is not a screen.*/
+        pub delivered_devices: u64,
+        ///Who saw it, oldest sighting first — reading order, like the timeline.
+        pub seen: ::std::vec::Vec<Sighting>,
+    }
     /**Readiness answer: the overall verdict plus the per-dependency detail an
 operator needs to know *which* dependency is holding the replica back.*/
     ///
@@ -6195,6 +6251,43 @@ rather than "published by a key" (design §5.2bis).*/
         fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
             self.0.fmt(f)
         }
+    }
+    /**One person, and when they first looked (design §7.3, §10.3).
+
+Serialize only, here and on [`Readership`]: a roll is computed and sent, never
+read back in. Deriving `Deserialize` would describe an input that does not
+exist, and leave the code that parses it untested for as long as that stays
+true.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One person, and when they first looked (design §7.3, §10.3).\n\nSerialize only, here and on [`Readership`]: a roll is computed and sent, never\nread back in. Deriving `Deserialize` would describe an input that does not\nexist, and leave the code that parses it untested for as long as that stays\ntrue.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "at",
+    ///    "author"
+    ///  ],
+    ///  "properties": {
+    ///    "at": {
+    ///      "description": "When they *first* saw it. Somebody who opens a notification on their laptop\nand again on their phone read it once, at the first of the two.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "author": {
+    ///      "$ref": "#/components/schemas/Author"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Sighting {
+        /**When they *first* saw it. Somebody who opens a notification on their laptop
+and again on their phone read it once, at the first of the two.*/
+        pub at: ::chrono::DateTime<::chrono::offset::Utc>,
+        pub author: Author,
     }
     ///An active silence, held per user.
     ///
@@ -8142,6 +8235,55 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Who has read a notification — what unfolds under "seen by 3/5"
+
+Sends a `GET` request to `/api/v1/notifications/{id}/receipts`
+
+Arguments:
+- `id`: Notification id
+*/
+    pub async fn readership<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<types::Readership>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/notifications/{}/receipts", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "readership",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

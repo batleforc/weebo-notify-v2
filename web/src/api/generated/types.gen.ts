@@ -1354,6 +1354,33 @@ export type QuietHours = {
 };
 
 /**
+ * What "seen by 3/5" unfolds into (design §7.3, §10.3).
+ *
+ * The number on the badge is the headline; the hover card is the answer to the
+ * question the badge provokes — *who*, and *when*. Delivery stays folded underneath
+ * as a device count, because "it reached four screens" and "three people read it"
+ * are different facts and only the second one is about readership.
+ */
+export type Readership = {
+    /**
+     * How many people could see it, where that is a knowable number.
+     *
+     * `None` on a channel whose access is derived rather than stored — see
+     * [`Readership::of`]. A client shows "vu par 3" then, not "vu par 3/3".
+     */
+    audience?: number | null;
+    /**
+     * Distinct devices that acknowledged delivery. A receipt without a device is
+     * a logical subscription (design §5.2bis), and a subscription is not a screen.
+     */
+    delivered_devices: number;
+    /**
+     * Who saw it, oldest sighting first — reading order, like the timeline.
+     */
+    seen: Array<Sighting>;
+};
+
+/**
  * Readiness answer: the overall verdict plus the per-dependency detail an
  * operator needs to know *which* dependency is holding the replica back.
  */
@@ -1606,6 +1633,28 @@ export type ServiceAccount = {
  * rather than "published by a key" (design §5.2bis).
  */
 export type ServiceAccountId = string;
+
+/**
+ * One person, and when they first looked (design §7.3, §10.3).
+ *
+ * Serialize only, here and on [`Readership`]: a roll is computed and sent, never
+ * read back in. Deriving `Deserialize` would describe an input that does not
+ * exist, and leave the code that parses it untested for as long as that stays
+ * true.
+ */
+export type Sighting = {
+    /**
+     * When they *first* saw it. Somebody who opens a notification on their laptop
+     * and again on their phone read it once, at the first of the two.
+     */
+    at: string;
+    /**
+     * Who. Carries the display name where the reader is entitled to it — a hover
+     * card that listed raw identifiers would answer a question nobody asked
+     * (design §2.4).
+     */
+    author: Author;
+};
 
 /**
  * An active silence, held per user.
@@ -2608,6 +2657,40 @@ export type RecordResponses = {
 };
 
 export type RecordResponse = RecordResponses[keyof RecordResponses];
+
+export type ReadershipData = {
+    body?: never;
+    path: {
+        /**
+         * Notification id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/notifications/{id}/receipts';
+};
+
+export type ReadershipErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a member of its channel
+     */
+    403: Problem;
+};
+
+export type ReadershipError = ReadershipErrors[keyof ReadershipErrors];
+
+export type ReadershipResponses = {
+    /**
+     * The roll, or `null` when receipts are off on that channel
+     */
+    200: null | Readership;
+};
+
+export type ReadershipResponse = ReadershipResponses[keyof ReadershipResponses];
 
 export type RevisionsData = {
     body?: never;

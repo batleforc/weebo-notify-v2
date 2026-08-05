@@ -106,5 +106,6 @@ pub use quota::{Allowance, Quota, RateLimiter};
 pub use receipts::ReceiptRepository;
 pub use sinks::{DeadLetter, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkTarget};
 pub use tokens::{
-    FederationVerifier, MintedToken, TokenRejection, TokenVerifier, TrustPolicy, VerifiedClaims,
+    FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,
+    VerifiedClaims,
 };

@@ -15,6 +15,8 @@ import { readProfile, setAvatar, updateProfile } from "@/api/generated";
 import type { Profile, ProfileField } from "@/api/generated/types.gen";
 import { failureOf } from "@/api/problem";
 import { useSession } from "@/auth/session";
+import DndPanel from "@/components/settings/DndPanel.vue";
+import PushPanel from "@/components/settings/PushPanel.vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -276,6 +278,10 @@ onMounted(load);
         </Button>
       </CardContent>
     </Card>
+
+    <PushPanel />
+
+    <DndPanel />
 
     <Card>
       <CardHeader>

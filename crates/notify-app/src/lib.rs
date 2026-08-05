@@ -30,7 +30,7 @@
 //! | Authentication | [`Authenticate`] |
 //! | Publishing | [`PublishNotification`], [`UpsertNotification`], [`DeleteNotification`] |
 //! | Reading | [`ListInbox`], [`GetNotification`], [`ListRevisions`], [`SearchNotifications`] |
-//! | Interaction | [`RecordInteraction`], [`ListInteractions`], [`SilenceNotification`], [`PostReceipt`] |
+//! | Interaction | [`RecordInteraction`], [`ListInteractions`], [`SilenceNotification`], [`PostReceipt`], [`ReadReceipts`] |
 //! | Real time | [`SyncBacklog`], [`ResolveStreamStart`] |
 //! | Administration | [`ListChannels`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
 //! | Background | [`PurgeExpired`] |
@@ -42,6 +42,7 @@ pub mod channels;
 pub mod devices;
 pub mod digest;
 pub mod fanout;
+pub mod federate;
 pub mod interact;
 pub mod keys;
 pub mod maintenance;
@@ -58,7 +59,10 @@ pub use channels::{CreateChannel, DeleteChannel, ListChannels, ManageMembers, Up
 pub use devices::{EnrolDevice, ListDevices, RevokeDevice};
 pub use digest::{DigestReport, SendDndDigests};
 pub use fanout::Fanout;
-pub use interact::{ListInteractions, PostReceipt, RecordInteraction, SilenceNotification};
+pub use federate::ExchangeToken;
+pub use interact::{
+    ListInteractions, PostReceipt, ReadReceipts, RecordInteraction, SilenceNotification,
+};
 pub use keys::{
     CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, RevokeApiKey, UlidKeyGenerator,
 };

@@ -425,7 +425,7 @@ Rationale : UnifiedPush garde la boucle 100 % self-hosted sur Android (le serveu
 ### 7.3 Accusés (opt-in par canal)
 
 - `delivered` (automatique, par device) et `seen` (interaction utilisateur).
-- Si activé sur le canal : les membres autorisés voient « vu par 3/5 ».
+- Si activé sur le canal : les membres autorisés voient « vu par 3/5 » — le numérateur est en **personnes** (deux devices d'une même personne comptent une fois, un service account jamais, §5.2bis), le dénominateur est le nombre de membres humains du canal. **Le dénominateur peut ne pas exister** : un canal dont l'accès vient d'un binding de groupe OIDC n'a pas de liste de lecteurs à compter (§14.2 — l'accès par groupe est dérivé par requête, jamais matérialisé), et l'affichage tombe alors sur « vu par 3 » plutôt que d'inventer un total. Le détail — qui, et quand — se déplie en `HoverCard` (§10.3), servi par `GET /notifications/{id}/receipts` (§8).
 - **Pas de signature des receipts par le device** (concept retiré — les tests d'implémentation ont montré que ce n'était pas viable) : l'authenticité repose sur l'authentification du device auprès du serveur — un principal ne peut poser un receipt que pour ses propres devices, le serveur (de confiance, §6) horodate. Falsifier un receipt suppose de compromettre la session du device, hors du modèle de menace.
 
 ### 7.4 Ne pas déranger (DND, par user)
@@ -474,6 +474,7 @@ GET    /api/v1/sync?cursor=...                # backlog offline
 GET    /api/v1/stream                         # SSE (contrat §8.1)
 GET    /api/v1/ws                             # WebSocket (mêmes événements, frames JSON)
 POST   /api/v1/receipts                       # delivered/seen
+GET    /api/v1/notifications/{id}/receipts    # qui l'a lue et quand — ce que déplie « vu par 3/5 » (§7.3, §10.3) ; `null` si le canal n'en collecte pas
 GET    /api/v1/push/webpush                   # clé publique VAPID (`applicationServerKey`, RFC 8292) — 501 si ce déploiement ne fait pas de Web Push
 GET    /api/v1/preferences/dnd                # préférences DND du user (§7.4)
 PUT    /api/v1/preferences/dnd                # quiet hours, exceptions par canal, bypass urgent
@@ -747,7 +748,7 @@ La notification est l'objet central ; son rendu est un composant unique déclin�
 - **Cycle de vie visible** : `open`/`working` affichent un indicateur vivant (spinner discret, `progress` si fourni) ; `closed` fige la row avec son statut final. La **timeline des révisions** (§2.2) se déroule dans le panneau détail — chaque révision est un événement horodaté, diff mis en évidence (ex. `status: info → failure`).
 - **Badge retard** (§7.2) : chip `reçue en retard (+2h13)` sur la row, tooltip avec les deux timestamps.
 - **Rendu markdown sanitizé** (§2.3) : markdown pur, HTML brut jamais interprété, liens `http(s)` uniquement, CSP stricte sans `unsafe-inline` — le contenu d'un canal peut venir de publishers moins fiables que ses lecteurs.
-- **Actions** (§2.3) : boutons shadcn `Button` en pied de card — `view` = variante `link`/`outline`, `ack` = `default` (état acquitté persistant), `reply` = `ghost` + input inline, `choice` = groupe de boutons `outline` (l'option retenue passe en `default`), `silence` = `ghost` + menu durée/scope (`DropdownMenu`). Receipts « vu par 3/5 » — le compte est en **users** (§7.3, `seen` est une interaction utilisateur) — en `HoverCard` listant qui a vu et quand ; le `delivered` par device reste un détail replié.
+- **Actions** (§2.3) : boutons shadcn `Button` en pied de card — `view` = variante `link`/`outline`, `ack` = `default` (état acquitté persistant), `reply` = `ghost` + input inline, `choice` = groupe de boutons `outline` (l'option retenue passe en `default`), `silence` = `ghost` + menu durée/scope (`DropdownMenu`). Receipts « vu par 3/5 » — le compte est en **users** (§7.3, `seen` est une interaction utilisateur) — en `HoverCard` listant qui a vu et quand ; le `delivered` par device reste un détail replié. Le dénominateur disparaît (« vu par 3 ») là où le canal n'a pas d'audience énumérable, la carte disant pourquoi (§7.3, §14.2).
 - Composants shadcn mobilisés : `Card`, `Badge`, `Button`, `DropdownMenu` (actions row), `Dialog`/`Sheet` (détail mobile), `Tabs`, `Tooltip`, `HoverCard`, `Command`, `Table` (admin), `Form` + `vee-validate`/`zod` (admin), `Sonner` (toasts temps réel), `Skeleton` (chargement backlog).
 
 ### 10.4 Layout & écrans
@@ -1345,8 +1346,9 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 | **M0 — Socle** | ✅ commité (`240ff36`) |
 | **M1 — Cœur + web v0** | ✅ commité (`9cd9414`, `aef4844`) — détail ci-dessous |
 | **M2 — Sync, offline & TUI** | ✅ commité (`e6a6b2e`, `731e795`) — les huit incréments, les quatre manques, puis D1 et D3 |
-| **M3 — Push web & PWA** | 🟡 M3.1 à M3.4 commités (`731e795`) ; M3.5 **écrit** ; M3.6 et M3.7 à faire — ci-dessous |
-| M4 → M7 | ⬜ non commencés |
+| **M3 — Push web & PWA** | ✅ **écrit** — M3.1 à M3.4 commités (`731e795`), M3.5 commité (`3098ebc`), M3.6 et M3.7 écrits — détail ci-dessous |
+| **M4 — Fédération CI & plateforme** | 🟡 en cours — découpage et M4.1 ci-dessous |
+| M5 → M7 | ⬜ non commencés |
 
 **Découpage de M1** :
 
@@ -1541,8 +1543,8 @@ Portes au vert à la fin de M2 : `task lint:check`, `task test` (482 Rust + 52 w
 | M3.3 | Suppression des push pendant une période DND, `deferred_by_dnd` au sync (§7.2, T10 et T19) | ✅ écrit |
 | M3.4 | Digest de sortie — **un** push, pas une rafale ; job leader-only (§11) | ✅ écrit |
 | M3.5 | `push-webpush` — RFC 8030/8291 (VAPID), premier adapter de production de `PushDispatcher` (§14.3), config `[push.webpush]` | ✅ écrit — câblé dans la composition root, plus `GET /push/webpush` |
-| M3.6 | Web : PWA installable + service worker, abonnement Web Push, enrôlement device, DND respecté localement | ⬜ |
-| M3.7 | Receipts : « vu par 3/5 » en `HoverCard` (§7.3, §10.3), compté en users | ⬜ |
+| M3.6 | Web : PWA installable + service worker, abonnement Web Push, enrôlement device, DND respecté localement | ✅ écrit — ADR-0017 |
+| M3.7 | Receipts : « vu par 3/5 » en `HoverCard` (§7.3, §10.3), compté en users | ✅ écrit — plus `GET /notifications/{id}/receipts` |
 
 L'ordre n'est pas libre : M3.3 et M3.4 consomment la préférence de M3.1–M3.2, et M3.6 consomme le transport de M3.5. M3.5 est le premier à sortir du « registre vide » que §14.3 décrit comme le comportement correct de M1.
 
@@ -1623,7 +1625,115 @@ Deux choix mineurs, notés parce qu'ils se relisent mal plus tard : la clé publ
 
 **Une chose trouvée en ouvrant le chantier plutôt qu'en le faisant** : le commit `731e795` ne compilait pas. Huit lignes d'une édition inachevée étaient collées **avant** l'en-tête de `crates/notify-server/src/config.rs`, et le `PathBuf` de `vapid_key_file` n'avait pas d'import. Les hooks de pre-commit (`task recu`, `task lint`) auraient arrêté les deux ; ils n'ont donc pas tourné. C'est le mode d'échec de D8 sous un autre angle — là, une vérification passait sans travail ; ici, le travail est passé sans vérification. La leçon est déjà écrite en §14.4 et n'a pas besoin d'une dette de plus : elle a besoin que les hooks soient installés (`task init`), et le fait qu'un commit ait pu atterrir sans eux est ce qui vaut d'être noté.
 
-Portes au vert à la fin de M3.5 : `task lint:check`, `task test` (602 Rust + 52 web), `task test:critical` (85), `task test:e2e` (54, contre un vrai Postgres — 54 exécutés, zéro sauté, ce que le compte prouve), `task test:oidc-compat` (leg `mock`, 3 exécutés et 0 sauté), `task audit` (cargo + deny + pnpm + trivy, redevenu vert), et `task recu` idempotent — l'idempotence contrôlée **après** avoir vu la génération produire `generated.rs`, ce que D8 exige. Couverture domaine+app à **91,4 %** pour un plancher à 90 % : en baisse sur les 96,2 % de la fin de M2, et la baisse est le code M3 arrivé avec `731e795` — `dnd`, `digest` et `preferences` sont moins couverts que ce qui les précède. Au-dessus du plancher, donc pas un blocage ; noté ici parce qu'une couverture qui glisse sans que personne l'écrive finit sous le plancher entre deux milestones.
+Portes au vert à la fin de M3.5 : `task lint:check`, `task test` (602 Rust + 52 web), `task test:critical` (85), `task test:e2e` (54, contre un vrai Postgres — 54 exécutés, zéro sauté, ce que le compte prouve), `task test:oidc-compat` (leg `mock`, 3 exécutés et 0 sauté), `task audit` (cargo + deny + pnpm + trivy, redevenu vert), et `task recu` idempotent — l'idempotence contrôlée **après** avoir vu la génération produire `generated.rs`, ce que D8 exige. Couverture domaine+app annoncée à **91,4 %** pour un plancher à 90 %, « en baisse sur les 96,2 % de la fin de M2 », avec l'inquiétude qu'une couverture qui glisse sans que personne l'écrive finisse sous le plancher. **Cette baisse n'a jamais eu lieu** : le chiffre venait de `task test:cover:domain`, qui mesurait autre chose que le gate dont il portait le nom — le gate rendait 96 % ce jour-là comme les précédents. Corrigé en fermant M3, avec le détail ci-dessous ; la ligne reste ici parce qu'une conclusion tirée d'un instrument faux se relit mieux à côté de ce qui l'a produite.
+
+**M3.6 en détail.** Le navigateur devient un device : installable, réveillable, et silencieux quand on le lui a demandé.
+
+**Le service worker est écrit à la main** — pas de `vite-plugin-pwa`, pas de Workbox — et c'est ADR-0017. Le raisonnement tient en deux points : ce fichier décide de ce qui s'affiche sur un écran verrouillé (il rend l'`Envelope` de `push-webpush`, un contrat de fil que rien dans l'OpenAPI ne décrit), donc c'est un fichier qu'on doit **lire** pour lui faire confiance ; et le manifeste de précache généré est un couplage au build, sur un projet dont toute la rigueur consiste à savoir exactement ce qui dérive de quoi. Ce que Workbox achetait ici — précache haché, versionnement de cache, un DSL de routage pour une route — tient dans la trentaine de lignes du fichier. Le coût est assumé et écrit : ni bundlé ni typé, donc `src/lib/sw.spec.ts` charge **ce fichier-là** dans un global de worker bouchonné, plutôt qu'une copie de sa logique.
+
+**Le cache ne touche jamais `/api/`**, et ce n'est pas de la prudence : un `GET /sync` servi depuis un cache rendrait à l'app un backlog que le curseur a déjà dépassé — un second source of truth que personne n'a demandé. Le shell est en network-first, l'inverse (cache-first) servant un bundle périmé à quelqu'un qui est en ligne, alors que le produit entier parle de voir ce qui se passe *maintenant*.
+
+**Le double affichage était le vrai piège.** Un navigateur avec l'app ouverte apprend chaque arrivée **deux fois** — sur son propre flux (§8.1) et par le push. Le worker afficherait donc une notification OS par-dessus le toast que la page allait lever. Il vérifie donc s'il existe un client **visible** : si oui il lui passe l'enveloppe et n'affiche rien, sinon il affiche. « Visible » et pas « ouvert » : un onglet en arrière-plan ne montre rien, donc le considérer comme ayant traité le push avalerait la notification. Et ce détour est aussi ce qui met le push derrière le DND local, que le worker ne peut pas évaluer — il ne tient ni session ni préférence.
+
+**Le DND local est une seconde implémentation, et sa frontière est écrite.** §7.4 l'exige (« sans cette règle, le SSE contournerait le DND sur les clients ouverts ») pendant que M3.1 dit que rien d'autre que le domaine n'a le droit de se demander ce que « DND » veut dire. L'alternative — demander au serveur à chaque arrivée — est un aller-retour pour décider s'il faut dessiner un toast, sur le chemin où la latence *est* la fonctionnalité. Donc `stores/preferences.ts` recopie `Dnd::is_muted` clause pour clause et dans le même ordre, et la copie s'arrête là : elle décide des **popups locaux** et de rien d'autre — aucun push supprimé, rien retiré de l'inbox, aucun autre module qui l'interroge. Les tests reprennent les scénarios des tests Rust, y compris les deux qui se trompent tout seuls : la fenêtre qui traverse minuit appartient au jour où elle **commence**, et l'heure se lit dans le fuseau de la préférence — 23:30 à Tokyo est calme pour une préférence Tokyo et le milieu de l'après-midi pour une préférence Paris, au même instant. `Intl` est la copie navigateur de la base IANA que `chrono-tz` compile dans le serveur, ce qui les fait tomber d'accord sur un changement d'heure sans que ce fichier sache ce qu'est un changement d'heure.
+
+Trois décisions plus petites, notées parce qu'elles se relisent mal :
+
+- **la permission est demandée après `GET /push/webpush`**, jamais avant. Un navigateur ne donne qu'une invite, et la refuser est définitif : la dépenser sur un déploiement qui ne fait pas de Web Push serait la perdre pour rien ;
+- **une souscription existante est réutilisée, pas remplacée.** `subscribe()` avec la même clé rend le même endpoint, donc re-souscrire produirait un **second** device pour un seul navigateur. Symétriquement, `disable()` coupe la souscription *avant* de révoquer le device : l'ordre inverse laisse une fenêtre où le serveur envoie un push que plus rien ne route ;
+- **l'id du device vit en `localStorage`**, parce que rien d'autre ne distingue deux profils de navigateur — la même personne sur la même machine en Chrome et en Firefox, ce sont deux endpoints et à juste titre deux devices. Le perdre en enrôle un second, visible et révocable dans Devices, ce qui vaut mieux que de deviner qu'ils sont le même et de révoquer le push de quelqu'un d'autre.
+
+Une exception à §10.6 (« aucune couleur brute hors des tokens ») est ouverte ici et c'est la seule : `manifest.webmanifest` et le `<meta name="theme-color">` sont lus par l'OS **avant** qu'aucune feuille de style n'existe. Les deux portent le `--background` du thème sombre en hexadécimal, et le fichier le dit à l'endroit où quelqu'un le lira.
+
+**Ce que M3.6 ne ferme pas, et pourquoi c'est écrit plutôt que tu.** ADR-0016 dit « M3 closes this » : le refresh token quitte `sessionStorage` pour le service worker, qui existe maintenant. Il n'a pas bougé, et la raison est que le déplacement tel qu'imaginé n'achète rien. Un worker est **tué agressivement** ; pour survivre à ça, le jeton devrait vivre en IndexedDB — que la page lit aussi bien que lui, donc un XSS y accède exactement comme aujourd'hui. Le garder en mémoire du worker *protège* réellement, et coûte un aller-retour complet chez l'IdP à chaque éviction, c'est-à-dire souvent : ce serait « tout en mémoire », l'option qu'ADR-0016 a écartée en M1 pour la raison qu'on n'a pas envie de rappeler aux gens de ne jamais recharger. La décision est donc réelle et n'est pas celle qu'ADR-0016 anticipait ; elle mérite son propre enregistrement et son propre incrément, pas un amendement glissé dans un milestone qui parle de push. **ADR-0016 reste `accepted`, pas `superseded`** — et la dette entre en §14.4 sous son numéro plutôt que d'être laissée dans le futur d'un autre document.
+
+**M3.7 en détail.** Le badge « vu par 3/5 » existait ; ce qu'il déplie n'existait pas, et le chiffre lui-même était faux.
+
+**Il fallait un endpoint, et §8 n'en avait pas.** Le panneau comptait les receipts arrivés **sur son propre flux** pendant qu'il était ouvert : quelqu'un qui avait lu la notification la veille était invisible, et le compte repartait de zéro à chaque rechargement d'onglet. `ReceiptRepository::list_for` existait depuis M1 et n'était appelé par personne — un port écrit pour un écran qui ne l'a jamais consommé. D'où `GET /notifications/{id}/receipts`, ajouté à §8 ci-dessus, autorisé **à travers la notification** comme la timeline et les interactions (une frontale ne peut pas lire qui a lu ce qu'elle n'a pas le droit de lire), et qui répond **`null`** là où le canal ne collecte rien — la même orthographe que `POST /receipts` juste à côté, parce que « personne ne l'a lue » et « on n'enregistre pas ça » sont deux phrases différentes et qu'un client qui sait traiter l'une sait traiter l'autre.
+
+**Les noms viennent du serveur, jamais du fil.** L'événement `receipt` de §8.1 porte un `principal` ; une HoverCard a besoin d'une **personne** (§2.4). Le serveur résout donc les profils sur la route, et le client traite l'événement comme un **poke** — exactement la forme du signal local de §9.3bis : la trame ne dit que « regarde à nouveau », une requête en vol à la fois. L'alternative — replier l'événement localement — aurait affiché des ULID bruts à côté des noms venus du serveur, sur le même écran.
+
+**Et le dénominateur n'existe pas toujours.** C'est le bug que seul le fait de le lancer pouvait révéler : sur `cluster-ovh-1`, le canal de démonstration de §11, le serveur répondait `audience: 0` — puis `1` dès qu'une personne avait lu. Alice y accède par le binding `infra-admins`, donc il n'existe **aucune ligne de membership** à compter, et §14.2 dit pourquoi : l'accès par groupe est dérivé à chaque requête, jamais matérialisé, précisément pour que quitter un groupe prenne effet à l'appel suivant. Rien dans le processus ne sait combien de personnes contient `infra-admins`.
+
+Diviser par les lignes qui existent quand même aurait donné « vu par 3/3 » sur un canal que trente personnes lisent : pas une approximation, une affirmation fausse — *tout le monde est au courant* — et une affirmation qu'aucun client ne peut détecter comme fausse. `audience` est donc un **`Option`** : un canal qui n'a que des membres a son total, un canal qui a le moindre binding de groupe n'en a pas, et le badge affiche « vu par 3 » tout court avec la raison dans la carte. La limite résiduelle est nommée là où elle se voit et ne peut pas se fermer ici : une personne qui a le droit de lire par son groupe et n'a rien ouvert n'apparaît nulle part, parce que rien ne sait qu'elle existe.
+
+Quand le total **est** connaissable, il reste un **plancher** : un membre retiré après avoir lu produirait « 2/1 », qui ne se lit pas.
+
+Trois formes plus petites, notées parce qu'elles se relisent mal :
+
+- **une personne, pas un device.** Deux `seen` de la même personne se replient sur le **premier** — ouvrir la même notification sur son portable puis sur son téléphone, c'est l'avoir lue une fois, à la première. C'est aussi ce que §9.3bis avait déjà décidé côté clients locaux (une seule identité device par profil, « pour ne pas compter la machine trois fois ») ;
+- **`delivered` compte des écrans**, reste replié sous le compte de personnes, et un receipt **sans device** — l'abonnement logique d'un service account (§5.2bis) — n'est pas un écran ;
+- **`SeenTally` a disparu.** Il calculait le numérateur, `Readership` le calcule aussi, et deux noms pour un même fait finissent par diverger. Ses trois tests sont passés sur `Readership` sans perdre une clause, T25 comprise.
+
+**Vérifié en le lançant**, contre un vrai Postgres et le provider de dev : sur un canal à membres, `vu par 1/2` puis `2/2` avec les deux noms et un receipt rejoué qui ne gonfle rien ; sur `cluster-ovh-1`, deux lectrices nommées et `audience: null` ; et `403` pour qui n'est pas dans le canal — carol comme bob avant son membership.
+
+**Fermer M3.** Les sept incréments sont écrits, et rien n'est nommé ici comme manquant : ce que M3 ne prenait pas (la palette `Cmd+K`) était déjà dit plus haut, et ce qu'il a laissé ouvert (le refresh token de M3.6) est une dette numérotée plutôt qu'une phrase.
+
+Portes au vert à la fin de M3 : `task lint:check`, `task test` (564 Rust + 93 web), `task test:critical` (86), `task test:e2e` (54, contre un vrai Postgres — 54 exécutés, zéro sauté), `task test:oidc-compat` (leg `mock`, 3 exécutés et 0 sauté), `task audit` (cargo + deny + pnpm + trivy), et `task recu` idempotent — la génération vue produire `generated.rs` et les quatre fichiers TS **avant** de comparer les empreintes, ce que D8 exige.
+
+Couverture domaine+app : **96,2 %** pour un plancher à 90 %. Et c'est le chiffre qui a produit la seule vraie trouvaille de la fermeture, parce qu'il n'était pas celui qu'on lisait.
+
+**`task test:cover:domain` ne mesurait pas ce que son nom promettait.** Sa description disait « le périmètre que le gate CI applique réellement (≥ 90 %) » et elle lançait `cargo llvm-cov nextest -p notify-domain -p notify-app --summary-only`, ce qui se trompe **deux fois dans le même sens** : la première colonne de ce tableau est la couverture par **région**, quand le gate (`xtask coverage-gate`, qui lit du LCOV) compte des **lignes** ; et `-p` n'exécute que les tests de ces deux crates, quand le gate mesure un run **workspace** — or les suites d'adapters exercent beaucoup de `notify-app`. Les deux erreurs vont dans le même sens, vers le bas.
+
+L'écart n'est pas cosmétique : **90,3 % contre 96,2 %** le même jour, sur la même base. C'est-à-dire un quart de point au-dessus du plancher là où il y en a six. La fin de M3.5 a donc enregistré « 91,4 %, en baisse sur les 96,2 % de M2 » et une inquiétude — « une couverture qui glisse sans que personne l'écrive finit sous le plancher » — sur une baisse **qui n'a jamais eu lieu** : le gate rendait 96,4 % en fermant M1, 96,2 % en fermant M2, et 96,2 % aujourd'hui. Ce qui avait changé, c'était l'instrument.
+
+Un garde-fou local qui affiche autre chose que le gate dont il porte le nom est pire que pas de garde-fou : celui-ci a fait fermer un milestone sur une fausse alerte, et il en aurait produit une par milestone jusqu'à ce que quelqu'un lance les deux commandes côte à côte. `test:cover:domain` **exécute le gate** maintenant — même mesure, même arithmétique, une seule vérité — et le raisonnement est écrit dans la tâche plutôt que dans ce document, là où le prochain à la modifier le lira.
+
+C'est le mode d'échec de D8 par le troisième côté : là une vérification passait sans travail, là le travail passait sans vérification, ici la vérification mesurait autre chose et le disait avec assurance.
+
+**Découpage de M4** :
+
+| # | Livrable | État |
+|---|---|---|
+| M4.1 | Fédération dans le domaine (§5.3) — `TrustPolicy`, glob **ancré**, `aud` exigée, anti-replay `jti` (T11) | ✅ écrit |
+| M4.2 | `POST /auth/token/exchange` — jeton Ed25519, TTL ≤ 15 min, quota 10/min par (issuer, subject) (§8.2) | 🟡 use case et chemin d'authentification écrits ; adapter de signature, `ReplayGuard` PG, route et clé restent |
+| M4.3 | Réconciliation des policies : `[[trust_policy]]` globales et `[[channels.managed.publishers]]` scopées au canal, ces dernières prioritaires (§11) | ⬜ |
+| M4.4 | Rôle `platform-admin` (§5.4) — GitOps only, frontière métadonnées/contenu, self-join audité (T30) | ⬜ |
+| M4.5 | Endpoints `/api/v1/admin/*` — audit log, réconciliation, inventaire (§8) | ⬜ |
+| M4.6 | Web : console plateforme v1 (§10.4bis) et UI trust policies | ⬜ |
+| M4.7 | Dogfooding : la CI publie ses statuts vers weebo-notify (§3.2, §3.2bis) | ⬜ |
+
+L'ordre n'est pas libre : M4.2 consomme le domaine de M4.1, M4.3 lui donne ses policies, M4.5 consomme le rôle de M4.4, et M4.7 ne peut pas exister avant que M4.2 réponde. Le point de départ est meilleur qu'à M3 : `[[trust_policy]]`, `[[channels.managed.publishers]]` et `[admin] oidc_groups` sont **déjà lus** par la configuration depuis M1.8 et listés par `Config::unhonoured` — le travail est de les honorer, pas de les découvrir.
+
+**Ce que M4 ne peut pas prendre, et qui n'appartient à personne.** §10.4bis fait de la **DLQ des sinks** un des quatre objets de la console v1, et §8 lui donne deux routes (`GET /admin/dlq`, `POST /admin/dlq/{id}/requeue`). Or les sinks sortants (§7.1bis) n'ont **aucun adapter de production** (§14.3) et n'apparaissent dans **aucun milestone** de §14 : ni M1 (« hors périmètre »), ni M2 à M7, qui parlent de sync, de push et de Tauri. Le webhook signé, l'email SMTP, les retries et la DLQ elle-même sont donc spécifiés en détail — contrat HMAC, fenêtre anti-replay de 5 minutes, backoff 30 s → 1 h, abandon à 24 h — et personne ne les écrit.
+
+Deux façons de mentir à ce sujet, et on ne prendra ni l'une ni l'autre : livrer une console dont l'onglet DLQ est vide en permanence et laisser croire que « rien n'est en souffrance », ou retirer la DLQ de §10.4bis et faire disparaître le problème du document. **M4 livre donc les trois autres objets de la console** (audit log, réconciliation, inventaire) et laisse la DLQ dehors, nommée ici — le sujet est un milestone à part entière, pas un onglet, et il faudra décider où il tombe avant M5.
+
+**M4.1 en détail.** La décision de fédération, en pur domaine : des claims que quelqu'un d'autre a signées, des policies que l'opérateur a écrites, et une réponse. Aucun réseau, donc les trois durcissements de §5.3 se testent tous les trois.
+
+**Le glob est le cœur du sujet, et il tient en une méthode.** `repo:weebo/*` doit matcher `repo:weebo/infra` et jamais `repo:weebo-evil/x` : l'implémentation évidente — comparer le préfixe avant l'étoile — fait exactement l'inverse de ce qu'on croit lire. `Pattern` compare donc **le préfixe et le suffixe**, et vérifie qu'ils ne se chevauchent pas, sans quoi `repo:weebo/*:ref:refs/heads/main` matcherait `repo:weebo/:ref:refs/heads/mai`. Une bibliothèque de glob aurait apporté `?`, les classes de caractères et `**` — trois façons de plus d'écrire un motif qui matche plus large que ce que son auteur croyait, pour un besoin que §11 exprime avec une étoile.
+
+Deux motifs sont **refusés à la construction** plutôt que gérés : le vide, et `*` tout seul. Un `*` de sujet fait confiance à quiconque peut ouvrir une pull request sur le dépôt de l'issuer ; qui veut vraiment ça doit écrire quelque chose qui ne peut pas être un lapsus.
+
+**Le port promettait ce que son type interdisait.** `FederationVerifier::verify_ci_token` rendait des `VerifiedClaims` — la forme du login humain —, et sa documentation annonçait les deux contrôles de T11. Or `VerifiedClaims` ne porte **ni `aud` ni `jti`** : aucune implémentation n'aurait pu faire ces contrôles, et aucun appelant n'aurait pu les faire après. Ce n'est pas un oubli de câblage, c'est une règle écrite en prose à côté d'un type qui la rend inexprimable — la même famille que le `PUSH_PAYLOAD_HINT` de M3.5 et que la matrice `oidc-compat` de §15. Le port rend maintenant des `FederatedClaims`, et **ne décide plus rien** : il rapporte les audiences, le domaine refuse. Un seul endroit décide « ce jeton n'est pas pour nous », et c'est un endroit sans I/O et avec des tests.
+
+**L'anti-replay est un port à part.** `IdempotencyStore` existait et ressemblait à ce qu'il faut, mais sa sémantique est l'inverse : il **rejoue** la réponse stockée, ce qui est juste pour un publish qu'un client a retenté après un timeout, et exactement faux ici — rejouer rendrait une seconde copie du jeton frais à qui présente à nouveau un ID token volé, transformant « il vaut un échange » en « il en vaut autant qu'on veut, tous identiques ». D'où `ReplayGuard`, dont la seule méthode **teste et enregistre en un appel** : en deux, deux jobs présentant le même jeton volé liraient tous les deux « jamais vu ».
+
+**Une policy de canal l'emporte, et c'est écrit plutôt que déduit.** §11 dit que les blocs `publishers` d'un canal priment sur les `[[trust_policy]]` globales. La lecture tentante — « la plus étroite gagne » — est une *autre* règle qui tombe d'accord la plupart du temps, et diverge le jour où quelqu'un écrit une globale plus étroite que la locale. Le `TrustPolicy` porte donc un booléen `channel_scoped`, et dès qu'une policy scopée matche, les globales sont **écartées** : un canal qui nomme ses publishers a dit qui ils sont.
+
+**M4.2, la moitié qui est écrite.** `ExchangeToken` et la porte d'authentification qui accepte ce qu'il émet. Ce qui reste est nommé plus bas plutôt que présenté comme fini.
+
+**L'ordre des contrôles est la sécurité, et chaque position a sa raison.** Signature, quota, policy, anti-replay, mint. Deux placements ne sont pas interchangeables :
+
+- **le `jti` est consommé après la policy et avant le mint.** Le consommer plus tôt — dès qu'un jeton se présente — donnerait à n'importe qui une façon de **verrouiller un vrai job hors de son propre échange** : il suffirait de présenter un jeton portant le `jti` de la victime pour le griller. Le consommer plus tard laisserait une fenêtre où deux requêtes concurrentes frappent toutes les deux. Un test vérifie précisément la première clause : un refus ne consomme pas l'id sur lequel il a été refusé ;
+- **le quota est indexé sur les claims vérifiées**, donc après la signature — §8.2 limite « par (issuer, subject) » et aucun des deux n'existe avant. Ce qui protège la vérification elle-même est le plafond global devant, pas celui-ci.
+
+**Les patterns sont résolus au mint, pas à l'usage.** Le jeton nomme `ci-infra` et `ci-web`, jamais `ci-*`. C'est ce que le type `MintedToken` de M1 supposait déjà, et la raison tient à §11 : la configuration se recharge à chaud, donc deux requêtes d'un même pipeline pourraient légitimement obtenir deux réponses différentes si chacune rejouait le match. Résoudre une fois écrit la réponse. Conséquence assumée : un canal créé après l'échange n'est pas couvert par le jeton en cours — quinze minutes, puis il l'est.
+
+Cela a demandé `ChannelRepository::all_ids`, et sa documentation dit ce qu'il n'est pas : une lecture **non scopée**, donc jamais un chemin d'autorisation. Elle répond « qu'est-ce qui existe », pas « qu'as-tu le droit de voir » — mélanger les deux est la façon dont un inventaire devient une fuite.
+
+**Une policy qui matche mais ne couvre aucun canal existant est un refus**, pas un jeton vide. Émettre un jeton qui ne peut rien faire repousse l'erreur de configuration jusqu'au job, qui la découvrira un 403 à la fois, très loin de la ligne de TOML qui l'a causée.
+
+**Deux jetons porteurs sur le même en-tête, distingués en essayant.** Un access token OIDC et un jeton CI de notre cru arrivent tous deux en `Authorization: Bearer`, et rien dans l'en-tête ne les sépare — une clé d'API a au moins son préfixe `wnk_`. Lire `iss` dans un JWT **non vérifié** pour choisir le vérificateur serait router sur une donnée fournie par l'attaquant ; on essaie donc le vérificateur maison d'abord, et l'échec coûte une lecture d'en-tête qui s'arrête sur l'algorithme. Un déploiement sans `[federation]` ne fait pas l'essai du tout, d'où un `Option` plutôt qu'un double qui refuse (§14.3) : ce n'est pas un use case qui découvre une capacité absente, c'est le chemin le plus chaud de l'API qui décide s'il y a une seconde porte.
+
+Le grant est **lu sur le jeton**, jamais re-dérivé, pour la même raison que la résolution au mint.
+
+**Ce que M4.2 n'a pas encore**, nommé ici plutôt que passé sous silence — il n'y a pas de route, donc rien de tout ceci n'est joignable :
+
+- l'adapter de signature Ed25519 et la vérification JWKS **par issuer** : `notify-oidc` cache le JWKS d'un seul issuer, celui de la configuration ; une instance fédère potentiellement plusieurs forges ;
+- l'adapter `ReplayGuard` sur Postgres, et sa migration ;
+- `POST /api/v1/auth/token/exchange` et sa place dans le document OpenAPI ;
+- **la clé de signature**, qui est une addition à §11 : §5.3 exige de l'Ed25519 et §11 n'a aucun bloc pour dire où vit la clé privée. Elle ne peut pas être générée au démarrage — un replica signerait ce qu'un autre ne saurait pas vérifier —, donc c'est un `[federation] signing_key_file`, sur le modèle du `vapid_key_file` de M3.5, avec le même outillage de dev (`task dev:setup`, `xtask`) et la même exigence de custody que §15 pose déjà pour minisign et cosign.
 
 ### 14.2 Accès par groupe OIDC — le modèle dérivé
 
@@ -1657,7 +1767,8 @@ Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est u
 | `AttachmentStore` | ✅ | ✅ `S3Attachments` (M2.2) | Conformité passée contre un vrai RustFS. Un déploiement sans `[attachments]` reçoit un double qui **refuse** (`NotConfigured`) au lieu de réussir dans le vide. |
 | `AvatarProcessor` | — | ✅ `notify-avatars` (M2.2) | Seule surface de décodage média du serveur (§15) : taille, format d'après les octets, dimensions **avant** décodage, ré-encodage qui strippe les métadonnées. |
 | `SinkDispatcher` / `SinkQueue` | ✅ | ⬜ | Hors périmètre M1 (§7.1bis). |
-| `FederationVerifier` | ❌ | ⬜ | M4 (§5.3). Pas encore de double non plus. |
+| `FederationVerifier` | ✅ `StaticFederationVerifier` (M4.1) | ⬜ | M4.2. Le port rend désormais des `FederatedClaims` — il rendait des `VerifiedClaims`, qui ne portent ni `aud` ni `jti`, donc les deux contrôles que sa doc promettait étaient **irreprésentables** (M4.1). |
+| `ReplayGuard` | ✅ `InMemoryReplayGuard` (M4.1) | ⬜ | M4.2. Port à part et non `IdempotencyStore` : celui-ci **rejoue** la réponse stockée, ce qui rendrait une seconde copie du jeton à qui rejoue un ID token volé. Un `jti` déjà vu se refuse. |
 | `TokenVerifier` | ✅ | ✅ `notify-oidc` | |
 | `SecretHasher` | ✅ | ✅ `notify-oidc` (Argon2id) | |
 | `KeyGenerator` | ✅ | ✅ `UlidKeyGenerator` (`notify-app`) | Dérive préfixe et secret de ULID — 160 bits d'aléa CSPRNG. |
@@ -1680,8 +1791,10 @@ Tout ce qui suit est connu, écrit et chiffré en effort. Une dette sans solutio
 | D6 | `delivered_at` non conservé | — | S | ✅ soldée en fermant M2 |
 | D7 | Legs Dex et Authentik de `oidc-compat` | une seule lecture d'OIDC au lieu de trois (§15) | M | ⬜ ouverte |
 | D8 | Une vérification qui passe sans rien exécuter | — | S | ✅ règle appliquée |
+| D9 | Refresh token en `sessionStorage` (ADR-0016) | lisible par un XSS aussi longtemps qu'il vit | M | ⬜ ouverte — le déplacer dans le worker n'achète rien tant qu'il passe par IndexedDB (M3.6) |
+| D10 | `task test:cover:domain` mesurait autre chose que son gate | — | S | ✅ soldée en fermant M3 |
 
-Les six entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
+Les sept entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
 
 **D1 — `Event` rendu en type inhabité.** progenitor voyait `allOf[Audience(oneOf), EventPayload(oneOf), {cursor, logged_at}]` et produisait `pub enum EventVariant0 {}` : la désérialisation d'une page de sync ne marchait que tant qu'elle était vide. `notify-client-core` contournait avec son propre modèle minimal (documenté dans le module), donc rien n'était cassé — mais la promesse d'ADR-0009, « les clients viennent du contrat », avait un trou.
 
@@ -1726,6 +1839,12 @@ Le retard est `delivered_at - created_at`, au-delà d'un seuil de cinq minutes e
 **D8 — un contrôle vert qui ne prouvait rien.** En écrivant M2, `task recu` échouait (D-avatar, corrigé) et le contrôle d'idempotence — « les fichiers générés n'ont pas bougé » — **passait justement parce que la génération n'avait pas tourné**. C'est le même mode d'échec que D7 sous une autre forme, et il a été commis ici après avoir été dénoncé deux sections plus haut.
 
 *Solution* : la règle, écrite pour qu'elle serve ailleurs — **une vérification doit prouver que le travail a eu lieu avant de vérifier son résultat**. Concrètement : contrôler le code de sortie *et* une trace d'exécution (`task recu` nomme ce qu'il régénère) avant de comparer des empreintes. Le job `contract` en CI était protégé par son code de sortie ; c'est la vérification manuelle qui ne l'était pas.
+
+**D10 — une mesure locale qui contredisait son propre gate.** `task test:cover:domain` disait mesurer « le périmètre que le gate CI applique réellement » et lisait la couverture par **région** d'un run `-p notify-domain -p notify-app`, là où le gate lit des **lignes** sur un run **workspace**. Deux écarts, tous deux vers le bas : 90,3 % affiché contre 96,2 % appliqué. Le coût n'est pas théorique — M3.5 a enregistré une baisse de couverture qui n'existait pas, et la fermeture de M3 a bien failli ouvrir une dette pour la réparer.
+
+*Solution, faite* : la tâche **exécute le gate** (`xtask coverage-gate` sur le LCOV du run workspace) plutôt que d'approximer ce qu'il ferait. Le raisonnement vit dans `.tasks/test.yaml`, au-dessus des commandes, pour que le prochain à vouloir la rendre plus rapide voie d'abord pourquoi elle ne l'est pas.
+
+La règle générale, à côté de celle de D8 : **une vérification locale qui nomme un gate doit lancer ce gate.** Une approximation qui se trompe vers le haut cache un échec ; une qui se trompe vers le bas fabrique du travail — et coûte la confiance qu'on accorde au chiffre la fois d'après.
 
 ---
 

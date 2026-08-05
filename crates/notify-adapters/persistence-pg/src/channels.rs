@@ -229,6 +229,19 @@ impl ChannelRepository for PgStore {
         }
         Ok(channels)
     }
+
+    async fn all_ids(&self) -> PortResult<Vec<ChannelId>> {
+        // Ids straight off the index, with no member fan-out: the one caller wants
+        // to match patterns against names (design §5.3).
+        let rows = sqlx::query_scalar::<_, String>("SELECT id FROM channels ORDER BY id")
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| fail("channel", error))?;
+
+        rows.iter()
+            .map(|id| crate::mapping::parse("channel.id", id, ChannelId::parse))
+            .collect()
+    }
 }
 
 impl PgStore {

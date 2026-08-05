@@ -11,32 +11,66 @@ import { Menu, X } from "lucide-vue-next";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
+import AppToaster from "@/components/layout/AppToaster.vue";
 import NotificationDetail from "@/components/notification/NotificationDetail.vue";
 import { Button } from "@/components/ui/button";
+import { resubscribe } from "@/lib/push";
+import { register } from "@/lib/service-worker";
 import { useChannels } from "@/stores/channels";
 import { useDetail } from "@/stores/detail";
 import { useInbox } from "@/stores/inbox";
+import { usePreferences } from "@/stores/preferences";
+import { useToasts } from "@/stores/toasts";
 
 const channels = useChannels();
 const detail = useDetail();
 const inbox = useInbox();
+const preferences = usePreferences();
+const toasts = useToasts();
 const route = useRoute();
 const router = useRouter();
 
 const sidebarOpen = ref(false);
 let unsubscribe: (() => void) | null = null;
+let unhandPush: (() => void) | null = null;
 
 onMounted(async () => {
   // The detail panel does not hold a stream of its own: one connection per tab,
   // out of the twenty a user gets across every client (§8.2).
-  unsubscribe = inbox.subscribe((event) => detail.ingest(event));
+  unsubscribe = inbox.subscribe((event) => {
+    detail.ingest(event);
+    // Both before the toast: a `preference` event that arrives with an arrival
+    // has to be applied first, or the toast it should have silenced is already up.
+    preferences.ingest(event);
+    toasts.arrival(event);
+  });
 
-  await Promise.all([channels.load(), inbox.load()]);
+  // A push the worker handed over because this tab is visible (see `public/sw.js`)
+  // — it skipped the OS notification so that this one goes through the same
+  // do-not-disturb gate as the stream does.
+  const onMessage = (event: MessageEvent) => {
+    const message = event.data as { type?: string; envelope?: unknown } | null;
+    if (message?.type === "push" && message.envelope) {
+      toasts.pushed(message.envelope as { title?: string });
+    }
+  };
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    unhandPush = () =>
+      navigator.serviceWorker.removeEventListener("message", onMessage);
+  }
+
+  // Registration is not awaited by anything that renders: the app works without a
+  // worker, and the person waiting for the inbox should not wait for one.
+  void register(() => void resubscribe());
+
+  await Promise.all([channels.load(), inbox.load(), preferences.load()]);
   inbox.start();
 });
 
 onBeforeUnmount(() => {
   unsubscribe?.();
+  unhandPush?.();
   inbox.stop();
 });
 
@@ -122,5 +156,6 @@ function closeDetail(): void {
         <NotificationDetail />
       </div>
     </div>
+    <AppToaster />
   </div>
 </template>

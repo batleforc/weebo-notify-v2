@@ -70,6 +70,17 @@ tasks:
       - cargo run --quiet -p xtask -- coverage-gate --lcov target/coverage/rust.lcov {{if .CLI_ARGS}}--base {{.CLI_ARGS}}{{end}}
 
   cover:domain:
-    desc: "Coverage of notify-domain + notify-app only — the scope the CI gate actually enforces (>=90%)"
+    desc: "The domain+app figure the CI gate enforces (>=90%) — same measurement, same arithmetic"
+    # It used to be `cargo llvm-cov nextest -p notify-domain -p notify-app
+    # --summary-only`, and that answered a different question in two ways at once:
+    # the first column of that table is *region* coverage while the gate counts
+    # **lines**, and `-p` runs only those two crates' tests while the gate measures
+    # a workspace run — the adapter suites exercise plenty of `notify-app`. The two
+    # errors compound downwards: it printed 90.3 % against a 90 % floor the day the
+    # gate said 96.2 %, and a milestone was closed believing coverage was sliding.
+    # A local check that disagrees with the gate it names is worse than no local
+    # check, so this now runs the gate.
     cmds:
-      - cargo llvm-cov nextest -p notify-domain -p notify-app --summary-only
+      - mkdir -p target/coverage
+      - cargo llvm-cov nextest --workspace --ignore-filename-regex '{{.COVERAGE_EXCLUDE}}' --lcov --output-path target/coverage/rust.lcov
+      - cargo run --quiet -p xtask -- coverage-gate --lcov target/coverage/rust.lcov

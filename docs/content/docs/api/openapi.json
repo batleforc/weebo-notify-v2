@@ -1443,6 +1443,70 @@
         ]
       }
     },
+    "/api/v1/notifications/{id}/receipts": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Who has read a notification — what unfolds under \"seen by 3/5\".",
+        "operationId": "readership",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Notification id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The roll, or `null` when receipts are off on that channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Readership"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a member of its channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/notifications/{id}/revisions": {
       "get": {
         "tags": [
@@ -4744,6 +4808,36 @@
           }
         }
       },
+      "Readership": {
+        "type": "object",
+        "description": "What \"seen by 3/5\" unfolds into (design §7.3, §10.3).\n\nThe number on the badge is the headline; the hover card is the answer to the\nquestion the badge provokes — *who*, and *when*. Delivery stays folded underneath\nas a device count, because \"it reached four screens\" and \"three people read it\"\nare different facts and only the second one is about readership.",
+        "required": [
+          "seen",
+          "delivered_devices"
+        ],
+        "properties": {
+          "audience": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many people could see it, where that is a knowable number.\n\n`None` on a channel whose access is derived rather than stored — see\n[`Readership::of`]. A client shows \"vu par 3\" then, not \"vu par 3/3\".",
+            "minimum": 0
+          },
+          "delivered_devices": {
+            "type": "integer",
+            "description": "Distinct devices that acknowledged delivery. A receipt without a device is\na logical subscription (design §5.2bis), and a subscription is not a screen.",
+            "minimum": 0
+          },
+          "seen": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Sighting"
+            },
+            "description": "Who saw it, oldest sighting first — reading order, like the timeline."
+          }
+        }
+      },
       "Readiness": {
         "type": "object",
         "description": "Readiness answer: the overall verdict plus the per-dependency detail an\noperator needs to know *which* dependency is holding the replica back.",
@@ -5131,6 +5225,25 @@
       "ServiceAccountId": {
         "type": "string",
         "description": "A service account, named so a timeline can say \"published by `bot-argocd`\"\nrather than \"published by a key\" (design §5.2bis)."
+      },
+      "Sighting": {
+        "type": "object",
+        "description": "One person, and when they first looked (design §7.3, §10.3).\n\nSerialize only, here and on [`Readership`]: a roll is computed and sent, never\nread back in. Deriving `Deserialize` would describe an input that does not\nexist, and leave the code that parses it untested for as long as that stays\ntrue.",
+        "required": [
+          "author",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When they *first* saw it. Somebody who opens a notification on their laptop\nand again on their phone read it once, at the first of the two."
+          },
+          "author": {
+            "$ref": "#/components/schemas/Author",
+            "description": "Who. Carries the display name where the reader is entitled to it — a hover\ncard that listed raw identifiers would answer a question nobody asked\n(design §2.4)."
+          }
+        }
       },
       "Silence": {
         "type": "object",

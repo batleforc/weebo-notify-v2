@@ -62,4 +62,19 @@ pub trait ChannelRepository: Send + Sync {
     /// Every GitOps-managed channel, for reconciliation and drift correction
     /// (design §11, scenario T21).
     async fn list_managed(&self) -> PortResult<Vec<Channel>>;
+
+    /// Every channel id on the instance, ordered.
+    ///
+    /// Ids only, and deliberately: the one caller is the federation exchange
+    /// (design §5.3), which resolves a policy's `ci-*` into the channels that
+    /// actually exist so the minted token can name them. It needs no members, no
+    /// policy and no origin, and returning whole channels here would make an
+    /// instance-wide read of everything look like an ordinary thing to reach for.
+    ///
+    /// Unscoped, so it is **not** an authorisation path: nothing may hand this list
+    /// to a caller. It answers "what exists", not "what may you see" — the second
+    /// question is [`list_for`], and mixing them is how an inventory becomes a leak.
+    ///
+    /// [`list_for`]: ChannelRepository::list_for
+    async fn all_ids(&self) -> PortResult<Vec<ChannelId>>;
 }
