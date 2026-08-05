@@ -14,14 +14,15 @@ use std::sync::Arc;
 
 use notify_app::{
     Authenticate, Authorizer, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel,
-    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
-    ExchangeToken, Fanout, GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox,
-    ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers,
-    PostReceipt, PresignAttachment, PublishNotification, PurgeExpired, ReadAvatar, ReadDnd,
-    ReadProfile, ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction,
-    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SendDndDigests,
-    SetAvatar, SetDnd, SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel,
-    UpdateProfile, UpsertNotification,
+    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, DrainSinks,
+    EnrolDevice, ExchangeToken, Fanout, GetNotification, ListApiKeys, ListChannels,
+    ListDeadLetters, ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts,
+    ListTrustPolicies, ManageMembers, PostReceipt, PresignAttachment, PublishNotification,
+    PurgeExpired, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
+    ReconciliationLog, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
+    RevokeDevice, SearchNotifications, SelfJoin, SendDndDigests, SetAvatar, SetDnd,
+    SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel, UpdateProfile,
+    UpsertNotification,
 };
 use notify_attachments_s3::{S3Attachments, S3Config};
 use notify_avatars::ImageAvatarProcessor;
@@ -30,13 +31,16 @@ use notify_eventbus_pg::PgEventBus;
 use notify_http_actix::ApiState;
 use notify_oidc::{Argon2SecretHasher, FederationTokens, OidcConfig, OidcVerifier};
 use notify_persistence_pg::{PgLeaderElection, PgStore};
-use notify_ports::{AttachmentStore, EventBus, SystemClock};
+use notify_ports::{AttachmentStore, EventBus, SinkRegistry as _, SystemClock};
 use notify_push_webpush::{WebPush, WebPushConfig};
+use notify_sinks_email::{EmailSink, SmtpSettings};
+use notify_sinks_webhook::WebhookSink;
 
 use crate::bus::SharedBus;
 use crate::config::Config;
 use crate::push::TransportRegistry;
 use crate::reconcile::Reconciler;
+use crate::sinks::{SinkFleet, SinkRoutes};
 
 /// Everything the process needs, built once.
 pub(crate) struct Application {
@@ -52,6 +56,11 @@ pub(crate) struct Application {
     pub purge: PurgeExpired,
     /// The do-not-disturb digest (§7.4), on the same terms.
     pub digests: SendDndDigests,
+    /// The outbound sink drain (§7.1bis), on the same terms again.
+    pub drain: DrainSinks,
+    /// What `[[channels.managed.sinks]]` configured, for the startup log — the
+    /// counterpart of `transports` below.
+    pub routes: SinkRoutes,
     /// GitOps reconciliation.
     pub reconciler: Reconciler,
     /// Where each pass is left for `GET /admin/reconciliation` to read (§10.4bis).
@@ -129,6 +138,13 @@ impl Application {
         };
         let avatars = Arc::new(ImageAvatarProcessor::new());
 
+        // The sinks `[[channels.managed.sinks]]` asks for, and the adapters that
+        // serve them (§7.1bis). Built before the fan-out because the fan-out is
+        // handed the routing table: a channel with no sink queues nothing, and an
+        // instance with no sink at all does not even look.
+        let routes = SinkRoutes::build(config)?;
+        let sinks = sink_fleet(config, &routes)?;
+
         let authorizer = Authorizer::new(repository.clone());
         let fanout = Fanout::new(
             bus.clone(),
@@ -143,6 +159,12 @@ impl Application {
             // so every message it produces is a poke.
             transports.max_payload_bytes(),
         );
+
+        let fanout = if routes.is_empty() {
+            fanout
+        } else {
+            fanout.with_sinks(Arc::new(routes.clone()), repository.clone())
+        };
 
         // Shared by everything that has to answer "is this notification still
         // there, and may this caller see it".
@@ -264,6 +286,8 @@ impl Application {
             self_join: SelfJoin::new(repository.clone(), repository.clone(), clock.clone()),
             trust_policies: ListTrustPolicies::new(console_policies),
             reconciliation: ReadReconciliation::new(reconciliation_log.clone()),
+            dlq: ListDeadLetters::new(repository.clone()),
+            requeue: RequeueDeadLetter::new(repository.clone(), repository.clone(), clock.clone()),
             presign: PresignAttachment::new(attachments.clone(), authorizer.clone()),
 
             sync: SyncBacklog::new(
@@ -358,6 +382,16 @@ impl Application {
             clock.clone(),
         );
 
+        // The sink drain (§7.1bis), leader-only for the same reason as the two
+        // above: every replica draining would deliver each webhook once per replica.
+        let drain = DrainSinks::new(
+            repository.clone(),
+            Arc::new(routes.clone()),
+            Arc::new(sinks),
+            Arc::new(PgLeaderElection::new(store.pool().clone())),
+            clock.clone(),
+        );
+
         let reconciler = Reconciler::new(repository.clone(), repository.clone(), repository, clock);
 
         Ok(Self {
@@ -366,11 +400,57 @@ impl Application {
             pump,
             purge,
             digests,
+            drain,
+            routes,
             reconciler,
             reconciliation_log,
             transports,
         })
     }
+}
+
+/// The sink adapters this deployment needs — and only those.
+///
+/// Driven by what the channels declare rather than by what the binary can do: an
+/// instance with three webhooks and no mail sink never builds an SMTP transport, so
+/// a missing `[sinks.smtp]` is not its problem. The converse is refused in
+/// [`crate::config`], where an `email` sink without a relay stops the process.
+///
+/// Every failure here is an operator's and is answered at startup: an SMTP URL that
+/// does not parse, a `from` that is not a mailbox. Finding out at the first incident
+/// is the failure mode this exists to avoid — the same rule as the VAPID key above.
+fn sink_fleet(config: &Config, routes: &SinkRoutes) -> anyhow::Result<SinkFleet> {
+    let mut fleet = SinkFleet::empty();
+    let kinds = routes.kinds();
+
+    if kinds.contains(&"webhook") {
+        let webhook: Arc<dyn notify_ports::SinkDispatcher> = Arc::new(WebhookSink::new()?);
+        fleet = fleet.with(&webhook);
+    }
+
+    if kinds.contains(&"email") {
+        let Some(smtp) = &config.sinks.smtp else {
+            anyhow::bail!("an email sink is configured with no [sinks.smtp] relay");
+        };
+
+        let password = smtp
+            .password_ref
+            .as_deref()
+            .map(|reference| crate::config::resolve_secret("[sinks.smtp] password_ref", reference))
+            .transpose()?;
+
+        let mail: Arc<dyn notify_ports::SinkDispatcher> =
+            Arc::new(EmailSink::new(&SmtpSettings {
+                url: smtp.url.parse()?,
+                from: smtp.from.clone(),
+                username: smtp.username.clone(),
+                password,
+                permalink_base: smtp.permalink_base.as_deref().map(str::parse).transpose()?,
+            })?);
+        fleet = fleet.with(&mail);
+    }
+
+    Ok(fleet)
 }
 
 /// The push transports this deployment configured, and the key a browser needs to

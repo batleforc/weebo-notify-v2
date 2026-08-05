@@ -17,6 +17,8 @@ notify-attachments-s3.workspace = true
 notify-avatars.workspace = true
 notify-http-actix.workspace = true
 notify-push-webpush.workspace = true
+notify-sinks-email.workspace = true
+notify-sinks-webhook.workspace = true
 
 actix-web.workspace = true
 anyhow.workspace = true
@@ -41,6 +43,7 @@ tracing-subscriber.workspace = true
 utoipa-scalar.workspace = true
 actix-cors.workspace = true
 futures.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 notify-ports = { workspace = true, features = ["test-utils"] }

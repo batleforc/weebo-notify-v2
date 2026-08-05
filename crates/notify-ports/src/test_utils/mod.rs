@@ -59,7 +59,7 @@ pub mod store;
 pub use clock::TestClock;
 pub use infra::{
     CountingKeyGenerator, InMemoryAttachments, InMemoryReplayGuard, RecordingSinkDispatcher,
-    StaticFederationVerifier, StaticTokenVerifier, StubSecretHasher, TestLeaderElection,
-    TestRateLimiter,
+    StaticFederationVerifier, StaticSinkRegistry, StaticTokenVerifier, StubSecretHasher,
+    TestLeaderElection, TestRateLimiter,
 };
 pub use store::InMemory;

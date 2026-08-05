@@ -160,6 +160,16 @@ pub enum DomainError {
     #[error("this notification no longer exists")]
     NotificationGone,
 
+    /// The dead letter is not there to requeue — already requeued, or purged
+    /// (design §7.1bis, `POST /admin/dlq/{id}/requeue`).
+    ///
+    /// Its own variant rather than [`Self::NotificationGone`], which it otherwise
+    /// resembles: a console branching on `notification.gone` would show "this
+    /// notification is gone" for a delivery whose notification is perfectly alive.
+    /// Same category, different sentence.
+    #[error("this dead letter is no longer in the queue")]
+    DeadLetterGone,
+
     /// The object is declared in GitOps config, which owns its shape (design §11).
     ///
     /// Its own variant rather than a [`Self::Malformed`] because the request is not
@@ -250,6 +260,7 @@ impl DomainError {
             Self::UrlSchemeNotAllowed { .. } => "action.url_scheme_not_allowed",
             Self::SilenceGroupNeedsDuration => "silence.duration_required",
             Self::NotificationGone => "notification.gone",
+            Self::DeadLetterGone => "dlq.gone",
             Self::ManagedByConfig { .. } => "origin.managed",
             Self::InvalidCredential => "auth.invalid_credential",
             Self::ApiKeyExpired => "apikey.expired",
@@ -279,7 +290,9 @@ impl DomainError {
             | Self::RevisionLimitReached { .. }
             | Self::InfiniteTtlNotAllowed => ErrorKind::LimitExceeded,
             Self::TooLarge { .. } => ErrorKind::TooLarge,
-            Self::NotificationGone | Self::ManagedByConfig { .. } => ErrorKind::Conflict,
+            Self::NotificationGone | Self::DeadLetterGone | Self::ManagedByConfig { .. } => {
+                ErrorKind::Conflict
+            }
             Self::InvalidCredential
             | Self::ApiKeyExpired
             | Self::ApiKeyRevoked

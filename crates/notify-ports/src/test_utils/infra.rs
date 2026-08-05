@@ -346,7 +346,12 @@ impl LeaderGuard for TestGuard {
     }
 
     async fn release(&self) {
-        *lock(&self.leader) = false;
+        // Deliberately not `leader = false`: releasing the lock at the end of a pass
+        // is not losing the election. `PgLeaderElection` drops its advisory lock and
+        // the same replica takes it again on the next tick, so a double that demoted
+        // here would make every job leader-for-one-pass — and a test that runs two
+        // passes would see the second one do nothing, for a reason that has nothing
+        // to do with what it is testing. Losing leadership is `depose`.
     }
 }
 
@@ -461,6 +466,9 @@ impl AttachmentStore for InMemoryAttachments {
 #[derive(Debug, Clone, Default)]
 pub struct RecordingSinkDispatcher {
     delivered: Arc<Mutex<Vec<SinkDelivery>>>,
+    /// The targets it was handed, so a test can assert that the secret came from the
+    /// registry at send time rather than from the queue row.
+    targets: Arc<Mutex<Vec<crate::sinks::SinkTarget>>>,
     outcome: Arc<Mutex<Option<SinkOutcome>>>,
 }
 
@@ -481,6 +489,11 @@ impl RecordingSinkDispatcher {
     pub fn delivered(&self) -> Vec<SinkDelivery> {
         lock(&self.delivered).clone()
     }
+
+    /// The targets those deliveries were resolved to, in the same order.
+    pub fn targets(&self) -> Vec<crate::sinks::SinkTarget> {
+        lock(&self.targets).clone()
+    }
 }
 
 #[async_trait::async_trait]
@@ -489,11 +502,73 @@ impl SinkDispatcher for RecordingSinkDispatcher {
         &["webhook", "email"]
     }
 
-    async fn deliver(&self, delivery: &SinkDelivery) -> PortResult<SinkOutcome> {
+    async fn deliver(
+        &self,
+        delivery: &SinkDelivery,
+        target: &crate::sinks::SinkTarget,
+    ) -> PortResult<SinkOutcome> {
+        lock(&self.targets).push(target.clone());
         lock(&self.delivered).push(delivery.clone());
         Ok(lock(&self.outcome)
             .clone()
             .unwrap_or(SinkOutcome::Delivered))
+    }
+}
+
+/// The routing table a test writes by hand, standing in for the one the composition
+/// root builds from `[[channels.managed.sinks]]` (design §11).
+#[derive(Debug, Clone, Default)]
+pub struct StaticSinkRegistry {
+    routes: Arc<Mutex<Vec<(notify_domain::ChannelId, crate::sinks::SinkTarget)>>>,
+}
+
+impl StaticSinkRegistry {
+    /// One with nothing routed anywhere — what an instance that declares no sink
+    /// looks like, and the case the fan-out has to stay silent about.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Route a channel to a target. Returns `self` so a fixture reads as a list.
+    #[must_use]
+    pub fn route(
+        self,
+        channel: notify_domain::ChannelId,
+        target: crate::sinks::SinkTarget,
+    ) -> Self {
+        lock(&self.routes).push((channel, target));
+        self
+    }
+
+    /// Forget a target — how a test plays "the operator removed it from the config
+    /// while a delivery was queued".
+    pub fn withdraw(&self, sink: &notify_domain::SinkId) {
+        lock(&self.routes).retain(|(_, target)| target.id().as_ref() != Ok(sink));
+    }
+}
+
+impl crate::sinks::SinkRegistry for StaticSinkRegistry {
+    fn sinks_for(&self, channel: &notify_domain::ChannelId) -> Vec<notify_domain::SinkId> {
+        lock(&self.routes)
+            .iter()
+            .filter(|(id, _)| id == channel)
+            .filter_map(|(_, target)| target.id().ok())
+            .collect()
+    }
+
+    fn target(
+        &self,
+        channel: &notify_domain::ChannelId,
+        sink: &notify_domain::SinkId,
+    ) -> Option<crate::sinks::SinkTarget> {
+        lock(&self.routes)
+            .iter()
+            .find(|(id, target)| id == channel && target.id().as_ref() == Ok(sink))
+            .map(|(_, target)| target.clone())
+    }
+
+    fn is_empty(&self) -> bool {
+        lock(&self.routes).is_empty()
     }
 }
 
@@ -559,6 +634,12 @@ mod tests {
         let leader = TestLeaderElection::leader();
         let guard = leader.try_acquire("purge").await.unwrap().unwrap();
         assert!(guard.is_held().await);
+
+        // Releasing at the end of a pass leaves the election won: the real one drops
+        // its advisory lock and takes it again next tick, and a job that ran twice
+        // would otherwise do nothing the second time.
+        guard.release().await;
+        assert!(leader.try_acquire("purge").await.unwrap().is_some());
 
         // A partition takes the lock away mid-run; a job checking between batches
         // has to see it (scenario T22).

@@ -5,17 +5,16 @@
 //! only in a route table is a check the next route table can be written without,
 //! and this is the one boundary where forgetting is not recoverable.
 //!
-//! # What is deliberately absent
+//! # The DLQ answers about deliveries, never about their contents
 //!
-//! The sinks DLQ (`GET /admin/dlq`, `POST /admin/dlq/{id}/requeue`). §10.4bis makes
-//! it one of the console's four objects and §8 gives it two routes — but outbound
-//! sinks (§7.1bis) have no production adapter and belong to no milestone (§14.1).
-//! Serving an endpoint that would answer "nothing is stuck" from a queue nobody
-//! fills is worse than not serving it: it is a green light wired to nothing.
+//! `GET /admin/dlq` names a channel, a sink and an error, and stops there. The
+//! event that failed to deliver is in the queue row and is not served: an admin who
+//! is not a member of the channel would otherwise read its notifications through
+//! the failure of a webhook, which is the one door §5.4 closes.
 
 use actix_web::{HttpResponse, get, post, web};
 use notify_app::{ChannelCard, Reconciliation, TrustPolicyCard};
-use notify_ports::{AuditEntry, AuditQuery, Page};
+use notify_ports::{AuditEntry, AuditQuery, DeadLetter, Page};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
@@ -152,6 +151,77 @@ pub(crate) async fn trust_policies(
     // No `POST` beside it, and there will not be one: §11 owns these, and an edit
     // button would offer what the next reconciliation takes back.
     Ok(web::Json(state.trust_policies.execute(&caller.0)?))
+}
+
+/// Which channel's dead letters to show.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub(crate) struct DlqFilters {
+    /// Restrict to one channel. Absent means every channel.
+    pub(crate) channel: Option<String>,
+}
+
+/// The sink deliveries that were given up on (design §7.1bis, §10.4bis).
+#[utoipa::path(
+    get,
+    path = "/admin/dlq",
+    tag = "admin",
+    params(("channel" = Option<String>, Query, description = "One channel")),
+    responses(
+        (status = 200, description = "Dead letters, newest first", body = Vec<DeadLetter>),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not a platform admin", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/admin/dlq")]
+pub(crate) async fn dlq(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    filters: web::Query<DlqFilters>,
+) -> Result<web::Json<Vec<DeadLetter>>, ApiError> {
+    let channel = filters
+        .into_inner()
+        .channel
+        .as_deref()
+        .map(str::parse)
+        .transpose()?;
+
+    Ok(web::Json(
+        state.dlq.execute(&caller.0, channel.as_ref()).await?,
+    ))
+}
+
+/// Put one dead letter back in the queue (design §8, scenario T17).
+#[utoipa::path(
+    post,
+    path = "/admin/dlq/{id}/requeue",
+    tag = "admin",
+    params(("id" = String, Path, description = "Delivery id, as `GET /admin/dlq` returns it")),
+    responses(
+        (status = 204, description = "Requeued, and recorded in the audit log"),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not a platform admin", body = Problem),
+            (status = 409, description = "No dead letter with that id — already requeued, or purged", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[post("/admin/dlq/{id}/requeue")]
+pub(crate) async fn requeue_dead_letter(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let id = path.into_inner().parse()?;
+
+    // A refusal and not a `204` for one that is not there: a console that reported
+    // success for a requeue that requeued nothing would leave an operator waiting on
+    // a delivery nobody scheduled. `409` rather than `404`, like every other object
+    // this API says is gone.
+    if state.requeue.execute(&caller.0, &id).await? {
+        Ok(HttpResponse::NoContent().finish())
+    } else {
+        Err(notify_domain::DomainError::DeadLetterGone.into())
+    }
 }
 
 /// What the last GitOps pass did on this replica (design §11).

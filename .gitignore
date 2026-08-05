@@ -26,5 +26,10 @@ web/coverage/
 # on covering this path the day a production one lands in it (design §12.5, M3.5).
 dev/secrets/
 
+# The Dex configuration and the credentials `task dev:dex` renders into it. The
+# template beside them is committed; what carries a password never is (§3.2, D7).
+dev/dex/config.local.yaml
+dev/dex/env.local
+
 # nextest JUnit output
 junit*.xml

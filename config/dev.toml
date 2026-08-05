@@ -36,6 +36,16 @@ bucket = "weebo-notify-attachments"
 access_key = "weebo-dev"
 secret_key = "weebo-dev-secret"
 
+# The relay every `email` sink hands its mail to (§7.1bis). Mailpit, which
+# `task dev:sinks` starts and whose inbox is on http://localhost:8025 — nothing
+# leaves the machine, which is what makes it safe to point a real sink at it.
+[sinks.smtp]
+url = "smtp://localhost:1025"
+from = "weebo-notify <notify@weebo.local>"
+# Where the link at the bottom of the mail points (§10.4). Omit it and no link is
+# written, rather than one to a host nobody serves.
+permalink_base = "http://localhost:5173"
+
 [push.webpush]
 # Minted by `task dev:setup`, gitignored, and read at startup — a key the server
 # cannot read stops it rather than letting it run mute (§6.2, M3.5). The path is
@@ -117,6 +127,14 @@ limits = { publish_per_min = 120 }
   [[channels.managed.access]]
   email = "carol@weebo.local"
   scopes = ["subscribe"]
+
+  # An outbound sink (§7.1bis), pointed at the Mailpit of `task dev:sinks` — a
+  # sink nobody can run locally is a sink nobody checks. Without Mailpit up, the
+  # drain retries on the published schedule (30 s doubling to 1 h) and gives up
+  # after a day, which is the DLQ of §10.4bis with something real in it.
+  [[channels.managed.sinks]]
+  type = "email"
+  address = "oncall@weebo.local"
 
 [[channels.managed]]
 id = "ci-infra"

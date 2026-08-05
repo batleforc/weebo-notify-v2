@@ -101,6 +101,22 @@ services:
     profiles: [sinks]
     ports: ["8025:8025", "1025:1025"]
 
+  dex:
+    # The strict-minimal leg of the identity matrix (§3.2, T29) — a provider that
+    # emits no `groups` claim for anybody. Here as well as in CI so the leg can be
+    # reproduced by hand when it goes red there, which is the only time anybody
+    # will want it.
+    #
+    # Its config does not exist until `task dev:dex` renders it: the password is
+    # generated per run and never committed (§3.2), so the mount below points at a
+    # file the task writes just before bringing this up.
+    image: ghcr.io/dexidp/dex:v2.45.1
+    profiles: [dex]
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports: ["5556:5556"]
+    volumes:
+      - ./dex/config.local.yaml:/etc/dex/config.yaml:ro
+
 volumes:
   pg-data:
   rustfs-data:

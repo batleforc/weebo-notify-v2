@@ -69,7 +69,9 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(admin::inventory)
             .service(admin::self_join)
             .service(admin::trust_policies)
-            .service(admin::reconciliation),
+            .service(admin::reconciliation)
+            .service(admin::dlq)
+            .service(admin::requeue_dead_letter),
     );
 }
 

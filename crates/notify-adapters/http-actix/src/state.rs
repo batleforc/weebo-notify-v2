@@ -10,12 +10,12 @@ use std::sync::Arc;
 use notify_app::{
     Authenticate, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel, CreateServiceAccount,
     DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, ExchangeToken,
-    GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
-    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt,
-    PresignAttachment, PublishNotification, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts,
-    ReadReconciliation, RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice,
-    SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
-    UpdateChannel, UpdateProfile, UpsertNotification,
+    GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox,
+    ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers,
+    PostReceipt, PresignAttachment, PublishNotification, ReadAvatar, ReadDnd, ReadProfile,
+    ReadReceipts, ReadReconciliation, RecordInteraction, RequeueDeadLetter, ResolveStreamStart,
+    RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd,
+    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_ports::EventBus;
 
@@ -72,6 +72,10 @@ pub struct ApiState {
     pub trust_policies: ListTrustPolicies,
     /// `GET /admin/reconciliation`.
     pub reconciliation: ReadReconciliation,
+    /// `GET /admin/dlq` — the sink deliveries that were given up on (§7.1bis).
+    pub dlq: ListDeadLetters,
+    /// `POST /admin/dlq/{id}/requeue`.
+    pub requeue: RequeueDeadLetter,
 
     /// `POST /attachments/presign`.
     pub presign: PresignAttachment,

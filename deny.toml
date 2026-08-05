@@ -36,6 +36,10 @@ allow = [
     "BSL-1.0",
     "CC0-1.0",
     "OpenSSL",
+    # Arrived with the mail sink (§7.1bis): `quoted_printable`, through `lettre`.
+    # OSI-approved and permissive — it is ISC with the attribution clause removed,
+    # so it grants strictly more than several licences already on this list.
+    "0BSD",
 ]
 # A crate whose licence cannot be determined is a decision to make, not a default
 # to accept: it lands here one line at a time, with a reason.

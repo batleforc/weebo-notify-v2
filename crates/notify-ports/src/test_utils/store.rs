@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use futures::stream::BoxStream;
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyPrefix, Channel, ChannelId, Cursor, Device, DeviceId, Dnd, ExternalId,
-    InteractionRecord, Notification, NotificationId, Principal, Receipt, ReceiptKind, Recorded,
-    Revision, Scope, ServiceAccount, ServiceAccountId, Silence, Status, TombstoneReason, User,
-    UserId,
+    ApiKey, ApiKeyId, ApiKeyPrefix, Channel, ChannelId, Cursor, DeliveryId, Device, DeviceId, Dnd,
+    ExternalId, InteractionRecord, Notification, NotificationId, Principal, Receipt, ReceiptKind,
+    Recorded, Revision, Scope, ServiceAccount, ServiceAccountId, Silence, Status, TombstoneReason,
+    User, UserId,
 };
 use time::OffsetDateTime;
 
@@ -59,6 +59,8 @@ struct Reservation {
 struct QueuedDelivery {
     delivery: SinkDelivery,
     due_at: OffsetDateTime,
+    /// Held by a drain until this instant. `None` is nobody's.
+    leased_until: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Default)]
@@ -90,6 +92,8 @@ struct State {
     push_outcome: Option<PushOutcome>,
     sink_queue: Vec<QueuedDelivery>,
     dead_letters: Vec<DeadLetter>,
+    /// The bodies behind the dead letters, so a requeue puts back something sendable.
+    buried: Vec<SinkDelivery>,
 }
 
 impl State {
@@ -1357,35 +1361,51 @@ impl SinkQueue for InMemory {
         delivery: &SinkDelivery,
         next_attempt_at: OffsetDateTime,
     ) -> PortResult<()> {
-        self.state().sink_queue.push(QueuedDelivery {
+        let mut state = self.state();
+        // Keyed on the delivery id, so a retry reschedules rather than duplicates —
+        // the property the real queue gets from its primary key.
+        state
+            .sink_queue
+            .retain(|queued| queued.delivery.delivery_id != delivery.delivery_id);
+        state.sink_queue.push(QueuedDelivery {
             delivery: delivery.clone(),
             due_at: next_attempt_at,
+            leased_until: None,
         });
         Ok(())
     }
 
-    async fn claim_due(&self, now: OffsetDateTime, limit: u32) -> PortResult<Vec<SinkDelivery>> {
+    async fn claim_due(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+        lease_until: OffsetDateTime,
+    ) -> PortResult<Vec<SinkDelivery>> {
         let mut state = self.state();
 
-        let claimed: Vec<SinkDelivery> = state
-            .sink_queue
-            .iter()
-            .filter(|queued| queued.due_at <= now)
-            .take(limit as usize)
-            .map(|queued| queued.delivery.clone())
-            .collect();
-
-        // Claiming, not reading: two replicas both briefly believing they lead must
-        // not double-deliver a webhook.
-        let ids: Vec<String> = claimed
-            .iter()
-            .map(|delivery| delivery.delivery_id.clone())
-            .collect();
-        state
-            .sink_queue
-            .retain(|queued| !ids.contains(&queued.delivery.delivery_id));
+        let mut claimed = Vec::new();
+        for queued in &mut state.sink_queue {
+            if claimed.len() >= limit as usize {
+                break;
+            }
+            // Due, and not already in somebody's hands.
+            if queued.due_at > now || queued.leased_until.is_some_and(|until| until > now) {
+                continue;
+            }
+            // Leased, not removed: a drain that died mid-attempt must leave the
+            // delivery owed rather than lose it (see `SinkQueue`).
+            queued.leased_until = Some(lease_until);
+            claimed.push(queued.delivery.clone());
+        }
 
         Ok(claimed)
+    }
+
+    async fn complete(&self, delivery: &DeliveryId) -> PortResult<()> {
+        self.state()
+            .sink_queue
+            .retain(|queued| queued.delivery.delivery_id != *delivery);
+        Ok(())
     }
 
     async fn bury(
@@ -1394,15 +1414,20 @@ impl SinkQueue for InMemory {
         error: &str,
         at: OffsetDateTime,
     ) -> PortResult<()> {
-        self.state().dead_letters.push(DeadLetter {
-            id: delivery.delivery_id.clone(),
+        let mut state = self.state();
+        state
+            .sink_queue
+            .retain(|queued| queued.delivery.delivery_id != delivery.delivery_id);
+        state.dead_letters.push(DeadLetter {
+            id: delivery.delivery_id,
             channel: delivery.channel.clone(),
-            sink_kind: delivery.target.kind(),
+            sink: delivery.sink.clone(),
             last_error: error.to_owned(),
-            attempts: delivery.attempt,
-            first_failed_at: at,
+            attempts: delivery.attempts,
+            first_failed_at: delivery.first_failed_at.unwrap_or(at),
             dead_at: at,
         });
+        state.buried.push(delivery.clone());
         Ok(())
     }
 
@@ -1416,16 +1441,36 @@ impl SinkQueue for InMemory {
             .collect())
     }
 
-    async fn requeue(&self, id: &str, at: OffsetDateTime) -> PortResult<bool> {
+    async fn requeue(&self, id: &DeliveryId, at: OffsetDateTime) -> PortResult<bool> {
         let mut state = self.state();
-        let Some(position) = state.dead_letters.iter().position(|letter| letter.id == id) else {
+        let Some(position) = state
+            .dead_letters
+            .iter()
+            .position(|letter| letter.id == *id)
+        else {
             return Ok(false);
         };
         state.dead_letters.remove(position);
 
-        // The delivery body is not kept by this double; a requeue is observable
-        // through `dead_letters` shrinking, which is what the use-case test asserts.
-        let _ = at;
+        // The body is kept when it was buried, so a requeue here puts back something
+        // a drain can actually send — the same thing the real queue does, and what
+        // scenario T17 checks end to end.
+        if let Some(position) = state
+            .buried
+            .iter()
+            .position(|delivery| delivery.delivery_id == *id)
+        {
+            let mut delivery = state.buried.remove(position);
+            // A requeue is a fresh chance, not a resumption of the day it spent
+            // failing: leaving `first_failed_at` in place would bury it again on the
+            // very next failure.
+            delivery.first_failed_at = None;
+            state.sink_queue.push(QueuedDelivery {
+                delivery,
+                due_at: at,
+                leased_until: None,
+            });
+        }
         Ok(true)
     }
 
@@ -1507,7 +1552,6 @@ mod tests {
         Membership, NotificationId, Origin, PushTransport, ReceiptId, RevisionDraft, State,
     };
 
-    use crate::sinks::SinkTarget;
     use time::Duration;
 
     use super::*;
@@ -2610,41 +2654,44 @@ mod tests {
 
     // --- Sink queue --------------------------------------------------------
 
-    #[tokio::test]
-    async fn a_due_delivery_is_claimed_once_and_a_buried_one_can_be_requeued() {
-        use url::Url;
-
-        let store = InMemory::new();
+    /// One delivery of the first event of `ci-infra`, for the queue tests.
+    async fn delivery(store: &InMemory) -> SinkDelivery {
         let alice = user();
         store.seed_channel(channel("ci-infra", &alice));
-        let notification = publish(&store, "ci-infra", &alice, "deploy", now()).await;
-        let event = store.events().into_iter().next().unwrap();
-        let _ = notification;
+        publish(store, "ci-infra", &alice, "deploy", now()).await;
 
-        let delivery = SinkDelivery {
-            delivery_id: "dlv-1".to_owned(),
+        SinkDelivery {
+            delivery_id: DeliveryId::generate(),
             channel: channel_id("ci-infra"),
-            target: SinkTarget::Webhook {
-                url: Url::parse("https://hooks.weebo.poc/incidents").unwrap(),
-                secret: "shh".to_owned(),
-            },
-            event,
-            attempt: 1,
-        };
+            sink: notify_domain::SinkId::new("webhook", "https://hooks.weebo.poc/incidents")
+                .unwrap(),
+            event: store.events().into_iter().next().unwrap(),
+            attempts: 0,
+            first_failed_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_due_delivery_is_leased_once_and_a_buried_one_comes_back_sendable() {
+        let store = InMemory::new();
+        let delivery = delivery(&store).await;
+        let lease = now() + Duration::seconds(60);
 
         SinkQueue::enqueue(&store, &delivery, now()).await.unwrap();
         assert!(
-            SinkQueue::claim_due(&store, now() - Duration::seconds(1), 10)
+            SinkQueue::claim_due(&store, now() - Duration::seconds(1), 10, lease)
                 .await
                 .unwrap()
                 .is_empty(),
             "nothing is due yet"
         );
 
-        let claimed = SinkQueue::claim_due(&store, now(), 10).await.unwrap();
+        let claimed = SinkQueue::claim_due(&store, now(), 10, lease)
+            .await
+            .unwrap();
         assert_eq!(claimed.len(), 1);
         assert!(
-            SinkQueue::claim_due(&store, now(), 10)
+            SinkQueue::claim_due(&store, now(), 10, lease)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -2658,13 +2705,70 @@ mod tests {
             SinkQueue::dead_letter_depth(&store).await.unwrap(),
             vec![(channel_id("ci-infra"), 1)]
         );
-        assert!(SinkQueue::requeue(&store, "dlv-1", now()).await.unwrap());
-        assert!(!SinkQueue::requeue(&store, "dlv-1", now()).await.unwrap());
+
+        assert!(
+            SinkQueue::requeue(&store, &delivery.delivery_id, now())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !SinkQueue::requeue(&store, &delivery.delivery_id, now())
+                .await
+                .unwrap(),
+            "the second requeue has nothing to put back"
+        );
         assert!(
             SinkQueue::dead_letters(&store, None)
                 .await
                 .unwrap()
                 .is_empty()
+        );
+        assert_eq!(
+            SinkQueue::claim_due(&store, now(), 10, lease)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "a requeue puts back something a drain can actually send"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_lease_makes_a_delivery_owed_again() {
+        // The property the whole lease exists for: a drain killed mid-attempt must
+        // leave the delivery owed rather than lose it.
+        let store = InMemory::new();
+        let delivery = delivery(&store).await;
+
+        SinkQueue::enqueue(&store, &delivery, now()).await.unwrap();
+        let short = now() + Duration::seconds(30);
+        assert_eq!(
+            SinkQueue::claim_due(&store, now(), 10, short)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let later = now() + Duration::seconds(31);
+        assert_eq!(
+            SinkQueue::claim_due(&store, later, 10, later + Duration::seconds(30))
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "nobody is holding it any more"
+        );
+
+        SinkQueue::complete(&store, &delivery.delivery_id)
+            .await
+            .unwrap();
+        assert!(
+            SinkQueue::claim_due(&store, later, 10, later)
+                .await
+                .unwrap()
+                .is_empty(),
+            "an accepted delivery is done with"
         );
     }
 }

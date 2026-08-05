@@ -22,6 +22,7 @@ mod health;
 mod openapi;
 mod push;
 mod reconcile;
+mod sinks;
 mod wiring;
 
 #[derive(Debug, Parser)]
@@ -106,6 +107,15 @@ const JOB_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// this — they resolve from the token.
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How often the leader looks for sink deliveries that are due (design §7.1bis).
+///
+/// Shorter than the others, and that is the whole difference between "a webhook
+/// arrives" and "a webhook arrives eventually": a publish queues rather than sends
+/// (`notify_app::sinks`), so this interval *is* the delivery latency for the first
+/// attempt. Five seconds costs one advisory-lock attempt per replica per five
+/// seconds and buys a consumer that sees an incident while it is still an incident.
+const SINK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[actix_web::main]
 async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -141,6 +151,16 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     );
     for pending in &report.pending {
         tracing::warn!(%pending, "access binding is waiting on a first login");
+    }
+
+    if application.routes.len() > 0 {
+        // Counts and kinds, never destinations: a webhook url is where the sink's
+        // secret is keyed, and a startup log is the least private file on the host.
+        tracing::info!(
+            sinks = application.routes.len(),
+            kinds = ?application.routes.kinds(),
+            "outbound sinks configured"
+        );
     }
 
     let bind = config.server.bind;
@@ -193,6 +213,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let jobs = actix_web::rt::spawn(background(
         application.purge,
         application.digests,
+        application.drain,
         application.reconciler,
         application.reconciliation_log,
         config,
@@ -225,16 +246,19 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
 async fn background(
     purge: notify_app::PurgeExpired,
     digests: notify_app::SendDndDigests,
+    drain: notify_app::DrainSinks,
     reconciler: reconcile::Reconciler,
     reconciliation_log: notify_app::ReconciliationLog,
     config: config::Config,
 ) {
     let mut purge_tick = actix_web::rt::time::interval(JOB_INTERVAL);
     let mut digest_tick = actix_web::rt::time::interval(JOB_INTERVAL);
+    let mut sink_tick = actix_web::rt::time::interval(SINK_INTERVAL);
     let mut reconcile_tick = actix_web::rt::time::interval(RECONCILE_INTERVAL);
-    // The first tick fires immediately and all three have just run at boot.
+    // The first tick fires immediately and all of these have just run at boot.
     purge_tick.tick().await;
     digest_tick.tick().await;
+    sink_tick.tick().await;
     reconcile_tick.tick().await;
 
     loop {
@@ -260,6 +284,22 @@ async fn background(
                 ),
                 Ok(_) => {}
                 Err(error) => tracing::warn!(?error, "digest pass failed; retrying next tick"),
+            },
+            // The sinks of §7.1bis. Logged only when something moved: a quiet
+            // instance ticks twelve times a minute, and a line each would bury
+            // everything else in the log.
+            _ = sink_tick.tick() => match drain.execute().await {
+                Ok(report) if report.delivered + report.retried + report.buried + report.orphaned > 0 => {
+                    tracing::info!(
+                        delivered = report.delivered,
+                        retried = report.retried,
+                        buried = report.buried,
+                        orphaned = report.orphaned,
+                        "sink drain pass complete"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(?error, "sink drain failed; retrying next tick"),
             },
             _ = reconcile_tick.tick() => match reconciler.execute(&config).await {
                 Ok(report) => {

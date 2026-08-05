@@ -17,13 +17,17 @@ const {
   trustPoliciesMock,
   auditMock,
   reconciliationMock,
+  dlqMock,
   selfJoinMock,
+  requeueMock,
 } = vi.hoisted(() => ({
   inventoryMock: vi.fn(),
   trustPoliciesMock: vi.fn(),
   auditMock: vi.fn(),
   reconciliationMock: vi.fn(),
+  dlqMock: vi.fn(),
   selfJoinMock: vi.fn(),
+  requeueMock: vi.fn(),
 }));
 
 vi.mock("@/api/generated", () => ({
@@ -31,7 +35,9 @@ vi.mock("@/api/generated", () => ({
   trustPolicies: trustPoliciesMock,
   audit: auditMock,
   reconciliation: reconciliationMock,
+  dlq: dlqMock,
   selfJoin: selfJoinMock,
+  requeueDeadLetter: requeueMock,
 }));
 
 /**
@@ -56,6 +62,16 @@ const CARD = {
   receipts_enabled: false,
 };
 
+const DEAD_LETTER = {
+  id: "dlv_01J0000000000000000000000",
+  channel: "ci-infra",
+  sink: "webhook:https://hooks.weebo.poc/incidents",
+  last_error: "HTTP 410",
+  attempts: 3,
+  first_failed_at: "2026-08-01T09:00:00Z",
+  dead_at: "2026-08-01T10:00:00Z",
+};
+
 beforeEach(() => {
   setActivePinia(createPinia());
   for (const mock of [
@@ -63,7 +79,9 @@ beforeEach(() => {
     trustPoliciesMock,
     auditMock,
     reconciliationMock,
+    dlqMock,
     selfJoinMock,
+    requeueMock,
   ]) {
     mock.mockReset();
   }
@@ -109,6 +127,7 @@ describe("who may see the console", () => {
 
 describe("what it shows", () => {
   it("loads the four panels in one go", async () => {
+    dlqMock.mockResolvedValue({ data: [DEAD_LETTER] });
     inventoryMock.mockResolvedValue({ data: [CARD] });
     trustPoliciesMock.mockResolvedValue({
       data: [
@@ -151,6 +170,50 @@ describe("what it shows", () => {
     expect(platform.policies[0].subject).toBe("repo:weebo/*");
     expect(platform.entries).toHaveLength(1);
     expect(platform.gitops?.pending).toEqual(["carol@weebo.local"]);
+    expect(platform.stuck).toHaveLength(1);
+    expect(platform.stuck[0].sink).toContain("hooks.weebo.poc");
+  });
+
+  it("never receives the event a dead letter failed to deliver", async () => {
+    // The §5.4 boundary, checked on the client's side of it too: the shape the
+    // server sends has no room for a payload, and a console that started rendering
+    // one would be reading a channel's content through a failed webhook.
+    inventoryMock.mockResolvedValue({ data: [CARD] });
+    trustPoliciesMock.mockResolvedValue({ data: [] });
+    auditMock.mockResolvedValue({ data: { items: [], next: null } });
+    reconciliationMock.mockResolvedValue({ data: null });
+    dlqMock.mockResolvedValue({ data: [DEAD_LETTER] });
+
+    const platform = useConsole();
+    await platform.load();
+
+    expect(Object.keys(platform.stuck[0])).not.toContain("event");
+  });
+
+  it("reloads after a requeue, because the audit entry is the point", async () => {
+    inventoryMock.mockResolvedValue({ data: [CARD] });
+    trustPoliciesMock.mockResolvedValue({ data: [] });
+    auditMock.mockResolvedValue({ data: { items: [], next: null } });
+    reconciliationMock.mockResolvedValue({ data: null });
+    dlqMock.mockResolvedValue({ data: [] });
+    requeueMock.mockResolvedValue({ data: undefined });
+
+    const platform = useConsole();
+    await platform.requeue(DEAD_LETTER.id);
+
+    expect(requeueMock).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: DEAD_LETTER.id } }),
+    );
+    expect(auditMock).toHaveBeenCalled();
+  });
+
+  it("shows the answer when somebody else requeued it first", async () => {
+    requeueMock.mockRejectedValue(refusal(409, "dlq.gone"));
+
+    const platform = useConsole();
+    await platform.requeue(DEAD_LETTER.id);
+
+    expect(platform.error).not.toBeNull();
   });
 
   it("says 'no pass' rather than zeroes when none has finished", async () => {
@@ -160,6 +223,7 @@ describe("what it shows", () => {
     trustPoliciesMock.mockResolvedValue({ data: [] });
     auditMock.mockResolvedValue({ data: { items: [], next: null } });
     reconciliationMock.mockResolvedValue({ data: null });
+    dlqMock.mockResolvedValue({ data: [] });
 
     const platform = useConsole();
     await platform.load();
@@ -172,6 +236,7 @@ describe("what it shows", () => {
     trustPoliciesMock.mockResolvedValue({ data: [] });
     auditMock.mockResolvedValue({ data: { items: [], next: null } });
     reconciliationMock.mockResolvedValue({ data: null });
+    dlqMock.mockResolvedValue({ data: [] });
     selfJoinMock.mockResolvedValue({ data: undefined });
 
     const platform = useConsole();

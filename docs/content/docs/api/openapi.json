@@ -199,6 +199,126 @@
         ]
       }
     },
+    "/api/v1/admin/dlq": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The sink deliveries that were given up on (design §7.1bis, §10.4bis).",
+        "operationId": "dlq",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "query",
+            "description": "One channel",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dead letters, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeadLetter"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/dlq/{id}/requeue": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Put one dead letter back in the queue (design §8, scenario T17).",
+        "operationId": "requeue_dead_letter",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Delivery id, as `GET /admin/dlq` returns it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Requeued, and recorded in the audit log"
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No dead letter with that id — already requeued, or purged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/reconciliation": {
       "get": {
         "tags": [
@@ -3878,6 +3998,57 @@
           "sun"
         ]
       },
+      "DeadLetter": {
+        "type": "object",
+        "description": "A delivery that ran out of retries (design §7.1bis).",
+        "required": [
+          "id",
+          "channel",
+          "sink",
+          "last_error",
+          "attempts",
+          "first_failed_at",
+          "dead_at"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many attempts it took before giving up.",
+            "minimum": 0
+          },
+          "channel": {
+            "$ref": "#/components/schemas/ChannelId",
+            "description": "Which channel it came from — the dimension of the `sink_dlq_depth` metric."
+          },
+          "dead_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was given up on."
+          },
+          "first_failed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it first failed."
+          },
+          "id": {
+            "$ref": "#/components/schemas/DeliveryId",
+            "description": "Its id, for `POST /admin/dlq/{id}/requeue`."
+          },
+          "last_error": {
+            "type": "string",
+            "description": "The last failure."
+          },
+          "sink": {
+            "$ref": "#/components/schemas/SinkId",
+            "description": "Which sink it was going to, endpoint included: the first thing an operator\nneeds is where to go and look."
+          }
+        }
+      },
+      "DeliveryId": {
+        "type": "string",
+        "description": "One outbound delivery chain, from first attempt to acceptance or dead letter\n(design §7.1bis).\n\nSent as `X-Weebo-Delivery` and reused across retries — it is the consumer's\nidempotency key, which is the whole reason it exists. §7.1bis called it a\nUUID before anything was written, at a point where the only properties that\nmattered were \"unique\" and \"stable across retries\"; a ULID has both, sorts by\ntime in the index the drain reads in order, and is what every other minted id\nin this product already is."
+      },
       "DependencyCheck": {
         "type": "object",
         "description": "The state of a single dependency.",
@@ -6040,6 +6211,10 @@
           }
         ],
         "description": "What a silence covers."
+      },
+      "SinkId": {
+        "type": "string",
+        "description": "Which sink of which channel, written as `kind:destination`.\n\nStable across restarts and reconfigurations, free of secrets, and legible in a\ndead-letter listing — see the module documentation for why it is derived rather\nthan declared."
       },
       "State": {
         "type": "string",

@@ -104,7 +104,9 @@ pub use preferences::{DeferredTally, PreferenceRepository};
 pub use push::{PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport};
 pub use quota::{Allowance, Quota, RateLimiter};
 pub use receipts::ReceiptRepository;
-pub use sinks::{DeadLetter, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkTarget};
+pub use sinks::{
+    DeadLetter, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkRegistry, SinkTarget,
+};
 pub use tokens::{
     FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,
     VerifiedClaims,

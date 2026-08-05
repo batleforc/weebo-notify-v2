@@ -2069,6 +2069,130 @@ promise.*/
             value.parse()
         }
     }
+    ///A delivery that ran out of retries (design §7.1bis).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A delivery that ran out of retries (design §7.1bis).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "attempts",
+    ///    "channel",
+    ///    "dead_at",
+    ///    "first_failed_at",
+    ///    "id",
+    ///    "last_error",
+    ///    "sink"
+    ///  ],
+    ///  "properties": {
+    ///    "attempts": {
+    ///      "description": "How many attempts it took before giving up.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "channel": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "dead_at": {
+    ///      "description": "When it was given up on.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "first_failed_at": {
+    ///      "description": "When it first failed.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/DeliveryId"
+    ///    },
+    ///    "last_error": {
+    ///      "description": "The last failure.",
+    ///      "type": "string"
+    ///    },
+    ///    "sink": {
+    ///      "$ref": "#/components/schemas/SinkId"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DeadLetter {
+        ///How many attempts it took before giving up.
+        pub attempts: i32,
+        pub channel: ChannelId,
+        ///When it was given up on.
+        pub dead_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///When it first failed.
+        pub first_failed_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        pub id: DeliveryId,
+        ///The last failure.
+        pub last_error: ::std::string::String,
+        pub sink: SinkId,
+    }
+    /**One outbound delivery chain, from first attempt to acceptance or dead letter
+(design §7.1bis).
+
+Sent as `X-Weebo-Delivery` and reused across retries — it is the consumer's
+idempotency key, which is the whole reason it exists. §7.1bis called it a
+UUID before anything was written, at a point where the only properties that
+mattered were "unique" and "stable across retries"; a ULID has both, sorts by
+time in the index the drain reads in order, and is what every other minted id
+in this product already is.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One outbound delivery chain, from first attempt to acceptance or dead letter\n(design §7.1bis).\n\nSent as `X-Weebo-Delivery` and reused across retries — it is the consumer's\nidempotency key, which is the whole reason it exists. §7.1bis called it a\nUUID before anything was written, at a point where the only properties that\nmattered were \"unique\" and \"stable across retries\"; a ULID has both, sorts by\ntime in the index the drain reads in order, and is what every other minted id\nin this product already is.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct DeliveryId(pub ::std::string::String);
+    impl ::std::ops::Deref for DeliveryId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<DeliveryId> for ::std::string::String {
+        fn from(value: DeliveryId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for DeliveryId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for DeliveryId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for DeliveryId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     ///The state of a single dependency.
     ///
     /// <details><summary>JSON schema</summary>
@@ -6929,6 +7053,61 @@ when the notification does.*/
             key: ::std::string::String,
         },
     }
+    /**Which sink of which channel, written as `kind:destination`.
+
+Stable across restarts and reconfigurations, free of secrets, and legible in a
+dead-letter listing — see the module documentation for why it is derived rather
+than declared.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Which sink of which channel, written as `kind:destination`.\n\nStable across restarts and reconfigurations, free of secrets, and legible in a\ndead-letter listing — see the module documentation for why it is derived rather\nthan declared.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct SinkId(pub ::std::string::String);
+    impl ::std::ops::Deref for SinkId {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<SinkId> for ::std::string::String {
+        fn from(value: SinkId) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for SinkId {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for SinkId {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for SinkId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     ///Where a notification is in its lifecycle.
     ///
     /// <details><summary>JSON schema</summary>
@@ -7782,6 +7961,108 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The sink deliveries that were given up on (design §7.1bis, §10.4bis)
+
+Sends a `GET` request to `/api/v1/admin/dlq`
+
+Arguments:
+- `channel`: One channel
+*/
+    pub async fn dlq<'a>(
+        &'a self,
+        channel: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::DeadLetter>>,
+        Error<types::Problem>,
+    > {
+        let url = format!("{}/api/v1/admin/dlq", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("channel", &channel))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "dlq",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Put one dead letter back in the queue (design §8, scenario T17)
+
+Sends a `POST` request to `/api/v1/admin/dlq/{id}/requeue`
+
+Arguments:
+- `id`: Delivery id, as `GET /admin/dlq` returns it
+*/
+    pub async fn requeue_dead_letter<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/admin/dlq/{}/requeue", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "requeue_dead_letter",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

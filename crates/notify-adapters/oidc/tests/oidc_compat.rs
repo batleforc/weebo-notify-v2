@@ -103,13 +103,25 @@ impl Fixture {
     }
 
     /// The account this provider knows for the role asked for.
-    const fn username(&self, account: Account) -> &'static str {
+    ///
+    /// `WNK_TEST_OIDC_USERNAME` overrides it, and that is not a convenience: Dex's
+    /// local connector authenticates on the **email** of a `staticPasswords` entry
+    /// and not on its `username`, so "alice" is not a login there. A difference of
+    /// exactly this kind is what the matrix exists to surface, and hard-coding
+    /// around it would be hiding one.
+    fn username(&self, account: Account) -> String {
+        if let Ok(named) = std::env::var("WNK_TEST_OIDC_USERNAME")
+            && !named.is_empty()
+        {
+            return named;
+        }
+
         match (self.provider, account) {
             // Dex emits no groups for anybody, so its "group-less" case is any
             // account — asking it for carol would only prove that a user we never
             // created is absent.
-            (Provider::Dex, _) | (_, Account::InGroups) => "alice",
-            (_, Account::Groupless) => "carol",
+            (Provider::Dex, _) | (_, Account::InGroups) => "alice".to_owned(),
+            (_, Account::Groupless) => "carol".to_owned(),
         }
     }
 
@@ -119,13 +131,13 @@ impl Fixture {
         match self.provider {
             // The mock is ours, so the browser half of the flow is drivable and
             // worth driving: Authorization Code + PKCE, end to end.
-            Provider::Mock => sign_in_through_the_browser(&self.issuer, username).await,
+            Provider::Mock => sign_in_through_the_browser(&self.issuer, &username).await,
             // For a third party the browser half is *their* UI — a login form we
             // would be scraping, not a contract we hold them to. What this matrix is
             // about is whether our verifier accepts what they mint, so the token
             // comes from the password grant and the part under test starts at
             // verification.
-            _ => password_grant(&self.issuer, username, self.provider).await,
+            _ => password_grant(&self.issuer, &username, self.provider).await,
         }
     }
 }

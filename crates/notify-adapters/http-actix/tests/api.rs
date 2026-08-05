@@ -158,6 +158,12 @@ impl Harness {
             // Never reconciled in the harness, which is a state the console has to
             // render: `null` and not zeroes (§10.4bis).
             reconciliation: ReadReconciliation::new(ReconciliationLog::new()),
+            dlq: notify_app::ListDeadLetters::new(Arc::new(store.clone())),
+            requeue: notify_app::RequeueDeadLetter::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
             presign: PresignAttachment::new(Arc::new(attachments.clone()), authorizer.clone()),
             sync: SyncBacklog::new(
                 Arc::new(store.clone()),

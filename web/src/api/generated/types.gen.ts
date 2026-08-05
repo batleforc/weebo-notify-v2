@@ -567,6 +567,54 @@ export const Day = {
 export type Day = typeof Day[keyof typeof Day];
 
 /**
+ * A delivery that ran out of retries (design §7.1bis).
+ */
+export type DeadLetter = {
+    /**
+     * How many attempts it took before giving up.
+     */
+    attempts: number;
+    /**
+     * Which channel it came from — the dimension of the `sink_dlq_depth` metric.
+     */
+    channel: ChannelId;
+    /**
+     * When it was given up on.
+     */
+    dead_at: string;
+    /**
+     * When it first failed.
+     */
+    first_failed_at: string;
+    /**
+     * Its id, for `POST /admin/dlq/{id}/requeue`.
+     */
+    id: DeliveryId;
+    /**
+     * The last failure.
+     */
+    last_error: string;
+    /**
+     * Which sink it was going to, endpoint included: the first thing an operator
+     * needs is where to go and look.
+     */
+    sink: SinkId;
+};
+
+/**
+ * One outbound delivery chain, from first attempt to acceptance or dead letter
+ * (design §7.1bis).
+ *
+ * Sent as `X-Weebo-Delivery` and reused across retries — it is the consumer's
+ * idempotency key, which is the whole reason it exists. §7.1bis called it a
+ * UUID before anything was written, at a point where the only properties that
+ * mattered were "unique" and "stable across retries"; a ULID has both, sorts by
+ * time in the index the drain reads in order, and is what every other minted id
+ * in this product already is.
+ */
+export type DeliveryId = string;
+
+/**
  * The state of a single dependency.
  */
 export type DependencyCheck = {
@@ -1926,6 +1974,15 @@ export type SilenceTarget = {
 };
 
 /**
+ * Which sink of which channel, written as `kind:destination`.
+ *
+ * Stable across restarts and reconfigurations, free of secrets, and legible in a
+ * dead-letter listing — see the module documentation for why it is derived rather
+ * than declared.
+ */
+export type SinkId = string;
+
+/**
  * Where a notification is in its lifecycle.
  */
 export const State = {
@@ -2205,6 +2262,78 @@ export type SelfJoinResponses = {
 };
 
 export type SelfJoinResponse = SelfJoinResponses[keyof SelfJoinResponses];
+
+export type DlqData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * One channel
+         */
+        channel?: string;
+    };
+    url: '/api/v1/admin/dlq';
+};
+
+export type DlqErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+};
+
+export type DlqError = DlqErrors[keyof DlqErrors];
+
+export type DlqResponses = {
+    /**
+     * Dead letters, newest first
+     */
+    200: Array<DeadLetter>;
+};
+
+export type DlqResponse = DlqResponses[keyof DlqResponses];
+
+export type RequeueDeadLetterData = {
+    body?: never;
+    path: {
+        /**
+         * Delivery id, as `GET /admin/dlq` returns it
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/admin/dlq/{id}/requeue';
+};
+
+export type RequeueDeadLetterErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+    /**
+     * No dead letter with that id — already requeued, or purged
+     */
+    409: Problem;
+};
+
+export type RequeueDeadLetterError = RequeueDeadLetterErrors[keyof RequeueDeadLetterErrors];
+
+export type RequeueDeadLetterResponses = {
+    /**
+     * Requeued, and recorded in the audit log
+     */
+    204: void;
+};
+
+export type RequeueDeadLetterResponse = RequeueDeadLetterResponses[keyof RequeueDeadLetterResponses];
 
 export type ReconciliationData = {
     body?: never;

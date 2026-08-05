@@ -55,6 +55,7 @@ pub mod principal;
 pub mod profile;
 pub mod receipt;
 pub mod silence;
+pub mod sink;
 pub mod ttl;
 
 pub use action::{
@@ -72,8 +73,9 @@ pub use federation::{
 };
 pub use identity::{ApiKey, ApiKeyPrefix, PresentedApiKey, ServiceAccount, User};
 pub use ids::{
-    ActionKey, ApiKeyId, AttachmentId, ChannelId, ChoiceOptionKey, DeviceId, ExternalId,
-    InteractionId, NotificationId, ReceiptId, RevisionId, ServiceAccountId, Slug, UserId,
+    ActionKey, ApiKeyId, AttachmentId, ChannelId, ChoiceOptionKey, DeliveryId, DeviceId,
+    ExternalId, InteractionId, NotificationId, ReceiptId, RevisionId, ServiceAccountId, Slug,
+    UserId,
 };
 pub use interaction::{Interaction, InteractionLog, InteractionRecord, Recorded};
 pub use notification::{
@@ -85,4 +87,5 @@ pub use principal::{ApiKeyOwner, Author, Principal, PrincipalKind};
 pub use profile::{FieldEdit, Profile, ProfileEdit, ProfileField};
 pub use receipt::{Readership, Receipt, ReceiptKind, Sighting};
 pub use silence::{Silence, SilenceTarget};
+pub use sink::{RetryPolicy, SINK_KINDS, SinkId};
 pub use ttl::{Ttl, TtlPolicy, TtlResolution};

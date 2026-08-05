@@ -52,6 +52,7 @@ pub mod preferences;
 pub mod profiles;
 pub mod publish;
 pub mod read;
+pub mod sinks;
 pub mod sync;
 
 pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
@@ -83,4 +84,5 @@ pub use read::{
     DeleteNotification, GetNotification, InboxFilters, ListInbox, ListRevisions,
     SearchNotifications,
 };
+pub use sinks::{DrainReport, DrainSinks, ListDeadLetters, RequeueDeadLetter};
 pub use sync::{ResolveStreamStart, SyncBacklog, SyncRequest};

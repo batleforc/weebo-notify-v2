@@ -1,6 +1,6 @@
 //! What happens after a write lands.
 //!
-//! Two things, in this order and for different reasons:
+//! Three things, in this order and for different reasons:
 //!
 //! 1. **Poke the bus.** Every replica holds its own stream connections, so every
 //!    replica has to learn about the write. The poke carries an id and a cursor,
@@ -11,18 +11,30 @@
 //!    §7.4). Only the push is suppressed: the bus poke above still goes out, so a
 //!    client with the app open keeps receiving on its stream and the inbox fills
 //!    normally. An app somebody chose to leave open is not an interruption.
+//! 3. **Queue the channel's outbound sinks** (design §7.1bis). Queued and not sent:
+//!    a webhook is somebody else's server, and putting their latency in front of a
+//!    publisher's answer would make a CI pipeline wait on a consumer it does not
+//!    know exists. The leader drains the queue ([`crate::sinks`]).
 //!
-//! Both are best-effort by design. A failed poke costs latency and the cursor
-//! catches up; a failed push is recorded and retried by the transport. Neither may
-//! fail the publish that caused it: a CI job must not see a 500 because somebody's
-//! phone is unreachable.
+//! All three are best-effort by design. A failed poke costs latency and the cursor
+//! catches up; a failed push is recorded and retried by the transport; a sink that
+//! cannot even be *queued* is logged and lost, which is the one honest option left
+//! when the alternative is failing a publish that already succeeded. None of them
+//! may fail the publish that caused it: a CI job must not see a 500 because
+//! somebody's phone is unreachable.
+//!
+//! Sinks are a channel-level route, so **no per-user filtering applies to them** —
+//! neither silence nor do-not-disturb, both of which belong to a person and their
+//! devices (§7.4). A webhook feeding an incident tracker does not go quiet because
+//! somebody went to bed.
 
 use std::sync::Arc;
 
-use notify_domain::{Cursor, Device, Notification, Principal, PushTransport};
+use notify_domain::{Cursor, DeliveryId, Device, Notification, Principal, PushTransport, Revision};
 use notify_ports::{
-    Clock, DeviceRepository, EventBus, InteractionRepository, Poke, PreferenceRepository, PushBody,
-    PushDispatcher, PushMessage, PushOutcome,
+    Audience, Clock, DeviceRepository, Event, EventBus, EventPayload, InteractionRepository, Poke,
+    PreferenceRepository, PushBody, PushDispatcher, PushMessage, PushOutcome, RevisionEvent,
+    SinkDelivery, SinkQueue, SinkRegistry,
 };
 
 /// Broadcasts a write to the rest of the instance and to devices.
@@ -43,6 +55,22 @@ pub struct Fanout {
     /// right answer rather than a degenerate one — with nothing to carry a payload,
     /// every message is a poke.
     payload_budget: usize,
+    /// Where a channel's events go besides devices, and the queue they wait in
+    /// (design §7.1bis).
+    ///
+    /// `None` on a deployment that declares no sink at all — which is most of them,
+    /// and the reason this is a separate constructor rather than two more arguments
+    /// every caller would pass empty. An instance with nothing to route does not
+    /// serialise an event to hand it to a queue nobody drains.
+    sinks: Option<Sinks>,
+}
+
+/// The two halves of the sink route, held together so they are wired or not wired
+/// as one.
+#[derive(Clone)]
+struct Sinks {
+    registry: Arc<dyn SinkRegistry>,
+    queue: Arc<dyn SinkQueue>,
 }
 
 impl core::fmt::Debug for Fanout {
@@ -71,7 +99,23 @@ impl Fanout {
             preferences,
             clock,
             payload_budget,
+            sinks: None,
         }
+    }
+
+    /// Route this channel's events to the configured sinks as well (design §7.1bis).
+    ///
+    /// Called by the composition root when `[[channels.managed.sinks]]` declares
+    /// anything. Left off otherwise, so a publish on an instance with no sink does
+    /// not build a delivery for nobody.
+    #[must_use]
+    pub fn with_sinks(
+        mut self,
+        registry: Arc<dyn SinkRegistry>,
+        queue: Arc<dyn SinkQueue>,
+    ) -> Self {
+        self.sinks = Some(Sinks { registry, queue });
+        self
     }
 
     /// Tell the instance a channel event landed. Never fails the caller.
@@ -94,6 +138,66 @@ impl Fanout {
     pub async fn poke_user(&self, user: notify_domain::UserId, cursor: Cursor) {
         if let Err(error) = self.bus.publish(&Poke::User { id: user, cursor }).await {
             tracing::warn!(?error, "event bus poke failed");
+        }
+    }
+
+    /// Queue this revision for the channel's outbound sinks (design §7.1bis).
+    ///
+    /// The event is rebuilt here from the same three values the store appended it
+    /// from — the notification, the revision and the cursor it landed on — so a
+    /// consumer sees byte for byte what a client sees on the stream (§8.1). The
+    /// store is not asked for it back: that would be a read per publish to recover
+    /// something this call already holds. A conformance test against a real
+    /// Postgres holds the two shapes together.
+    pub async fn queue_sinks(
+        &self,
+        notification: &Notification,
+        revision: &Revision,
+        cursor: Cursor,
+    ) {
+        let Some(sinks) = &self.sinks else {
+            return;
+        };
+
+        let targets = sinks.registry.sinks_for(&notification.channel);
+        if targets.is_empty() {
+            return;
+        }
+
+        let event = Event {
+            cursor,
+            audience: Audience::Channel {
+                id: notification.channel.clone(),
+            },
+            recorded_at: revision.received_at,
+            payload: EventPayload::Revision(Box::new(RevisionEvent::new(notification, revision))),
+        };
+
+        for sink in targets {
+            let delivery = SinkDelivery {
+                // One id per sink, not one per publish: `X-Weebo-Delivery` is the
+                // consumer's idempotency key, and two consumers sharing one would
+                // make each other's deduplication wrong.
+                delivery_id: DeliveryId::generate(),
+                channel: notification.channel.clone(),
+                sink,
+                event: event.clone(),
+                attempts: 0,
+                first_failed_at: None,
+            };
+
+            // Due immediately: the wait is the drain interval, not a backoff.
+            if let Err(error) = sinks.queue.enqueue(&delivery, self.clock.now()).await {
+                // Nothing better is available here. The publish is already durable,
+                // so failing it would report a write that happened as a write that
+                // did not; the delivery is lost and said so, loudly.
+                tracing::error!(
+                    ?error,
+                    channel = %notification.channel,
+                    sink = %delivery.sink,
+                    "could not queue a sink delivery; it is lost"
+                );
+            }
         }
     }
 
@@ -658,6 +762,88 @@ mod tests {
             panic!("a publish pushes a notification, not a digest");
         };
         assert_eq!(body, PushBody::Poke);
+    }
+
+    // --- Outbound sinks (design §7.1bis) ----------------------------------
+
+    #[tokio::test]
+    async fn a_publish_queues_one_delivery_per_configured_sink() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        seed(&store, &alice, PushTransport::Stream, clock.now());
+
+        let registry = notify_ports::test_utils::StaticSinkRegistry::empty()
+            .route(
+                channel_id(),
+                notify_ports::SinkTarget::Webhook {
+                    url: Url::parse("https://hooks.weebo.poc/incidents").unwrap(),
+                    secret: "shh".to_owned(),
+                },
+            )
+            .route(
+                channel_id(),
+                notify_ports::SinkTarget::Email {
+                    address: "oncall@weebo.poc".to_owned(),
+                },
+            );
+
+        let notification = notification(&alice, None, clock.now());
+        let revision = notification.head.clone();
+        fanout(&store, &clock)
+            .with_sinks(Arc::new(registry), Arc::new(store.clone()))
+            .queue_sinks(&notification, &revision, Cursor::from_sequence(1))
+            .await;
+
+        let queued = notify_ports::SinkQueue::claim_due(
+            &store,
+            clock.now(),
+            10,
+            clock.now() + time::Duration::minutes(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(queued.len(), 2, "one per sink, not one per publish");
+        assert_ne!(
+            queued[0].delivery_id, queued[1].delivery_id,
+            "two consumers sharing an idempotency key would make each other's \
+             deduplication wrong"
+        );
+        assert_eq!(
+            queued[0].event.cursor,
+            Cursor::from_sequence(1),
+            "a consumer sees what a client sees on the stream (§8.1)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_with_no_sink_queues_nothing() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        seed(&store, &alice, PushTransport::Stream, clock.now());
+
+        let notification = notification(&alice, None, clock.now());
+        let revision = notification.head.clone();
+        fanout(&store, &clock)
+            .with_sinks(
+                Arc::new(notify_ports::test_utils::StaticSinkRegistry::empty()),
+                Arc::new(store.clone()),
+            )
+            .queue_sinks(&notification, &revision, Cursor::from_sequence(1))
+            .await;
+
+        assert!(
+            notify_ports::SinkQueue::claim_due(&store, clock.now(), 10, clock.now())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

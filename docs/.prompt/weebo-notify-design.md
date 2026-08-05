@@ -271,6 +271,8 @@ crates/
 │   ├── push-unifiedpush/   # Android self-hosted
 │   ├── push-apns/          # iOS (token-based auth .p8)
 │   ├── attachments-s3/     # S3-compatible (RustFS en dev/self-hosted)
+│   ├── sinks-webhook/      # POST JSON signé HMAC + le vérificateur de référence (§7.1bis)
+│   ├── sinks-email/        # SMTP (lettre/rustls) — une révision, un mail en clair
 │   ├── eventbus-pg/        # LISTEN/NOTIFY (défaut) — pokes (ids) uniquement, limite 8 Ko de NOTIFY oblige
 │   ├── eventbus-redis/     # Pub/Sub Redis/Valkey — option HA/scale-out (§11), même contrat de pokes
 │   └── oidc/               # Découverte, JWKS cache, validation (Authentik + issuers CI fédérés)
@@ -400,9 +402,13 @@ Un canal peut, en plus des devices, router vers des **sinks sortants** déclaré
 
 **Contrat webhook** :
 - Body : l'événement au même schéma que le flux SSE (§8.1, event `revision`), en clair.
-- Headers : `X-Weebo-Event` (type d'événement), `X-Weebo-Delivery` (UUID unique — clé d'idempotence côté consommateur), `X-Weebo-Signature: t=<unix_ts>,v1=<hex(hmac_sha256(secret, t + "." + body))>`.
+- Headers : `X-Weebo-Event` (type d'événement), `X-Weebo-Delivery` (identifiant unique et **stable à travers les retries** — clé d'idempotence côté consommateur ; un ULID `dlv_…` et non un UUID, cf. M4bis), `X-Weebo-Signature: t=<unix_ts>,v1=<hex(hmac_sha256(secret, t + "." + body))>`.
 - Anti-replay : la signature couvre le timestamp ; le consommateur rejette si `|now − t| > 5 min`.
 - Retries : backoff exponentiel 30 s → 1 h, abandon après 24 h → **DLQ** (métriquée §13, requeue manuel via `POST /admin/dlq/{id}/requeue` §8 — UI dans la console plateforme §10.4bis).
+- **Une publication met en file, elle n'envoie pas** : le consommateur est le serveur de quelqu'un d'autre, et mettre sa latence devant la réponse d'un publisher ferait rougir un pipeline pour une raison qui ne le concerne pas. Le leader draine (§11) toutes les 5 s ; c'est ce délai, et non un aller-retour, qui sépare une publication de sa première tentative.
+- **Le paiement de l'at-least-once** : une livraison est *baillée* et non retirée à la prise, donc un leader tué en pleine tentative la laisse due plutôt que perdue — au pire un doublon, ce que `X-Weebo-Delivery` existe précisément pour rendre supportable.
+
+L'identité d'un sink est **dérivée de sa destination** (`webhook:https://…`, `email:…`) et la file ne porte jamais sa clé HMAC : le secret est résolu depuis la config au moment de l'envoi (ADR-0018). Trois conséquences directes — le secret reste hors des dumps, une rotation s'applique à ce qui est déjà en file, et un sink retiré de la config cesse d'être réessayé.
 
 Rationale : UnifiedPush garde la boucle 100 % self-hosted sur Android (le serveur expose lui-même le endpoint push UnifiedPush, le distributeur vivant côté device §10bis.4) ; APNs est le seul canal fiable iOS ; Web Push couvre PWA et desktop navigateur sans dépendance tierce. Le endpoint push UnifiedPush embarqué — porte d'entrée publique supplémentaire — est authentifié par **token opaque par device** (révoqué avec lui, §8 `DELETE /devices`) et soumis aux quotas §8.2.
 
@@ -918,6 +924,13 @@ team_id  = "..."
 signing_key_file = "/secrets/federation.pem"   # Ed25519 PKCS#8 ; jamais généré au boot (un replica signerait ce qu'un autre ne vérifie pas)
 # audience = "weebo-notify"           # défaut ; à changer si deux instances partagent un ingress
 
+[sinks.smtp]                          # le relais des sinks `email` (§7.1bis) — instance-wide par nature
+url  = "smtp://mail.weebo.poc:25"     # smtp:// dans le cluster, smtps:// en dehors
+from = "weebo-notify <notify@weebo.poc>"
+# username = "notify"
+# password_ref = "env:WNK_SMTP_PASSWORD"     # mêmes formes que secret_ref
+# permalink_base = "https://notify.weebo.poc" # sans lui, aucun lien n'est écrit dans le mail (§10.4)
+
 [retention]
 default_ttl = "7d"                    # défaut global, surchargeable par canal puis par message
 max_ttl     = "90d"                   # clamp dur, applicable par canal
@@ -985,7 +998,11 @@ limits           = { publish_per_min = 120 }   # surcharge des quotas §8.2
   [[channels.managed.sinks]]
   type   = "webhook"
   url    = "https://hooks.weebo.poc/incidents"
-  secret_ref = "env:WNK_SINK_INCIDENTS_HMAC"   # ou file:/... — résolu par le SecretResolver
+  secret_ref = "env:WNK_SINK_INCIDENTS_HMAC"   # ou file:/... — résolu au démarrage
+
+  [[channels.managed.sinks]]
+  type    = "email"
+  address = "oncall@weebo.poc"
 
   # Publishers machine : fédération JWT (Forgejo/GitHub Actions) scoped au canal
   [[channels.managed.publishers]]
@@ -1040,6 +1057,7 @@ Objectif : **un env complet en une commande**, identique qu'on développe en loc
 | Authentik worker | Tâches asynchrones Authentik (blueprints, mails) | service `authentik-worker` (profile `authentik`) | — | — |
 | Redis/Valkey | Broker requis par Authentik ; sert aussi à tester `eventbus-redis` (§11) | service `redis` (profiles `authentik`, `eventbus`) | component `redis` | interne `localhost:6379` |
 | Mailpit | Puits SMTP pour tester le sink `email` | service `mailpit` (profile `sinks`) | — (rarement utile en Che) | UI `localhost:8025`, SMTP `localhost:1025` |
+| Dex | OIDC **minimal strict** — aucune claim `groups`, le cas T29 (§3.2 `oidc-compat`) | service `dex` (profile `dex`, config rendue par `task dev:dex`) | — (CI et reproduction manuelle) | `http://localhost:5556/dex` |
 | weebo-notify | Le serveur, lancé **hors conteneur** (`cargo run` / hot-reload) | — | container `tools` du parent WeeboDevImage | `localhost:8080` (web `localhost:5173`) |
 
 Points de parité importants :
@@ -1348,6 +1366,8 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 6. **M6 — Tauri Android** (§10bis.4) : premier besoin de re-chiffrement — enrôlement X25519 (Android Keystore), sealed box à la livraison, endpoint push UnifiedPush côté serveur + distributeur embarqué dans l'app.
 7. **M7 — Tauri iOS** (§10bis.5) : APNs + Notification Service Extension de déchiffrement (dépendance compte Apple Developer, §15).
 
+**M4bis — Sinks sortants**, inséré entre M4 et M5 : §7.1bis de bout en bout — webhook signé, email SMTP, file de retries leader-only, DLQ et son onglet de console (§10.4bis). Il n'apparaissait dans aucun milestone de la liste ci-dessus, ce que la fin de M4 a nommé plutôt que passé sous silence ; il tombe ici parce que M5 est bloqué par D13 et parce que la console de M4 avait un quatrième objet qui n'existait pas.
+
 ### 14.1 État d'avancement
 
 > Mis à jour au fil de l'eau. « écrit » veut dire *dans l'arbre de travail et testé* ;
@@ -1361,6 +1381,7 @@ Le frontend web est un client de premier rang : il entre dès M1 et progresse à
 | **M2 — Sync, offline & TUI** | ✅ commité (`e6a6b2e`, `731e795`) — les huit incréments, les quatre manques, puis D1 et D3 |
 | **M3 — Push web & PWA** | ✅ **écrit** — M3.1 à M3.4 commités (`731e795`), M3.5 commité (`3098ebc`), M3.6 et M3.7 écrits — détail ci-dessous |
 | **M4 — Fédération CI & plateforme** | 🟡 M4.1 à M4.6 écrits ; M4.7 écrit mais jamais joué contre une vraie forge — détail ci-dessous |
+| **M4bis — Sinks sortants** | ✅ **écrit** — le milestone que §14.1 disait devoir être placé avant M5 ; les cinq incréments, T17 de bout en bout — détail ci-dessous |
 | **M5 — Tauri desktop** | ⛔ bloqué sur l'image de dev : la pile GTK/WebKit que Tauri lie sous Linux n'est pas dans `che-min-mise` (§12.4, `task tauri:doctor`) |
 | M6 → M7 | ⬜ non commencés |
 
@@ -1703,7 +1724,7 @@ C'est le mode d'échec de D8 par le troisième côté : là une vérification pa
 | M4.2 | `POST /auth/token/exchange` — jeton Ed25519, TTL ≤ 15 min, quota 10/min par (issuer, subject) (§8.2) | ✅ écrit — route, adapter, `ReplayGuard` PG, clé et env de dev compris |
 | M4.3 | Réconciliation des policies : `[[trust_policy]]` globales et `[[channels.managed.publishers]]` scopées au canal, ces dernières prioritaires (§11) | ✅ écrit — arrivé avec M4.2, qui ne pouvait pas s'échanger sans elles |
 | M4.4 | Rôle `platform-admin` (§5.4) — GitOps only, frontière métadonnées/contenu, self-join audité (T30) | ✅ écrit |
-| M4.5 | Endpoints `/api/v1/admin/*` — audit log, inventaire, self-join, trust policies, réconciliation (§8) | 🟡 écrit sans la DLQ — aucun sink à y mettre (§14.1) |
+| M4.5 | Endpoints `/api/v1/admin/*` — audit log, inventaire, self-join, trust policies, réconciliation (§8) | ✅ écrit — la DLQ manquait faute de sinks, elle est arrivée avec M4bis |
 | M4.6 | Web : console plateforme v1 (§10.4bis) et UI trust policies | ✅ écrit |
 | M4.7 | Dogfooding : la CI publie ses statuts vers weebo-notify (§3.2, §3.2bis) | 🟡 `notify token exchange` et le workflow écrits ; le workflow n'a jamais tourné contre une vraie Forgejo |
 
@@ -1712,6 +1733,8 @@ L'ordre n'est pas libre : M4.2 consomme le domaine de M4.1, M4.3 lui donne ses p
 **Ce que M4 ne peut pas prendre, et qui n'appartient à personne.** §10.4bis fait de la **DLQ des sinks** un des quatre objets de la console v1, et §8 lui donne deux routes (`GET /admin/dlq`, `POST /admin/dlq/{id}/requeue`). Or les sinks sortants (§7.1bis) n'ont **aucun adapter de production** (§14.3) et n'apparaissent dans **aucun milestone** de §14 : ni M1 (« hors périmètre »), ni M2 à M7, qui parlent de sync, de push et de Tauri. Le webhook signé, l'email SMTP, les retries et la DLQ elle-même sont donc spécifiés en détail — contrat HMAC, fenêtre anti-replay de 5 minutes, backoff 30 s → 1 h, abandon à 24 h — et personne ne les écrit.
 
 Deux façons de mentir à ce sujet, et on ne prendra ni l'une ni l'autre : livrer une console dont l'onglet DLQ est vide en permanence et laisser croire que « rien n'est en souffrance », ou retirer la DLQ de §10.4bis et faire disparaître le problème du document. **M4 livre donc les trois autres objets de la console** (audit log, réconciliation, inventaire) et laisse la DLQ dehors, nommée ici — le sujet est un milestone à part entière, pas un onglet, et il faudra décider où il tombe avant M5.
+
+*Décidé depuis* : c'est **M4bis**, ci-dessous, et il tombe juste après M4. Le quatrième objet de la console existe, et il est branché sur une file que quelque chose remplit.
 
 **M4.1 en détail.** La décision de fédération, en pur domaine : des claims que quelqu'un d'autre a signées, des policies que l'opérateur a écrites, et une réponse. Aucun réseau, donc les trois durcissements de §5.3 se testent tous les trois.
 
@@ -1792,7 +1815,7 @@ Une trouvaille en câblant le client : `GET /admin/audit` acceptait quatre filtr
 
 Le seul chiffre **actionnable et silencieux autrement** y est aussi : les liaisons par `email` ou `oidc_sub` en attente d'une première connexion (§14.1, M1.8). Sans un endroit où les voir, le symptôme est « alice dit qu'elle ne voit pas le canal » et rien pour le relier à sa cause.
 
-**Ce que M4.5 ne sert pas**, et c'est délibéré : la **DLQ des sinks**. §10.4bis en fait un des quatre objets de la console et §8 lui donne deux routes, mais aucun sink n'existe (§14.1) — servir un endpoint qui répondrait « rien n'est en souffrance » depuis une file que personne ne remplit est un voyant vert câblé sur rien, ce qui est pire que pas de voyant. `GET /admin/reconciliation` manque aussi et pour une raison plus banale : l'état du réconciliateur n'est pas encore exposé hors de la boucle qui le calcule.
+**Ce que M4.5 ne servait pas**, et c'était délibéré : la **DLQ des sinks**. §10.4bis en fait un des quatre objets de la console et §8 lui donne deux routes, mais aucun sink n'existait alors (§14.1) — servir un endpoint qui répond « rien n'est en souffrance » depuis une file que personne ne remplit est un voyant vert câblé sur rien, ce qui est pire que pas de voyant. Les deux routes sont arrivées avec M4bis, en même temps que la file.
 
 **M4.7 en détail, et sa limite d'abord.** Le workflow existe et **n'a jamais tourné contre une vraie Forgejo** — il n'y en a pas dans cet environnement. C'est écrit ici, en tête, parce que le reste du document passe son temps à dénoncer les tics verts qui ne prouvent rien (D7, D8, D10) et qu'un fichier de CI commité sans avoir jamais tourné en est un candidat naturel.
 
@@ -1806,6 +1829,76 @@ Deux formes valent d'être notées :
 - **le job entier est sauté quand l'instance n'est pas configurée** (`vars.WNK_URL`), parce que c'est l'état normal d'un fork et qu'échouer le pipeline de quelqu'un d'autre pour une notification qu'il n'a pas demandée serait le mauvais défaut.
 
 **Un manque de §9.1 nommé, puis soldé** : le croquis y écrit `notify publish --action "view:Runbook:https://…"`, et le drapeau n'existait pas. Le workflow est parti sans bouton « voir le run » plutôt qu'avec un drapeau imaginaire, puis D11 l'a ajouté et le workflow l'a récupéré. `--image` a suivi, et a fait tomber D14 : au-dessus de 48 KiB il n'y a aucun chemin, pour personne.
+
+**Découpage de M4bis** :
+
+| # | Livrable | État |
+|---|---|---|
+| M4bis.1 | Domaine + use cases — `SinkId`, `RetryPolicy`, `DrainSinks`, les deux opérations DLQ, l'enfilement dans le `Fanout` | ✅ écrit |
+| M4bis.2 | `sinks-webhook` (HMAC + vérificateur de référence) et `sinks-email` (SMTP) — les deux premiers adapters de `SinkDispatcher` (§14.3) | ✅ écrit |
+| M4bis.3 | `SinkQueue` Postgres (bail, pas prise), boucle de drain leader-only, `[[channels.managed.sinks]]` et `[sinks.smtp]` honorés | ✅ écrit |
+| M4bis.4 | `GET /admin/dlq`, `POST /admin/dlq/{id}/requeue`, quatrième panneau de la console (§10.4bis) | ✅ écrit |
+| M4bis.5 | T17 de bout en bout en suite `critical`, conformance contre un vrai Postgres, portes | ✅ écrit |
+
+L'ordre n'est pas libre : M4bis.3 consomme les adapters de M4bis.2, M4bis.4 consomme la file de M4bis.3, et T17 ne peut se jouer entier qu'une fois les quatre en place. Le point de départ est le meilleur de tous les milestones jusqu'ici : `SinkDispatcher`, `SinkQueue`, `SinkTarget` et `DeadLetter` étaient **écrits depuis M1**, avec leurs doubles in-memory et leurs tests. Le travail a été de les honorer — et de découvrir que deux d'entre eux disaient la mauvaise chose.
+
+**M4bis.1 en détail.** Deux valeurs et un job, plus une décision qui a redessiné le port.
+
+**Le secret n'entre jamais dans la file** (ADR-0018). Le `SinkDelivery` de M1 portait son `SinkTarget`, donc son secret HMAC : sérialisé dans une ligne, il aurait atterri dans chaque dump, chaque sauvegarde et chaque écran d'où un opérateur peut pointer une ligne — pour un credential qui appartient à quelqu'un d'autre, sur une base que §6.1 garde délibérément sans chiffrement applicatif. Une ligne **nomme** donc son sink, et le registre (la config, en mémoire) rend la cible au moment de l'envoi. Deux propriétés tombent gratuitement avec : une rotation de secret s'applique à ce qui est déjà en file, et un sink retiré de la config cesse d'être réessayé au lieu d'être réessayé pendant vingt-quatre heures vers un endroit que plus personne ne sert.
+
+D'où l'identité, que §11 ne donnait pas : `kind:destination`. Elle est stable à travers un redémarrage, sans credential — une URL portant un userinfo est refusée là où la config est lue —, et **lisible dans la DLQ**, qui est exactement l'écran où quelqu'un a besoin de savoir *quel endpoint* est coincé. Conséquence assumée et écrite : un sink repointé sur une nouvelle URL est un nouveau sink.
+
+**Le calendrier est une valeur, pas une boucle.** « Backoff exponentiel 30 s → 1 h, abandon après 24 h » est une phrase de §7.1bis et trois erreurs faciles en code : un délai qui cesse de croître au mauvais endroit, un plafond appliqué avant le doublement, et un abandon mesuré depuis le mauvais instant. `RetryPolicy` est donc un type du domaine avec ses tests, et l'abandon court **depuis le premier échec** et non depuis la publication : un consommateur qui tombe trois heures après une publication chargée a sa journée entière à partir du moment où l'ennui commence.
+
+**Le classement, lui, reste dans l'adapter.** Seul ce qui a parlé HTTP sait qu'un `503` veut dire « plus tard » et un `410` « jamais ». Le use case ne fait ni l'un ni l'autre : il met les deux bout à bout et écrit le résultat. C'est la même frontière que §7.4 trace entre « le publisher choisit l'insistance » et « le destinataire choisit ce qui le réveille ».
+
+**Une publication met en file, elle n'envoie pas.** Appeler l'endpoint de quelqu'un d'autre avant de répondre au publisher mettrait sa latence, sa panne et son handshake TLS devant un job CI qui demandait juste qu'on note une ligne — et le premier timeout rendrait un pipeline rouge pour une raison sur laquelle personne ne peut agir. Le prix est écrit là où il se voit : un sink est livré dans l'intervalle du drain (5 s) et non dans un aller-retour.
+
+**Et l'événement est reconstruit, pas relu.** Le `Fanout` tient déjà la notification, la révision et le curseur — les trois valeurs dont le store compose l'événement qu'il vient d'ajouter. Le redemander au store serait une lecture par publication pour retrouver ce que l'appel a en main ; un test de conformance contre un vrai Postgres tient les deux formes ensemble, ce qui est la garantie que la reconstruction n'a pas dérivé.
+
+**M4bis.2 en détail.** Deux adapters, et le webhook est le seul endroit du produit qui soit une **API publique pour un logiciel qu'on ne verra jamais**.
+
+**Le vérificateur de référence est livré avec le signeur.** `verify()` vit dans le même module que `sign()`, testé par les mêmes tests. Un contrat qu'un consommateur doit deviner est un contrat implémenté de trois façons subtilement différentes ; celui-ci se copie. La comparaison y est à temps constant, parce que l'alternative fuit le digest un octet de timing à la fois vers quiconque a le droit de POSTer là.
+
+**Le timestamp est dans la matière signée**, et c'est ce qui rend un rejeu détectable *du tout* : une signature sur le seul corps est valide pour toujours. Un consommateur qui refuse au-delà de 5 minutes obtient l'anti-replay en prime d'une comparaison qu'il allait faire de toute façon (T17).
+
+Trois refus plus petits, notés parce qu'ils se relisent mal : **aucune redirection n'est suivie** (signer pour un hôte et livrer à un autre est exactement ce qu'un `302` ferait) ; **un `410` ne se réessaie pas** (vingt-quatre heures de retries n'aident personne et retardent le moment où un humain voit la ligne) ; et **il n'y a pas de garde SSRF dans l'adapter**, parce que l'URL vient de `[[channels.managed.sinks]]` — la vérification de schéma et le refus des credentials dans l'URL sont là où le fichier est lu, au démarrage, à côté du refus d'un `type` inconnu.
+
+Côté mail, la décision qui compte est **ce qu'on n'envoie pas** : seules les révisions deviennent un mail. Un `receipt`, une `interaction`, un `tombstone`, une `preference` sont l'affaire d'un client et la boîte de personne — « alice a lu ta notification » est un badge, pas un courrier. Un webhook les reçoit toutes les cinq parce qu'un programme ignore ce qui ne le concerne pas ; une boîte aux lettres, non. Et **pas de partie HTML** : le corps est du markdown par contrat (§2.3), et une alternative HTML voudrait dire rendre du markdown fourni par un publisher dans un client mail, c'est-à-dire la surface de sanitisation la plus indulgente qui soit, pour quelques mots en gras.
+
+**M4bis.3 en détail.** La file, et la seule chose qui n'est pas évidente dedans.
+
+**Prendre est un bail, pas un retrait.** Un drain qui supprimerait la ligne en la ramassant perdrait toutes les livraisons en vol à la seconde où le leader est tué — un trou silencieux dans une promesse *at-least-once*, et du genre qui ne se manifeste que par « le webhook n'arrive parfois pas ». La ligne est donc **baillée** : elle redevient due toute seule à l'expiration, et le doublon que ça coûte au pire est exactement ce que `X-Weebo-Delivery` existe pour rendre supportable. La prise est **une seule instruction** (`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`) : lire puis écrire est une course que deux leaders — il en existe deux pendant chaque bascule — gagnent tous les deux.
+
+`SKIP LOCKED` plutôt qu'une attente : un drain qui bloquerait sur la ligne d'un pair sérialiserait toute la file derrière un seul consommateur lent.
+
+**Enterrer est transactionnel.** Une livraison à la fois due *et* abandonnée serait renvoyée par le prochain drain pendant que la console la liste comme perdue.
+
+**Le requeue rend une chance, pas la journée passée à échouer** : `first_failed_at` repart à `NULL`. Le garder ferait ré-enterrer la livraison au tout premier échec suivant, c'est-à-dire l'inverse de ce que demande l'admin qui appuie sur le bouton.
+
+**Le drain a son propre intervalle**, 5 s contre 60 pour la purge et le digest — parce que cet intervalle *est* la latence de livraison, pas un rythme de ménage. Il est leader-only pour la raison des deux autres : chaque replica qui drainerait livrerait chaque webhook une fois par replica.
+
+**M4bis.4 en détail.** Deux routes et un panneau, dont la seule vraie question est ce qu'ils ne montrent pas.
+
+`GET /admin/dlq` nomme un canal, un sink et une erreur, et s'arrête là. L'événement qui n'a pas pu être livré est dans la ligne de file et **n'est pas servi** : un admin non membre du canal lirait sinon ses notifications à travers l'échec d'un webhook, ce qui est exactement la porte que §5.4 ferme. Un test côté client le verrouille aussi, parce que c'est le genre de champ qu'on ajoute « pour déboguer ».
+
+Un requeue sur une entrée absente rend **409 `dlq.gone`** et pas 204 : une console qui annoncerait un succès pour un requeue qui n'a rien remis laisserait un opérateur attendre une livraison que personne n'a programmée. Variant dédié plutôt que `notification.gone` — la notification, elle, se porte très bien.
+
+**M4bis.5 en détail, et les trois choses que le fait de le lancer a sorties.**
+
+T17 se joue en trois endroits, un par question qu'il pose : la signature est vérifiée par un **consommateur écrit ailleurs** (un script Node, pas notre code), le rejeu à `t − 6 min` est refusé, et la séquence complète — échec, backoff 30 s puis 60 s, abandon après 24 h, requeue, livraison — est **un seul test**, parce que ce qui est promis est la séquence et non ses étapes prises séparément.
+
+**Vérifié en le lançant**, contre un vrai Postgres, le provider de dev et un consommateur Node qui recalcule le HMAC lui-même : publication → livraison en 5 s avec `signature_ok: true` et un timestamp dans la fenêtre → consommateur qui répond `410` → DLQ avec l'endpoint nommé → `requeue` **204** puis **409 `dlq.gone`** au second → redelivrée et acceptée, **avec le même `X-Weebo-Delivery`** qu'à la première tentative. Et `403 platform.role_required` pour bob, qui n'a pas le rôle.
+
+Trois trouvailles, dont une qui ne concerne pas les sinks du tout :
+
+- **`TestLeaderElection::release()` démettait le replica.** Le double transformait donc chaque job en *leader-pour-une-passe* : un test qui en lance deux voyait la seconde ne rien faire, pour une raison sans rapport avec ce qu'il testait. Le vrai `PgLeaderElection` relâche son advisory lock et le reprend au tick suivant ; le double dit maintenant la même chose, et perdre l'élection reste `depose()`. C'est un double qui divergeait du contrat de son port — la même famille que le `PUSH_PAYLOAD_HINT` de M3.5, vue depuis les tests ;
+- **une livraison orpheline est apparue toute seule.** Le premier démarrage a logué « dropping a delivery whose sink left the configuration » : une ligne laissée par la suite de conformance, dont le sink n'existe pas dans la config du serveur. C'est le chemin de M4bis.1 qui s'exécute pour de vrai, et il s'exécute *en le disant* — ce qui est la moitié qui compte, parce qu'une file qui jette en silence est le seul comportement qu'une file n'a pas le droit d'avoir ;
+- **`cargo deny` a refusé une licence** : `quoted_printable`, sous `0BSD`, arrive avec `lettre`. Permissive, approuvée OSI, et strictement plus permissive que plusieurs licences déjà sur la liste — ajoutée avec sa raison, une ligne, comme les autres.
+
+Portes au vert à la fin de M4bis : `task lint:check`, `task test` (710 Rust + 103 web), `task test:critical` (**101**, contre 86 à la fin de M3), `task test:e2e` (**59**, contre un vrai Postgres — 59 exécutés, zéro sauté), `task test:oidc-compat` (leg `mock`, 3 exécutés et 0 sauté), `task audit` (cargo + deny + pnpm + trivy), et `task recu` idempotent — l'idempotence contrôlée **après** avoir vu la génération produire `generated.rs` et les quatre fichiers TS, ce que D8 exige. Couverture domaine+app : **95,8 %** pour un plancher à 90 %, mesurée par le gate lui-même (D10).
+
+**Ce que M4bis ne prend pas**, nommé plutôt que passé sous silence : la métrique `sink_dlq_depth` de §13. Le port répond déjà à la question (`dead_letter_depth`, testé contre un vrai Postgres), et il n'y a **aucun exporteur Prometheus dans ce build** — §13 en entier attend son incrément. Câbler une jauge sans `/metrics` serait un compteur que personne ne lit ; la faire vivre est le travail de l'observabilité, pas celui des sinks.
 
 ### 14.2 Accès par groupe OIDC — le modèle dérivé
 
@@ -1838,7 +1931,9 @@ Recensé en câblant M1.7 et M1.8. Un port dont **aucun** adapter n'existe est u
 | `PushDispatcher` | ✅ | ✅ `TransportRegistry` (M1.8) + `WebPush` (M3.5) | Le registre reste vide sur un déploiement sans `[push.webpush]`, et c'est le comportement correct : `Fanout` saute déjà les devices `stream`, donc il n'est atteint que par un device enrôlé sur un transport que cette instance ne sert pas — il répond `NotConfigured` en nommant la capacité. Il dit aussi ce que ses transports portent, et c'est ce plafond qui décide charge utile ou poke (M3.5). |
 | `AttachmentStore` | ✅ | ✅ `S3Attachments` (M2.2) | Conformité passée contre un vrai RustFS. Un déploiement sans `[attachments]` reçoit un double qui **refuse** (`NotConfigured`) au lieu de réussir dans le vide. |
 | `AvatarProcessor` | — | ✅ `notify-avatars` (M2.2) | Seule surface de décodage média du serveur (§15) : taille, format d'après les octets, dimensions **avant** décodage, ré-encodage qui strippe les métadonnées. |
-| `SinkDispatcher` / `SinkQueue` | ✅ | ⬜ | Hors périmètre M1 (§7.1bis). |
+| `SinkDispatcher` | ✅ `RecordingSinkDispatcher` | ✅ `WebhookSink` + `EmailSink` (M4bis) | Une flotte par genre, comme `TransportRegistry` : un genre sans adapter nomme sa capacité (`sinks.webhook`) plutôt que d'échouer vaguement. Le classement retry/rejet vit là — seul ce qui a parlé HTTP sait qu'un `410` ne changera pas d'avis. |
+| `SinkQueue` | ✅ | ✅ `PgStore` (M4bis) | Prendre est un **bail** et non un retrait : un leader tué en pleine tentative laisse la livraison due plutôt que perdue. La ligne nomme son sink et ne porte **jamais** son secret (ADR-0018). |
+| `SinkRegistry` | ✅ `StaticSinkRegistry` | ✅ `SinkRoutes` (M4bis) | Synchrone et construit depuis la config : un `async` ici inviterait une implémentation qui va *lire* quelque chose, c'est-à-dire un sink éditable par l'API dans le dos de §11. |
 | `FederationVerifier` | ✅ `StaticFederationVerifier` (M4.1) | ✅ `FederationTokens` (M4.2) | Un `OidcVerifier` par forge, donc tout le durcissement JWKS de §5.1 hérité ; l'allowlist d'issuers vient des trust policies et **est** la protection anti-SSRF d'un endpoint sans credential. Le port rend des `FederatedClaims` — il rendait des `VerifiedClaims`, qui ne portent ni `aud` ni `jti`, donc les deux contrôles que sa doc promettait étaient **irreprésentables** (M4.1). |
 | `ReplayGuard` | ✅ `InMemoryReplayGuard` (M4.1) | ✅ `PgStore` (M4.2) | Un `INSERT … ON CONFLICT DO NOTHING` : « lire puis écrire » est une course que deux jobs gagnent tous les deux. Port à part et non `IdempotencyStore`, qui **rejoue** la réponse stockée — ce qui rendrait une seconde copie du jeton à qui rejoue un ID token volé. |
 | `TokenVerifier` | ✅ | ✅ `notify-oidc` | |
@@ -1861,7 +1956,7 @@ Tout ce qui suit est connu, écrit et chiffré en effort. Une dette sans solutio
 | D4 | Commandes `:` non exécutées | — | M | ✅ soldée en fermant M2 |
 | D5 | Signal local absent (§9.3bis) | — | M | ✅ soldée en fermant M2 |
 | D6 | `delivered_at` non conservé | — | S | ✅ soldée en fermant M2 |
-| D7 | Legs Dex et Authentik de `oidc-compat` | une seule lecture d'OIDC au lieu de trois (§15) | M | ⬜ ouverte |
+| D7 | Legs Dex et Authentik de `oidc-compat` | une seule lecture d'OIDC au lieu de trois (§15) | M | 🟡 câblés, jamais exécutés — aucun moteur de conteneurs ici (§12.4) |
 | D8 | Une vérification qui passe sans rien exécuter | — | S | ✅ règle appliquée |
 | D9 | Refresh token en `sessionStorage` (ADR-0016) | lisible par un XSS aussi longtemps qu'il vit | M | ⬜ ouverte — le déplacer dans le worker n'achète rien tant qu'il passe par IndexedDB (M3.6) |
 | D10 | `task test:cover:domain` mesurait autre chose que son gate | — | S | ✅ soldée en fermant M3 |
@@ -1869,6 +1964,7 @@ Tout ce qui suit est connu, écrit et chiffré en effort. Une dette sans solutio
 | D12 | Le workflow de dogfooding n'a jamais tourné contre une vraie forge | deux lignes non observées, toutes deux bruyantes si fausses (M4.7) | S | ⬜ ouverte |
 | D13 | L'image de dev ne porte pas la pile GTK/WebKit | M5 ne peut pas être compilé, encore moins lancé (§12.4) | S | ⬜ ouverte |
 | D14 | `POST /attachments/presign` listé par §8 et servi par aucun build | — | M | ✅ soldée |
+| D15 | `sink_dlq_depth` (§13) sans exporteur Prometheus pour la porter | la profondeur de DLQ ne se lit que dans la console, jamais dans une alerte | M | ⬜ ouverte — le port répond déjà ; c'est `/metrics` qui n'existe pas (M4bis) |
 
 Les neuf entrées soldées gardent leur texte ci-dessous plutôt que d'être effacées : une dette dont on ne peut plus relire la raison redevient un souvenir, et c'est exactement ce que cette section refuse.
 
@@ -1912,6 +2008,14 @@ Le retard est `delivered_at - created_at`, au-delà d'un seuil de cinq minutes e
 
 *Solution* : démarrer le fournisseur **dans une étape** et non en `services:` (ceux-là démarrent avant le checkout, donc aucune config rendue ne peut y être montée), puis exporter `WNK_TEST_OIDC_ISSUER` et les identifiants. Pour Dex, une config `staticClients` + `enablePasswordDB` avec alice et **aucun mapping de groupes** — cette absence *est* le test (T29). Pour Authentik, le blueprint déjà commité dans `dev/authentik/`.
 
+*Où ça en est, précisément.* Tout ce qui est fabricable ici l'est, et **rien de ce qui demande un fournisseur vivant n'a été observé** — cet environnement n'a aucun moteur de conteneurs (§12.4, le voisin de D13), donc ni Dex ni Authentik n'ont pu être démarrés pour regarder.
+
+Fait et vérifié : la **config Dex** que §15 signalait comme absente du dépôt existe (`dev/dex/`, un template plus `render.sh` qui génère mot de passe et secret client à chaque exécution et les hashe en bcrypt — vérifié en le lançant, hash `$2a$` valide, fichiers rendus gitignorés) ; un service `dex` dans le compose et un `task dev:dex` pour reproduire à la main un leg rouge en CI ; et la suite paramétrée là où elle devait l'être — `WNK_TEST_OIDC_USERNAME`, parce que **le connecteur local de Dex authentifie sur l'`email`** et non sur le `username`, donc « alice » n'y est pas un login. C'est exactement le genre d'écart que la matrice existe pour faire apparaître ; le coder en dur aurait été en cacher un.
+
+Écrit et **jamais exécuté** : les deux étapes de démarrage dans `.forgejo/workflows/oidc-compat.yaml`, et la matrice qui passe de un fournisseur à trois. Ce qui rend ça tenable plutôt qu'imprudent est une propriété de la suite et non du workflow — **nommer un fournisseur injoignable panique au lieu de sauter**, donc un leg mal câblé devient rouge en nommant la variable qui manque. Aucune de ces étapes ne peut produire la panne que ce job existe pour empêcher : un tic vert qui veut dire « rien n'a tourné ». La première exécution sur une vraie forge est le test, comme pour D12.
+
+Deux inconnues nommées plutôt que supposées résolues : que le grant `password` d'Authentik réponde pour un client **public** (le blueprint le déclare ainsi), et que la socket Docker montée dans le job suffise à joindre depuis le conteneur de job ce qu'il a démarré (d'où `--network host`). Les deux échouent bruyamment.
+
 **D8 — un contrôle vert qui ne prouvait rien.** En écrivant M2, `task recu` échouait (D-avatar, corrigé) et le contrôle d'idempotence — « les fichiers générés n'ont pas bougé » — **passait justement parce que la génération n'avait pas tourné**. C'est le même mode d'échec que D7 sous une autre forme, et il a été commis ici après avoir été dénoncé deux sections plus haut.
 
 *Solution* : la règle, écrite pour qu'elle serve ailleurs — **une vérification doit prouver que le travail a eu lieu avant de vérifier son résultat**. Concrètement : contrôler le code de sortie *et* une trace d'exécution (`task recu` nomme ce qu'il régénère) avant de comparer des empreintes. Le job `contract` en CI était protégé par son code de sortie ; c'est la vérification manuelle qui ne l'était pas.
@@ -1952,6 +2056,10 @@ La conséquence n'est pas propre à la CLI : *personne* ne peut publier une imag
 
 **Vérifié en le lançant**, contre le vrai RustFS de l'env de dev : presign → `PUT` signé accepté par le bucket (200) → publish référençant l'`att_…`. Et les refus : 413 au-dessus de 25 MiB, 422 pour un type non servi et pour une longueur nulle, 403 pour qui ne peut pas publier là. Côté CLI, une image de 4 KiB part en `data_uri` et une de 200 KiB en `attachment`.
 
+**D15 — une jauge sans exporteur.** §13 nomme `sink_dlq_depth{channel}` parmi les métriques Prometheus, et M4bis a livré tout ce qu'il faut pour la remplir : `SinkQueue::dead_letter_depth` répond la profondeur par canal, testé contre un vrai Postgres. Ce qui manque n'appartient pas aux sinks : **ce build n'expose aucun `/metrics`**, donc §13 entier attend son incrément. Câbler une jauge derrière un exporteur qui n'existe pas serait un compteur que personne ne lit — et l'écrire quand même donnerait l'impression que l'observabilité est faite.
+
+*Solution* : l'incrément §13, qui monte un exporteur et branche les six métriques d'un coup. La profondeur de DLQ est celle qui mérite une alerte plutôt qu'un écran (personne ne regarde une console à 3 h), donc c'est aussi la première à câbler quand cet incrément arrive.
+
 **D12 — un workflow commité qui n'a jamais tourné.** `.forgejo/workflows/notify.yaml` est écrit contre le contrat de §5.3 et les deux commandes qu'il lance sont vérifiées contre un vrai serveur, mais aucune forge n'existe ici pour répondre des deux dernières lignes : que `id-token: write` rende un jeton, et que son `aud` nomme weebo-notify.
 
 *Solution* : le pousser sur la forge principale et regarder. C'est la seule façon, et le risque est borné pour une raison qui vaut d'être dite — **les deux inconnues échouent bruyamment** : pas de jeton donne une variable vide et une étape rouge, un mauvais `aud` donne le 401 que §5.3 est fait pour rendre. Aucune des deux ne peut produire un tick vert qui ne veut rien dire, ce qui est la propriété que D7 et D8 réclament partout ailleurs.
@@ -1973,12 +2081,13 @@ En attendant, la question se pose à la machine et pas au document : `task tauri
 
   **État réel, découvert en finissant M1** : la matrice annonçait trois fournisseurs et n'en testait aucun. Elle se déclenchait sur des chemins qui n'existent pas (`crates/notify-app/src/auth/**`, `tests/auth/**`), lançait `task test:e2e` avec des arguments que la tâche ne relaie pas, sans conteneur de fournisseur ni base de données — donc une sélection de tests qui se sautaient tous, et un tick vert signifiant « rien n'a tourné ». Aucune configuration Dex n'existe d'ailleurs dans le repo.
 
-  Ce qui tourne aujourd'hui : la suite réelle (`crates/notify-adapters/oidc/tests/oidc_compat.rs`) prend un jeton d'un fournisseur **vivant** et le passe au vrai `OidcVerifier`, sur le leg `mock`. Elle est déjà paramétrée par `WNK_TEST_OIDC_PROVIDER`, et **échoue** si on nomme un fournisseur qu'elle ne peut pas joindre plutôt que de se sauter : c'est la propriété qui empêche le mode d'échec ci-dessus de revenir. Câbler Dex et Authentik reste à faire — c'est D7 en §14.4, avec la marche à suivre.
+  Ce qui tourne aujourd'hui : la suite réelle (`crates/notify-adapters/oidc/tests/oidc_compat.rs`) prend un jeton d'un fournisseur **vivant** et le passe au vrai `OidcVerifier`, sur le leg `mock`. Elle est déjà paramétrée par `WNK_TEST_OIDC_PROVIDER`, et **échoue** si on nomme un fournisseur qu'elle ne peut pas joindre plutôt que de se sauter : c'est la propriété qui empêche le mode d'échec ci-dessus de revenir. La config Dex existe désormais dans le dépôt et les deux legs externes sont câblés en CI — mais **aucun des deux n'a jamais tourné**, faute de moteur de conteneurs ici : D7 en §14.4 dit exactement ce qui est vérifié et ce qui ne l'est pas.
 
   `TokenVerifier` in-memory reste le niveau zéro pour le travail domaine (`task dev:core`).
 - **iOS** : APNs impose un compte Apple Developer et l'extension Swift ; c'est le seul point non 100 % self-hosted.
 - **Rotation device** : la révocation d'un device doit invalider ses subscriptions push et son curseur de sync (et sa clé publique X25519 pour les devices mobiles).
 - **Web Push = confiance dans le navigateur** : côté PWA la protection contre le push service repose sur RFC 8291, clés gérées en interne par le navigateur (décision §6.2 — aucune clé applicative côté web). C'est équivalent en pratique au niveau mobile, mais la garantie dépend de l'implémentation du navigateur, pas de nous — à documenter pour les canaux sensibles.
 - **Avatar = seule surface de décodage média du serveur** (§2.4) : parsing d'images fournies par les users — décodeur sûr, plafond de dimensions avant décodage complet (anti-bombe de décompression), formats animés refusés, métadonnées EXIF strippées (GPS). Toute nouvelle feature qui ferait décoder du média côté serveur doit repasser par cette case.
+- **Un webhook est une API publique et une sortie de la frontière de confiance** (§7.1bis) : le payload part en clair chez quelqu'un d'autre, donc un sink est une décision de confidentialité au même titre qu'un membership — c'est la config (§11) qui la prend, jamais l'API. Le secret HMAC vit en mémoire du process et **jamais dans la file** (ADR-0018) ; sa rotation est un `secret_ref` changé et un redémarrage, sans reprise de données. À documenter pour qui self-host : déclarer un sink sur un canal sensible, c'est autoriser un tiers à lire ce canal.
 - **Clés de signature de release** (§3.2bis) : la clé privée minisign de l'updater est un équivalent « RCE sur tout le parc desktop » en cas de fuite — custody stricte : secrets CI Forgejo scopés au seul workflow release, jamais dans le repo, rotation documentée. Même exigence pour cosign, le keystore de signature Android et la clé APNs `.p8`.
 - **Le « feeling natif » dépend du moteur webview** (§10bis.3bis) : Windows exige le runtime WebView2 (bootstrapper embarqué dans le `.msi`) ; Linux dépend de la version webkit2gtk de la distro — rendu et comportements à valider sur les cibles réelles, pas seulement sur la machine de dev.

@@ -155,6 +155,21 @@ ulid_newtype!(
     "device_id"
 );
 
+ulid_newtype!(
+    /// One outbound delivery chain, from first attempt to acceptance or dead letter
+    /// (design §7.1bis).
+    ///
+    /// Sent as `X-Weebo-Delivery` and reused across retries — it is the consumer's
+    /// idempotency key, which is the whole reason it exists. §7.1bis called it a
+    /// UUID before anything was written, at a point where the only properties that
+    /// mattered were "unique" and "stable across retries"; a ULID has both, sorts by
+    /// time in the index the drain reads in order, and is what every other minted id
+    /// in this product already is.
+    DeliveryId,
+    "dlv_",
+    "delivery_id"
+);
+
 /// A canonical, operator-chosen name: lowercase ASCII alphanumerics separated by
 /// `-`, `_` or `.`, starting and ending on an alphanumeric.
 ///

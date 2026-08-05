@@ -44,6 +44,7 @@ mod notifications;
 mod preferences;
 mod quota;
 mod receipts;
+mod sinks;
 
 use notify_ports::{PortError, PortResult};
 use sqlx::postgres::{PgPool, PgPoolOptions};

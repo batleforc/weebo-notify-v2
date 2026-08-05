@@ -1,0 +1,54 @@
+# Dex, the strict-minimal leg of the identity-provider matrix (design §3.2, T29).
+#
+# It is here for exactly one behaviour our own provider cannot show us: Dex emits
+# **no `groups` claim**, for anybody, ever. That absence *is* the test — an account
+# that reaches only its individual `oidc_sub`/`email` bindings (§11), never a default
+# access and never a crash (§14.2).
+#
+# ## This file is a template, and the passwords are not in it
+#
+# `render.sh` fills the two placeholders below with values generated at the moment
+# it runs. Dex is CI-only and disposable: no local ergonomics argue for a fixed
+# password the way `alice`/`weebo-dev` do for the mock (§12.5), so there is nothing
+# to weigh against not committing one.
+#
+# ## Why the login name is an email
+#
+# Dex's local connector authenticates on the `email` of a `staticPasswords` entry,
+# not on `username`. The compatibility suite therefore reads
+# `WNK_TEST_OIDC_USERNAME` rather than assuming `alice` — the same shape of
+# difference the matrix exists to surface.
+issuer: http://127.0.0.1:5556/dex
+
+storage:
+  # Nothing here outlives the job.
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  # The resource-owner password grant, which is how the suite gets a token from a
+  # provider whose login page is *theirs*: what the matrix is about is whether our
+  # verifier accepts what they mint, not whether we can scrape their form.
+  passwordConnector: local
+  skipApprovalScreen: true
+
+staticClients:
+  - id: weebo-notify
+    name: weebo-notify
+    # Dex requires a secret even for a client that only does the password grant;
+    # the suite passes it as WNK_TEST_OIDC_CLIENT_SECRET.
+    secret: __CLIENT_SECRET__
+    redirectURIs:
+      - http://localhost:5173/auth/callback
+
+enablePasswordDB: true
+
+staticPasswords:
+  # One account, and no group mapping anywhere in this file. Adding one would
+  # remove the only reason Dex is in the matrix.
+  - email: alice@weebo.local
+    username: alice
+    hash: "__ALICE_HASH__"
+    userID: "9a1e0000-0000-4000-8000-00000000a11c"

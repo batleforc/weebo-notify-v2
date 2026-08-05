@@ -40,3 +40,4 @@ task adr:list                      # lists them with their status
 | [0015](/docs/adr/0015-the-browser-reads-the-stream-with-fetch) | The browser reads the stream with fetch, not EventSource | We own framing and reconnection, and the stream carries a bearer |
 | [0016](/docs/adr/0016-where-the-web-client-keeps-its-tokens) | Where the web client keeps its tokens | A stated gap against §5.1 that M3 closes |
 | [0017](/docs/adr/0017-a-hand-written-service-worker-rather-than-workbox) | A hand-written service worker rather than Workbox | The file that renders a lock-screen notification ships unbundled and is tested as itself |
+| [0018](/docs/adr/0018-a-sink-is-named-by-where-it-points-and-the-queue-never-holds-its-secret) | A sink is named by where it points, and the queue never holds its secret | Keeps a third party's credential out of every dump, at the cost of a lookup per attempt |

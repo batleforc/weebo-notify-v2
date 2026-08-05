@@ -12,6 +12,8 @@ members = [
     "crates/notify-adapters/attachments-s3",
     "crates/notify-adapters/avatars",
     "crates/notify-adapters/push-webpush",
+    "crates/notify-adapters/sinks-webhook",
+    "crates/notify-adapters/sinks-email",
     "crates/notify-adapters/push-unifiedpush",
     "crates/notify-adapters/push-apns",
     "crates/notify-server",
@@ -58,6 +60,8 @@ notify-oidc = { path = "crates/notify-adapters/oidc" }
 notify-attachments-s3 = { path = "crates/notify-adapters/attachments-s3" }
 notify-avatars = { path = "crates/notify-adapters/avatars" }
 notify-push-webpush = { path = "crates/notify-adapters/push-webpush" }
+notify-sinks-webhook = { path = "crates/notify-adapters/sinks-webhook" }
+notify-sinks-email = { path = "crates/notify-adapters/sinks-email" }
 notify-push-unifiedpush = { path = "crates/notify-adapters/push-unifiedpush" }
 notify-push-apns = { path = "crates/notify-adapters/push-apns" }
 notify-client-api = { path = "crates/notify-client-api" }

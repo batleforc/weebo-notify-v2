@@ -14,29 +14,29 @@ name: oidc-compat
 # signature, audience, issuer, expiry and the claim mapping channel access derives
 # from (§14.2).
 #
-# ## What runs today, and what does not
+# ## What has run, and what has not — read this before trusting a green tick
 #
-# Only the `mock` leg. The `dex` and `authentik` legs were listed here long before
-# anything could run them: there is no Dex configuration in this repository, and no
-# provider container in this job. The matrix said three and tested zero, because the
-# step it ran selected `notify-app`'s in-memory unit tests against a database that
-# was never started — green, and empty.
+# The `mock` leg runs, and has run since M1. The `dex` and `authentik` legs are
+# wired here (D7) and have **never executed**: the workspace this was written in has
+# no container engine at all (§12.4), so neither provider could be started to watch
+# it. The first run on a real runner is their test, exactly as it was for the
+# dogfooding workflow (D12).
 #
-# Wiring the two remaining legs is a bounded piece of work, and the suite is already
-# shaped for it:
+# What makes that acceptable rather than reckless is a property of the suite and not
+# of this file: naming a provider it cannot reach **panics** rather than skipping. A
+# leg that is misconfigured turns red and says which variable it wanted; none of
+# these steps can produce the failure this job exists to prevent — a green tick
+# meaning "nothing ran".
 #
-#   1. start the provider in a step (NOT under `services:` — those containers start
-#      before checkout, so a rendered config cannot be mounted into them);
-#   2. export `WNK_TEST_OIDC_ISSUER`, `WNK_TEST_OIDC_CLIENT_ID`,
-#      `WNK_TEST_OIDC_PASSWORD` and, for a confidential client,
-#      `WNK_TEST_OIDC_CLIENT_SECRET`;
-#   3. for Dex: a `staticClients` + `enablePasswordDB` config with alice, and no
-#      groups mapping — that absence IS the test (T29);
-#   4. for Authentik: the blueprint already committed in dev/authentik/, which the
-#      compose profile applies, plus a user whose password the job generates.
+# ## Why the providers are started in a step
 #
-# Until then the matrix says one, and tests one. NEVER merge a change to the auth
-# flow without this job green.
+# `services:` containers start *before* the checkout, so a configuration rendered
+# from this repository cannot be mounted into one. Dex's password is generated per
+# run (§3.2 — it is CI-only, so no local ergonomics argue for a fixed one), which
+# means the config only exists after `dev/dex/render.sh` has run. Hence a step, and
+# hence the docker socket this job asks for and the other jobs deliberately do not.
+#
+# NEVER merge a change to the auth flow without this job green.
 
 on:
   pull_request:
@@ -48,6 +48,7 @@ on:
       - "crates/oidc-mock/**"
       - "dev/oidc-mock/**"
       - "dev/authentik/**"
+      - "dev/dex/**"
       - ".forgejo/workflows/oidc-compat.yaml"
   schedule:
     # Nightly, so a provider's own update cannot break us silently.
@@ -67,13 +68,19 @@ jobs:
     runs-on: docker
     container:
       image: ghcr.io/catthehacker/ubuntu:act-24.04
+      # The socket, because the providers are started in a step rather than under
+      # `services:` — see the header. `--network host` is what lets the job reach
+      # what it started on 127.0.0.1 without guessing at container addressing.
+      options: --network host
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
 
     strategy:
       # Every provider reports independently: knowing it passes on two of three is
-      # far more useful than a single red cross. One entry today — see the header.
+      # far more useful than a single red cross.
       fail-fast: false
       matrix:
-        provider: [mock]
+        provider: [mock, dex, authentik]
 
     steps:
       - name: Checkout
@@ -99,6 +106,70 @@ jobs:
       - name: Install pinned tools
         run: mise install --yes
 
+      # --- Dex ------------------------------------------------------------
+      #
+      # The leg that carries T29: a provider that emits no `groups` claim at all,
+      # so the degradation path is exercised by something that really behaves that
+      # way rather than by a fixture we wrote to behave that way.
+      - name: Start Dex
+        if: matrix.provider == 'dex'
+        run: |
+          set -euo pipefail
+          # bcrypt, which is the only hash Dex takes. apache2-utils is two hundred
+          # kilobytes; the alternative is pulling a web server for one subcommand.
+          apt-get update -qq && apt-get install -y -qq apache2-utils
+
+          # Passwords generated now, never committed: Dex is CI-only, and nothing
+          # about local ergonomics argues for a fixed one (§3.2).
+          dev/dex/render.sh "$RUNNER_TEMP/dex-config.yaml" > "$RUNNER_TEMP/dex.env"
+          . "$RUNNER_TEMP/dex.env"
+          {
+            echo "WNK_TEST_OIDC_ISSUER=$WNK_TEST_OIDC_ISSUER"
+            echo "WNK_TEST_OIDC_CLIENT_ID=$WNK_TEST_OIDC_CLIENT_ID"
+            echo "WNK_TEST_OIDC_CLIENT_SECRET=$WNK_TEST_OIDC_CLIENT_SECRET"
+            echo "WNK_TEST_OIDC_USERNAME=$WNK_TEST_OIDC_USERNAME"
+            echo "WNK_TEST_OIDC_PASSWORD=$WNK_TEST_OIDC_PASSWORD"
+          } >> "$GITHUB_ENV"
+          # Masked before anything can echo them into a log.
+          echo "::add-mask::$WNK_TEST_OIDC_PASSWORD"
+          echo "::add-mask::$WNK_TEST_OIDC_CLIENT_SECRET"
+
+          docker run -d --name dex --network host \
+            -v "$RUNNER_TEMP/dex-config.yaml:/etc/dex/config.yaml:ro" \
+            ghcr.io/dexidp/dex:v2.45.1 dex serve /etc/dex/config.yaml
+
+          # Waited on rather than slept through: a fixed sleep is either too short
+          # on a loaded runner or wasted on an idle one.
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:5556/dex/.well-known/openid-configuration >/dev/null && exit 0
+            sleep 1
+          done
+          echo "Dex did not answer its discovery document in 60s" >&2
+          docker logs dex >&2
+          exit 1
+
+      # --- Authentik -------------------------------------------------------
+      #
+      # The one provider in the matrix that neither we nor a minimal-OIDC project
+      # wrote: refresh-token rotation, logout, real group mapping (§12.5).
+      - name: Start Authentik
+        if: matrix.provider == 'authentik'
+        run: |
+          set -euo pipefail
+          # The compose stack the developer environment already describes (§12.3),
+          # so CI and a laptop run the same Authentik with the same blueprint.
+          task dev:env
+          docker compose -f dev/compose.yaml --profile authentik up -d --wait
+          task dev:seed
+
+          . dev/.env.local
+          {
+            echo "WNK_TEST_OIDC_ISSUER=http://127.0.0.1:9100/application/o/weebo-notify/"
+            echo "WNK_TEST_OIDC_CLIENT_ID=weebo-notify"
+            echo "WNK_TEST_OIDC_USERNAME=alice"
+            echo "WNK_TEST_OIDC_PASSWORD=weebo-dev"
+          } >> "$GITHUB_ENV"
+
       - name: Run the auth suite against ${{ matrix.provider }}
         env:
           WNK_TEST_OIDC_PROVIDER: ${{ matrix.provider }}
@@ -106,3 +177,12 @@ jobs:
         # That is what makes "it behaves the same everywhere" a fact rather than a
         # hope — and why naming a provider it cannot reach fails the job.
         run: mise exec -- task test:oidc-compat
+
+      - name: What the provider said, when it said no
+        if: failure() && matrix.provider != 'mock'
+        # The suite's own message names the variable it wanted; this is for the half
+        # of the failures where the provider refused to start at all.
+        run: |
+          docker ps -a
+          docker logs dex 2>&1 | tail -50 || true
+          docker compose -f dev/compose.yaml --profile authentik logs --tail 50 || true

@@ -6,14 +6,15 @@
  * series in Grafana — duplicating them here would be a screen nobody trusts because
  * it disagrees with the one that has the data.
  *
- * Three panels, each answering a question somebody actually arrives with:
+ * Four panels, each answering a question somebody actually arrives with:
  *   * **Canaux** — is this instance configured the way we think it is;
  *   * **Trust policies** — why was that pipeline refused;
+ *   * **DLQ** — what did we fail to deliver, and can it be sent again;
  *   * **Audit** — what happened, and who did it.
  *
- * There is no fourth panel for the sinks DLQ, which §10.4bis lists: no sink exists
- * yet (§14.1), and a tab reading "nothing is stuck" from a queue nobody fills is a
- * green light wired to nothing.
+ * The DLQ panel shows the delivery and never the event: an admin who is not a
+ * member of the channel would otherwise read its notifications through a failed
+ * webhook, which is the door §5.4 closes.
  */
 import { onMounted } from "vue";
 
@@ -208,6 +209,66 @@ onMounted(() => {
         <p class="text-xs text-muted-foreground">
           En lecture seule : la config les possède (§11), donc un bouton d'édition
           proposerait ce que la prochaine réconciliation reprendrait.
+        </p>
+      </section>
+
+      <Separator />
+
+      <!-- DLQ: deliveries given up on, and the one button that can act on them. -->
+      <section class="space-y-2">
+        <h2 class="text-sm font-semibold">
+          Livraisons en souffrance · {{ platform.stuck.length }}
+        </h2>
+        <p v-if="!platform.stuck.length" class="text-xs text-muted-foreground">
+          Rien en souffrance. Une livraison arrive ici après 24 h d'échecs, ou
+          immédiatement si le consommateur a répondu quelque chose qui ne changera
+          pas — un <code>410</code>, par exemple (§7.1bis).
+        </p>
+        <div v-else class="overflow-x-auto rounded-md border border-border">
+          <table class="w-full text-xs">
+            <thead class="bg-muted/50 text-left">
+              <tr>
+                <th class="p-2 font-medium">Canal</th>
+                <th class="p-2 font-medium">Sink</th>
+                <th class="p-2 font-medium">Tentatives</th>
+                <th class="p-2 font-medium">Dernière erreur</th>
+                <th class="p-2 font-medium">Abandon</th>
+                <th class="p-2" />
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="letter in platform.stuck"
+                :key="letter.id"
+                class="border-t border-border"
+              >
+                <td class="p-2 font-medium">{{ letter.channel }}</td>
+                <!--
+                  The destination in full: the first thing an operator needs is
+                  where to go and look, and the sink id carries it by construction
+                  (§7.1bis — it is derived from where the sink points).
+                -->
+                <td class="p-2 font-mono break-all">{{ letter.sink }}</td>
+                <td class="p-2">{{ letter.attempts }}</td>
+                <td class="p-2 text-status-failure">{{ letter.last_error }}</td>
+                <td class="p-2 whitespace-nowrap">{{ exact(letter.dead_at) }}</td>
+                <td class="p-2 text-right">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    @click="platform.requeue(letter.id)"
+                  >
+                    Réessayer
+                  </Button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-if="platform.stuck.length" class="text-xs text-muted-foreground">
+          « Réessayer » remet la livraison en file avec un compteur d'échecs remis
+          à zéro, et écrit une entrée d'audit. Le contenu de l'événement n'est pas
+          affiché ici : le lire supposerait d'être membre du canal (§5.4).
         </p>
       </section>
 

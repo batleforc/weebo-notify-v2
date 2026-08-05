@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddMemberData, AddMemberErrors, AddMemberResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PresignData, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors } from './types.gen';
+import type { AddMemberData, AddMemberErrors, AddMemberResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, DlqData, DlqErrors, DlqResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PresignData, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RequeueDeadLetterData, RequeueDeadLetterErrors, RequeueDeadLetterResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -44,6 +44,25 @@ export const inventory = <ThrowOnError extends boolean = false>(options?: Option
 export const selfJoin = <ThrowOnError extends boolean = false>(options: Options<SelfJoinData, ThrowOnError>): RequestResult<SelfJoinResponses, SelfJoinErrors, ThrowOnError> => (options.client ?? client).post<SelfJoinResponses, SelfJoinErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/admin/channels/{channel}/join',
+    ...options
+});
+
+/**
+ * The sink deliveries that were given up on (design §7.1bis, §10.4bis).
+ */
+export const dlq = <ThrowOnError extends boolean = false>(options?: Options<DlqData, ThrowOnError>): RequestResult<DlqResponses, DlqErrors, ThrowOnError> => (options?.client ?? client).get<DlqResponses, DlqErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/dlq',
+    ...options
+});
+
+/**
+ * Put one dead letter back in the queue (design §8, scenario T17).
+ */
+export const requeueDeadLetter = <ThrowOnError extends boolean = false>(options: Options<RequeueDeadLetterData, ThrowOnError>): RequestResult<RequeueDeadLetterResponses, RequeueDeadLetterErrors, ThrowOnError> => (options.client ?? client).post<RequeueDeadLetterResponses, RequeueDeadLetterErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/dlq/{id}/requeue',
     ...options
 });
 

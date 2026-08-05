@@ -131,7 +131,8 @@ impl Writer {
             .notifications
             .insert(&notification, &written.revision)
             .await?;
-        self.after_write(&notification, cursor).await;
+        self.after_write(&notification, &written.revision, cursor)
+            .await;
 
         Ok(Published {
             notification,
@@ -158,7 +159,8 @@ impl Writer {
             .notifications
             .append_revision(&notification, &written.revision)
             .await?;
-        self.after_write(&notification, cursor).await;
+        self.after_write(&notification, &written.revision, cursor)
+            .await;
 
         Ok(Published {
             notification,
@@ -169,9 +171,17 @@ impl Writer {
         })
     }
 
-    async fn after_write(&self, notification: &Notification, cursor: Cursor) {
+    async fn after_write(
+        &self,
+        notification: &Notification,
+        revision: &notify_domain::Revision,
+        cursor: Cursor,
+    ) {
         self.fanout.poke_channel(notification, cursor).await;
         self.fanout.push(notification).await;
+        self.fanout
+            .queue_sinks(notification, revision, cursor)
+            .await;
     }
 }
 

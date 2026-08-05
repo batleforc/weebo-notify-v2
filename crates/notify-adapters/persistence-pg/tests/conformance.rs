@@ -2165,4 +2165,223 @@ mod e2e {
             "and one still inside its window must survive the sweep"
         );
     }
+
+    // --- Outbound sinks (design §7.1bis, scenario T17) ---------------------
+
+    fn queue(store: &PgStore) -> &dyn notify_ports::SinkQueue {
+        store
+    }
+
+    /// One delivery of a real event, so the row round-trips what a consumer would
+    /// actually receive rather than a fixture that only this file believes in.
+    async fn delivery(store: &PgStore) -> notify_ports::SinkDelivery {
+        let (id, alice) = user();
+        let stored =
+            User::from_claims(id, &format!("oidc-{}", ulid_slug()), None, None, now()).unwrap();
+        users(store).upsert(&stored).await.unwrap();
+        let channel = seeded_channel(store, &alice).await;
+        let (notification, _) = publish(store, &channel, &alice, "etcd degraded").await;
+
+        let page = events(store)
+            .sync(
+                id,
+                &SyncQuery {
+                    after: None,
+                    channels: vec![channel.clone()],
+                    groups: Vec::new(),
+                    page: PageRequest::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let event = page
+            .events
+            .into_iter()
+            .find(|event| event.payload.notification_id() == Some(notification.id))
+            .expect("the publish appended its revision event");
+
+        notify_ports::SinkDelivery {
+            delivery_id: notify_domain::DeliveryId::generate(),
+            channel: channel.clone(),
+            sink: notify_domain::SinkId::new("webhook", "https://hooks.weebo.poc/incidents")
+                .unwrap(),
+            event,
+            attempts: 0,
+            first_failed_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_claim_leases_rather_than_takes_and_an_expired_lease_owes_it_again() {
+        let store = store!();
+        let delivery = delivery(&store).await;
+        let now = now();
+
+        queue(&store).enqueue(&delivery, now).await.unwrap();
+
+        let claimed = queue(&store)
+            .claim_due(now, 10, now + Duration::seconds(60))
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(
+            claimed[0].event, delivery.event,
+            "what a consumer receives is what a client would have seen on its \
+             stream, byte for byte (ADR-0013)"
+        );
+
+        assert!(
+            queue(&store)
+                .claim_due(now, 10, now + Duration::seconds(60))
+                .await
+                .unwrap()
+                .iter()
+                .all(|held| held.delivery_id != delivery.delivery_id),
+            "two replicas both briefly leading must not POST the same webhook twice"
+        );
+
+        // The property the lease exists for: a drain killed mid-attempt leaves the
+        // delivery owed rather than losing it.
+        let later = now + Duration::seconds(61);
+        assert!(
+            queue(&store)
+                .claim_due(later, 10, later + Duration::seconds(60))
+                .await
+                .unwrap()
+                .iter()
+                .any(|held| held.delivery_id == delivery.delivery_id)
+        );
+
+        queue(&store).complete(&delivery.delivery_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_retry_reschedules_the_same_row_rather_than_adding_one() {
+        let store = store!();
+        let delivery = delivery(&store).await;
+        let now = now();
+
+        queue(&store).enqueue(&delivery, now).await.unwrap();
+        queue(&store)
+            .enqueue(
+                &notify_ports::SinkDelivery {
+                    attempts: 1,
+                    first_failed_at: Some(now),
+                    ..delivery.clone()
+                },
+                now + Duration::seconds(30),
+            )
+            .await
+            .unwrap();
+
+        let due = queue(&store)
+            .claim_due(now + Duration::seconds(30), 10, now + Duration::seconds(90))
+            .await
+            .unwrap();
+        let mine: Vec<_> = due
+            .iter()
+            .filter(|held| held.delivery_id == delivery.delivery_id)
+            .collect();
+
+        assert_eq!(mine.len(), 1, "one failure must not owe two deliveries");
+        assert_eq!(mine[0].attempts, 1);
+        // To the second: `timestamptz` keeps microseconds and `OffsetDateTime` keeps
+        // nanoseconds, so an exact comparison here would be testing the precision of
+        // the column rather than that the give-up clock survived the round trip.
+        assert_eq!(
+            mine[0].first_failed_at.map(OffsetDateTime::unix_timestamp),
+            Some(now.unix_timestamp())
+        );
+
+        queue(&store).complete(&delivery.delivery_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn critical_t17_a_buried_delivery_is_listed_counted_and_requeued() {
+        let store = store!();
+        let delivery = delivery(&store).await;
+        let channel = delivery.channel.clone();
+        let now = now();
+
+        queue(&store).enqueue(&delivery, now).await.unwrap();
+        queue(&store)
+            .bury(
+                &notify_ports::SinkDelivery {
+                    attempts: 12,
+                    first_failed_at: Some(now - Duration::hours(24)),
+                    ..delivery.clone()
+                },
+                "connection refused",
+                now,
+            )
+            .await
+            .unwrap();
+
+        // Buried means gone from the queue: owed and abandoned at once would have
+        // the next drain sending what the console lists as given up on.
+        assert!(
+            queue(&store)
+                .claim_due(now, 100, now + Duration::seconds(60))
+                .await
+                .unwrap()
+                .iter()
+                .all(|held| held.delivery_id != delivery.delivery_id)
+        );
+
+        let letters = queue(&store).dead_letters(Some(&channel)).await.unwrap();
+        assert_eq!(letters.len(), 1);
+        assert_eq!(letters[0].attempts, 12);
+        assert_eq!(
+            letters[0].sink.destination(),
+            "https://hooks.weebo.poc/incidents"
+        );
+        assert_eq!(
+            queue(&store)
+                .dead_letter_depth()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|(id, _)| *id == channel),
+            Some((channel.clone(), 1))
+        );
+
+        assert!(
+            queue(&store)
+                .requeue(&delivery.delivery_id, now)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !queue(&store)
+                .requeue(&delivery.delivery_id, now)
+                .await
+                .unwrap(),
+            "the second requeue has nothing to put back"
+        );
+        assert!(
+            queue(&store)
+                .dead_letters(Some(&channel))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let back = queue(&store)
+            .claim_due(now, 100, now + Duration::seconds(60))
+            .await
+            .unwrap();
+        let mine = back
+            .iter()
+            .find(|held| held.delivery_id == delivery.delivery_id)
+            .expect("a requeue puts back something a drain can actually send");
+        assert_eq!(mine.event, delivery.event);
+        assert_eq!(
+            mine.first_failed_at, None,
+            "a requeue is a fresh chance, not a resumption of the day it spent \
+             failing — otherwise the next failure buries it again"
+        );
+
+        queue(&store).complete(&delivery.delivery_id).await.unwrap();
+    }
 }

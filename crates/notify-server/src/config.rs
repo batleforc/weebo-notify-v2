@@ -66,6 +66,9 @@ pub(crate) struct Config {
 
     /// Push transport credentials (§11). Parsed, not yet honoured — M3 onwards.
     pub push: Push,
+
+    /// `[sinks]` — what the outbound sinks of §7.1bis need beyond their channel.
+    pub sinks: Sinks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,13 +294,134 @@ pub(crate) struct Publisher {
     pub scopes: Vec<Scope>,
 }
 
+/// One `[[channels.managed.sinks]]` entry (design §7.1bis, §11).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Sink {
     #[serde(rename = "type")]
     pub kind: String,
+    /// Where a `webhook` posts.
     pub url: Option<String>,
+    /// Where an `email` goes.
+    pub address: Option<String>,
+    /// `env:NAME` or `file:/path` — resolved at startup, never held in this file.
     pub secret_ref: Option<String>,
+}
+
+impl Sink {
+    /// Refuse a sink this build cannot serve, at startup rather than at the first
+    /// incident.
+    ///
+    /// Three of these checks are security rather than tidiness, and they are here
+    /// because this is the only place that sees the raw string:
+    ///
+    /// * **the scheme is `http` or `https`.** A `file:` webhook is not a delivery,
+    ///   it is a write primitive pointed at our own filesystem;
+    /// * **no credentials in the URL.** `https://user:pass@host` is legal and would
+    ///   put a password into a queue row, a dead letter listing and a log line at
+    ///   once — the sink id is derived from this URL (§7.1bis) precisely so that it
+    ///   never carries one;
+    /// * **a webhook has a secret.** An unsigned webhook is one a consumer cannot
+    ///   tell from anyone else's POST, so the signature is not optional.
+    pub(crate) fn validate(&self, channel: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            notify_domain::SINK_KINDS.contains(&self.kind.as_str()),
+            "channel `{channel}` declares a sink of type `{}`; this build serves {:?}",
+            self.kind,
+            notify_domain::SINK_KINDS
+        );
+
+        match self.kind.as_str() {
+            "webhook" => {
+                let raw = self.url.as_deref().unwrap_or_default();
+                let url = url::Url::parse(raw).map_err(|error| {
+                    anyhow::anyhow!(
+                        "channel `{channel}` has a webhook sink whose url is not one: {error}"
+                    )
+                })?;
+                anyhow::ensure!(
+                    matches!(url.scheme(), "http" | "https"),
+                    "channel `{channel}` has a webhook sink with scheme `{}`; only http and https \
+                     are delivered to",
+                    url.scheme()
+                );
+                anyhow::ensure!(
+                    url.username().is_empty() && url.password().is_none(),
+                    "channel `{channel}` has a webhook url carrying credentials; put the secret in \
+                     `secret_ref` — the url is stored and logged, and a password in it would be too"
+                );
+                anyhow::ensure!(
+                    self.secret_ref.is_some(),
+                    "channel `{channel}` has a webhook sink with no `secret_ref`; an unsigned \
+                     webhook is one a consumer cannot tell from anybody else's POST (§7.1bis)"
+                );
+            }
+            "email" => {
+                let address = self.address.as_deref().unwrap_or_default();
+                anyhow::ensure!(
+                    address.contains('@') && !address.contains(char::is_whitespace),
+                    "channel `{channel}` has an email sink whose `address` is not one"
+                );
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// Resolve a `env:NAME` / `file:/path` reference (design §11).
+///
+/// Two forms and no third: an inline secret would be a secret in a file somebody
+/// commits, which is the whole reason §11 spells references rather than values.
+pub(crate) fn resolve_secret(what: &str, reference: &str) -> anyhow::Result<String> {
+    if let Some(name) = reference.strip_prefix("env:") {
+        return std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("{what} names environment variable `{name}`, which is not set")
+        });
+    }
+
+    if let Some(path) = reference.strip_prefix("file:") {
+        let contents = std::fs::read_to_string(path).map_err(|error| {
+            anyhow::anyhow!("{what} names `{path}`, which cannot be read: {error}")
+        })?;
+        // Trimmed: a secret written with `echo` into a mounted file ends in a
+        // newline, and an HMAC over a trailing newline is a signature nobody can
+        // reproduce and nobody can see.
+        return Ok(contents.trim().to_owned());
+    }
+
+    anyhow::bail!("{what} must be `env:NAME` or `file:/path`, not `{reference}`")
+}
+
+/// `[sinks]` — what the outbound sinks need that is not per-channel (design
+/// §7.1bis).
+///
+/// An addition to §11, on the same terms as `[federation]` before it: §11 declares
+/// an `email` sink per channel and never says which relay carries it, and a relay
+/// is instance-wide by nature — one SMTP server serves every channel that mails.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Sinks {
+    pub smtp: Option<Smtp>,
+}
+
+/// `[sinks.smtp]` — the relay the `email` sinks hand their mail to.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Smtp {
+    /// `smtp://host:port` inside a cluster, `smtps://…` across one.
+    pub url: String,
+    /// The envelope sender.
+    pub from: String,
+    /// Relay credentials, when it asks for them.
+    pub username: Option<String>,
+    /// `env:NAME` or `file:/path`, like every other secret here.
+    pub password_ref: Option<String>,
+    /// Where this instance is reachable, for the link at the bottom of the mail
+    /// (design §10.4). No link is written without it, because a guessed hostname
+    /// produces mail full of dead links.
+    pub permalink_base: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -412,6 +536,15 @@ impl Config {
                 !channel.id.is_empty(),
                 "a [[channels.managed]] entry has no id"
             );
+            for sink in &channel.sinks {
+                sink.validate(&channel.id)?;
+                anyhow::ensure!(
+                    sink.kind != "email" || self.sinks.smtp.is_some(),
+                    "channel `{}` declares an email sink and there is no [sinks.smtp] \
+                     relay to send it through",
+                    channel.id
+                );
+            }
             for access in &channel.access {
                 anyhow::ensure!(
                     access.subjects() == 1,
@@ -455,17 +588,9 @@ impl Config {
             ));
         }
 
-        let sinks: usize = self
-            .channels
-            .managed
-            .iter()
-            .map(|channel| channel.sinks.len())
-            .sum();
-        if sinks > 0 {
-            pending.push(format!(
-                "{sinks} [[channels.managed.sinks]] entries — outbound sinks (§7.1bis)"
-            ));
-        }
+        // `[[channels.managed.sinks]]` is honoured since M4bis and is absent from
+        // this list on purpose, on the same terms as `[push.webpush]` below: the
+        // composition root reads it, and a sink it cannot build stops the process.
 
         // `[push.webpush]` is honoured since M3.5 and is absent from this list on
         // purpose: the composition root reads it, and a key it cannot use stops the
@@ -590,24 +715,95 @@ mod tests {
             "[[trust_policy]]\n\
              issuer = \"https://forgejo.weebo.poc\"\n\
              subject = \"repo:weebo/*\"\n\
-             scopes = [\"publish\"]\n\
-             \n\
-             [[channels.managed]]\n\
-             id = \"ci-infra\"\n\
-             [[channels.managed.sinks]]\n\
-             type = \"webhook\"\n\
-             url = \"https://hooks.weebo.poc/incidents\"\n",
+             scopes = [\"publish\"]\n",
         );
 
         let pending = Config::load(&path).unwrap().unhonoured();
 
         assert_eq!(
             pending.len(),
-            2,
+            1,
             "a silently ignored key costs an afternoon"
         );
         assert!(pending.iter().any(|line| line.contains("trust_policy")));
-        assert!(pending.iter().any(|line| line.contains("sinks")));
+    }
+
+    #[test]
+    fn a_sink_is_no_longer_reported_as_a_key_this_build_ignores() {
+        let path = with_config(
+            "sinks-honoured",
+            "[[channels.managed]]\n\
+             id = \"ci-infra\"\n\
+             [[channels.managed.sinks]]\n\
+             type = \"webhook\"\n\
+             url = \"https://hooks.weebo.poc/incidents\"\n\
+             secret_ref = \"env:WNK_SINK_HMAC\"\n",
+        );
+
+        // Same rule as Web Push above: warning about a section the composition root
+        // reads would train an operator to ignore this list.
+        assert!(
+            !Config::load(&path)
+                .unwrap()
+                .unhonoured()
+                .iter()
+                .any(|line| line.contains("sinks"))
+        );
+    }
+
+    #[test]
+    fn a_webhook_with_no_secret_is_refused_at_startup() {
+        let path = with_config(
+            "unsigned-webhook",
+            "[[channels.managed]]\n\
+             id = \"ci-infra\"\n\
+             [[channels.managed.sinks]]\n\
+             type = \"webhook\"\n\
+             url = \"https://hooks.weebo.poc/incidents\"\n",
+        );
+
+        // An unsigned webhook is one a consumer cannot tell from anybody else's POST
+        // (§7.1bis), so it is not a degraded mode — it is a refusal.
+        assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn a_webhook_url_that_would_leak_or_reach_inward_is_refused() {
+        for url in [
+            // A password that would land in a queue row, a dead letter listing and
+            // a log line at once — the sink id is derived from this url.
+            "https://user:hunter2@hooks.weebo.poc/incidents",
+            // Not a delivery: a write primitive pointed at our own filesystem.
+            "file:///etc/passwd",
+        ] {
+            let path = with_config(
+                "bad-webhook",
+                &format!(
+                    "[[channels.managed]]\n\
+                     id = \"ci-infra\"\n\
+                     [[channels.managed.sinks]]\n\
+                     type = \"webhook\"\n\
+                     url = \"{url}\"\n\
+                     secret_ref = \"env:WNK_SINK_HMAC\"\n"
+                ),
+            );
+
+            assert!(Config::load(&path).is_err(), "`{url}` must be refused");
+        }
+    }
+
+    #[test]
+    fn an_email_sink_without_a_relay_is_refused_rather_than_queued_forever() {
+        let path = with_config(
+            "mail-no-relay",
+            "[[channels.managed]]\n\
+             id = \"ci-infra\"\n\
+             [[channels.managed.sinks]]\n\
+             type = \"email\"\n\
+             address = \"oncall@weebo.poc\"\n",
+        );
+
+        assert!(Config::load(&path).is_err());
     }
 
     #[test]

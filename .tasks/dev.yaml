@@ -121,6 +121,20 @@ tasks:
           {{.CHE_GUARD}}
           {{.COMPOSE}} --profile sinks up -d --wait
 
+  dex:
+    desc: "Add Dex (profile `dex`) — the no-groups leg of the identity matrix (T29), on :5556"
+    # Here so a red `oidc-compat` run can be reproduced by hand, which is the only
+    # moment anybody wants Dex. The config is rendered first because its password is
+    # generated per run and never committed (§3.2); the rendered file is gitignored.
+    cmds:
+      - cmd: |
+          {{.CHE_GUARD}}
+          dev/dex/render.sh dev/dex/config.local.yaml > dev/dex/env.local
+          {{.COMPOSE}} --profile dex up -d --wait
+          echo
+          echo "Dex is up. Run the compatibility leg against it with:"
+          echo "  set -a; . dev/dex/env.local; set +a; task test:oidc-compat"
+
   seed:
     desc: "Seed the environment (idempotent): sqlx migrations, RustFS bucket, Authentik blueprint"
     cmds:
