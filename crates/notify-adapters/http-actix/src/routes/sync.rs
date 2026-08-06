@@ -78,5 +78,25 @@ pub(crate) async fn sync(
         device,
     };
 
-    Ok(web::Json(state.sync.execute(&caller.0, request).await?))
+    let mut page = state.sync.execute(&caller.0, request).await?;
+
+    // The same flag the stream sets, on the same events, so a client that catches
+    // up through `/sync` and one that was connected reach the same conclusion about
+    // the same notification (§7.4, §14.4 D22). `deferred_by_dnd` stays alongside it:
+    // it is the page-level list §7.4 promises for the "arrived late" badge, and this
+    // is the per-event fact a popup decision reads.
+    for event in &mut page.events {
+        if let notify_ports::EventPayload::Revision(revision) = &event.payload
+            && page.deferred_by_dnd.contains(&revision.notification_id)
+        {
+            event.muted_by_dnd = true;
+        }
+    }
+
+    // How far behind the clients that reconnect are (design §13). Observed here and
+    // not in the stream handlers: those drain the same use case on every poke, and
+    // counting a one-event poke as a backlog would drown the distribution in ones.
+    state.metrics.sync_backlog(page.events.len());
+
+    Ok(web::Json(page))
 }

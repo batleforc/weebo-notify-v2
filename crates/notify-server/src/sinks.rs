@@ -309,6 +309,7 @@ id = "ci-infra"
                     id: ChannelId::parse("ci-infra").unwrap(),
                 },
                 recorded_at: time::OffsetDateTime::UNIX_EPOCH,
+                muted_by_dnd: false,
                 payload: notify_ports::EventPayload::Tombstone {
                     notification_id: notify_domain::NotificationId::generate(),
                     reason: notify_domain::TombstoneReason::Expired,

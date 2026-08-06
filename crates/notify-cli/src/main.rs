@@ -131,7 +131,15 @@ pub(crate) enum Command {
     },
 
     /// Open the terminal UI. Explicit alias of running `notify` with no subcommand.
-    Watch,
+    Watch {
+        /// Also relay arrivals to the desktop (§9.2).
+        ///
+        /// Off by default: a TUI that starts popping system notifications because
+        /// somebody opened it is a TUI people close. The do-not-disturb of §7.4 is
+        /// honoured either way — the popup is suppressed, the inbox still fills.
+        #[arg(long)]
+        notify_send: bool,
+    },
 
     /// Generate shell completions for bash, zsh, fish or PowerShell.
     Completions {
@@ -179,7 +187,10 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<String, CliError> {
     match cli.command {
         Some(Command::Completions { shell }) => Ok(completions(shell)),
-        Some(Command::Watch) | None => tui::run(&cli.profile).map(|()| String::new()),
+        Some(Command::Watch { notify_send }) => {
+            tui::run(&cli.profile, notify_send).map(|()| String::new())
+        }
+        None => tui::run(&cli.profile, false).map(|()| String::new()),
         // Only the commands that talk to a server pay for a runtime; `completions`
         // in a shell's startup path should not start tokio to print a script.
         Some(command) => on_runtime(|| async move {
@@ -244,7 +255,7 @@ pub(crate) async fn execute(
         // Refused rather than ignored: from the shell this is handled before a
         // session is opened, and from inside the TUI it can only mean somebody typed
         // `:watch` in the window it would have opened.
-        Command::Watch => Err(CliError::Usage(
+        Command::Watch { .. } => Err(CliError::Usage(
             "`watch` opens the terminal UI, which is not something a command can do \
              from inside it"
                 .to_owned(),
@@ -319,3 +330,63 @@ impl std::fmt::Display for CliError {
 }
 
 impl std::error::Error for CliError {}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
+    use clap::{CommandFactory as _, Parser as _};
+
+    use super::*;
+
+    #[test]
+    fn the_command_tree_is_well_formed() {
+        // clap's own check for the things that only fail at runtime: a duplicate
+        // long flag, an argument referring to a group that does not exist, a
+        // conflict naming an unknown id. Free, and it fails here rather than the
+        // first time somebody runs that subcommand.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn both_spellings_of_enrol_reach_the_same_command() {
+        // §9.1 writes `notify device enroll`; this crate spells the variant with one
+        // `l`. Without the alias, the line copied out of the design document answers
+        // "unrecognized subcommand", which is a poor first five minutes.
+        for spelling in ["enrol", "enroll"] {
+            let cli = Cli::try_parse_from(["notify", "device", spelling]).unwrap();
+
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(Command::Device {
+                        command: manage::DeviceCommand::Enrol { .. }
+                    })
+                ),
+                "`{spelling}` did not reach the enrolment command"
+            );
+        }
+    }
+
+    #[test]
+    fn every_command_can_be_asked_for_json() {
+        // §9.1 promises `--output json|table` on *each* command, and it is the
+        // property a script depends on: one that holds for eight subcommands out of
+        // nine is discovered in a pipeline, not here.
+        for command in Cli::command().get_subcommands() {
+            let name = command.get_name();
+            assert!(
+                command
+                    .get_arguments()
+                    .chain(
+                        // A global argument is declared once, on the root, and shows
+                        // up on the subcommand only after propagation — so look at
+                        // both rather than trusting where it happens to be spelled.
+                        Cli::command().get_arguments()
+                    )
+                    .any(|argument| argument.get_long() == Some("output")),
+                "`notify {name}` cannot be asked for JSON (§9.1)"
+            );
+        }
+    }
+}

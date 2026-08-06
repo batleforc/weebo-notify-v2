@@ -20,10 +20,10 @@ use notify_app::{
     CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
     Fanout, GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
     ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt,
-    PresignAttachment, PublishNotification, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts,
-    ReadReconciliation, ReconciliationLog, RecordInteraction, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification,
-    SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
+    PresignAttachment, PublishNotification, ReadAvatar, ReadChannel, ReadDnd, ReadProfile,
+    ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction, ResolveStreamStart,
+    RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd,
+    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_avatars::ImageAvatarProcessor;
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
@@ -78,6 +78,10 @@ impl Harness {
 
         let state = ApiState {
             bus: Arc::new(store.clone()),
+            // Nothing here asserts on a number, so the harness measures nothing —
+            // the exporter is exercised where it lives (`notify-metrics-prometheus`)
+            // and the recording sites are two lines each.
+            metrics: Arc::new(notify_ports::NoMetrics),
             authenticate: Authenticate::new(
                 Arc::new(tokens.clone()),
                 Arc::new(store.clone()),
@@ -174,6 +178,7 @@ impl Harness {
             ),
             stream_start: ResolveStreamStart::new(Arc::new(store.clone()), Arc::new(store.clone())),
             channels: ListChannels::new(Arc::new(store.clone())),
+            read_channel: ReadChannel::new(authorizer.clone()),
             create_channel: CreateChannel::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -828,6 +833,90 @@ async fn a_stream_frame_says_which_channel_it_belongs_to() {
 }
 
 #[actix_web::test]
+async fn a_stream_frame_says_whether_the_reader_was_meant_to_be_left_alone() {
+    // D22: the server holds the preference and applies the rule, so it answers the
+    // question once — per reader, on the event. Every client that decided this for
+    // itself was another copy of a rule to keep in step, and there were three.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    // Quiet from now until well past this test.
+    let request = test::TestRequest::put()
+        .uri("/api/v1/preferences/dnd")
+        .insert_header(AUTH)
+        .set_json(json!({ "until": "2099-01-01T00:00:00Z" }))
+        .to_request();
+    assert!(
+        test::call_service(&app, request)
+            .await
+            .status()
+            .is_success()
+    );
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/notifications")
+        .insert_header(AUTH)
+        .set_json(json!({ "channel": "ci-infra", "title": "etcd degraded" }))
+        .to_request();
+    let _: Value = test::call_and_read_body_json(&app, request).await;
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/stream")
+        .insert_header(AUTH)
+        .insert_header(("Last-Event-ID", notify_domain::Cursor::START.to_string()))
+        .to_request();
+    let body = read_available(test::call_service(&app, request).await).await;
+
+    let frame: Value = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .find(|frame| frame["event"] == "revision")
+        .expect("the stream produced no revision frame");
+
+    assert_eq!(
+        frame["muted_by_dnd"], true,
+        "the reader is in a quiet period, and the server is what knows it: {frame}"
+    );
+    // The event still arrives, whole. §7.4 suppresses the *popup*, never the
+    // stream: an open client is a deliberate choice to look.
+    assert_eq!(frame["payload"]["title"], "etcd degraded");
+}
+
+#[actix_web::test]
+async fn a_stream_frame_outside_a_quiet_period_carries_no_flag_at_all() {
+    // Absent rather than false: the field is skipped when it is not true, so a
+    // client written before it existed parses the frame unchanged.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/notifications")
+        .insert_header(AUTH)
+        .set_json(json!({ "channel": "ci-infra", "title": "etcd degraded" }))
+        .to_request();
+    let _: Value = test::call_and_read_body_json(&app, request).await;
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/stream")
+        .insert_header(AUTH)
+        .insert_header(("Last-Event-ID", notify_domain::Cursor::START.to_string()))
+        .to_request();
+    let body = read_available(test::call_service(&app, request).await).await;
+
+    let frame: Value = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .find(|frame| frame["event"] == "revision")
+        .expect("the stream produced no revision frame");
+
+    assert!(frame["muted_by_dnd"].is_null(), "{frame}");
+}
+
+#[actix_web::test]
 async fn a_stream_needs_a_credential_like_everything_else() {
     let (_, state) = Harness::new();
     let app = service!(state);
@@ -1081,6 +1170,130 @@ async fn patching_a_policy_touches_only_what_the_body_names() {
 }
 
 #[actix_web::test]
+async fn critical_t15_a_payload_over_the_ceiling_is_refused_with_413() {
+    // T15's first half at the surface a publisher meets. The domain refuses it; what
+    // this pins is the **status code** §8.2 promises — a publisher retrying a 500
+    // forever because a 413 was mapped wrong is the failure worth a test.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("cluster-ovh-1").await;
+
+    let app = service!(state);
+    let request = test::TestRequest::post()
+        .uri("/api/v1/notifications")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "channel": "cluster-ovh-1",
+            "title": "far too much",
+            // Multi-byte on purpose: the body limit counts characters, this one
+            // counts bytes, and the gap between the two is where an oversized
+            // payload gets through.
+            "body": "é".repeat(16 * 1024),
+            "image": {
+                "kind": "data_uri",
+                "uri": format!("data:image/png;base64,{}", "A".repeat(47 * 1024)),
+            },
+        }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let problem: Value = test::read_body_json(response).await;
+    assert_eq!(
+        problem["code"], "payload.too_large",
+        "the stable code clients switch on (§8), not just the status"
+    );
+}
+
+#[actix_web::test]
+async fn critical_t15_a_presign_over_the_ceiling_is_refused_before_it_is_signed() {
+    // T15's second half. Refused **before** signing: a signature handed out for an
+    // upload the bucket will reject is a round trip and a confusing error, and the
+    // ceiling is ours to enforce rather than the store's to discover.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("cluster-ovh-1").await;
+
+    let app = service!(state);
+    let request = test::TestRequest::post()
+        .uri("/api/v1/attachments/presign")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "channel": "cluster-ovh-1",
+            "content_type": "image/png",
+            "content_length": 26 * 1024 * 1024_u64,
+        }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[actix_web::test]
+async fn a_channel_can_be_read_by_id_rather_than_hunted_for_in_a_page() {
+    // §8 has listed this route since M1 and no build served it: a client wanting
+    // one channel had to walk `GET /channels` until it found it.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("cluster-ovh-1").await;
+
+    let app = service!(state);
+    let request = test::TestRequest::get()
+        .uri("/api/v1/channels/cluster-ovh-1")
+        .insert_header(AUTH)
+        .to_request();
+    let channel: serde_json::Value = test::call_and_read_body_json(&app, request).await;
+
+    assert_eq!(channel["id"], "cluster-ovh-1");
+    assert!(
+        channel["members"].as_array().is_some_and(|m| !m.is_empty()),
+        "the detail §8 promises is members and policy, not just the id: {channel}"
+    );
+    assert!(channel["policy"].is_object());
+    assert_eq!(
+        channel["origin"], "dynamic",
+        "the managed badge §8 asks for is this field"
+    );
+}
+
+#[actix_web::test]
+async fn reading_a_channel_you_are_not_in_says_nothing_about_whether_it_exists() {
+    // The rule `Authorizer` holds everywhere else, checked on the new door: the
+    // answer for "not yours" and for "not there" has to be the same one, or this
+    // route becomes the cheapest way to enumerate an instance.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("cluster-ovh-1").await;
+
+    let secret = Channel::dynamic(ChannelId::parse("someone-elses").unwrap(), None).unwrap();
+    ChannelRepository::upsert(&harness.store, &secret)
+        .await
+        .unwrap();
+
+    let app = service!(state);
+    let existing = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/channels/someone-elses")
+            .insert_header(AUTH)
+            .to_request(),
+    )
+    .await;
+    let absent = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/channels/never-existed")
+            .insert_header(AUTH)
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(existing.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        absent.status(),
+        existing.status(),
+        "one of these two answers would tell an attacker which channels exist"
+    );
+}
+
+#[actix_web::test]
 async fn patching_a_managed_channel_is_refused_like_deleting_one() {
     let (harness, state) = Harness::new();
     let id = harness.with_alice_in("cluster-ovh-1").await;
@@ -1174,6 +1387,93 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
         assert!(
             paths.iter().any(|path| path.as_str() == expected),
             "{expected} is served but undocumented; the generated clients would not have it"
+        );
+    }
+}
+
+#[actix_web::test]
+async fn every_operation_design_8_lists_is_served_and_not_only_its_path() {
+    // The test above checks *paths*, and that is how `GET /channels/{channel}` went
+    // missing for four milestones: `PATCH` and `DELETE` registered the same path, so
+    // the list was satisfied while the read §8 promises was served by nothing.
+    //
+    // This one is method-aware, and it is maintained by hand from §8 on purpose —
+    // that list is prose, so the only way it can fail a build is if somebody copies
+    // it here. Copying it here is the cheap half; noticing was the expensive half.
+    let (_, api) = App::new()
+        .into_utoipa_app()
+        .configure(notify_http_actix::configure)
+        .split_for_parts();
+
+    for (method, path) in [
+        ("get", "/api/v1/channels"),
+        ("post", "/api/v1/channels"),
+        ("get", "/api/v1/channels/{channel}"),
+        ("patch", "/api/v1/channels/{channel}"),
+        ("delete", "/api/v1/channels/{channel}"),
+        ("post", "/api/v1/channels/{channel}/members"),
+        ("delete", "/api/v1/channels/{channel}/members/{principal}"),
+        ("get", "/api/v1/channels/{channel}/notifications"),
+        (
+            "put",
+            "/api/v1/channels/{channel}/notifications/{external_id}",
+        ),
+        ("post", "/api/v1/notifications"),
+        ("get", "/api/v1/notifications/{id}"),
+        ("delete", "/api/v1/notifications/{id}"),
+        ("post", "/api/v1/notifications/{id}/interactions"),
+        ("get", "/api/v1/notifications/{id}/interactions"),
+        ("post", "/api/v1/notifications/{id}/silence"),
+        ("get", "/api/v1/notifications/{id}/receipts"),
+        ("get", "/api/v1/notifications/{id}/revisions"),
+        ("get", "/api/v1/search"),
+        ("get", "/api/v1/sync"),
+        ("get", "/api/v1/stream"),
+        ("get", "/api/v1/ws"),
+        ("post", "/api/v1/receipts"),
+        ("get", "/api/v1/push/webpush"),
+        ("get", "/api/v1/preferences/dnd"),
+        ("put", "/api/v1/preferences/dnd"),
+        ("get", "/api/v1/devices"),
+        ("post", "/api/v1/devices"),
+        ("delete", "/api/v1/devices/{id}"),
+        ("get", "/api/v1/users/me/profile"),
+        ("put", "/api/v1/users/me/profile"),
+        ("put", "/api/v1/users/me/avatar"),
+        ("get", "/api/v1/serviceaccounts"),
+        ("post", "/api/v1/serviceaccounts"),
+        ("delete", "/api/v1/serviceaccounts/{id}"),
+        ("get", "/api/v1/apikeys"),
+        ("post", "/api/v1/apikeys"),
+        ("delete", "/api/v1/apikeys/{id}"),
+        ("post", "/api/v1/auth/token/exchange"),
+        ("post", "/api/v1/attachments/presign"),
+        ("get", "/api/v1/admin/audit"),
+        ("get", "/api/v1/admin/channels"),
+        ("post", "/api/v1/admin/channels/{channel}/join"),
+        ("get", "/api/v1/admin/trust-policies"),
+        ("get", "/api/v1/admin/dlq"),
+        ("post", "/api/v1/admin/dlq/{id}/requeue"),
+        ("get", "/api/v1/admin/reconciliation"),
+    ] {
+        let item = api.paths.paths.get(path).unwrap_or_else(|| {
+            unreachable!("§8 lists {method} {path} and no route serves that path")
+        });
+
+        let served: Vec<&str> = [
+            ("get", item.get.is_some()),
+            ("put", item.put.is_some()),
+            ("post", item.post.is_some()),
+            ("delete", item.delete.is_some()),
+            ("patch", item.patch.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(verb, present)| present.then_some(verb))
+        .collect();
+
+        assert!(
+            served.contains(&method),
+            "§8 lists {method} {path}; that path serves only {served:?}"
         );
     }
 }

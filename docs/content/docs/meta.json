@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "---Reference---",
+    "clients",
     "architecture",
     "dev",
     "ops",

@@ -132,6 +132,38 @@ pub(crate) async fn create_channel(
     Ok(HttpResponse::Created().json(channel))
 }
 
+/// One channel: its policy, its members, and where it came from.
+///
+/// Listed by §8 since M1 and served by no build until now — a client wanting one
+/// channel had to walk `GET /channels` until it found it, which works right up to
+/// the page where it does not.
+#[utoipa::path(
+    get,
+    path = "/channels/{channel}",
+    tag = "channels",
+    params(("channel" = String, Path, description = "Channel id")),
+    responses(
+        (status = 200, description = "The channel, with its members and policy", body = Channel),
+        (status = 401, description = "No usable credential", body = Problem),
+        // 403 and not 404 when it exists but is somebody else's: the two answers are
+        // deliberately the same, because telling them apart enumerates the instance.
+        (status = 403, description = "No `subscribe` scope there, or no such channel", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/channels/{channel}")]
+pub(crate) async fn read_channel(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+) -> Result<web::Json<Channel>, ApiError> {
+    let channel = ChannelId::parse(&path.into_inner())?;
+
+    Ok(web::Json(
+        state.read_channel.execute(&caller.0, &channel).await?,
+    ))
+}
+
 /// Change a channel's policy. Refused on a GitOps-managed one.
 #[utoipa::path(
     patch,

@@ -23,6 +23,7 @@ mod openapi;
 mod push;
 mod reconcile;
 mod sinks;
+mod telemetry;
 mod wiring;
 
 #[derive(Debug, Parser)]
@@ -118,15 +119,12 @@ const SINK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[actix_web::main]
 async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,sqlx=warn")),
-        )
-        .init();
-
+    // Read before the subscriber exists, because `[telemetry]` decides what the
+    // subscriber is. The window is deliberately this short: a failure in here is
+    // reported by `main` on stderr, and everything after it is logged properly.
     let config = config::Config::load(config_path)?;
+    let traces = telemetry::install(config.telemetry.as_ref())?;
+
     for pending in config.unhonoured() {
         // Parsed and not acted on. Saying so at startup is the difference between
         // "this build does not do that yet" and an afternoon of debugging.
@@ -170,6 +168,10 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         application.store.clone(),
         application.transports.names(),
     ));
+    // The same registry the HTTP layer and the drain loop write to — `/metrics`
+    // renders it, and a second one here would export an empty document while
+    // everything counted into the first.
+    let exporter = actix_web::web::Data::new(application.metrics.clone());
 
     let server = actix_web::HttpServer::new(move || {
         // Closed by default (§5.1): an origin that is not listed cannot call the
@@ -192,9 +194,13 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             .openapi(openapi::base())
             .app_data(state.clone())
             .app_data(readiness.clone())
+            .app_data(exporter.clone())
             .map(|app| {
                 app.wrap(cors)
                     .wrap(actix_web::middleware::Logger::default().log_target("http"))
+                    // Outermost of the two, so the access log line lands inside the
+                    // request span rather than beside it (design §13).
+                    .wrap(actix_web::middleware::from_fn(telemetry::continue_trace))
                     .configure(health::configure)
             })
             .configure(notify_http_actix::configure)
@@ -214,6 +220,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         application.purge,
         application.digests,
         application.drain,
+        application.metrics.clone(),
         application.reconciler,
         application.reconciliation_log,
         config,
@@ -238,6 +245,11 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
 
     tracing::info!("stopped");
 
+    // Last, so the line above is in the batch: the exporter holds finished spans
+    // until its next tick, and a process that exits without flushing drops exactly
+    // the spans of whatever made somebody restart it.
+    traces.shutdown();
+
     outcome.map_err(Into::into)
 }
 
@@ -247,6 +259,7 @@ async fn background(
     purge: notify_app::PurgeExpired,
     digests: notify_app::SendDndDigests,
     drain: notify_app::DrainSinks,
+    metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     reconciler: reconcile::Reconciler,
     reconciliation_log: notify_app::ReconciliationLog,
     config: config::Config,
@@ -289,16 +302,30 @@ async fn background(
             // instance ticks twelve times a minute, and a line each would bury
             // everything else in the log.
             _ = sink_tick.tick() => match drain.execute().await {
-                Ok(report) if report.delivered + report.retried + report.buried + report.orphaned > 0 => {
-                    tracing::info!(
-                        delivered = report.delivered,
-                        retried = report.retried,
-                        buried = report.buried,
-                        orphaned = report.orphaned,
-                        "sink drain pass complete"
-                    );
+                Ok(report) => {
+                    if report.delivered + report.retried + report.buried + report.orphaned > 0 {
+                        tracing::info!(
+                            delivered = report.delivered,
+                            retried = report.retried,
+                            buried = report.buried,
+                            orphaned = report.orphaned,
+                            "sink drain pass complete"
+                        );
+                    }
+
+                    // `sink_dlq_depth` is refreshed by the leader and by nobody else
+                    // (§13): a follower publishing zero would claim nothing is stuck
+                    // on an instance where something is. The series is simply absent
+                    // on the replicas that do not know.
+                    if report.led {
+                        match drain.dead_letter_depth().await {
+                            Ok(depths) => metrics.dlq_depth(&depths),
+                            Err(error) => {
+                                tracing::warn!(?error, "could not read the dead-letter depth");
+                            }
+                        }
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => tracing::warn!(?error, "sink drain failed; retrying next tick"),
             },
             _ = reconcile_tick.tick() => match reconciler.execute(&config).await {

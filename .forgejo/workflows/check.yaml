@@ -71,6 +71,13 @@ jobs:
         # never formatted.
         run: mise exec -- task lint:check
 
+      - name: Web production build
+        # The unit suite never runs `vite build`, and the build is where the
+        # Content-Security-Policy is stamped and its hashes checked against the
+        # page actually written (ADR-0019). Without this step that check happens
+        # on somebody's laptop or nowhere.
+        run: mise exec -- task build:web:smoke
+
       - name: Tests and coverage
         run: mise exec -- task cover
 

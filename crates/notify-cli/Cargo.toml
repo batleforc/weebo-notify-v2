@@ -23,6 +23,11 @@ anyhow.workspace = true
 # For the "arrived late" badge (§7.2): the same date type the generated client and
 # the local store already speak, rather than a third one to convert between.
 chrono.workspace = true
+chrono-tz.workspace = true
+# The desktop relay of §9.2. Pure Rust on every platform this ships to: zbus on
+# Linux, the OS APIs elsewhere — no C toolchain, the rule this workspace has kept
+# since M1.
+notify-rust = { version = "4", default-features = false, features = ["d"] }
 base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true

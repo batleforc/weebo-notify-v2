@@ -71,6 +71,11 @@ pub(crate) enum DeviceCommand {
     List,
 
     /// Enrol this machine, and remember it in the local store.
+    ///
+    /// `enroll` is accepted too. §9.1 writes the command with two `l`s, this crate
+    /// spells it with one, and the difference is invisible until somebody copies
+    /// the line out of the design document and gets "unrecognized subcommand".
+    #[command(alias = "enroll")]
     Enrol {
         /// How it should appear in your device list. Defaults to the hostname.
         #[arg(long)]

@@ -887,6 +887,62 @@
       }
     },
     "/api/v1/channels/{channel}": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "One channel: its policy, its members, and where it came from.",
+        "description": "Listed by §8 since M1 and served by no build until now — a client wanting one\nchannel had to walk `GET /channels` until it found it, which works right up to\nthe page where it does not.",
+        "operationId": "read_channel",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "description": "Channel id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel, with its members and policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No `subscribe` scope there, or no such channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
       "delete": {
         "tags": [
           "channels"
@@ -4346,6 +4402,10 @@
                     "type": "string",
                     "format": "date-time",
                     "description": "When it was appended, by the server's clock."
+                  },
+                  "muted_by_dnd": {
+                    "type": "boolean",
+                    "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual."
                   }
                 }
               }
@@ -4389,6 +4449,10 @@
                     "type": "string",
                     "format": "date-time",
                     "description": "When it was appended, by the server's clock."
+                  },
+                  "muted_by_dnd": {
+                    "type": "boolean",
+                    "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual."
                   }
                 }
               }
@@ -4432,6 +4496,10 @@
                     "type": "string",
                     "format": "date-time",
                     "description": "When it was appended, by the server's clock."
+                  },
+                  "muted_by_dnd": {
+                    "type": "boolean",
+                    "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual."
                   }
                 }
               }
@@ -4475,6 +4543,10 @@
                 "format": "date-time",
                 "description": "When it was appended, by the server's clock."
               },
+              "muted_by_dnd": {
+                "type": "boolean",
+                "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual."
+              },
               "notification_id": {
                 "$ref": "#/components/schemas/NotificationId"
               },
@@ -4517,6 +4589,10 @@
                     "type": "string",
                     "format": "date-time",
                     "description": "When it was appended, by the server's clock."
+                  },
+                  "muted_by_dnd": {
+                    "type": "boolean",
+                    "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual."
                   },
                   "user_id": {
                     "$ref": "#/components/schemas/UserId"

@@ -1,0 +1,49 @@
+version: "3"
+
+# Building what gets shipped, as opposed to what gets tested.
+#
+# One target so far. The server image belongs here too and is not written yet
+# (§14.4, D17): there is no Containerfile in this repository, and the release
+# workflow says so with a warning rather than pretending otherwise.
+
+tasks:
+  web:
+    desc: "Build the deployable web bundle — needs VITE_API_BASE_URL, VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID"
+    # A deployment is a build (`web/src/config.ts`): the API origin, the issuer and
+    # the client id are inlined now, and so is the Content-Security-Policy that
+    # names the first two (ADR-0019). There is deliberately no default — a bundle
+    # built against the wrong origin loads and then cannot reach its own API, which
+    # is a worse failure than not building at all.
+    cmds:
+      - cmd: |
+          missing=""
+          for name in VITE_API_BASE_URL VITE_OIDC_ISSUER VITE_OIDC_CLIENT_ID; do
+            eval "value=\${$name:-}"
+            [ -n "$value" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "missing:$missing" >&2
+            echo "" >&2
+            echo "A web bundle is built for one deployment (ADR-0019). Export the three" >&2
+            echo "variables, or run 'task build:web:smoke' to check the build itself." >&2
+            exit 1
+          fi
+          pnpm -C web build
+
+  web:smoke:
+    desc: "Build the web bundle with the committed example values — proves the build works, produces nothing deployable"
+    # What CI runs. Its purpose is the pipeline, not the artefact: the production
+    # build is where the CSP is stamped and where its hashes are checked against
+    # the page actually written, so a build that only ever happens on somebody's
+    # laptop is a gate nobody holds.
+    #
+    # The values come from the committed `web/.env.example` rather than from
+    # invented ones, so this exercises a file that has to stay correct anyway.
+    cmds:
+      - cmd: |
+          set -a
+          . web/.env.example
+          set +a
+          pnpm -C web build
+          echo ""
+          echo "Smoke build only — this bundle points at ${VITE_API_BASE_URL} and is not deployable."

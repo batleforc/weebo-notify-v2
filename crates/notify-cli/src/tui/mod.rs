@@ -33,6 +33,9 @@
 //!   it is the one that matters when the terminal is the renderer.
 
 mod app;
+mod completion;
+mod desktop;
+mod history;
 mod render;
 
 use std::io::IsTerminal as _;
@@ -54,7 +57,7 @@ pub(crate) use app::{App, Message, Pane};
 const TICK: Duration = Duration::from_millis(250);
 
 /// Open the interface.
-pub(crate) fn run(profile_name: &str) -> Result<(), CliError> {
+pub(crate) fn run(profile_name: &str, notify_send: bool) -> Result<(), CliError> {
     if !std::io::stdout().is_terminal() {
         return Err(CliError::Usage(
             "stdout is not a terminal — refusing to open the TUI".to_owned(),
@@ -89,6 +92,7 @@ pub(crate) fn run(profile_name: &str) -> Result<(), CliError> {
             holds_stream: lease.is_some(),
             signal,
             watch,
+            notify_send,
         },
     );
     leave();
@@ -105,6 +109,8 @@ struct Front<'a> {
     signal: Option<StreamSignal>,
     /// Set when it does not: it waits to be poked.
     watch: Option<StreamWatch>,
+    /// Whether arrivals also go to the desktop (§9.2, `--notify-send`).
+    notify_send: bool,
 }
 
 /// Put the terminal into the state a full-screen app needs, and arrange to undo it
@@ -174,10 +180,38 @@ fn event_loop(
         }
 
         poke(&mut front, &mut app);
+        relay_arrivals(&front, &mut app);
 
         if app.should_quit {
             return Ok(());
         }
+    }
+}
+
+/// Hand what arrived to the desktop, when `--notify-send` asked for it (§9.2).
+///
+/// Outside `App::update` for the reason `poke` is: `update` changes state and stays
+/// free of I/O, and a popup is I/O. The do-not-disturb gate is §7.4's, and it is
+/// applied here rather than server-side because the stream keeps flowing during a
+/// quiet period — an open client is a deliberate choice to look.
+fn relay_arrivals(front: &Front<'_>, app: &mut App) {
+    // Drained before the flag is checked, and that order is deliberate: without it
+    // a TUI running without `--notify-send` would accumulate every arrival of the
+    // session in a vector nobody reads.
+    let arrivals = app.take_arrivals();
+    if !front.notify_send {
+        return;
+    }
+
+    for row in arrivals {
+        // The server already answered this, per reader, on the event that carried
+        // the arrival (§7.4). Asking again here is what D22 was about: the rule
+        // lives with the preference, the server applies it once, and a client that
+        // re-derived it was a third copy to keep in step.
+        if row.muted_by_dnd {
+            continue;
+        }
+        desktop::relay(&row.title, row.body.as_deref().unwrap_or_default());
     }
 }
 

@@ -167,3 +167,13 @@ receipts = false
 id = "bot-argocd"
 display_name = "ArgoCD"
 description = "Publishes the state of ArgoCD syncs"
+
+# Traces (§13). Commented out because nothing here collects them: the dev stack has
+# no OTLP endpoint, and a section pointing at a collector that is not running would
+# make every local run retry an export nobody asked for. Uncomment against a
+# Jaeger/Tempo/otel-collector on 4318 — or set WNK_TELEMETRY__OTLP_ENDPOINT, which
+# is what a Kubernetes deployment does with the same file (§11).
+# [telemetry]
+# otlp_endpoint = "http://localhost:4318"
+# service_name = "weebo-notify"
+# sample_ratio = 1.0

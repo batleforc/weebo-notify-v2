@@ -44,6 +44,45 @@ impl ListChannels {
     }
 }
 
+/// `GET /api/v1/channels/{channel}` — one channel, by id (design §8).
+#[derive(Clone)]
+pub struct ReadChannel {
+    authorizer: Authorizer,
+}
+
+impl core::fmt::Debug for ReadChannel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReadChannel").finish_non_exhaustive()
+    }
+}
+
+impl ReadChannel {
+    /// Wire it.
+    #[must_use]
+    pub const fn new(authorizer: Authorizer) -> Self {
+        Self { authorizer }
+    }
+
+    /// One channel, if the caller may see it.
+    ///
+    /// `Subscribe` and not `Manage`: this is the read [`ListChannels`] already
+    /// grants, addressed by id instead of by page. Asking for `Manage` would mean a
+    /// member could not open a channel they receive notifications from.
+    ///
+    /// A channel the caller may not see and one that does not exist give the same
+    /// answer, which is [`Authorizer::authorize`]'s rule and the reason this use
+    /// case is three lines: distinguishing them enumerates the instance.
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        channel_id: &ChannelId,
+    ) -> Result<Channel, Failure> {
+        self.authorizer
+            .authorize(caller, channel_id, Scope::Subscribe)
+            .await
+    }
+}
+
 /// `POST /api/v1/channels` — create a dynamic channel (design §8).
 #[derive(Clone)]
 pub struct CreateChannel {

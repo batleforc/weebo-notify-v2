@@ -33,6 +33,53 @@ const KEEP_ALIVE: Duration = Duration::from_secs(25);
 /// browser tab into a memory leak on the replica.
 const BACKPRESSURE: u32 = 64;
 
+/// Holds `realtime_connections{transport}` up for as long as it lives (design §13).
+///
+/// A guard and not two calls, because the interesting half is the decrement: a
+/// stream ends when the client goes away, when the task is aborted at shutdown, or
+/// when the log becomes unreadable — and a handler that decremented on its own
+/// success path would leak a connection on every one of those. The gauge also feeds
+/// the HPA (§11), so a leak there is an instance that never scales back down.
+///
+/// It is **eventually** accurate, and how long "eventually" is differs by transport
+/// — which is worth knowing before reading the gauge as a live number:
+///
+/// * **SSE** waits on the receiver being dropped as well as on the next poke, so a
+///   departure is learned without anything being published. The remaining lag is the
+///   responder's: it drops its receiver on the first write the socket actually
+///   refuses, and the socket refuses one write later than one would expect — the
+///   kernel absorbs the first. Measured on a killed client with nothing in flight:
+///   **off the gauge 50 s later**, two [`KEEP_ALIVE`]s, no publish involved;
+/// * **WebSocket** only finds out by writing, because this handler drops the
+///   incoming stream. On a silent instance a dead socket therefore stays counted
+///   until something is published — an open-ended lag, and the honest reading of
+///   that gauge is "connections held, plus any that died since the last publish".
+///
+/// Measured rather than assumed, and the measurement is why the select below exists:
+/// waiting on pokes alone, a killed client survived a keep-alive *and* a first
+/// publish, and only came off the gauge at the **second** — which on a quiet channel
+/// is however long that takes.
+struct Connected {
+    metrics: std::sync::Arc<dyn notify_ports::Metrics>,
+    transport: notify_ports::StreamKind,
+}
+
+impl Connected {
+    fn open(state: &ApiState, transport: notify_ports::StreamKind) -> Self {
+        state.metrics.stream_opened(transport);
+        Self {
+            metrics: std::sync::Arc::clone(&state.metrics),
+            transport,
+        }
+    }
+}
+
+impl Drop for Connected {
+    fn drop(&mut self) {
+        self.metrics.stream_closed(self.transport);
+    }
+}
+
 /// Where to resume, and what to narrow to.
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -113,7 +160,22 @@ impl Connection {
             if let Some(last) = page.events.last() {
                 self.cursor = last.cursor;
             }
-            drained.extend(page.events);
+
+            // The answer to "should this make a noise for *this* reader" is right
+            // here and used to be thrown away: the sync use case computes
+            // `deferred_by_dnd` per caller (§7.4) and this loop kept only the
+            // events. Every client then re-derived the rule for itself — three
+            // implementations of it at the last count (§14.4, D22). Carrying it
+            // costs a lookup per event and removes the reason they existed.
+            let muted = &page.deferred_by_dnd;
+            drained.extend(page.events.into_iter().map(|mut event| {
+                if let notify_ports::EventPayload::Revision(revision) = &event.payload
+                    && muted.contains(&revision.notification_id)
+                {
+                    event.muted_by_dnd = true;
+                }
+                event
+            }));
 
             if page.next.is_none() {
                 return Ok(drained);
@@ -175,6 +237,10 @@ pub(crate) async fn stream(
     let mut connection =
         Connection::open(&state, caller.0, &params, last_event_id.as_deref()).await?;
     let mut pokes = state.bus.subscribe().await?;
+    // Counted from here, where the connection is real, rather than from the first
+    // poke — a client that connects and never receives anything is still one this
+    // replica is holding open.
+    let connected = Connected::open(&state, notify_ports::StreamKind::Sse);
 
     let (sender, receiver) = tokio::sync::mpsc::channel(BACKPRESSURE as usize);
     let stream = sse::Sse::from_infallible_receiver(receiver).with_keep_alive(KEEP_ALIVE);
@@ -189,7 +255,26 @@ pub(crate) async fn stream(
     }
 
     actix_web::rt::spawn(async move {
-        while pokes.next().await.is_some() {
+        // Moved into the task, so the gauge comes back down whichever way this ends:
+        // the client going away, the log becoming unreadable, or the runtime
+        // dropping the task at shutdown.
+        let _connected = connected;
+
+        loop {
+            tokio::select! {
+                // The client leaving, learned without waiting for somebody to
+                // publish. Waiting only on pokes was measurably wrong: a killed
+                // client stayed on the gauge through a keep-alive and a first
+                // publish, and on a channel that is quiet overnight it would have
+                // stayed there overnight — with the HPA reading the number.
+                () = sender.closed() => return,
+                poke = pokes.next() => {
+                    if poke.is_none() {
+                        break;
+                    }
+                }
+            }
+
             let events = match connection.drain().await {
                 Ok(events) => events,
                 Err(error) => {
@@ -254,7 +339,11 @@ pub(crate) async fn websocket(
         }
     };
 
+    let connected = Connected::open(&state, notify_ports::StreamKind::WebSocket);
+
     actix_web::rt::spawn(async move {
+        let _connected = connected;
+
         // Same order as SSE: backlog first, then live.
         loop {
             let events = match connection.drain().await {

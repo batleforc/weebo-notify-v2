@@ -271,6 +271,9 @@ fn hydrate(row: &PgRow) -> PortResult<Event> {
         cursor: cursor(seq),
         audience,
         recorded_at: row.try_get("recorded_at").map_err(|e| fail("event", e))?,
+        // Never stored, so never read back: the reader it is true for is decided
+        // on the way out (§7.4, D22).
+        muted_by_dnd: false,
         payload: from_json::<EventPayload>("event.payload", payload)?,
     })
 }

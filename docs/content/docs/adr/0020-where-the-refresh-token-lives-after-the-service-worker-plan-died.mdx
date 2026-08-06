@@ -1,0 +1,147 @@
+---
+title: ADR-0020 — Where the refresh token lives, after the service worker plan died
+description: The M3 plan does not work. The refresh token stays in sessionStorage — now as a decision with its mitigations named, not as an interim waiting for a worker.
+---
+
+Status: **accepted** (2026-08-06) · Supersedes: [ADR-0016](/docs/adr/0016-where-the-web-client-keeps-its-tokens) · Superseded by: —
+
+<Callout>
+  **The token does not move.** What changes is that its address is now a decision
+  with a reason and a trigger for revisiting, instead of an interim waiting for a
+  service worker that cannot help. This record supersedes ADR-0016, whose "M3
+  closes this" is the sentence that stopped being true.
+</Callout>
+
+## Context
+
+[ADR-0016](/docs/adr/0016-where-the-web-client-keeps-its-tokens) put the access
+token in memory and the refresh token in `sessionStorage`, and named the exposure it
+left: **a script running on this origin can read `sessionStorage` and take a refresh
+token that outlives the page.** It also named the plan to close it — "M3 closes
+this: the service worker takes the refresh token and the page can no longer read
+it".
+
+**That plan does not work, and M3 said so rather than pretending.** A service worker
+is killed aggressively; to survive eviction the token would have to live in
+IndexedDB, which the page reads exactly as well as the worker does. Keeping it in
+worker *memory* does protect it — and costs a full round trip to the identity
+provider on every eviction, which is "everything in memory", the option ADR-0016
+rejected in M1 because people respond to it by never reloading and leaving a tab
+open for weeks.
+
+Two things have changed since:
+
+- **the CSP now ships with the bundle**
+  ([ADR-0019](/docs/adr/0019-the-csp-travels-with-the-bundle)). `script-src` has no
+  `'unsafe-inline'`, and `connect-src` names only the API and the issuer — so an
+  injected script has a much narrower path in *and* out. This lowers the
+  probability of the XSS; it does not change what one would get;
+- **the markdown path is gated three ways** (`html: false`, DOMPurify, scheme
+  check), which is where publisher-controlled content would have come from.
+
+What has not changed is the shape of the problem: the refresh token is the
+long-lived half, and it is readable by any script on the origin.
+
+## Options
+
+**A — keep `sessionStorage`, and say so.** The CSP raised the floor; rotation makes
+a stolen token single-use and its reuse detectable at the provider; the tab closing
+ends the session. Cost: nothing new. What it buys: nothing new either — the
+exposure ADR-0016 named stays exactly as it is, and this record exists to stop it
+being forgotten rather than to fix it.
+
+**B — worker memory only, no persistence.** The refresh token never touches storage
+the page can read. Cost: every worker eviction is a redirect through the identity
+provider — invisible when the provider still has a session cookie, a full login when
+it does not. This is the "everything in memory" option under a different name, and
+M1's objection stands: a reload that might bounce through the IdP teaches people not
+to reload.
+
+**C — the refresh token moves behind an `httpOnly` cookie.** The SPA stops holding
+it: the token exchange happens server-side, the server sets `httpOnly; Secure;
+SameSite=Strict; Path=/api/v1/auth/refresh`, and the page calls that one endpoint to
+get an access token it keeps in memory. XSS cannot read the cookie — the browser
+sends it, the script never sees it.
+
+The cost is not CSRF (a `SameSite=Strict` cookie on a single path, plus the custom
+header this API already requires, closes that) but something §5.1 states as a
+property: **"zéro session serveur"**. Two ways to hold the token, and both bend it:
+
+- **the cookie carries the token, encrypted by a server key** — no database row, so
+  HA stays trivial, but a key now has to exist, be mounted, and be rotated across
+  replicas (the same shape as `[federation]`'s Ed25519 key, §11);
+- **the cookie carries an opaque id, the token lives in Postgres** — no new key, but
+  that row is a server-side session in everything but name, and §5.1's "rien à
+  répliquer entre replicas" becomes "one more table".
+
+## Decision
+
+**Option A: the refresh token stays in `sessionStorage`, and this record is what
+stops that being forgotten.**
+
+C was recommended when this was written, and it was not taken. The reasoning that
+settles it the other way is the one C could not answer cheaply: its price is a
+sentence of §5.1 — "zéro session serveur" — plus a symmetric key to mount and
+rotate, or a table to replicate. That is real architecture bought against a
+residual risk whose two enabling conditions have both been narrowed since ADR-0016:
+
+- an injected script now has to get past a CSP with no `unsafe-inline` in
+  `script-src`, and can only reach the API and the issuer through `connect-src`;
+- the one place publisher-controlled content is rendered passes three gates before
+  it is HTML at all.
+
+What the token buys an attacker has not changed — hours instead of fifteen minutes
+— but what it takes to get there has, and the cost of C has not.
+
+**The mitigations this decision rests on**, listed because a decision that rests on
+things nobody wrote down is a decision that quietly stops holding:
+
+1. the bundle ships its own strict CSP (ADR-0019);
+2. the markdown path never interprets raw HTML (`html: false`, DOMPurify, scheme
+   check);
+3. refresh tokens rotate on every use, so a stolen one is single-use and its reuse
+   is something the provider can detect;
+4. `sessionStorage` is tab-scoped: closing the tab ends it.
+
+**What reopens this**, in order of likelihood:
+
+- **any of those four weakening** — an `unsafe-inline` added to make a library work,
+  a channel rendering something the markdown path does not gate, an identity
+  provider without rotation;
+- **a deployment whose channels carry something worse to disclose than the API
+  access an XSS already has** — this product assumes a stolen session is bounded by
+  what the person could see anyway;
+- a browser change that makes C cheap, or a first-party server already sitting in
+  front of the SPA for other reasons.
+
+## Consequences
+
+**Positive**
+
+- Nothing to build, and nothing to operate: no key to mount, no table to replicate,
+  §5.1's "zéro session serveur" stays true as written.
+- The reload behaviour people actually use is preserved — F5 lands back in the
+  inbox, so `/n/<id>` in a CI log stays a usable link.
+- The decision now has a *reason* and a *trigger*, where before it had a plan that
+  could not work. A reader of `session.ts` is told the same thing.
+
+**Negative**
+
+- The exposure ADR-0016 named is still there, unchanged: an XSS able to read
+  `sessionStorage` takes a refresh token that outlives the page. This record makes
+  that a choice rather than an oversight; it does not make it smaller.
+- The load-bearing control is now the CSP rather than the token's address, which
+  means a CSP regression is a *token* regression. Worth knowing before somebody
+  loosens it to make a library work.
+
+**Accepted debt**
+
+- D9 stays in §14.4 as an **accepted risk** rather than an open item, with the four
+  mitigations and the reopening triggers above.
+
+**Accepted debt either way**
+
+- Neither option touches what an XSS can do *while the page is open*: it can call
+  the API as the user with the in-memory access token. That is not fixable in the
+  browser, and it is the reason the CSP is the load-bearing control here rather than
+  the token's address.

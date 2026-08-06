@@ -15,8 +15,12 @@
  *   3. links are restricted to `http(s)` — no `javascript:`, no `data:` — and open
  *      in a new tab with `noopener`, so a notification cannot navigate the app.
  *
- * The strict CSP §10.3 asks for is the fourth gate, and it lives in the server that
- * serves this bundle rather than in the bundle.
+ * The strict CSP §10.3 asks for is the fourth gate. It used to be owed by "the
+ * server that serves this bundle", which in this repository is nothing at all — so
+ * it now travels with the bundle instead: `lib/csp.ts` builds it and the Vite config
+ * stamps it into `index.html` (ADR-0019). What a meta policy cannot carry —
+ * `frame-ancestors`, `report-to` — is still the deployment's, and says so in the
+ * hardening page.
  */
 
 import DOMPurify from "dompurify";

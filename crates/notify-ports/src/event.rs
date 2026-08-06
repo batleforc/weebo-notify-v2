@@ -268,6 +268,24 @@ pub struct Event {
     /// When it was appended, by the server's clock.
     #[serde(rename = "logged_at", with = "time::serde::rfc3339")]
     pub recorded_at: OffsetDateTime,
+    /// Whether the recipient's do-not-disturb was running when this happened
+    /// (design §7.4).
+    ///
+    /// **A fact about the delivery, not about the row.** The same event is `false`
+    /// for one reader and `true` for another, so it is set on the way out and never
+    /// stored — which is why it defaults rather than being required, and why the
+    /// stored `Event` this is built from carries no such field.
+    ///
+    /// It exists so a connected client stops deciding for itself. §7.4 asks a
+    /// client to suppress its own popups during a quiet period, and every client
+    /// that answered that question locally was a second implementation of a rule
+    /// the server already applies to push — three of them, at the last count
+    /// (§14.4, D22). The server computes it once, per reader, and says so.
+    ///
+    /// The stream is **not** interrupted by it: the inbox fills as usual and the
+    /// event arrives. What the flag decides is whether it makes a noise.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub muted_by_dnd: bool,
     /// What happened.
     #[serde(flatten)]
     pub payload: EventPayload,
@@ -422,6 +440,7 @@ mod tests {
             cursor: Cursor::from_sequence(1),
             audience,
             recorded_at: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
+            muted_by_dnd: false,
             payload: EventPayload::Tombstone {
                 notification_id: NotificationId::generate(),
                 reason: TombstoneReason::Expired,

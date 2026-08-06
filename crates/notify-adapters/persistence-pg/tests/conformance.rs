@@ -2384,4 +2384,116 @@ mod e2e {
 
         queue(&store).complete(&delivery.delivery_id).await.unwrap();
     }
+    // --- Migrations (T24, §3.4) ---------------------------------------------
+
+    /// A database name nothing else in this run will pick.
+    fn throwaway_database() -> String {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        format!(
+            "wnk_t24_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    #[tokio::test]
+    async fn critical_t24_a_first_boot_builds_the_schema_and_a_second_replays_nothing() {
+        // T24 word for word: "boot sur base vide → schéma complet ; re-boot →
+        // idempotent, zéro migration rejouée". Both halves need a database nobody
+        // has migrated yet, so this one creates its own and drops it after — the
+        // shared test database is, by construction, already migrated.
+        let Ok(url) =
+            std::env::var("WNK_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
+        else {
+            eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+            return;
+        };
+
+        let admin = PgStore::connect(&url, 1).await.expect("the server answers");
+        let name = throwaway_database();
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
+            .execute(admin.pool())
+            .await
+            .expect("the test role may create a database");
+
+        let fresh = url
+            .rsplit_once('/')
+            .map(|(head, _)| format!("{head}/{name}"))
+            .unwrap();
+        let outcome = migrate_twice(&fresh).await;
+
+        // Dropped whatever happened above, so a failing assertion does not leave a
+        // database behind on somebody's machine.
+        let store_closed = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"
+        )))
+        .execute(admin.pool())
+        .await;
+        assert!(
+            store_closed.is_ok(),
+            "the throwaway database could not be dropped"
+        );
+
+        outcome.expect("see the assertion above");
+    }
+
+    /// The body of the test above, so its database is dropped even when it fails.
+    async fn migrate_twice(url: &str) -> Result<(), String> {
+        let store = PgStore::connect(url, 2).await.map_err(|e| e.to_string())?;
+
+        store.migrate().await.map_err(|e| e.to_string())?;
+
+        let tables: Vec<(String,)> = sqlx::query_as(
+            "select table_name::text from information_schema.tables \
+             where table_schema = 'public'",
+        )
+        .fetch_all(store.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+        let tables: Vec<String> = tables.into_iter().map(|(name,)| name).collect();
+
+        for expected in [
+            "channels",
+            "notifications",
+            "events",
+            "devices",
+            "sink_queue",
+        ] {
+            if !tables.iter().any(|name| name == expected) {
+                return Err(format!(
+                    "a boot on an empty database left no {expected} table: {tables:?}"
+                ));
+            }
+        }
+
+        //  is the field that betrays a replay: a migration applied a
+        // second time would carry a new timestamp, even with the same version.
+        let first: Vec<(i64, OffsetDateTime)> =
+            sqlx::query_as("select version, installed_on from _sqlx_migrations order by version")
+                .fetch_all(store.pool())
+                .await
+                .map_err(|e| e.to_string())?;
+
+        if first.is_empty() {
+            return Err("no migration was recorded at all".to_owned());
+        }
+
+        store.migrate().await.map_err(|e| e.to_string())?;
+
+        let second: Vec<(i64, OffsetDateTime)> =
+            sqlx::query_as("select version, installed_on from _sqlx_migrations order by version")
+                .fetch_all(store.pool())
+                .await
+                .map_err(|e| e.to_string())?;
+
+        if first != second {
+            return Err(format!(
+                "the second boot replayed something: {first:?} then {second:?}"
+            ));
+        }
+
+        store.pool().close().await;
+        Ok(())
+    }
 }

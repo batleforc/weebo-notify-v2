@@ -16,6 +16,7 @@ workspace = true
 notify-attachments-s3.workspace = true
 notify-avatars.workspace = true
 notify-http-actix.workspace = true
+notify-metrics-prometheus.workspace = true
 notify-push-webpush.workspace = true
 notify-sinks-email.workspace = true
 notify-sinks-webhook.workspace = true
@@ -40,12 +41,20 @@ time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
 utoipa-scalar.workspace = true
 actix-cors.workspace = true
 futures.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+# `test` brings figment's `Jail`, which is the only way to exercise the `WNK_*`
+# environment layer here: the workspace forbids `unsafe`, and `std::env::set_var`
+# has been unsafe since the 2024 edition.
+figment = { workspace = true, features = ["test"] }
 notify-ports = { workspace = true, features = ["test-utils"] }
 notify-push-webpush = { workspace = true, features = ["test-utils"] }
 sqlx = { workspace = true }

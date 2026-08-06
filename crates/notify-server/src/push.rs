@@ -31,6 +31,13 @@ use notify_ports::{
 #[derive(Clone, Default)]
 pub(crate) struct TransportRegistry {
     transports: BTreeMap<&'static str, Arc<dyn PushTransport>>,
+    /// Where `push_delivery_duration_seconds` and `push_failures_total` land
+    /// (design §13).
+    ///
+    /// Here rather than in the fan-out because this is the only place that knows
+    /// *which transport* answered — the fan-out holds a `dyn PushDispatcher` and is
+    /// deliberately unable to tell them apart.
+    metrics: Option<Arc<dyn notify_ports::Metrics>>,
 }
 
 impl core::fmt::Debug for TransportRegistry {
@@ -50,6 +57,13 @@ impl TransportRegistry {
     /// Register one, replacing any transport already under that name.
     pub(crate) fn with(mut self, transport: Arc<dyn PushTransport>) -> Self {
         self.transports.insert(transport.name(), transport);
+        self
+    }
+
+    /// Report every attempt to the exporter (design §13).
+    #[must_use]
+    pub(crate) fn measured_by(mut self, metrics: Arc<dyn notify_ports::Metrics>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -73,18 +87,46 @@ impl TransportRegistry {
 
 #[async_trait::async_trait]
 impl PushDispatcher for TransportRegistry {
+    /// The last span of §13's `publish → fanout → push transport`.
+    ///
+    /// Named by the transport and not by the device: which relay was slow is the
+    /// question a trace is opened to answer, and a device id in a span attribute
+    /// would put somebody's endpoint in a document an operator reads (§13 — the
+    /// same rule the metrics labels follow).
+    #[tracing::instrument(name = "push", skip_all, fields(transport = device.transport.name()))]
     async fn dispatch(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
         let wanted = device.transport.name();
 
         let Some(transport) = self.transports.get(wanted) else {
             // Named rather than generic, so an operator reading the log is told
             // which capability to configure instead of that "push failed".
+            self.record(wanted, notify_ports::PushResult::Unusable, 0.0);
             return Err(PortError::NotConfigured {
                 what: capability(wanted),
             });
         };
 
-        transport.deliver(device, message).await
+        let started = std::time::Instant::now();
+        let outcome = transport.deliver(device, message).await;
+
+        let result = match &outcome {
+            Ok(PushOutcome::Delivered) => notify_ports::PushResult::Delivered,
+            Ok(PushOutcome::Expired) => notify_ports::PushResult::Expired,
+            Ok(PushOutcome::Failed { .. }) => notify_ports::PushResult::Failed,
+            Err(_) => notify_ports::PushResult::Unusable,
+        };
+        self.record(transport.name(), result, started.elapsed().as_secs_f64());
+
+        outcome
+    }
+}
+
+impl TransportRegistry {
+    /// Hand one attempt to the exporter, if there is one.
+    fn record(&self, transport: &'static str, result: notify_ports::PushResult, seconds: f64) {
+        if let Some(metrics) = &self.metrics {
+            metrics.push_finished(transport, result, seconds);
+        }
     }
 }
 

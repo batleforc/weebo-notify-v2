@@ -32,7 +32,7 @@
 //! | Reading | [`ListInbox`], [`GetNotification`], [`ListRevisions`], [`SearchNotifications`] |
 //! | Interaction | [`RecordInteraction`], [`ListInteractions`], [`SilenceNotification`], [`PostReceipt`], [`ReadReceipts`] |
 //! | Real time | [`SyncBacklog`], [`ResolveStreamStart`] |
-//! | Administration | [`ListChannels`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
+//! | Administration | [`ListChannels`], [`ReadChannel`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
 //! | Background | [`PurgeExpired`] |
 
 pub mod accounts;
@@ -59,7 +59,9 @@ pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAc
 pub use attachments::PresignAttachment;
 pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
-pub use channels::{CreateChannel, DeleteChannel, ListChannels, ManageMembers, UpdateChannel};
+pub use channels::{
+    CreateChannel, DeleteChannel, ListChannels, ManageMembers, ReadChannel, UpdateChannel,
+};
 pub use devices::{EnrolDevice, ListDevices, RevokeDevice};
 pub use digest::{DigestReport, SendDndDigests};
 pub use fanout::Fanout;

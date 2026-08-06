@@ -156,6 +156,20 @@ fn envelope(kind: &str, reach: Reach) -> ObjectBuilder {
             timestamp("When it was appended, by the server's clock."),
         )
         .required("logged_at")
+        // Optional, and that is the contract: it is a fact about *this delivery*
+        // to *this reader*, absent when false, and a client written before it
+        // existed keeps parsing (design §7.4, §14.4 D22).
+        .property(
+            "muted_by_dnd",
+            Object::builder()
+                .schema_type(Type::Boolean)
+                .description(Some(
+                    "Whether the reader's do-not-disturb was running when this \
+                     happened. Set per delivery, never stored: a client uses it to \
+                     suppress its own popup while the inbox fills as usual.",
+                ))
+                .build(),
+        )
         .property("event", constant(kind))
         .required("event");
 
@@ -347,6 +361,7 @@ mod tests {
                 cursor: Cursor::from_sequence(1),
                 audience,
                 recorded_at: now(),
+                muted_by_dnd: false,
                 payload,
             })
             .collect()

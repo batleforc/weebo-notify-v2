@@ -157,6 +157,79 @@ mod tests {
         assert!(next.is_some(), "a dropped lease frees the stream");
     }
 
+    /// The child half of [`critical_t28_a_killed_holder_frees_the_stream`].
+    ///
+    /// A `#[test]` because that is the only entry point an integration binary
+    /// exposes, and it does nothing at all unless the parent asks: without the
+    /// variable it returns immediately, so a normal run pays nothing for it.
+    #[test]
+    fn hold_the_stream_until_killed() {
+        let Ok(store) = std::env::var("WNK_TEST_HOLD_STREAM") else {
+            return;
+        };
+
+        let _held = try_hold_stream(Path::new(&store))
+            .unwrap()
+            .expect("the child is started before the parent tries");
+
+        // Tell the parent the lock is taken, then wait to be killed. The parent
+        // reads this marker rather than sleeping a guessed interval.
+        //
+        // A marker and not a bare word: libtest prints `test <name> ... ` without a
+        // newline first, so this lands *in the middle* of that line. The parent
+        // therefore looks for the token anywhere in a line rather than matching one.
+        println!("WNK-STREAM-HELD");
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+
+    #[test]
+    fn critical_t28_a_killed_holder_frees_the_stream() {
+        // T28 (§3.4), and the half the other tests cannot reach: they drop a lease,
+        // which runs `Drop`. A `kill -9` runs nothing — the release has to come from
+        // the operating system, which is the entire reason §9.3bis chose an advisory
+        // file lock over a flag in the database. A flag would still say "held" here,
+        // and the tray app would never get the stream back after a crash.
+        let store = temp_store_path("killed");
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "election::tests::hold_the_stream_until_killed"])
+            .args(["--nocapture", "--test-threads", "1"])
+            .env("WNK_TEST_HOLD_STREAM", &store)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the test binary can spawn itself");
+
+        // Wait for the child to say it holds the lock.
+        let stdout = child.stdout.take().unwrap();
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+            assert!(read > 0, "the child exited without taking the lock");
+            if line.contains("WNK-STREAM-HELD") {
+                break;
+            }
+        }
+
+        assert!(
+            try_hold_stream(&store).unwrap().is_none(),
+            "the child holds it, so this front end has to read the store instead"
+        );
+
+        child.kill().expect("SIGKILL");
+        child.wait().expect("reaped");
+
+        // No grace period and no retry loop: the descriptor is gone with the
+        // process, so the lock is gone with it.
+        assert!(
+            try_hold_stream(&store).unwrap().is_some(),
+            "a killed holder must free the stream, or a crashed tray app takes the \
+             inbox down with it until somebody deletes a lock file by hand"
+        );
+    }
+
     #[test]
     fn two_profiles_do_not_elect_each_other() {
         let work = temp_store_path("work");

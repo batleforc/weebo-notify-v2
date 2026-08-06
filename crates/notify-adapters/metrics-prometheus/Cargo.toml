@@ -1,0 +1,25 @@
+[package]
+name = "notify-metrics-prometheus"
+description = "The Prometheus registry behind GET /metrics (design §13)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+# `prometheus-client` rather than `prometheus`: typed metric families instead of
+# stringly-keyed ones, no lazy_static registry hidden in a global, and the encoder
+# is the OpenMetrics text format the exporter has to emit anyway.
+prometheus-client = "0.25"
+
+[dev-dependencies]
+tokio = { workspace = true }

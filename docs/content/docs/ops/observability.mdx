@@ -1,0 +1,138 @@
+---
+title: Observability
+description: What a scrape of a replica tells you, what a trace adds, what both deliberately omit, and how to write an alert that survives an idle instance.
+---
+
+Every replica serves `GET /metrics` in the OpenMetrics text format, beside `/healthz`
+and `/readyz` and outside `/api/v1`. It is scraped by infrastructure, not called by a
+client: it has no OpenAPI entry, and it is unauthenticated for the same reason the
+probes are — a scraper is a pod in the same namespace, not a person with a token.
+
+```yaml
+# A pod annotation, or the equivalent ServiceMonitor.
+prometheus.io/scrape: "true"
+prometheus.io/path: "/metrics"
+prometheus.io/port: "8080"
+```
+
+## What is published
+
+Six families, and the names are the contract — they end up in dashboards and alert
+rules living outside this repository, so a rename here breaks somebody else's pager.
+
+| Family | Type | Labels | What it answers |
+| --- | --- | --- | --- |
+| `notifications_published_total` | counter | `channel` | How much is being published, and where |
+| `push_delivery_duration_seconds` | histogram | `transport` | How long a push relay took to answer |
+| `push_failures_total` | counter | `transport`, `reason` | Attempts that did not arrive |
+| `sync_backlog_size` | histogram | — | How far behind clients are when they reconnect |
+| `realtime_connections` | gauge | `transport` (`sse`, `ws`) | Streams this replica is holding |
+| `sink_dlq_depth` | gauge | `channel` | Sink deliveries given up on |
+
+`reason` is a closed set — `expired`, `failed`, `unusable` — because a free-form one
+would make an alert match nothing the day a transport words its error differently. A
+delivery is not a failure and carries no `reason`, but it *is* timed: a transport that
+only appeared in the latency histogram when it succeeded would make a graph that
+improves during an outage.
+
+`realtime_connections` is also the signal the [HPA](/docs/ops/high-availability)
+reads, so how quickly it comes back down matters, and it differs by transport:
+
+- **SSE** learns of a departure without anything being published. A client killed
+  with nothing in flight was measured off the gauge **50 seconds later** — two
+  keep-alive intervals, because the first write to a dead socket still succeeds.
+- **WebSocket** only finds out by writing, and it writes when something is published.
+  On an instance with no traffic, a dead socket stays counted until the next publish.
+
+Read the gauge accordingly: it is "connections held, plus recent departures", not a
+live count. Scale on a trend rather than on a single scrape.
+
+## What is not published, on purpose
+
+No notification, no user, no device, no push endpoint — no label anywhere is
+unbounded. Somebody who can reach this endpoint learns how busy the instance is and
+what its channels are called, and nothing else. That is a real exposure and it is
+bounded deliberately.
+
+<Callout type="warn">
+  An ingress that publishes `/metrics` is a deployment mistake — the same one that
+  publishing `/readyz` would be. Keep it inside the cluster.
+</Callout>
+
+## The dead-letter depth is the leader's answer
+
+`sink_dlq_depth` is refreshed by the replica that led the last
+[sink drain pass](/docs/ops/high-availability) and by nobody else. On a follower the
+family is **absent**, not zero.
+
+That is the honest reading: an absent series says "this replica does not know", and a
+series reading zero says "nothing is stuck". Only the first is true on a follower.
+Alert on the maximum across replicas rather than on any single one:
+
+```promql
+max(sink_dlq_depth) by (channel) > 0
+```
+
+## Writing an alert that survives an idle instance
+
+A labelled family has **no series until something is recorded**. A freshly started
+replica serves `sync_backlog_size` — no labels, so one series from the start — and
+nothing else. A dashboard panel therefore reads "no data" rather than zero on an idle
+instance.
+
+This is the metrics client's model rather than a choice made here, and it is worth
+knowing before writing the rule rather than after: reach for `absent()`, an `or
+vector(0)`, or a `for:` window long enough to cover a quiet period.
+
+## Traces
+
+Off unless you ask for them. Name a collector and the server exports spans over
+**OTLP/HTTP** (protobuf); with no `[telemetry]` section there is no exporter, no
+span processor and no extra thread.
+
+```toml
+[telemetry]
+otlp_endpoint = "http://collector:4318"  # /v1/traces is appended for you
+service_name = "weebo-notify"            # one name per deployment, not per replica
+sample_ratio = 1.0                       # 0.0–1.0, parent-based
+```
+
+Every key is environment-overridable like the rest of the configuration, so one file
+covers every environment: `WNK_TELEMETRY__OTLP_ENDPOINT=http://collector:4318` alone
+is enough to switch tracing on.
+
+A publish produces the chain the design asks for — `http` → `publish` (or `upsert`) →
+`fanout` → `push`, the last one named by the transport that answered. Span attributes
+carry the channel, the notification id and the matched route, and never a title, a
+body, a user or a push endpoint: the rule the logs follow applies to spans too.
+
+### Sending your own trace in
+
+A caller may pass a W3C `traceparent`, and the request continues that trace instead of
+starting one — which is how a CI pipeline links its own trace to the notification it
+publishes:
+
+```bash
+curl -X POST https://notify.example/api/v1/notifications \
+  -H "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" \
+  ...
+```
+
+The header is trusted, deliberately. It is a correlation id and not a credential: a
+forged one attaches a request to a trace it does not belong to, in a system the
+sender can already write to. Refusing it would cost the feature and buy nothing.
+
+<Callout>
+  Sampling is **parent-based**: a request that arrives with a sampled `traceparent` is
+  recorded whatever `sample_ratio` says, and children always follow their root. A
+  trace with holes in the middle is harder to read than no trace.
+</Callout>
+
+Spans are flushed on `SIGTERM` before the process exits — otherwise the batch
+processor would drop exactly the spans of whatever made you restart it.
+
+## Logs
+
+Structured JSON, and never a payload. Administrative actions land in a separate
+append-only audit stream, browsable through `GET /admin/audit` — that is the one
+replayed after an incident, and it is not the technical log.

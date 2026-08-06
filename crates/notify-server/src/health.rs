@@ -93,11 +93,34 @@ impl Dependencies {
     }
 }
 
-/// Mount both probes.
+/// Mount the probes and the exporter.
 pub(crate) fn configure(config: &mut web::ServiceConfig) {
     config
         .route("/healthz", web::get().to(healthz))
-        .route("/readyz", web::get().to(readyz));
+        .route("/readyz", web::get().to(readyz))
+        .route("/metrics", web::get().to(metrics));
+}
+
+/// The Prometheus exporter (design §13).
+///
+/// # Why it sits beside the probes rather than under `/api/v1`
+///
+/// It is scraped by infrastructure, not called by a client: it has no OpenAPI entry
+/// (nothing generated from the spec would ever call it), it answers a text format
+/// rather than JSON, and it is unauthenticated for the same reason `/healthz` is —
+/// a scraper is a pod in the same namespace, not a person with a token.
+///
+/// That is a real exposure and it is bounded on purpose: the document carries
+/// **counts and channel ids**, never a notification, a user, a device or an
+/// endpoint. Somebody who can reach this learns how busy the instance is and what
+/// its channels are called. An ingress that publishes it is a deployment mistake,
+/// and the same one that publishing `/readyz` would be.
+async fn metrics(metrics: web::Data<std::sync::Arc<dyn notify_ports::Metrics>>) -> impl Responder {
+    HttpResponse::Ok()
+        // The version the Prometheus text parser expects; `prometheus-client`
+        // renders OpenMetrics, which is a superset it reads.
+        .content_type("application/openmetrics-text; version=1.0.0; charset=utf-8")
+        .body(metrics.render())
 }
 
 /// Liveness probe.
@@ -184,6 +207,70 @@ mod tests {
             readiness.checks[0].detail.is_some(),
             "an operator needs to be told which dependency, not just that one failed"
         );
+    }
+
+    #[actix_web::test]
+    async fn the_exporter_serves_the_registry_the_process_writes_to() {
+        // Worth its own test even though the registry is tested where it lives: what
+        // can break here is the wiring, and it breaks silently. An `app_data` whose
+        // type does not match what the handler extracts is a `500` at scrape time
+        // and nothing at all at compile time — so this asserts the number *this*
+        // registry recorded comes back out, not merely that the route answers.
+        let metrics: std::sync::Arc<dyn notify_ports::Metrics> =
+            std::sync::Arc::new(notify_metrics_prometheus::PrometheusMetrics::new());
+        metrics.stream_opened(notify_ports::StreamKind::Sse);
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(std::sync::Arc::clone(&metrics)))
+                .configure(configure),
+        )
+        .await;
+
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
+        assert!(response.status().is_success());
+
+        // The scraper reads the content type before the body; OpenMetrics is what
+        // `prometheus-client` renders and what the Prometheus parser expects.
+        let content_type = response
+            .headers()
+            .get(actix_web::http::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            content_type.starts_with("application/openmetrics-text"),
+            "a scraper reads the content type first: {content_type}"
+        );
+
+        let body = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+        assert!(
+            body.contains("realtime_connections{transport=\"sse\"} 1"),
+            "the endpoint must serve the registry the process counted into: {body}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_instance_wired_to_no_exporter_serves_an_empty_document_rather_than_an_error() {
+        // The no-op is a configuration answer, not a failure — a deployment that
+        // measures nothing should give a scraper an empty scrape, and a `500` here
+        // would page somebody for a build that is behaving exactly as configured.
+        let metrics: std::sync::Arc<dyn notify_ports::Metrics> =
+            std::sync::Arc::new(notify_ports::NoMetrics);
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(metrics))
+                .configure(configure),
+        )
+        .await;
+
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
+
+        assert!(response.status().is_success());
+        assert!(test::read_body(response).await.is_empty());
     }
 
     #[actix_web::test]

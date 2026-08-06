@@ -26,4 +26,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 notify-ports = { workspace = true, features = ["test-utils"] }
+# For T24 alone (§3.4): creating a throwaway database and reading
+# `_sqlx_migrations` are things the adapter has no business exposing as API.
+sqlx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

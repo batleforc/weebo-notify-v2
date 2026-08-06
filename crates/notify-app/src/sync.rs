@@ -356,6 +356,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn critical_t10_the_page_and_its_events_agree_about_a_quiet_period() {
+        // D22: the answer to "should this make a noise" is computed here, once, per
+        // reader — and the transports carry it on each event so no client has to
+        // re-derive the rule. The two halves must never disagree: a page that lists
+        // a notification as deferred while its own event says otherwise would be
+        // worse than either alone.
+        let fixture = fixture();
+        set_dnd(
+            &fixture,
+            Dnd {
+                until: Some(fixture.clock.now() + time::Duration::hours(8)),
+                ..Dnd::off(alice_id(&fixture))
+            },
+        )
+        .await;
+        let published = publish(&fixture, "etcd degraded").await;
+
+        let page = caught_up(&fixture).await;
+
+        assert_eq!(page.deferred_by_dnd, vec![published.id]);
+        // The flag itself is set by the transports, which is where the reader is
+        // known; what this pins is the list they read it from, on the same page.
+        let revision = page
+            .events
+            .iter()
+            .find(|event| matches!(&event.payload, EventPayload::Revision(_)))
+            .unwrap(); // the publish appended a revision event
+        let EventPayload::Revision(revision) = &revision.payload else {
+            unreachable!()
+        };
+        assert!(
+            page.deferred_by_dnd.contains(&revision.notification_id),
+            "the event a client renders and the list it badges from name the same \n             notification"
+        );
+    }
+
+    #[tokio::test]
     async fn critical_t10_a_notification_outside_any_quiet_period_is_not_flagged() {
         let fixture = fixture();
         // A preference that exists but is not running: having one is not the same

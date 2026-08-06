@@ -157,6 +157,14 @@ pub(crate) async fn publish(
         )
         .await?;
 
+    // Counted where the request is accepted, and only when it was: design §8.3 makes
+    // these two handlers the whole of ingestion, so counting them counts every
+    // publish — from `curl`, from the CLI, from a CI job. A replay is not one: it
+    // published once, and was counted then.
+    if !published.replayed {
+        state.metrics.published(&published.notification.channel);
+    }
+
     // A replay is not a creation: answering 201 twice would tell a client it
     // published twice, which is the one thing the header exists to prevent.
     let status = if published.replayed {
@@ -206,6 +214,8 @@ pub(crate) async fn upsert(
             },
         )
         .await?;
+
+    state.metrics.published(&published.notification.channel);
 
     // Always 200, never 201: whether this call created the notification or revised
     // it is an implementation detail of the retry the caller is making.

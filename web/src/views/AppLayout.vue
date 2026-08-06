@@ -12,13 +12,16 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToaster from "@/components/layout/AppToaster.vue";
+import CommandPalette from "@/components/layout/CommandPalette.vue";
 import NotificationDetail from "@/components/notification/NotificationDetail.vue";
 import { Button } from "@/components/ui/button";
+import { opensPalette } from "@/lib/palette";
 import { resubscribe } from "@/lib/push";
 import { register } from "@/lib/service-worker";
 import { useChannels } from "@/stores/channels";
 import { useDetail } from "@/stores/detail";
 import { useInbox } from "@/stores/inbox";
+import { usePalette } from "@/stores/palette";
 import { usePreferences } from "@/stores/preferences";
 import { useToasts } from "@/stores/toasts";
 
@@ -31,10 +34,28 @@ const route = useRoute();
 const router = useRouter();
 
 const sidebarOpen = ref(false);
+const palette = usePalette();
+
+/**
+ * The one shortcut the shell owns (§10.4).
+ *
+ * On `window` rather than on a focused element, because the palette has to open
+ * from anywhere — including from inside the inbox list, which handles its own keys.
+ * It does not fire while the palette is open: Reka UI traps focus there, and
+ * `Esc` is what closes it.
+ */
+function onKeydown(event: KeyboardEvent): void {
+  if (opensPalette(event)) {
+    event.preventDefault();
+    palette.toggle();
+  }
+}
 let unsubscribe: (() => void) | null = null;
 let unhandPush: (() => void) | null = null;
 
 onMounted(async () => {
+  window.addEventListener("keydown", onKeydown);
+
   // The detail panel does not hold a stream of its own: one connection per tab,
   // out of the twenty a user gets across every client (§8.2).
   unsubscribe = inbox.subscribe((event) => {
@@ -69,6 +90,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown);
   unsubscribe?.();
   unhandPush?.();
   inbox.stop();
@@ -104,6 +126,8 @@ function closeDetail(): void {
 </script>
 
 <template>
+  <CommandPalette />
+
   <div class="grid h-dvh grid-rows-[auto_minmax(0,1fr)] lg:grid-rows-1">
     <!-- Narrow viewports get a bar; wide ones do not need one, the sidebar is
          always there. -->

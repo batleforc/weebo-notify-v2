@@ -110,6 +110,9 @@ impl State {
             cursor,
             audience,
             recorded_at: at,
+            // Stored events carry no delivery facts: the flag is set per reader on
+            // the way out (§7.4, D22).
+            muted_by_dnd: false,
             payload,
         });
         cursor

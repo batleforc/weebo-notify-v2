@@ -1,4 +1,4 @@
 {
   "title": "Operations",
-  "pages": ["configuration", "high-availability", "hardening"]
+  "pages": ["configuration", "high-availability", "observability", "hardening"]
 }

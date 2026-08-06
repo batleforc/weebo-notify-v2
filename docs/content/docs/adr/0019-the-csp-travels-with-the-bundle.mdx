@@ -1,0 +1,85 @@
+---
+title: ADR-0019 — The CSP travels with the bundle
+description: The strict policy §10.3 asks for is stamped into index.html at build time, not left to whatever serves the files.
+---
+
+Status: accepted (2026-08-06) · Supersedes: — · Superseded by: —
+
+## Context
+
+§10.3 asks for a strict Content-Security-Policy without `unsafe-inline`, and it is
+load-bearing: a channel's publishers can be less trustworthy than its readers, and
+readers hold an access token in memory. `lib/markdown.ts` names it the fourth gate
+after `html: false`, DOMPurify and the scheme check.
+[ADR-0016](/docs/adr/0016-where-the-web-client-keeps-its-tokens) calls it "the other
+half" of the token trade and says it "belongs to whatever serves the bundle".
+
+Whatever serves the bundle does not exist in this repository. There is no
+Containerfile, no ingress manifest and no static server config — so the fourth gate
+was a sentence in three documents and a header in zero deployments.
+
+Three ways to close that:
+
+- **wait for the deployment** — correct in principle, and it means the gate arrives
+  whenever packaging does, with nothing failing in the meantime to say it is missing;
+- **a response header from the server that serves the SPA** — the complete form: it
+  can carry `frame-ancestors` and `report-to`, which a meta tag cannot. It also has
+  to be written once per way of serving the files, and forgotten once per way;
+- **a `<meta http-equiv>` in `index.html`** — enforced by the browser exactly like the
+  header for every directive it supports, and it ships with the files.
+
+## Decision
+
+**The policy is stamped into `index.html` at build time, by a Vite plugin, from the
+same environment variables the client reads.**
+
+`src/lib/csp.ts` builds it and `vite.config.ts` injects it. The policy starts at
+`default-src 'none'` and adds back only what the application is observed to need:
+the API and issuer origins in `connect-src`, `data:` in `img-src` for the inline
+images §2.3 allows, `'self'` for workers and the manifest.
+
+The hash of the one inline script — the pre-paint theme switch — is **computed from
+the page being served**, never written into a constant. A pasted hash is one
+whitespace edit away from a blank page.
+
+Two directives cannot travel this way: a meta policy ignores `frame-ancestors` and
+`report-to`. Those stay owed by the deployment, and are written down on the
+[hardening page](/docs/ops/hardening) rather than assumed.
+
+`style-src` keeps `'unsafe-inline'`. reka-ui positions popovers by writing `style`
+attributes, which CSP counts as inline styles and which cannot be hashed — they
+change with the cursor. Style injection cannot exfiltrate a token the way script
+injection can, so this is the one directive where the cost is worth paying.
+
+## Consequences
+
+**Positive**
+
+- The gate exists now, on every way of serving these files — a bucket, a CDN, a
+  container, `vite preview` — instead of when packaging lands.
+- `connect-src` is the useful half: an injected script that cannot reach an
+  attacker's host has to exfiltrate through the API or the provider.
+- The build fails when the policy would name a script it cannot see, and fails when
+  the deployment's URLs are missing — rather than producing a bundle that loads and
+  then cannot reach its own API.
+
+**Negative**
+
+- `pnpm dev` runs without the policy: Vite's HMR needs a websocket and inline
+  injection the shipped policy must not allow. A violation introduced while
+  developing shows up at `pnpm build && pnpm preview`, not at the keystroke.
+- The policy is baked at build time, so one bundle serves one deployment. That is
+  already true of `VITE_API_BASE_URL` (`src/config.ts`), so it costs nothing new —
+  but a future runtime `/config.json` would have to move the policy too.
+- Browser enforcement has not been observed: there is no browser in the development
+  environment. What is verified is the policy's content, the hashes against the page
+  actually written, and the build failing when the two disagree.
+
+**Accepted debt**
+
+- `frame-ancestors` and `report-to` need a header. When packaging arrives they
+  belong to it, and this record gets a follow-up rather than an amendment.
+- The bundle is built for one deployment, so CI cannot build the real one. What it
+  builds is `task build:web:smoke` — the same pipeline with the committed example
+  values — which proves the injection and the hash check run, and produces nothing
+  anybody should deploy.

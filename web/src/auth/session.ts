@@ -7,9 +7,17 @@
  * by the service worker". Half of that ships here: the **access token never leaves
  * memory**, so no XSS-readable storage ever holds a credential that opens the API.
  *
- * The other half needs the service worker, which arrives with the PWA in M3. Until
- * then the refresh token sits in `sessionStorage`, and that is a stated trade
- * rather than an oversight:
+ * The other half — "a refresh driven by the service worker" — **is not coming**,
+ * and this comment used to say it was. The worker exists since M3 and the move it
+ * was supposed to make buys nothing: a worker is killed aggressively, so to survive
+ * eviction the token would have to live in IndexedDB, which the page reads exactly
+ * as well as the worker does. Keeping it in worker memory instead means a trip
+ * through the identity provider on every eviction, which is the "everything in
+ * memory" option §5.1's own reasoning rejected.
+ *
+ * So the refresh token stays in `sessionStorage`, now as a **decision rather than
+ * an interim** (ADR-0020, which supersedes ADR-0016 for exactly this reason). The
+ * trade, stated:
  *
  *   * `sessionStorage` is scoped to the tab and cleared when it closes, so a
  *     shared machine does not keep a session alive behind the person who left;
@@ -20,9 +28,16 @@
  *     and its reuse is detectable by the provider.
  *
  * The exposure this leaves is an XSS able to read `sessionStorage`. The same XSS
- * could call the API directly with the in-memory token, so the marginal cost is
- * "until the tab closes" rather than "at all" — and M3 closes it by moving the
- * refresh into a worker the page cannot read.
+ * could call the API directly with the in-memory token, so what it adds is
+ * **duration**, not access — hours instead of the fifteen minutes an access token
+ * lives.
+ *
+ * That is an accepted risk, and it rests on three things holding: the bundle's
+ * strict CSP (ADR-0019 — `script-src` without `'unsafe-inline'`, `connect-src`
+ * naming only the API and the issuer), the three-gate markdown path (`lib/markdown`),
+ * and refresh rotation with reuse detection at the provider. **Weakening any of
+ * those reopens the decision**, and so does a deployment whose channels carry
+ * something worse to disclose than the API access an XSS already has.
  */
 
 import { defineStore } from "pinia";

@@ -140,6 +140,17 @@ impl DrainSinks {
         Ok(report)
     }
 
+    /// How deep the dead-letter queue is, per channel (design §13,
+    /// `sink_dlq_depth`).
+    ///
+    /// Asked for by the drain loop after a pass it led, and by nobody else — which
+    /// is what keeps the gauge a leader's answer. A follower reporting zero would be
+    /// claiming nothing is stuck, which is a different sentence from "this replica
+    /// does not know".
+    pub async fn dead_letter_depth(&self) -> Result<Vec<(ChannelId, u64)>, Failure> {
+        Ok(self.queue.dead_letter_depth().await?)
+    }
+
     /// One delivery, from resolving its target to writing down what happened.
     async fn attempt(
         &self,
@@ -386,6 +397,7 @@ mod tests {
             cursor: notify_domain::Cursor::from_sequence(1),
             audience: notify_ports::Audience::Channel { id: channel_id() },
             recorded_at: at,
+            muted_by_dnd: false,
             payload: notify_ports::EventPayload::Revision(Box::new(
                 notify_ports::RevisionEvent::new(&notification, &written.revision),
             )),

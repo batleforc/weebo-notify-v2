@@ -69,6 +69,52 @@ pub(crate) struct Config {
 
     /// `[sinks]` — what the outbound sinks of §7.1bis need beyond their channel.
     pub sinks: Sinks,
+
+    /// `[telemetry]` — where the traces of §13 go, if anywhere.
+    ///
+    /// Absent means this deployment emits no spans, which is the default and not a
+    /// degradation: a collector endpoint is a fact about a deployment, and a default
+    /// pointing at `localhost:4318` would make every instance without a collector
+    /// retry an export it was never asked for.
+    pub telemetry: Option<Telemetry>,
+}
+
+/// Where the OTLP exporter sends, and what it calls this process (design §13).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Telemetry {
+    /// The collector's OTLP **HTTP** endpoint, e.g. `http://collector:4318`.
+    ///
+    /// The `/v1/traces` path is appended by the exporter, so this is the base URL a
+    /// collector documents rather than the one an operator has to assemble.
+    pub otlp_endpoint: String,
+
+    /// What the traces are attributed to. One name per deployment, not per replica:
+    /// `service.instance.id` is what tells replicas apart, and putting the pod name
+    /// here would make a trace search per-pod.
+    pub service_name: String,
+
+    /// Fraction of root traces recorded, 0.0 to 1.0.
+    ///
+    /// Sampling belongs here rather than at the collector for the reason every
+    /// sampling decision is taken early: a span that was never recorded costs
+    /// nothing to export, and one recorded to be dropped downstream has already
+    /// been paid for. Children follow their root — a trace missing its middle is
+    /// worse than no trace.
+    pub sample_ratio: f64,
+}
+
+impl Default for Telemetry {
+    fn default() -> Self {
+        Self {
+            // No default endpoint on purpose: the section only exists when somebody
+            // wrote it, and an empty endpoint is refused at startup rather than
+            // exporting into the void.
+            otlp_endpoint: String::new(),
+            service_name: "weebo-notify".to_owned(),
+            sample_ratio: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -657,6 +703,178 @@ mod tests {
         assert!(incidents.receipts);
         assert_eq!(incidents.access.len(), 3);
         assert_eq!(incidents.default_priority, Some(Priority::High));
+    }
+
+    /// Every scalar leaf of a serialised config, as `(path, value)`.
+    ///
+    /// The "generated" half of T23: the schema is not written down anywhere, so it
+    /// is read off `Config::default()` — which is the same shape figment extracts
+    /// into, so a field added tomorrow is walked tomorrow with no test to update.
+    ///
+    /// Sequences are skipped, and that is not laziness: `[[channels.managed]]` and
+    /// the other repeated tables are GitOps material (§11), set in the file that
+    /// declares them rather than one variable at a time.
+    fn scalar_leaves(
+        value: &serde_json::Value,
+        prefix: &mut Vec<String>,
+        found: &mut Vec<(Vec<String>, serde_json::Value)>,
+    ) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (name, child) in fields {
+                    prefix.push(name.clone());
+                    scalar_leaves(child, prefix, found);
+                    prefix.pop();
+                }
+            }
+            // `null` is an absent optional section — `[telemetry]`, `[federation]`.
+            // There is nothing under it to walk until something sets it, and the
+            // test above covers that case for the one that matters.
+            serde_json::Value::Null | serde_json::Value::Array(_) => {}
+            scalar => found.push((prefix.clone(), scalar.clone())),
+        }
+    }
+
+    #[test]
+    fn critical_t23_every_configuration_key_can_be_set_from_the_environment() {
+        // T23 (§3.4). The rule §11 states is "every key without exception", and the
+        // only honest way to check a claim about *every* key is to enumerate them
+        // rather than to list the ones somebody remembered.
+        //
+        // Walked from `config/dev.toml` rather than from the defaults, for a reason
+        // that took a failing run to see: half the schema is optional sections and
+        // empty vectors, so a default config serialises to eleven scalars and would
+        // have let this test pass while covering almost nothing. The committed file
+        // fills `[attachments]`, `[push.webpush]`, `[sinks.smtp]` and the rest — and
+        // it is also the shape an operator actually overrides one variable at a time.
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/dev.toml");
+        let mut leaves = Vec::new();
+        scalar_leaves(
+            &serde_json::to_value(Config::load(&base).unwrap()).unwrap(),
+            &mut Vec::new(),
+            &mut leaves,
+        );
+
+        // A floor and not an exact count: the point is to fail when the walk stops
+        // walking, not to be rewritten every time a key is added. It was 24 the day
+        // this was written, with the repeated tables (`[[channels.managed]]`,
+        // `[[trust_policy]]`, `[[service_accounts]]`) and the list-valued keys
+        // deliberately outside — those are GitOps material, not variables.
+        assert!(
+            leaves.len() >= 20,
+            "the walk found only {} keys, which means the walk is broken rather than \
+             the configuration being small: {:?}",
+            leaves.len(),
+            leaves
+                .iter()
+                .map(|(path, _)| path.join("."))
+                .collect::<Vec<_>>()
+        );
+
+        // How many keys were actually *taken* rather than refused by name. Both
+        // outcomes are acceptable per key, so without this the test could pass with
+        // every single key erroring — which would prove that the variables are read
+        // and nothing about them being honoured.
+        let mut taken = 0_usize;
+        let total = leaves.len();
+
+        for (path, value) in leaves {
+            let variable = format!("{ENV_PREFIX}{}", path.join("__").to_uppercase());
+            let sentinel = match &value {
+                serde_json::Value::Bool(flag) => (!flag).to_string(),
+                serde_json::Value::Number(number) => number
+                    .as_i64()
+                    .map_or_else(|| "1".to_owned(), |n| (n + 1).to_string()),
+                _ => "weebo-t23".to_owned(),
+            };
+
+            #[expect(
+                clippy::result_large_err,
+                reason = "the signature belongs to figment::Jail"
+            )]
+            figment::Jail::expect_with(|jail| {
+                jail.set_env(&variable, &sentinel);
+
+                // Two acceptable outcomes, and they are acceptable for the same
+                // reason: both prove the variable *reached* the field. Either it was
+                // taken, or it was refused **by name** — a `bind` that will not parse
+                // as a socket address says so. The failure this test exists for is
+                // the third outcome: the variable is ignored in silence.
+                match Config::load(&base) {
+                    Ok(config) => {
+                        let loaded = serde_json::to_value(config).unwrap();
+                        let mut at = &loaded;
+                        for segment in &path {
+                            at = &at[segment];
+                        }
+                        let rendered = match at {
+                            serde_json::Value::String(text) => text.clone(),
+                            other => other.to_string(),
+                        };
+                        assert_eq!(
+                            rendered,
+                            sentinel,
+                            "{variable} loaded without changing {}",
+                            path.join(".")
+                        );
+                        taken += 1;
+                    }
+                    Err(error) => {
+                        let message = error.to_string().to_lowercase();
+                        let key = path.last().unwrap();
+                        assert!(
+                            message.contains(key) || message.contains(&sentinel),
+                            "{variable} was refused without naming {key}: {error}"
+                        );
+                    }
+                }
+
+                Ok(())
+            });
+        }
+
+        // Roughly two thirds of the keys hold a free-form value the sentinel is
+        // valid for; the rest are socket addresses, durations and closed enums that
+        // refuse it by name. Both prove the variable arrived — but if this ever fell
+        // to zero, the test would be checking error messages and nothing else.
+        assert!(
+            taken * 2 > total,
+            "only {taken} of {total} keys were actually taken from the environment; \
+             the rest merely produced an error naming themselves"
+        );
+    }
+
+    #[test]
+    fn traces_can_be_switched_on_by_environment_alone() {
+        // The path a Kubernetes deployment actually takes: one file for every
+        // environment (§11), and the collector named by a variable because it is the
+        // one thing that differs. A whole section arriving from the environment is
+        // the case `Option<Telemetry>` could plausibly get wrong — figment has to
+        // build the `Some` and fill the rest from the defaults.
+        //
+        // The closure's error type is figment's, and clippy would rather it were
+        // boxed — which is not this test's call to make.
+        #[expect(
+            clippy::result_large_err,
+            reason = "the signature belongs to figment::Jail"
+        )]
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("WNK_TELEMETRY__OTLP_ENDPOINT", "http://collector:4318");
+
+            let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
+
+            let telemetry = config
+                .telemetry
+                .expect("naming a collector is enough to turn traces on");
+            assert_eq!(telemetry.otlp_endpoint, "http://collector:4318");
+            assert_eq!(
+                telemetry.service_name, "weebo-notify",
+                "the rest of the section still comes from its defaults"
+            );
+            assert!((telemetry.sample_ratio - 1.0).abs() < f64::EPSILON);
+
+            Ok(())
+        });
     }
 
     #[test]

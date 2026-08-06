@@ -12,12 +12,12 @@ use notify_app::{
     DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, ExchangeToken,
     GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox,
     ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers,
-    PostReceipt, PresignAttachment, PublishNotification, ReadAvatar, ReadDnd, ReadProfile,
-    ReadReceipts, ReadReconciliation, RecordInteraction, RequeueDeadLetter, ResolveStreamStart,
-    RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd,
-    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
+    PostReceipt, PresignAttachment, PublishNotification, ReadAvatar, ReadChannel, ReadDnd,
+    ReadProfile, ReadReceipts, ReadReconciliation, RecordInteraction, RequeueDeadLetter,
+    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SetAvatar,
+    SetDnd, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
-use notify_ports::EventBus;
+use notify_ports::{EventBus, Metrics};
 
 /// The application, as the HTTP layer sees it.
 #[derive(Clone)]
@@ -27,6 +27,12 @@ pub struct ApiState {
     /// than a use case. What it does *with* a poke still goes through
     /// [`ApiState::sync`], so nothing here decides who may see what.
     pub bus: Arc<dyn EventBus>,
+
+    /// What this replica is measured on (design §13). Held here rather than passed
+    /// to the use cases: every number below is a fact about the process — how many
+    /// connections it holds, how far behind a client was — and a use case that
+    /// recorded its own would be one that knows it is being watched.
+    pub metrics: Arc<dyn Metrics>,
 
     /// Credential to caller, for the extractor.
     pub authenticate: Authenticate,
@@ -87,6 +93,8 @@ pub struct ApiState {
 
     /// `GET /channels`.
     pub channels: ListChannels,
+    /// `GET /channels/{id}`.
+    pub read_channel: ReadChannel,
     /// `POST /channels`.
     pub create_channel: CreateChannel,
     /// `PATCH /channels/{id}`.

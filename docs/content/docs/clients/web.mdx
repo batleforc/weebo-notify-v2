@@ -1,0 +1,58 @@
+---
+title: Web client
+description: The inbox in a browser — the shell, the palette, permalinks, and what installing it as a PWA adds.
+---
+
+The same three zones as the terminal UI: channels and filters, the inbox, the
+detail panel. Sign-in is Authorization Code + PKCE against your identity provider;
+the app holds tokens and calls the API with them, and the server keeps no session.
+
+## The command palette
+
+`Cmd+K` — `Ctrl+K` elsewhere — opens one surface for searching and switching.
+
+- **Channels and screens** match as you type, on both their name and their id, the
+  way an editor's "go to file" does: `cov` finds `cluster-ovh-1`.
+- **Notifications** are searched **on the server**, so it finds things the inbox
+  has not loaded. Titles, bodies and tags, scoped to the channels you are in.
+- **Actions** carry the same verbs as the terminal UI's `:` line, so what you learn
+  in one client guesses correctly in the other.
+
+`Enter` opens the highlighted row, `Esc` closes and gives focus back.
+
+## Permalinks
+
+`/n/<id>` opens a notification with its detail panel; `/c/<id>` opens a channel.
+These are the URLs a sink email, a CI log or a desktop notification points at, and
+they mirror the desktop app's deep links exactly.
+
+## Installing it
+
+The web client is a PWA: install it and it keeps working offline against the
+backlog it has synced, shows the "arrived late" badge, and can receive Web Push if
+the deployment configures it. A push arriving while the tab is visible is handed to
+the page instead of the operating system, so it goes through the same
+do-not-disturb gate as everything else.
+
+## What the browser holds
+
+The access token stays in memory. The refresh token is in `sessionStorage`, which
+means it dies with the tab — and that it is readable by any script running on this
+origin. That is a deliberate trade, not an oversight, and
+[ADR-0020](/docs/adr/0020-where-the-refresh-token-lives-after-the-service-worker-plan-died)
+records what it rests on: the strict CSP below, a markdown path that never
+interprets raw HTML, refresh tokens that rotate on every use, and storage that dies
+with the tab. An XSS on this origin can already call the API as you with the
+in-memory token; what this adds is duration, and that is the part being accepted.
+
+The bundle ships a strict Content-Security-Policy of its own
+([ADR-0019](/docs/adr/0019-the-csp-travels-with-the-bundle)): no inline scripts, and
+it can only talk to the API and the identity provider it was built for. Two
+directives a page cannot carry are owed by whatever serves the files — see
+[hardening](/docs/ops/hardening).
+
+<Callout>
+  A bundle is built for one deployment: the API origin and the issuer are baked in
+  at build time, and so is the policy that names them. Pointing a built bundle at a
+  different server is not a supported move.
+</Callout>

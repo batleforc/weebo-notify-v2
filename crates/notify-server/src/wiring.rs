@@ -18,7 +18,7 @@ use notify_app::{
     EnrolDevice, ExchangeToken, Fanout, GetNotification, ListApiKeys, ListChannels,
     ListDeadLetters, ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts,
     ListTrustPolicies, ManageMembers, PostReceipt, PresignAttachment, PublishNotification,
-    PurgeExpired, ReadAvatar, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
+    PurgeExpired, ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
     ReconciliationLog, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
     RevokeDevice, SearchNotifications, SelfJoin, SendDndDigests, SetAvatar, SetDnd,
     SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel, UpdateProfile,
@@ -29,6 +29,7 @@ use notify_avatars::ImageAvatarProcessor;
 use notify_domain::{Pattern, TrustPolicies, TrustPolicy as DomainTrustPolicy};
 use notify_eventbus_pg::PgEventBus;
 use notify_http_actix::ApiState;
+use notify_metrics_prometheus::PrometheusMetrics;
 use notify_oidc::{Argon2SecretHasher, FederationTokens, OidcConfig, OidcVerifier};
 use notify_persistence_pg::{PgLeaderElection, PgStore};
 use notify_ports::{AttachmentStore, EventBus, SinkRegistry as _, SystemClock};
@@ -72,6 +73,9 @@ pub(crate) struct Application {
     /// The push transports this deployment configured, for `/readyz` and the
     /// startup log.
     pub transports: TransportRegistry,
+    /// The registry `GET /metrics` serves, and that the drain loop refreshes the
+    /// dead-letter depth on (design §13).
+    pub metrics: Arc<dyn notify_ports::Metrics>,
 }
 
 impl core::fmt::Debug for Application {
@@ -115,10 +119,15 @@ impl Application {
         let verifier = Arc::new(OidcVerifier::new(oidc, clock.clone())?);
         let hasher = Arc::new(Argon2SecretHasher);
 
+        // The exporter (§13). One registry per process, handed to everything that
+        // measures: the HTTP layer, the push registry below, and the drain loop.
+        let metrics: Arc<dyn notify_ports::Metrics> = Arc::new(PrometheusMetrics::new());
+
         // The transports `[push.*]` asks for. Nothing above this line knows which
         // ones there are: a deployment with no `[push.webpush]` gets a registry that
         // names the missing capability, and the fan-out carries on (§14.3).
         let (transports, application_server_key) = push_transports(config)?;
+        let transports = transports.measured_by(metrics.clone());
         let dispatcher = Arc::new(transports.clone());
 
         // The object store. Absent from the configuration means absent from the
@@ -189,6 +198,7 @@ impl Application {
 
         let state = ApiState {
             bus: bus.clone(),
+            metrics: metrics.clone(),
             authenticate: {
                 let base = Authenticate::new(
                     verifier,
@@ -300,6 +310,7 @@ impl Application {
             stream_start: ResolveStreamStart::new(repository.clone(), repository.clone()),
 
             channels: ListChannels::new(repository.clone()),
+            read_channel: ReadChannel::new(authorizer.clone()),
             create_channel: CreateChannel::new(
                 repository.clone(),
                 repository.clone(),
@@ -405,6 +416,7 @@ impl Application {
             reconciler,
             reconciliation_log,
             transports,
+            metrics,
         })
     }
 }

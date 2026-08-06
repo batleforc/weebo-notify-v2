@@ -17,8 +17,8 @@ use crate::error::{DomainError, Result};
 use crate::hygiene::{TextKind, optional_text, required_text, sanitize};
 use crate::ids::AttachmentId;
 use crate::limits::{
-    MAX_BODY_CHARS, MAX_DATA_URI_BYTES, MAX_GROUP_KEY_CHARS, MAX_ICON_CHARS, MAX_TAG_CHARS,
-    MAX_TAGS, MAX_TITLE_CHARS,
+    MAX_BODY_CHARS, MAX_DATA_URI_BYTES, MAX_GROUP_KEY_CHARS, MAX_ICON_CHARS, MAX_PAYLOAD_BYTES,
+    MAX_TAG_CHARS, MAX_TAGS, MAX_TITLE_CHARS,
 };
 
 /// How far along a long-running thing is. Rendered as a bar; the units are the
@@ -287,6 +287,38 @@ impl TryFrom<ContentDraft> for Content {
     type Error = DomainError;
 
     fn try_from(draft: ContentDraft) -> Result<Self> {
+        let content = Self::validated(draft)?;
+
+        // The ceiling §8.2 puts on a payload, and the only one that is about the
+        // payload rather than about one of its fields (T15).
+        //
+        // Every field below has its own limit, and they do not add up to this one:
+        // a body of `MAX_BODY_CHARS` **characters** is four times that many bytes
+        // in the worst case, and an inline image adds 48 KiB on top. So the check
+        // has to be on the whole, after validation, or the sum of well-formed
+        // fields sails past a limit each of them respects.
+        //
+        // Measured on the serialised form because that is what the ceiling is
+        // about: what travels, what a push transport has to carry (§6.2), and what
+        // a row holds.
+        // A content that will not serialise is a bug rather than an oversized
+        // payload, and it is caught where the serialisation happens.
+        let size = serde_json::to_vec(&content).map_or(0, |bytes| bytes.len());
+        if size > MAX_PAYLOAD_BYTES {
+            return Err(DomainError::TooLarge {
+                what: "payload",
+                max: MAX_PAYLOAD_BYTES,
+                actual: size,
+            });
+        }
+
+        Ok(content)
+    }
+}
+
+impl Content {
+    /// Every field checked against its own limit, without the whole-payload one.
+    fn validated(draft: ContentDraft) -> Result<Self> {
         Ok(Self {
             title: required_text(
                 &draft.title,
@@ -497,6 +529,64 @@ mod tests {
         }
         .try_into();
         assert_eq!(too_big.unwrap_err().code(), "payload.too_large");
+    }
+
+    #[test]
+    fn critical_t15_fields_that_each_fit_can_still_make_a_payload_that_does_not() {
+        // T15's first half, and the reason it needs a check of its own: every field
+        // below is **within** its limit. A body of `MAX_BODY_CHARS` characters is
+        // legal, an inline image just under 48 KiB is legal, and together they are
+        // 60-odd kilobytes past the 64 KiB §8.2 puts on a payload.
+        //
+        // The multi-byte body is the point rather than decoration: the body limit is
+        // in *characters*, this one is in bytes, and a limit that only ever sees
+        // ASCII is a limit that has not been tested.
+        let draft = ContentDraft {
+            title: "an incident".to_owned(),
+            body: Some("é".repeat(MAX_BODY_CHARS)),
+            image: Some(
+                ImageDraft::DataUri {
+                    uri: format!(
+                        "data:image/png;base64,{}",
+                        "A".repeat(MAX_DATA_URI_BYTES - 32)
+                    ),
+                }
+                .try_into()
+                .unwrap(), // just under the inline image cap, so it validates
+            ),
+            ..ContentDraft::default()
+        };
+
+        let refused: Result<Content> = draft.try_into();
+
+        assert_eq!(
+            refused.unwrap_err().code(),
+            "payload.too_large",
+            "each field fits; the payload does not (§8.2)"
+        );
+    }
+
+    #[test]
+    fn critical_t15_a_payload_under_the_ceiling_is_accepted_whole() {
+        // The other side of the same check: the ceiling must not refuse a payload
+        // that a publisher can legitimately send, or the useful half of §2.3 —
+        // a body plus a small screenshot — becomes unusable.
+        let draft = ContentDraft {
+            title: "etcd degraded".to_owned(),
+            body: Some("il y a de la latence sur le cluster".repeat(100)),
+            image: Some(
+                ImageDraft::DataUri {
+                    uri: format!("data:image/png;base64,{}", "A".repeat(8 * 1024)),
+                }
+                .try_into()
+                .unwrap(), // a small screenshot
+            ),
+            ..ContentDraft::default()
+        };
+
+        let accepted: Result<Content> = draft.try_into();
+
+        assert!(accepted.is_ok(), "{:?}", accepted.err());
     }
 
     #[test]

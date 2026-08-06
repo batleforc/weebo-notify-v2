@@ -59,6 +59,7 @@ pub mod identities;
 pub mod interactions;
 pub mod leader;
 pub mod media;
+pub mod metrics;
 pub mod notifications;
 pub mod pagination;
 pub mod preferences;
@@ -98,6 +99,7 @@ pub use identities::{
 pub use interactions::InteractionRepository;
 pub use leader::{LeaderElection, LeaderGuard};
 pub use media::{AvatarProcessor, ImageRejection, ProcessedImage};
+pub use metrics::{Metrics, NoMetrics, PushResult, StreamKind};
 pub use notifications::{ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery};
 pub use pagination::{Page, PageRequest};
 pub use preferences::{DeferredTally, PreferenceRepository};

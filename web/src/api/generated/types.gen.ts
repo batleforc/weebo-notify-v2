@@ -798,6 +798,10 @@ export type Event = (RevisionEvent & {
      * When it was appended, by the server's clock.
      */
     logged_at: string;
+    /**
+     * Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+     */
+    muted_by_dnd?: boolean;
 }) | (Receipt & {
     audience: 'channel';
     channel_id: ChannelId;
@@ -807,6 +811,10 @@ export type Event = (RevisionEvent & {
      * When it was appended, by the server's clock.
      */
     logged_at: string;
+    /**
+     * Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+     */
+    muted_by_dnd?: boolean;
 }) | (InteractionRecord & {
     audience: 'channel';
     channel_id: ChannelId;
@@ -816,6 +824,10 @@ export type Event = (RevisionEvent & {
      * When it was appended, by the server's clock.
      */
     logged_at: string;
+    /**
+     * Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+     */
+    muted_by_dnd?: boolean;
 }) | {
     audience: 'channel';
     channel_id: ChannelId;
@@ -825,6 +837,10 @@ export type Event = (RevisionEvent & {
      * When it was appended, by the server's clock.
      */
     logged_at: string;
+    /**
+     * Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+     */
+    muted_by_dnd?: boolean;
     notification_id: NotificationId;
     reason: TombstoneReason;
 } | (PreferenceEvent & {
@@ -835,6 +851,10 @@ export type Event = (RevisionEvent & {
      * When it was appended, by the server's clock.
      */
     logged_at: string;
+    /**
+     * Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+     */
+    muted_by_dnd?: boolean;
     user_id: UserId;
 });
 
@@ -2691,6 +2711,40 @@ export type DeleteChannelResponses = {
 };
 
 export type DeleteChannelResponse = DeleteChannelResponses[keyof DeleteChannelResponses];
+
+export type ReadChannelData = {
+    body?: never;
+    path: {
+        /**
+         * Channel id
+         */
+        channel: string;
+    };
+    query?: never;
+    url: '/api/v1/channels/{channel}';
+};
+
+export type ReadChannelErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `subscribe` scope there, or no such channel
+     */
+    403: Problem;
+};
+
+export type ReadChannelError = ReadChannelErrors[keyof ReadChannelErrors];
+
+export type ReadChannelResponses = {
+    /**
+     * The channel, with its members and policy
+     */
+    200: Channel;
+};
+
+export type ReadChannelResponse = ReadChannelResponses[keyof ReadChannelResponses];
 
 export type UpdateChannelData = {
     body: ChannelPolicyBody;

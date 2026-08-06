@@ -2,6 +2,7 @@ version: "3"
 
 includes:
   mise: ./.tasks/mise.yaml
+  build: ./.tasks/build.yaml
   dev: ./.tasks/dev.yaml
   gen: ./.tasks/gen.yaml
   lint: ./.tasks/lint.yaml

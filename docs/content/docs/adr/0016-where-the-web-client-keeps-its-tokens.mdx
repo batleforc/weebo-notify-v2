@@ -3,7 +3,7 @@ title: ADR-0016 — Where the web client keeps its tokens
 description: The access token stays in memory; the refresh token sits in sessionStorage until the M3 service worker takes it.
 ---
 
-Status: accepted (2026-08-03) · Supersedes: — · Superseded by: —
+Status: **superseded** (2026-08-03) · Supersedes: — · Superseded by: [ADR-0020](/docs/adr/0020-where-the-refresh-token-lives-after-the-service-worker-plan-died)
 
 ## Context
 
@@ -53,7 +53,13 @@ at a time, so twenty concurrent calls do not mint twenty tokens.
 
 **Accepted debt**
 
-- **M3 closes this**: the service worker takes the refresh token and the page can no
-  longer read it. This record gets superseded then, not amended.
-- The strict CSP §10.3 asks for is the other half and belongs to whatever serves the
-  bundle. Without it, this trade is being made on top of a weaker floor than assumed.
+- ~~**M3 closes this**: the service worker takes the refresh token and the page can
+  no longer read it.~~ **It did not, and it cannot.** A worker is evicted
+  aggressively, so surviving eviction means IndexedDB — which the page reads exactly
+  as well as the worker does. See
+  [ADR-0020](/docs/adr/0020-where-the-refresh-token-lives-after-the-service-worker-plan-died),
+  which keeps this placement and replaces the plan with the mitigations it rests on.
+- ~~The strict CSP §10.3 asks for is the other half and belongs to whatever serves
+  the bundle.~~ It ships **with** the bundle now
+  ([ADR-0019](/docs/adr/0019-the-csp-travels-with-the-bundle)), so the floor this
+  trade assumed exists.

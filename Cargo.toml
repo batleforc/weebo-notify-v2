@@ -14,6 +14,7 @@ members = [
     "crates/notify-adapters/push-webpush",
     "crates/notify-adapters/sinks-webhook",
     "crates/notify-adapters/sinks-email",
+    "crates/notify-adapters/metrics-prometheus",
     "crates/notify-adapters/push-unifiedpush",
     "crates/notify-adapters/push-apns",
     "crates/notify-server",
@@ -62,6 +63,7 @@ notify-avatars = { path = "crates/notify-adapters/avatars" }
 notify-push-webpush = { path = "crates/notify-adapters/push-webpush" }
 notify-sinks-webhook = { path = "crates/notify-adapters/sinks-webhook" }
 notify-sinks-email = { path = "crates/notify-adapters/sinks-email" }
+notify-metrics-prometheus = { path = "crates/notify-adapters/metrics-prometheus" }
 notify-push-unifiedpush = { path = "crates/notify-adapters/push-unifiedpush" }
 notify-push-apns = { path = "crates/notify-adapters/push-apns" }
 notify-client-api = { path = "crates/notify-client-api" }
@@ -116,6 +118,24 @@ argon2 = { version = "0.5", features = ["std"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# OTLP over HTTP+protobuf on reqwest/rustls, and nothing else: the gRPC transport
+# would bring tonic and a second HTTP stack into a binary that already has one, and
+# the `-rustls` suffix is the same refusal as everywhere else here — no OpenSSL, so
+# the image still builds from a plain `cargo build` (design §13, D16).
+#
+# `reqwest-blocking-client` and not the async one, which is not a preference: the
+# batch span processor runs on its own dedicated thread, that thread is not a Tokio
+# runtime, and an async reqwest handed to it panics with "there is no reactor
+# running" on the first export. Found by running it against a collector.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-blocking-client",
+    "reqwest-rustls",
+] }
+tracing-opentelemetry = { version = "0.33", default-features = false, features = ["tracing-log"] }
 
 # --- CLI ---
 clap = { version = "4.6", features = ["derive", "env"] }

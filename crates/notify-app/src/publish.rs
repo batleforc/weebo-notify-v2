@@ -226,6 +226,13 @@ impl PublishNotification {
     }
 
     /// Publish.
+    ///
+    /// The root of the trace §13 asks for (`publish → fanout → push transport`) when
+    /// the caller sent no `traceparent`, and its continuation when they did. The
+    /// span carries the channel and nothing from the draft: a trace is read by
+    /// whoever runs the collector, and §13 says the logs never carry a payload —
+    /// there is no reason the spans should.
+    #[tracing::instrument(name = "publish", skip_all, fields(channel = %request.channel))]
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -335,6 +342,15 @@ impl UpsertNotification {
     }
 
     /// Create or revise.
+    ///
+    /// Same span as [`PublishNotification::execute`] in every respect but the name,
+    /// and it carries the publisher's own id because that is the thing an operator
+    /// has in hand when they come asking — "the run that failed was `build-4711`".
+    #[tracing::instrument(
+        name = "upsert",
+        skip_all,
+        fields(channel = %request.channel, external_id = %request.external_id)
+    )]
     pub async fn execute(
         &self,
         caller: &Caller,

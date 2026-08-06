@@ -170,6 +170,10 @@ impl Fanout {
                 id: notification.channel.clone(),
             },
             recorded_at: revision.received_at,
+            // A fact about a delivery, and this is not one: the fan-out builds the
+            // event that goes into the log, and the log is read by everybody
+            // (§7.4, D22).
+            muted_by_dnd: false,
             payload: EventPayload::Revision(Box::new(RevisionEvent::new(notification, revision))),
         };
 
@@ -206,6 +210,16 @@ impl Fanout {
     /// Errors are logged, never propagated. Reporting a publish as failed because a
     /// push relay was unhappy would make a CI pipeline red for somebody else's
     /// phone.
+    ///
+    /// The middle span of §13's `publish → fanout → push transport`, and the one
+    /// that earns the trace: everything it does is swallowed on purpose, so without
+    /// a span the answer to "the publish succeeded, why did nothing arrive" is a
+    /// warning line somewhere in the log of whichever replica handled it.
+    #[tracing::instrument(
+        name = "fanout",
+        skip_all,
+        fields(channel = %notification.channel, notification = %notification.id)
+    )]
     pub async fn push(&self, notification: &Notification) {
         let targets = match self.devices.delivery_targets(&notification.channel).await {
             Ok(targets) => targets,

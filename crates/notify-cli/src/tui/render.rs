@@ -189,6 +189,13 @@ fn command_line(frame: &mut Frame, area: Rect, command: &str) {
             Span::styled(":", Style::default().fg(Color::Yellow)),
             Span::raw(command.to_owned()),
             Span::styled("█", Style::default().fg(Color::Yellow)),
+            // The bindings this line has and the rest of the interface does not.
+            // §9.2 wants the active bindings visible at all times, and completion
+            // nobody knows about is completion nobody uses.
+            Span::styled(
+                "   tab compléter · ↑↓ historique · esc annuler",
+                Style::default().fg(Color::DarkGray),
+            ),
         ])),
         area,
     );

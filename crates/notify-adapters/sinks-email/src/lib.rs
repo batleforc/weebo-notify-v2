@@ -264,6 +264,7 @@ mod tests {
                     id: ChannelId::parse("cluster-ovh-1").unwrap(),
                 },
                 recorded_at: OffsetDateTime::UNIX_EPOCH,
+                muted_by_dnd: false,
                 payload,
             },
             attempts: 0,

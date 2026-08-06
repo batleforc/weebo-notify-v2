@@ -42,6 +42,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(stream::stream)
             .service(stream::websocket)
             .service(channels::list_channels)
+            .service(channels::read_channel)
             .service(channels::create_channel)
             .service(channels::update_channel)
             .service(channels::delete_channel)

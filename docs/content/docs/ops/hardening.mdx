@@ -36,6 +36,28 @@ private**, with a presigned URL as the only path to an object: short TTL, enforc
 content type and `content-length-range`. Any anonymous read access defeats the whole
 arrangement.
 
+## Two security headers the bundle cannot send itself
+
+The web client ships its own Content-Security-Policy, stamped into `index.html` at
+build time ([ADR-0019](/docs/adr/0019-the-csp-travels-with-the-bundle)) — so it is
+enforced however you serve the files. A `<meta>` policy cannot carry two directives,
+and whatever serves the bundle owes them:
+
+- **`frame-ancestors`** — without it, nothing stops the app being framed by another
+  origin. Send `Content-Security-Policy: frame-ancestors 'none'` (or
+  `X-Frame-Options: DENY` for older clients).
+- **`report-to` / `report-uri`** — without it, a policy violation is a console
+  message on somebody's laptop rather than a signal you receive.
+
+While you are adding headers, `Strict-Transport-Security` belongs to the same place
+and to the same class of "cannot be shipped in the page".
+
+<Callout>
+  The policy names the API and identity provider origins the bundle was **built**
+  with. Pointing a built bundle at a different API by changing a runtime setting
+  does not exist as a supported path — and if it did, the policy would block it.
+</Callout>
+
 ## Release signing keys
 
 The minisign private key for the desktop updater is equivalent to **remote code

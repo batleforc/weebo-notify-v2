@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use notify_client_core::types::{Channel, Notification, State, Status};
 use notify_client_core::{CachedNotification, Session, Store};
 
+use super::history;
 use super::sanitise;
 
 /// One line of the inbox, whichever side it came from.
@@ -32,6 +33,12 @@ pub(crate) struct Row {
     /// How long after its creation this profile first saw it (§7.2). `None` when
     /// the local store never recorded an arrival — which is not the same as zero.
     pub late_by: Option<TimeDelta>,
+    /// Whether the **server** said this one landed inside a quiet period (§7.4).
+    ///
+    /// Not re-derived here, and that is the point of D22: the rule lives where the
+    /// preference does, the server applies it per reader, and every client that
+    /// answered the question locally was another copy to keep in step.
+    pub muted_by_dnd: bool,
 }
 
 impl Row {
@@ -51,6 +58,11 @@ impl Row {
             state: head.state,
             status: head.status,
             late_by,
+            // `GET /inbox` is a list of notifications, not of deliveries: it has no
+            // opinion about a quiet period, and the store does (§7.4). A row read
+            // from the server is therefore never *known* to be muted — which is the
+            // safe direction, and the reason a popup decision reads the cache path.
+            muted_by_dnd: false,
         }
     }
 
@@ -71,6 +83,7 @@ impl Row {
             state: cached.state,
             status: cached.status,
             late_by,
+            muted_by_dnd: cached.deferred_by_dnd,
         }
     }
 }
@@ -119,6 +132,10 @@ pub(crate) enum Message {
     CommandBackspace,
     /// Run what is in the command line.
     RunCommand,
+    /// Complete what is typed from the clap tree (§9.2).
+    CompleteCommand,
+    /// Walk the persisted history: -1 is older, +1 is newer (§9.2).
+    RecallCommand(i32),
     /// Leave the command line, or close the popup.
     Cancel,
     /// Toggle the help popup.
@@ -151,11 +168,26 @@ pub(crate) struct App {
     pub selected_row: usize,
     /// The `:` line, when it is open.
     pub command: Option<String>,
+    /// What the `:` line remembers between runs (§9.2). Loaded from the profile
+    /// directory, so a TUI closed and reopened keeps yesterday's lines.
+    pub history: history::History,
     /// What the last command printed, shown in a popup.
     pub output: Option<String>,
     pub show_help: bool,
     pub status: String,
     pub should_quit: bool,
+    /// Whether the inbox has ever been filled, arrival or no arrival.
+    ///
+    /// The first load is not a pile of arrivals (a TUI that opens by popping the
+    /// whole inbox is one nobody opens twice), and "the inbox is empty" is not the
+    /// same question — see [`Self::note_arrivals`].
+    pub loaded: bool,
+    /// Rows that appeared since the last time the loop looked, oldest first.
+    ///
+    /// Filled by whatever reloads the inbox and drained by the loop, for the same
+    /// reason `wrote` is: `update` stays free of I/O, and popping a desktop
+    /// notification is I/O (§9.2).
+    pub arrivals: Vec<Row>,
     /// Set when this front end just wrote to the shared store, and cleared by the
     /// loop once it has poked the readers (§9.3bis). A flag rather than a call from
     /// `update`, because `update` is the one function that must stay free of I/O.
@@ -164,6 +196,7 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new(profile: String, holds_stream: bool) -> Self {
+        let history = history::History::load(Some(history::history_path(&profile)));
         Self {
             profile,
             holds_stream,
@@ -173,12 +206,20 @@ impl App {
             selected_channel: 0,
             selected_row: 0,
             command: None,
+            history,
             output: None,
             show_help: false,
             status: String::new(),
+            loaded: false,
+            arrivals: Vec::new(),
             should_quit: false,
             wrote: false,
         }
+    }
+
+    /// What arrived since the last call, clearing it as it answers.
+    pub(crate) fn take_arrivals(&mut self) -> Vec<Row> {
+        std::mem::take(&mut self.arrivals)
     }
 
     /// Whether readers should be poked, clearing the flag as it answers.
@@ -197,6 +238,9 @@ impl App {
                 KeyCode::Esc => Message::Cancel,
                 KeyCode::Enter => Message::RunCommand,
                 KeyCode::Backspace => Message::CommandBackspace,
+                KeyCode::Tab => Message::CompleteCommand,
+                KeyCode::Up => Message::RecallCommand(-1),
+                KeyCode::Down => Message::RecallCommand(1),
                 KeyCode::Char(character) => Message::CommandChar(character),
                 _ => Message::Ignored,
             };
@@ -248,8 +292,28 @@ impl App {
                     line.pop();
                 }
             }
+            Message::CompleteCommand => {
+                if let Some(line) = &mut self.command
+                    && let Some(completed) = super::completion::complete(line)
+                {
+                    *line = completed;
+                }
+            }
+            Message::RecallCommand(direction) => {
+                if self.command.is_some() {
+                    let recalled = if direction < 0 {
+                        self.history.previous().map(ToOwned::to_owned)
+                    } else {
+                        self.history.next().map(ToOwned::to_owned)
+                    };
+                    // Nothing newer than the newest is the line the caller was
+                    // typing, and an empty line is the honest rendering of it.
+                    self.command = Some(recalled.unwrap_or_default());
+                }
+            }
             Message::RunCommand => {
                 let line = self.command.take().unwrap_or_default();
+                self.history.push(&line);
                 self.output = Some(run_command(&line, &self.profile, session).await);
                 // Whatever it did, the server may now disagree with the screen.
                 self.refresh(session, store).await;
@@ -315,7 +379,7 @@ impl App {
 
         match session.inbox(self.channel_filter().as_deref(), 100).await {
             Ok(inbox) => {
-                self.inbox = inbox
+                let fresh: Vec<Row> = inbox
                     .iter()
                     .map(|entry| {
                         // The arrival time is the store's to answer, and a row it has
@@ -329,6 +393,12 @@ impl App {
                         Row::from_inbox(entry, late)
                     })
                     .collect();
+                // Through the same diff as the cache path: the holder reads the
+                // inbox from the server, so an arrival that lands on a refresh has
+                // to be noticed here too — and the first refresh is what marks the
+                // first load, so the first poke after it is not swallowed.
+                self.note_arrivals(&fresh);
+                self.inbox = fresh;
                 self.status = format!("{} notifications", self.inbox.len());
             }
             Err(error) => self.status = format!("inbox: {error}"),
@@ -345,13 +415,41 @@ impl App {
     pub(crate) fn reload_from_store(&mut self, store: &Store) {
         match store.cached_inbox(100) {
             Ok(cached) => {
-                self.inbox = cached.into_iter().map(Row::from_cache).collect();
+                let fresh: Vec<Row> = cached.into_iter().map(Row::from_cache).collect();
+                self.note_arrivals(&fresh);
+                self.inbox = fresh;
                 self.status = format!("{} notifications (cache)", self.inbox.len());
             }
             Err(error) => self.status = format!("store: {error}"),
         }
 
         self.clamp_selection();
+    }
+
+    /// Remember what is in `fresh` and was not on screen before.
+    ///
+    /// Identity is the notification id, not the revision: a notification that is
+    /// revised twenty times during an incident is one arrival, not twenty popups.
+    /// The first load is not an arrival either — everything is new then, and a TUI
+    /// that opens by popping the whole inbox is a TUI nobody opens twice.
+    fn note_arrivals(&mut self, fresh: &[Row]) {
+        // `loaded` and not `inbox.is_empty()`, which is what this said first and was
+        // wrong in a way nobody would have reported: somebody whose inbox is empty
+        // — a fresh enrolment, or a channel that just expired everything — would
+        // never be told about their **first** notification, and only that one.
+        if !self.loaded {
+            self.loaded = true;
+            return;
+        }
+
+        let known: std::collections::HashSet<&str> =
+            self.inbox.iter().map(|row| row.id.as_str()).collect();
+        self.arrivals.extend(
+            fresh
+                .iter()
+                .filter(|row| !known.contains(row.id.as_str()))
+                .cloned(),
+        );
     }
 
     fn clamp_selection(&mut self) {
@@ -561,5 +659,113 @@ mod tests {
     #[test]
     fn an_empty_command_line_does_nothing() {
         assert!(parse_command("   ").unwrap().is_none());
+    }
+    #[test]
+    fn tab_and_the_arrows_belong_to_the_command_line_while_it_is_open() {
+        // Outside it, Tab moves focus and the arrows move the selection (§9.2);
+        // inside it they have to mean completion and history, or the two features
+        // are unreachable from the keyboard they were written for.
+        let mut app = app();
+        app.command = Some(String::new());
+
+        assert_eq!(
+            app.key(KeyCode::Tab, KeyModifiers::NONE),
+            Message::CompleteCommand
+        );
+        assert_eq!(
+            app.key(KeyCode::Up, KeyModifiers::NONE),
+            Message::RecallCommand(-1)
+        );
+        assert_eq!(
+            app.key(KeyCode::Down, KeyModifiers::NONE),
+            Message::RecallCommand(1)
+        );
+
+        app.command = None;
+        assert_eq!(app.key(KeyCode::Tab, KeyModifiers::NONE), Message::NextPane);
+        assert_eq!(app.key(KeyCode::Up, KeyModifiers::NONE), Message::Move(-1));
+    }
+    fn row(id: &str) -> Row {
+        Row {
+            id: id.to_owned(),
+            channel: "ci-infra".to_owned(),
+            title: format!("about {id}"),
+            body: None,
+            seq: 1,
+            last_seq: 1,
+            state: State::Open,
+            status: Status::Info,
+            late_by: None,
+            muted_by_dnd: false,
+        }
+    }
+
+    #[test]
+    fn the_first_load_is_not_a_pile_of_arrivals() {
+        // A TUI that opens by popping the whole inbox is a TUI nobody opens twice
+        // (§9.2, `--notify-send`).
+        let mut app = app();
+
+        app.note_arrivals(&[row("ntf_1"), row("ntf_2")]);
+
+        assert!(app.take_arrivals().is_empty());
+    }
+
+    #[test]
+    fn the_first_notification_of_an_empty_inbox_is_still_an_arrival() {
+        // The bug this pins: "is the inbox empty" was standing in for "have we
+        // loaded yet", so somebody with an empty inbox — a fresh enrolment, or a
+        // channel that just expired everything — was never told about their first
+        // notification, and only that one. Silent, and unreportable.
+        let mut app = app();
+        app.note_arrivals(&[]); // the first load, of nothing at all
+        assert!(app.take_arrivals().is_empty());
+
+        app.note_arrivals(&[row("ntf_1")]);
+
+        let arrived: Vec<String> = app.take_arrivals().into_iter().map(|r| r.id).collect();
+        assert_eq!(arrived, ["ntf_1"]);
+    }
+
+    #[test]
+    fn only_what_was_not_there_before_counts_as_an_arrival() {
+        let mut app = app();
+        app.loaded = true;
+        app.inbox = vec![row("ntf_1")];
+
+        app.note_arrivals(&[row("ntf_2"), row("ntf_1")]);
+
+        let arrived: Vec<String> = app.take_arrivals().into_iter().map(|r| r.id).collect();
+        assert_eq!(arrived, ["ntf_2"]);
+    }
+
+    #[test]
+    fn a_notification_revised_twenty_times_is_one_arrival() {
+        // Identity is the notification id, not the revision: an incident that gets
+        // amended all afternoon must not pop all afternoon (§2.2).
+        let mut app = app();
+        app.loaded = true;
+        app.inbox = vec![row("ntf_1")];
+
+        let mut revised = row("ntf_2");
+        app.note_arrivals(&[revised.clone()]);
+        app.inbox = vec![row("ntf_1"), revised.clone()];
+        revised.seq = 2;
+        revised.title = "amended".to_owned();
+        app.note_arrivals(&[revised]);
+
+        assert_eq!(app.take_arrivals().len(), 1);
+    }
+
+    #[test]
+    fn draining_the_arrivals_leaves_nothing_behind() {
+        // The loop drains on every pass; a second pass must not pop the same thing.
+        let mut app = app();
+        app.loaded = true;
+        app.inbox = vec![row("ntf_1")];
+        app.note_arrivals(&[row("ntf_1"), row("ntf_2")]);
+
+        assert_eq!(app.take_arrivals().len(), 1);
+        assert!(app.take_arrivals().is_empty());
     }
 }

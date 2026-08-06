@@ -2727,6 +2727,10 @@ field the server was going to overwrite.
     ///              "description": "When it was appended, by the server's clock.",
     ///              "type": "string",
     ///              "format": "date-time"
+    ///            },
+    ///            "muted_by_dnd": {
+    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
+    ///              "type": "boolean"
     ///            }
     ///          }
     ///        }
@@ -2770,6 +2774,10 @@ field the server was going to overwrite.
     ///              "description": "When it was appended, by the server's clock.",
     ///              "type": "string",
     ///              "format": "date-time"
+    ///            },
+    ///            "muted_by_dnd": {
+    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
+    ///              "type": "boolean"
     ///            }
     ///          }
     ///        }
@@ -2813,6 +2821,10 @@ field the server was going to overwrite.
     ///              "description": "When it was appended, by the server's clock.",
     ///              "type": "string",
     ///              "format": "date-time"
+    ///            },
+    ///            "muted_by_dnd": {
+    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
+    ///              "type": "boolean"
     ///            }
     ///          }
     ///        }
@@ -2854,6 +2866,10 @@ field the server was going to overwrite.
     ///          "description": "When it was appended, by the server's clock.",
     ///          "type": "string",
     ///          "format": "date-time"
+    ///        },
+    ///        "muted_by_dnd": {
+    ///          "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
+    ///          "type": "boolean"
     ///        },
     ///        "notification_id": {
     ///          "$ref": "#/components/schemas/NotificationId"
@@ -2899,6 +2915,10 @@ field the server was going to overwrite.
     ///              "type": "string",
     ///              "format": "date-time"
     ///            },
+    ///            "muted_by_dnd": {
+    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
+    ///              "type": "boolean"
+    ///            },
     ///            "user_id": {
     ///              "$ref": "#/components/schemas/UserId"
     ///            }
@@ -2925,6 +2945,9 @@ field the server was going to overwrite.
             external_id: ::std::option::Option<ExternalId>,
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             payload: Content,
             priority: Priority,
@@ -2949,6 +2972,9 @@ last-write-wins (design §2.2).*/
             kind: ReceiptKind,
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             principal: Principal,
         },
@@ -2962,6 +2988,9 @@ last-write-wins (design §2.2).*/
             interaction: Interaction,
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             ///When the server recorded it.
             recorded_at: ::chrono::DateTime<::chrono::offset::Utc>,
@@ -2973,6 +3002,9 @@ last-write-wins (design §2.2).*/
             event: LoggedTombstoneEvent,
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             reason: TombstoneReason,
         },
@@ -2983,6 +3015,9 @@ last-write-wins (design §2.2).*/
             event: LoggedPreferenceEvent,
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            muted_by_dnd: ::std::option::Option<bool>,
             ///Every silence currently in force for them.
             silences: ::std::vec::Vec<Silence>,
             user: UserId,
@@ -8522,6 +8557,58 @@ Sends a `POST` request to `/api/v1/channels`
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**One channel: its policy, its members, and where it came from
+
+Listed by §8 since M1 and served by no build until now — a client wanting one
+channel had to walk `GET /channels` until it found it, which works right up to
+the page where it does not.
+
+Sends a `GET` request to `/api/v1/channels/{channel}`
+
+Arguments:
+- `channel`: Channel id
+*/
+    pub async fn read_channel<'a>(
+        &'a self,
+        channel: &'a str,
+    ) -> Result<ResponseValue<types::Channel>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/channels/{}", self.baseurl, encode_path(& channel.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "read_channel",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

@@ -612,6 +612,45 @@ mod tests {
         assert_eq!(reopened.device().unwrap().as_deref(), Some("dev_01J"));
     }
 
+    #[test]
+    fn critical_t28_deleting_the_store_asks_for_everything_again_rather_than_losing_it() {
+        // The other half of T28 (§3.4), and the sentence §9.3bis rests on: "le store
+        // n'est qu'un cache : le supprimer déclenche un re-sync complet, jamais une
+        // perte". What makes that true is here and nowhere else — the cursor lives
+        // in the file, so a deleted file means "start from the beginning", which is
+        // exactly what a client that has lost its place should ask for.
+        //
+        // The failure this rules out is the opposite one: a store that comes back
+        // *with* a cursor it cannot justify — from a stale copy, a default, a
+        // half-written row — and therefore skips everything published since.
+        let (store, path) = temp_store("deleted");
+        store.set_cursor("evt_00000000000042").unwrap();
+        store.set_device("dev_01J").unwrap();
+        drop(store);
+
+        std::fs::remove_file(&path).unwrap();
+        // WAL and shared-memory siblings go with it, the way `rm store.db*` would.
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+
+        let rebuilt = Store::open_at(&path).unwrap();
+
+        assert_eq!(
+            rebuilt.cursor().unwrap(),
+            None,
+            "a rebuilt store must ask for the whole backlog, not resume from a place \
+             it no longer knows"
+        );
+        assert!(rebuilt.is_empty().unwrap());
+        assert_eq!(
+            rebuilt.device().unwrap(),
+            None,
+            "the device id was in the store too: the next run enrols again rather \
+             than posting receipts as a device the server may have revoked"
+        );
+    }
+
     /// One cached revision, with the fields a test cares about.
     fn entry<'a>(id: &'a str, revised_at: &'a str, payload: &'a str) -> CacheEntry<'a> {
         CacheEntry {
