@@ -33,7 +33,14 @@ const KEEP_ALIVE: Duration = Duration::from_secs(25);
 /// browser tab into a memory leak on the replica.
 const BACKPRESSURE: u32 = 64;
 
-/// Holds `realtime_connections{transport}` up for as long as it lives (design §13).
+/// Holds a §8.2 connection slot and `realtime_connections{transport}` up for as
+/// long as it lives (design §13).
+///
+/// One guard for both because they have exactly the same lifetime and exactly the
+/// same hard part — the decrement. Two guards would be two chances to get that
+/// wrong, and the failure modes differ in severity: a leaked gauge misleads an
+/// operator, a leaked slot locks somebody out of their own inbox until the replica
+/// restarts.
 ///
 /// A guard and not two calls, because the interesting half is the decrement: a
 /// stream ends when the client goes away, when the task is aborted at shutdown, or
@@ -62,15 +69,35 @@ const BACKPRESSURE: u32 = 64;
 struct Connected {
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     transport: notify_ports::StreamKind,
+    /// Released on drop; never read. Held rather than dropped immediately, which is
+    /// the entire mechanism — see [`crate::slots::StreamSlot`].
+    _slot: crate::slots::StreamSlot,
 }
 
 impl Connected {
-    fn open(state: &ApiState, transport: notify_ports::StreamKind) -> Self {
+    /// Take a slot and start counting, or refuse with the `429` §8.2 asks for.
+    ///
+    /// Refusing *here* rather than after the backlog is drained is deliberate: the
+    /// twenty-first connection is turned away before it costs a page of events, and
+    /// a client over its ceiling learns so from a status code instead of from a
+    /// stream that goes quiet.
+    fn open(
+        state: &ApiState,
+        caller: &Caller,
+        transport: notify_ports::StreamKind,
+    ) -> Result<Self, ApiError> {
+        let slot = state.streams.acquire(&caller.principal).ok_or_else(|| {
+            ApiError::from(notify_ports::Failure::RateLimited {
+                retry_after_seconds: crate::slots::RETRY_AFTER_SECONDS,
+            })
+        })?;
+
         state.metrics.stream_opened(transport);
-        Self {
+        Ok(Self {
             metrics: std::sync::Arc::clone(&state.metrics),
             transport,
-        }
+            _slot: slot,
+        })
     }
 }
 
@@ -217,6 +244,8 @@ fn as_sse(event: &Event) -> Result<sse::Data, serde_json::Error> {
         (status = 401, description = "No usable credential", body = Problem),
         (status = 403, description = "Not a device owner — service accounts read the inbox", body = Problem),
         (status = 422, description = "That cursor is not one of ours", body = Problem),
+        (status = 429, description = "Too many live connections held by this principal \
+                                      on this replica (design §8.2)", body = Problem),
     ),
     security(("bearer" = []))
 )]
@@ -234,13 +263,14 @@ pub(crate) async fn stream(
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
 
+    // Counted from here, where the connection is real, rather than from the first
+    // poke — a client that connects and never receives anything is still one this
+    // replica is holding open. First of all, too: this is the one refusal that
+    // should cost nothing, so the ceiling is checked before the store is touched.
+    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::Sse)?;
     let mut connection =
         Connection::open(&state, caller.0, &params, last_event_id.as_deref()).await?;
     let mut pokes = state.bus.subscribe().await?;
-    // Counted from here, where the connection is real, rather than from the first
-    // poke — a client that connects and never receives anything is still one this
-    // replica is holding open.
-    let connected = Connected::open(&state, notify_ports::StreamKind::Sse);
 
     let (sender, receiver) = tokio::sync::mpsc::channel(BACKPRESSURE as usize);
     let stream = sse::Sse::from_infallible_receiver(receiver).with_keep_alive(KEEP_ALIVE);
@@ -310,6 +340,8 @@ pub(crate) async fn stream(
         (status = 101, description = "Switching protocols; frames are the SSE payloads as JSON"),
         (status = 401, description = "No usable credential", body = Problem),
         (status = 422, description = "That cursor is not one of ours", body = Problem),
+        (status = 429, description = "Too many live connections held by this principal \
+                                      on this replica (design §8.2)", body = Problem),
     ),
     security(("bearer" = []))
 )]
@@ -322,6 +354,9 @@ pub(crate) async fn websocket(
     params: web::Query<StreamParams>,
 ) -> Result<HttpResponse, ApiError> {
     let params = params.into_inner();
+    // Before the handshake, for the same reason as SSE: a client over its ceiling
+    // gets a status code rather than an upgraded socket that closes on its own.
+    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::WebSocket)?;
     let mut connection = Connection::open(&state, caller.0, &params, None).await?;
     let mut pokes = state.bus.subscribe().await?;
 
@@ -338,8 +373,6 @@ pub(crate) async fn websocket(
             .into());
         }
     };
-
-    let connected = Connected::open(&state, notify_ports::StreamKind::WebSocket);
 
     actix_web::rt::spawn(async move {
         let _connected = connected;

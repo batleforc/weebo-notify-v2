@@ -236,7 +236,9 @@ impl SearchNotifications {
         };
         if let Allowance::Limited {
             retry_after_seconds,
-        } = self.limiter.check(&quota, self.clock.now()).await?
+            // No override: §8.2 makes `limits` a property of a channel, and a search
+            // crosses every channel the caller can read.
+        } = self.limiter.check(&quota, None, self.clock.now()).await?
         {
             return Err(Failure::RateLimited {
                 retry_after_seconds,

@@ -582,6 +582,19 @@ impl Config {
                 !channel.id.is_empty(),
                 "a [[channels.managed]] entry has no id"
             );
+            // Refused rather than read as "unlimited", which is what somebody
+            // writing it almost certainly meant: a ceiling of zero refuses every
+            // publish on the channel, and it would do so with a `429` that looks
+            // like load rather than like configuration. Leaving `limits` out is how
+            // §8.2's default is asked for.
+            anyhow::ensure!(
+                channel
+                    .limits
+                    .is_none_or(|limits| limits.publish_per_min != Some(0)),
+                "channel `{}` sets limits.publish_per_min = 0, which refuses every \
+                 publish; omit the key to take the default of design §8.2",
+                channel.id
+            );
             for sink in &channel.sinks {
                 sink.validate(&channel.id)?;
                 anyhow::ensure!(
@@ -637,6 +650,13 @@ impl Config {
         // `[[channels.managed.sinks]]` is honoured since M4bis and is absent from
         // this list on purpose, on the same terms as `[push.webpush]` below: the
         // composition root reads it, and a sink it cannot build stops the process.
+
+        // `[[channels.managed]].limits` is honoured since M4octodecies — the
+        // reconciler puts `publish_per_min` on the channel policy and the publish
+        // path measures against it. It was parsed and read by nobody before that,
+        // and it was not in this list either, which is the failure mode this
+        // function exists to prevent: the one key that was silently dropped was the
+        // one the drop-detector did not know about.
 
         // `[push.webpush]` is honoured since M3.5 and is absent from this list on
         // purpose: the composition root reads it, and a key it cannot use stops the
@@ -1019,6 +1039,43 @@ mod tests {
              [[channels.managed.sinks]]\n\
              type = \"email\"\n\
              address = \"oncall@weebo.poc\"\n",
+        );
+
+        assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn a_channel_publish_limit_is_parsed_where_the_reconciler_reads_it() {
+        // Written the way design §11 writes it — an inline table — rather than as a
+        // sub-table. Both are TOML and both deserialise; the one worth pinning is
+        // the one an operator will copy out of the document.
+        let path = with_config(
+            "channel-limits",
+            "[[channels.managed]]\n\
+             id = \"ci-infra\"\n\
+             limits = { publish_per_min = 120 }\n",
+        );
+
+        let config = Config::load(&path).unwrap();
+
+        assert_eq!(
+            config.channels.managed[0]
+                .limits
+                .and_then(|limits| limits.publish_per_min),
+            Some(120)
+        );
+    }
+
+    #[test]
+    fn a_publish_limit_of_zero_is_refused_rather_than_read_as_unlimited() {
+        // Zero refuses every publish on the channel, with a `429` that reads like
+        // load rather than like configuration. Whoever writes it means "no limit",
+        // and the way to ask for that is to leave the key out.
+        let path = with_config(
+            "channel-limits-zero",
+            "[[channels.managed]]\n\
+             id = \"ci-infra\"\n\
+             limits = { publish_per_min = 0 }\n",
         );
 
         assert!(Config::load(&path).is_err());

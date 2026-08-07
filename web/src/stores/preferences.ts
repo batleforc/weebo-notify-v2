@@ -36,7 +36,6 @@ import { computed, ref } from "vue";
 import type {
   Dnd,
   DndDraft,
-  Priority,
   Silence,
   Event as StreamEvent,
 } from "@/api/generated";
@@ -132,34 +131,6 @@ export function active(dnd: Dnd | null, at: Date): boolean {
   return (dnd.quiet_hours ?? []).some((window) => covers(window, at));
 }
 
-/**
- * Mirrors `Dnd::is_muted`, clause for clause and in the same order.
- *
- * Order is not cosmetic: an exception wins over an active window, which is the
- * on-call case — mute everything *except* the channel that matters.
- */
-export function muted(
-  dnd: Dnd | null,
-  channel: string,
-  priority: Priority,
-  at: Date,
-): boolean {
-  if (!dnd) {
-    return false;
-  }
-
-  const scope = dnd.scope ?? { kind: "everything" };
-  const reaches =
-    scope.kind === "everything" || scope.channels.includes(channel);
-  if ((dnd.exceptions ?? []).includes(channel) || !reaches) {
-    return false;
-  }
-  if (!active(dnd, at)) {
-    return false;
-  }
-  return !(priority === "urgent" && (dnd.urgent_bypasses ?? false));
-}
-
 export const usePreferences = defineStore("preferences", () => {
   const dnd = ref<Dnd | null>(null);
   const silences = ref<Silence[]>([]);
@@ -229,10 +200,22 @@ export const usePreferences = defineStore("preferences", () => {
    * for something somebody just muted.
    */
   function stayQuiet(arrival: {
-    channel: string;
-    priority: Priority;
     notification: string;
     groupKey?: string | null;
+    /**
+     * What the **server** said about this delivery: `muted_by_dnd` on the event
+     * (§7.4, §8.1).
+     *
+     * Passed in rather than recomputed here, which is D22: the do-not-disturb rule
+     * has four clauses, one of them a quiet window whose small hours belong to the
+     * previous day, and it used to exist three times — in the domain for push, in
+     * the CLI for its desktop relay, and here. The server holds the preference and
+     * applies it per reader; this client reads the answer.
+     *
+     * Undefined for anything that did not come from an event — a push handed over
+     * by the worker, say — and undefined means "nobody said", which is not muted.
+     */
+    mutedByDnd?: boolean;
   }): boolean {
     // Mirrors `Silence::covers`: a group silence matches by `group_key`, and a
     // notification silence by id. A row with no group key matches neither, which
@@ -243,10 +226,10 @@ export const usePreferences = defineStore("preferences", () => {
         : silence.target.id === arrival.notification,
     );
 
-    return (
-      silenced ||
-      muted(dnd.value, arrival.channel, arrival.priority, new Date())
-    );
+    // Silence stays local, and that is not an oversight: it is per notification
+    // and per group (§2.3), the client already holds every one of them from the
+    // `preference` event, and no server round trip is involved in answering it.
+    return silenced || (arrival.mutedByDnd ?? false);
   }
 
   return {

@@ -81,23 +81,33 @@ impl Writer {
     /// Two limits rather than one because they protect different things — a
     /// runaway publisher should degrade itself, and a channel should survive
     /// several well-behaved ones (design §8.2, scenario T14).
+    ///
+    /// Takes the loaded [`notify_domain::Channel`] rather than its id because the
+    /// channel's own ceiling lives on its policy (§8.2, `limits` in §11). Both
+    /// callers have already authorised, so the channel is in hand and this costs
+    /// no extra read — which is why the override needed no reordering to honour.
     async fn check_quotas(
         &self,
         caller: &Caller,
-        channel: &ChannelId,
+        channel: &notify_domain::Channel,
         now: OffsetDateTime,
     ) -> Result<(), Failure> {
         let per_key = Quota::PublishPerKey {
             key: caller.principal.reference(),
         };
         let per_channel = Quota::PublishPerChannel {
-            channel: channel.to_string(),
+            channel: channel.id.to_string(),
         };
 
-        for quota in [per_key, per_channel] {
+        // Only the channel's own quota is configurable: §8.2 hangs `limits` off
+        // `[[channels.managed]]`, and a key's budget is a property of the key.
+        for (quota, configured) in [
+            (per_key, None),
+            (per_channel, channel.policy.publish_per_minute),
+        ] {
             if let Allowance::Limited {
                 retry_after_seconds,
-            } = self.limiter.check(&quota, now).await?
+            } = self.limiter.check(&quota, configured, now).await?
             {
                 return Err(Failure::RateLimited {
                     retry_after_seconds,
@@ -244,9 +254,7 @@ impl PublishNotification {
             .authorizer
             .authorize(caller, &request.channel, Scope::Publish)
             .await?;
-        self.writer
-            .check_quotas(caller, &request.channel, now)
-            .await?;
+        self.writer.check_quotas(caller, &channel, now).await?;
 
         let Some(key) = request.idempotency_key.clone() else {
             return self
@@ -362,9 +370,7 @@ impl UpsertNotification {
             .authorizer
             .authorize(caller, &request.channel, Scope::Publish)
             .await?;
-        self.writer
-            .check_quotas(caller, &request.channel, now)
-            .await?;
+        self.writer.check_quotas(caller, &channel, now).await?;
 
         let existing = self
             .writer
@@ -677,6 +683,68 @@ mod tests {
         assert!(
             fixture.store.events().is_empty(),
             "the quota is consumed on the way in, before any work"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channels_configured_ceiling_reaches_the_limiter() {
+        // §8.2 promises "défauts globaux, surchargeables par canal (`limits` dans
+        // `[[channels.managed]]`)". The number was parsed by the config and read by
+        // nobody; this is the wire that makes it mean something. Asserted at the
+        // port rather than at the outcome because the enforcement itself lives in
+        // the adapter that owns the counter — what this use case owes is passing
+        // the channel's number rather than dropping it.
+        let fixture = fixture(ChannelPolicy {
+            publish_per_minute: Some(30),
+            ..ChannelPolicy::default()
+        });
+        let caller = Caller::member(fixture.alice.clone());
+
+        fixture
+            .publish
+            .execute(&caller, request(None))
+            .await
+            .unwrap();
+
+        let seen = fixture.limiter.seen_with_ceilings();
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    Quota::PublishPerKey {
+                        key: fixture.alice.reference()
+                    },
+                    None
+                ),
+                (
+                    Quota::PublishPerChannel {
+                        channel: channel_id().to_string()
+                    },
+                    Some(30)
+                ),
+            ],
+            "the channel's own ceiling travels; a key's budget is not configurable"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_configures_nothing_is_measured_against_the_default() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+
+        fixture
+            .publish
+            .execute(&caller, request(None))
+            .await
+            .unwrap();
+
+        assert!(
+            fixture
+                .limiter
+                .seen_with_ceilings()
+                .iter()
+                .all(|(_, configured)| configured.is_none()),
+            "`None` is what lets the adapter apply the number §8.2 publishes"
         );
     }
 

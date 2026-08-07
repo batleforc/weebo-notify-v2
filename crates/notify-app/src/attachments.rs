@@ -26,7 +26,9 @@
 use std::sync::Arc;
 
 use notify_domain::{ChannelId, DomainError, Scope, limits::MAX_ATTACHMENT_BYTES};
-use notify_ports::{AttachmentStore, Failure, PresignedUpload, UploadRequest};
+use notify_ports::{
+    AttachmentRegistry, AttachmentStore, Clock, Failure, PresignedUpload, UploadRequest,
+};
 
 use crate::authz::{Authorizer, Caller};
 
@@ -39,11 +41,35 @@ use crate::authz::{Authorizer, Caller};
 /// keeping a decoder away from something hostile.
 const ALLOWED: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
+/// The two halves of attachment storage, handed round together.
+///
+/// The bucket holds the bytes; the registry remembers which ids we signed for
+/// (design §7.2bis, D25). They are separate ports because they are separate
+/// machines — S3 and Postgres — and a grouping type rather than two parameters
+/// because **every** caller needs both: signing writes to one and records in the
+/// other, and collecting reads one to decide what to delete from the other. A
+/// caller holding only the store is a caller that can create objects nothing will
+/// ever collect, which is the bug this pair exists to prevent.
+#[derive(Clone)]
+pub struct Attachments {
+    /// The bucket.
+    pub store: Arc<dyn AttachmentStore>,
+    /// What was signed, so it can be swept.
+    pub registry: Arc<dyn AttachmentRegistry>,
+}
+
+impl core::fmt::Debug for Attachments {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Attachments").finish_non_exhaustive()
+    }
+}
+
 /// Sign an upload.
 #[derive(Clone)]
 pub struct PresignAttachment {
-    attachments: Arc<dyn AttachmentStore>,
+    attachments: Attachments,
     authorizer: Authorizer,
+    clock: Arc<dyn Clock>,
 }
 
 impl core::fmt::Debug for PresignAttachment {
@@ -55,10 +81,11 @@ impl core::fmt::Debug for PresignAttachment {
 impl PresignAttachment {
     /// Wire it.
     #[must_use]
-    pub fn new(attachments: Arc<dyn AttachmentStore>, authorizer: Authorizer) -> Self {
+    pub fn new(attachments: Attachments, authorizer: Authorizer, clock: Arc<dyn Clock>) -> Self {
         Self {
             attachments,
             authorizer,
+            clock,
         }
     }
 
@@ -113,8 +140,9 @@ impl PresignAttachment {
             .into());
         }
 
-        Ok(self
+        let signed = self
             .attachments
+            .store
             .presign_upload(&UploadRequest {
                 // The *normalised* type, so the signature pins exactly what was
                 // checked. Signing the raw header would let `image/png; x=<junk>`
@@ -122,7 +150,87 @@ impl PresignAttachment {
                 content_type: declared,
                 content_length,
             })
-            .await?)
+            .await?;
+
+        // After the signature, never before: a row claiming an upload nobody was
+        // given a URL for would be a row the sweep deletes an object for that never
+        // existed. Recorded at all because this is the *only* trace of the id until
+        // somebody publishes with it — and if nobody ever does, it is the only thing
+        // that can find the bytes again (design §7.2bis, D25).
+        self.attachments
+            .registry
+            .record(signed.id, channel, self.clock.now())
+            .await?;
+
+        Ok(signed)
+    }
+}
+
+/// `GET /api/v1/attachments/{id}` — the way bytes come back out (design §6.1, §8).
+///
+/// A **signed URL and not the bytes**, unlike the avatar route next door. That is
+/// §6.1's rule rather than a preference: attachments never travel through the
+/// server, in either direction, which is what keeps a 25 MiB screenshot off this
+/// process's heap. The avatar is the single documented exception, and it is one
+/// because the server has to decode and resize it anyway (§2.4).
+#[derive(Clone)]
+pub struct ReadAttachment {
+    attachments: Attachments,
+    notifications: Arc<dyn notify_ports::NotificationRepository>,
+    authorizer: Authorizer,
+}
+
+impl core::fmt::Debug for ReadAttachment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReadAttachment").finish_non_exhaustive()
+    }
+}
+
+impl ReadAttachment {
+    /// Wire it.
+    #[must_use]
+    pub fn new(
+        attachments: Attachments,
+        notifications: Arc<dyn notify_ports::NotificationRepository>,
+        authorizer: Authorizer,
+    ) -> Self {
+        Self {
+            attachments,
+            notifications,
+            authorizer,
+        }
+    }
+
+    /// Sign a download, if the caller can read something that shows it.
+    ///
+    /// # Why the refusal is `NotificationGone` and not a scope error
+    ///
+    /// An attachment id is a bare ULID with no channel in it, so "you may not read
+    /// this" and "there is no such object" have to look identical from outside —
+    /// otherwise the endpoint answers, one request at a time, which ids exist on
+    /// this instance. It is the same reasoning as revoking somebody else's device.
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        id: notify_domain::AttachmentId,
+    ) -> Result<notify_ports::PresignedDownload, Failure> {
+        let channels = self.authorizer.readable_channels(caller).await?;
+        if !self
+            .notifications
+            .attachment_is_visible(&id, &channels)
+            .await?
+        {
+            return Err(DomainError::NotificationGone.into());
+        }
+
+        // Checked after the authorisation and before the signature: a signed URL
+        // for bytes that never arrived is a broken image a client cannot tell from
+        // a broken bucket, and a presign is a promise rather than an upload.
+        if !self.attachments.store.exists(id).await? {
+            return Err(DomainError::NotificationGone.into());
+        }
+
+        Ok(self.attachments.store.presign_download(id).await?)
     }
 }
 
@@ -131,12 +239,15 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
     use notify_domain::{Channel, Membership, Principal, UserId};
-    use notify_ports::test_utils::{InMemory, InMemoryAttachments};
+    use notify_ports::test_utils::{InMemory, InMemoryAttachments, TestClock};
+    use time::OffsetDateTime;
 
     use super::*;
 
     struct Fixture {
         presign: PresignAttachment,
+        store: InMemory,
+        bucket: InMemoryAttachments,
         alice: Principal,
         reader: Principal,
     }
@@ -161,11 +272,18 @@ mod tests {
         seeded.upsert_member(Membership::new(reader.clone(), vec![Scope::Subscribe]).unwrap());
         store.seed_channel(seeded);
 
+        let bucket = InMemoryAttachments::new();
         Fixture {
             presign: PresignAttachment::new(
-                Arc::new(InMemoryAttachments::new()),
-                Authorizer::new(Arc::new(store)),
+                Attachments {
+                    store: Arc::new(bucket.clone()),
+                    registry: Arc::new(store.clone()),
+                },
+                Authorizer::new(Arc::new(store.clone())),
+                Arc::new(TestClock::new()),
             ),
+            store,
+            bucket,
             alice,
             reader,
         }
@@ -187,6 +305,202 @@ mod tests {
             .unwrap();
 
         assert!(!signed.url.as_str().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_signed_upload_is_recorded_so_it_can_be_collected_later() {
+        // The only trace of this id until somebody publishes with it. Without the
+        // row, an upload nobody ever references is invisible to every query this
+        // schema can answer, and the bytes stay for ever (D25).
+        let fixture = fixture();
+
+        let signed = fixture
+            .presign
+            .execute(
+                &Caller::member(fixture.alice.clone()),
+                &channel(),
+                "image/png",
+                1_024,
+            )
+            .await
+            .unwrap();
+
+        let known = notify_ports::AttachmentRegistry::unreferenced(
+            &fixture.store,
+            OffsetDateTime::now_utc() + time::Duration::days(2),
+            10,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            known.contains(&signed.id),
+            "a signature nobody recorded is an object nobody can find"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_records_nothing() {
+        // The row is written after the signature, so a refusal never leaves one
+        // behind — a sweep chasing an object that was never signed for would be
+        // harmless but permanently confusing in the counters.
+        let fixture = fixture();
+
+        assert!(
+            fixture
+                .presign
+                .execute(
+                    &Caller::member(fixture.reader.clone()),
+                    &channel(),
+                    "image/png",
+                    1_024,
+                )
+                .await
+                .is_err()
+        );
+
+        let known = notify_ports::AttachmentRegistry::unreferenced(
+            &fixture.store,
+            OffsetDateTime::now_utc() + time::Duration::days(2),
+            10,
+        )
+        .await
+        .unwrap();
+
+        assert!(known.is_empty());
+    }
+
+    /// Publish a notification showing `reference`, and pretend the upload landed.
+    async fn shown_in(
+        store: &InMemory,
+        bucket: &InMemoryAttachments,
+        publisher: &Principal,
+        reference: notify_domain::AttachmentId,
+    ) {
+        bucket.mark_uploaded(reference);
+        let (notification, written) = notify_domain::Notification::create(
+            notify_domain::NotificationId::generate(),
+            channel(),
+            None,
+            notify_domain::RevisionDraft::simple(notify_domain::ContentDraft {
+                image: Some(notify_domain::Image::Attachment { reference }),
+                ..notify_domain::ContentDraft::titled("screenshot")
+            }),
+            notify_domain::Author::anonymous(publisher.clone()),
+            OffsetDateTime::now_utc(),
+            &notify_domain::ChannelPolicy::default(),
+        )
+        .unwrap();
+        notify_ports::NotificationRepository::insert(store, &notification, &written.revision)
+            .await
+            .unwrap();
+    }
+
+    fn reader_of(fixture: &Fixture) -> ReadAttachment {
+        ReadAttachment::new(
+            Attachments {
+                store: Arc::new(fixture.bucket.clone()),
+                registry: Arc::new(fixture.store.clone()),
+            },
+            Arc::new(fixture.store.clone()),
+            Authorizer::new(Arc::new(fixture.store.clone())),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_member_can_sign_a_download_of_what_a_notification_shows() {
+        // The read side of §6.1, which had a port method, an S3 implementation and
+        // no caller: an attachment could be uploaded and referenced, and no client
+        // could ever fetch the bytes.
+        let fixture = fixture();
+        let reference = notify_domain::AttachmentId::generate();
+        shown_in(&fixture.store, &fixture.bucket, &fixture.alice, reference).await;
+
+        let signed = reader_of(&fixture)
+            .execute(&Caller::member(fixture.reader.clone()), reference)
+            .await
+            .unwrap();
+
+        assert!(!signed.url.as_str().is_empty());
+    }
+
+    #[tokio::test]
+    async fn somebody_who_cannot_read_the_channel_cannot_sign_its_attachments() {
+        let fixture = fixture();
+        let reference = notify_domain::AttachmentId::generate();
+        shown_in(&fixture.store, &fixture.bucket, &fixture.alice, reference).await;
+
+        let stranger = Caller::member(Principal::User {
+            id: UserId::generate(),
+        });
+
+        assert_eq!(
+            reader_of(&fixture)
+                .execute(&stranger, reference)
+                .await
+                .unwrap_err()
+                .code(),
+            Some("notification.gone"),
+            "the refusal must not distinguish \"not yours\" from \"no such object\", \
+             or the endpoint enumerates the bucket one id at a time"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_id_no_notification_shows_is_not_downloadable() {
+        // Presigning an upload does not entitle anybody to read it back: what
+        // authorises a download is a *notification* somebody may read, so an id that
+        // was signed for and never published stays private to whoever uploaded it.
+        let fixture = fixture();
+        let orphan = notify_domain::AttachmentId::generate();
+        fixture.bucket.mark_uploaded(orphan);
+
+        assert_eq!(
+            reader_of(&fixture)
+                .execute(&Caller::member(fixture.alice.clone()), orphan)
+                .await
+                .unwrap_err()
+                .code(),
+            Some("notification.gone")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reference_whose_upload_never_arrived_is_not_signed_for() {
+        // A presign is a promise, not an upload (the port says so). Signing a URL
+        // for bytes that never landed gives a client a broken image it cannot tell
+        // from a broken bucket.
+        let fixture = fixture();
+        let never_uploaded = notify_domain::AttachmentId::generate();
+        let (notification, written) = notify_domain::Notification::create(
+            notify_domain::NotificationId::generate(),
+            channel(),
+            None,
+            notify_domain::RevisionDraft::simple(notify_domain::ContentDraft {
+                image: Some(notify_domain::Image::Attachment {
+                    reference: never_uploaded,
+                }),
+                ..notify_domain::ContentDraft::titled("promised a screenshot")
+            }),
+            notify_domain::Author::anonymous(fixture.alice.clone()),
+            OffsetDateTime::now_utc(),
+            &notify_domain::ChannelPolicy::default(),
+        )
+        .unwrap();
+        notify_ports::NotificationRepository::insert(
+            &fixture.store,
+            &notification,
+            &written.revision,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            reader_of(&fixture)
+                .execute(&Caller::member(fixture.reader.clone()), never_uploaded)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

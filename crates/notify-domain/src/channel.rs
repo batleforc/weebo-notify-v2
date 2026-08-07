@@ -128,6 +128,21 @@ pub struct ChannelPolicy {
     /// 3/5" (design §7.3). Opt-in: a channel that tells publishers who read what
     /// is a product decision, not a default.
     pub receipts_enabled: bool,
+    /// This channel's own publish ceiling, per minute, overriding the 600/min of
+    /// design §8.2. `None` means the published default applies.
+    ///
+    /// **GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),
+    /// and deliberately absent from the `PATCH /channels/{id}` body: a publisher
+    /// who could raise their own channel's ceiling through the API would be a
+    /// publisher for whom the ceiling is a suggestion. A dynamic channel has no
+    /// configuration file to be named in, so it keeps the default — which is the
+    /// right answer rather than a gap, the default being what §8.2 publishes.
+    ///
+    /// Defaulted on the wire so a policy stored before this field existed still
+    /// deserialises; the policy is persisted as JSON, so there is no column and no
+    /// migration behind this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_per_minute: Option<u32>,
 }
 
 impl Default for ChannelPolicy {
@@ -136,6 +151,7 @@ impl Default for ChannelPolicy {
             ttl: TtlPolicy::default(),
             default_priority: Priority::Default,
             receipts_enabled: false,
+            publish_per_minute: None,
         }
     }
 }

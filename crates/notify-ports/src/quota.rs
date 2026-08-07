@@ -73,5 +73,19 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// Consumes on the way *in*, so a caller that is over the limit is refused
     /// before doing the work rather than after.
-    async fn check(&self, quota: &Quota, now: OffsetDateTime) -> PortResult<Allowance>;
+    ///
+    /// `configured` is the override design §8.2 promises — "défauts globaux,
+    /// surchargeables par canal (`limits` dans `[[channels.managed]]`, §11)" —
+    /// and `None` means the published default applies. It is a **separate
+    /// argument rather than a field of [`Quota`]** because the two answer
+    /// different questions: `Quota` says *who is being counted*, and it is the
+    /// map key, the row key and the thing compared for equality. Folding a
+    /// ceiling into it would make two requests against the same channel look like
+    /// different subjects the moment an operator edited the number.
+    async fn check(
+        &self,
+        quota: &Quota,
+        configured: Option<u32>,
+        now: OffsetDateTime,
+    ) -> PortResult<Allowance>;
 }

@@ -79,9 +79,10 @@ pub mod tokens;
 pub mod test_utils;
 
 pub use attachments::{
-    AttachmentStore, PresignedDownload, PresignedUpload, StoredObject, UploadRequest,
+    AttachmentRegistry, AttachmentStore, PresignedDownload, PresignedUpload, StoredObject,
+    UploadRequest,
 };
-pub use audit::{AuditEntry, AuditLog, AuditQuery};
+pub use audit::{AUDIT_ACTIONS, AuditAction, AuditEntry, AuditLog, AuditQuery, actions};
 pub use channels::ChannelRepository;
 pub use clock::{Clock, SystemClock};
 pub use devices::DeviceRepository;

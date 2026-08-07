@@ -56,7 +56,7 @@ pub mod sinks;
 pub mod sync;
 
 pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
-pub use attachments::PresignAttachment;
+pub use attachments::{Attachments, PresignAttachment, ReadAttachment};
 pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{

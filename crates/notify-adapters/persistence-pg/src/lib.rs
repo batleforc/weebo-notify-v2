@@ -30,6 +30,7 @@
 //! its work, appends to `events`, and commits — so "the event log and the data
 //! disagree" is not a reachable state.
 
+mod attachments;
 mod audit;
 mod channels;
 mod devices;

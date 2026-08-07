@@ -40,6 +40,25 @@ pub const MAX_ACTIONS: usize = 5;
 /// left intact (design §8.2, scenario T6).
 pub const MAX_REVISIONS: u32 = 1_000;
 
+/// Live connections — SSE and WebSocket together — one principal may hold at
+/// once (design §8.2, "connexions SSE/WS par user": 20, multi-tab plus devices).
+///
+/// Enforced where the connections are held (the HTTP adapter), like
+/// [`MAX_PAYLOAD_BYTES`] is enforced where the bytes are; exposed here so the
+/// number has one home.
+///
+/// **Per principal, not per user**, and the widening is deliberate: §8.2 says
+/// "user" because a person with tabs and devices is the case it was written for,
+/// but a service account holds connections too (design §5.2bis) and an unbounded
+/// bot is the same leak with less warning. The four principals of §5 each get
+/// their own ceiling.
+///
+/// **Per replica, not per instance** — see D23. What this guarantees is that no
+/// single process holds more than this many connections for one principal, which
+/// is the resource the cap protects; the instance-wide reading of §8.2 needs
+/// shared state that does not exist here.
+pub const MAX_STREAMS_PER_PRINCIPAL: usize = 20;
+
 /// Action label ceiling (design §2.3).
 pub const MAX_LABEL_CHARS: usize = 40;
 

@@ -199,6 +199,10 @@ impl Application {
         let state = ApiState {
             bus: bus.clone(),
             metrics: metrics.clone(),
+            // Empty: a replica that has just booted is holding nothing. The count
+            // is per process by design (§8.2, D23), so it is built here rather than
+            // read from anywhere — there is nothing to recover.
+            streams: Arc::new(notify_http_actix::StreamSlots::new()),
             authenticate: {
                 let base = Authenticate::new(
                     verifier,
@@ -298,7 +302,22 @@ impl Application {
             reconciliation: ReadReconciliation::new(reconciliation_log.clone()),
             dlq: ListDeadLetters::new(repository.clone()),
             requeue: RequeueDeadLetter::new(repository.clone(), repository.clone(), clock.clone()),
-            presign: PresignAttachment::new(attachments.clone(), authorizer.clone()),
+            presign: PresignAttachment::new(
+                notify_app::Attachments {
+                    store: attachments.clone(),
+                    registry: repository.clone(),
+                },
+                authorizer.clone(),
+                clock.clone(),
+            ),
+            attachment: notify_app::ReadAttachment::new(
+                notify_app::Attachments {
+                    store: attachments.clone(),
+                    registry: repository.clone(),
+                },
+                repository.clone(),
+                authorizer.clone(),
+            ),
 
             sync: SyncBacklog::new(
                 repository.clone(),
@@ -353,7 +372,7 @@ impl Application {
             profile: ReadProfile::new(repository.clone()),
             update_profile: UpdateProfile::new(repository.clone()),
             set_avatar: SetAvatar::new(repository.clone(), avatars, attachments.clone()),
-            avatar: ReadAvatar::new(attachments),
+            avatar: ReadAvatar::new(attachments.clone()),
 
             dnd: ReadDnd::new(repository.clone()),
             set_dnd: SetDnd::new(repository.clone(), clock.clone(), fanout.clone()),
@@ -378,6 +397,16 @@ impl Application {
             repository.clone(),
             repository.clone(),
             repository.clone(),
+            // The same store the presign writes into (§6.1). On a deployment with no
+            // `[attachments]` this is the double that refuses, which is the right
+            // answer rather than a problem: an instance that cannot hand out a
+            // presigned upload has no attachment to collect either.
+            // The registry is the database, not the bucket (D25): it is what makes an
+            // upload nobody ever referenced findable at all.
+            notify_app::Attachments {
+                store: attachments.clone(),
+                registry: repository.clone(),
+            },
             Arc::new(PgLeaderElection::new(store.pool().clone())),
             bus.clone(),
             clock.clone(),

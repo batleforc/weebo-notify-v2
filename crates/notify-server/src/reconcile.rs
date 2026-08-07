@@ -161,6 +161,12 @@ impl Reconciler {
                 .default_priority
                 .unwrap_or(ChannelPolicy::default().default_priority),
             receipts_enabled: managed.receipts,
+            // `limits.publish_per_min` (§8.2, §11). Absent means the published
+            // default, which is why this is threaded through as `Option` the whole
+            // way rather than defaulted to 600 here: the number lives in the
+            // adapter that enforces it, and a second copy of it in the reconciler
+            // is a second copy to drift.
+            publish_per_minute: managed.limits.and_then(|limits| limits.publish_per_min),
         };
 
         for access in &managed.access {
@@ -460,5 +466,50 @@ mod tests {
 
         assert_eq!(first, second, "boot, SIGHUP and the timer all run this");
         assert!(second.policy.receipts_enabled);
+    }
+
+    #[tokio::test]
+    async fn a_configured_publish_limit_reaches_the_channel_policy() {
+        // The step that was missing: `limits.publish_per_min` parsed cleanly and
+        // stopped there. It is on the policy now, which is what the publish path
+        // reads (§8.2, §11).
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let declared = config(vec![ManagedChannel {
+            id: "ci-infra".to_owned(),
+            limits: Some(crate::config::ChannelLimits {
+                publish_per_min: Some(30),
+            }),
+            ..ManagedChannel::default()
+        }]);
+
+        reconciler(&store, &clock).execute(&declared).await.unwrap();
+
+        let channel = ChannelRepository::get(&store, &ChannelId::parse("ci-infra").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(channel.policy.publish_per_minute, Some(30));
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_declares_no_limits_keeps_the_published_default() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let declared = config(vec![ManagedChannel {
+            id: "ci-infra".to_owned(),
+            ..ManagedChannel::default()
+        }]);
+
+        reconciler(&store, &clock).execute(&declared).await.unwrap();
+
+        let channel = ChannelRepository::get(&store, &ChannelId::parse("ci-infra").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            channel.policy.publish_per_minute, None,
+            "`None` means §8.2's default, not `0`"
+        );
     }
 }

@@ -16,7 +16,8 @@
 //! 404 loses.
 
 use notify_domain::{
-    ChannelId, Cursor, ExternalId, Notification, NotificationId, Priority, Revision, State, Status,
+    AttachmentId, ChannelId, Cursor, ExternalId, Notification, NotificationId, Priority, Revision,
+    State, Status,
 };
 use time::OffsetDateTime;
 
@@ -144,6 +145,45 @@ pub trait NotificationRepository: Send + Sync {
         now: OffsetDateTime,
         limit: u32,
     ) -> PortResult<Vec<ExpiredNotification>>;
+
+    /// Whether any live notification in `channels` references this attachment
+    /// (design §6.1, §8 — `GET /attachments/{id}`).
+    ///
+    /// The authorisation for downloading an attachment, and it is phrased as a
+    /// question about *notifications* rather than about the object because an
+    /// attachment has no access control of its own: the bucket is private, the
+    /// object is not scoped to a channel, and what entitles somebody to the bytes
+    /// is being able to read something that shows them.
+    ///
+    /// Deleted and expired rows do not count. An attachment stops being readable
+    /// when the last notification showing it goes, which is the same instant the
+    /// sweep starts considering the object collectable — the two answers agreeing
+    /// is what stops a reader from holding a URL to bytes that are about to vanish.
+    async fn attachment_is_visible(
+        &self,
+        attachment: &AttachmentId,
+        channels: &[ChannelId],
+    ) -> PortResult<bool>;
+
+    /// The attachment objects that only rows due for purge still reference
+    /// (design §7.2bis, §6.1).
+    ///
+    /// Asked with the same window as [`Self::purge`] and **before** it, because
+    /// the rows are the only record of which objects belong to what: deleting them
+    /// first would leave the bucket holding objects nothing can name. Doing it in
+    /// this order also makes a failed object delete harmless — the rows stay, and
+    /// the next pass asks the same question and gets the same answer.
+    ///
+    /// "Only" is the whole of the safety here. An id referenced by any revision
+    /// outside the window is left alone: nothing stops a publisher from naming one
+    /// attachment in two notifications, and deleting a live notification's image
+    /// because an unrelated expired one pointed at it would be data loss caused by
+    /// a cleanup job.
+    async fn orphaned_attachments(
+        &self,
+        deleted_before: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<AttachmentId>>;
 
     /// Hard-delete previously soft-deleted rows, once their tombstones have had
     /// time to reach every client (design §7.2bis).

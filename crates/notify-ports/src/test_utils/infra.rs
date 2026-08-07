@@ -714,10 +714,13 @@ impl KeyGenerator for CountingKeyGenerator {
 /// this one simply allows everything until told otherwise, and then refuses
 /// everything. Enough to assert that a `429` is produced and that the *other*
 /// publishers of a channel are untouched (scenario T14).
+/// One recorded call: the subject, and the configured ceiling it came with.
+pub type QuotaCheck = (Quota, Option<u32>);
+
 #[derive(Debug, Clone, Default)]
 pub struct TestRateLimiter {
     limited: Arc<Mutex<Vec<Quota>>>,
-    seen: Arc<Mutex<Vec<Quota>>>,
+    seen: Arc<Mutex<Vec<QuotaCheck>>>,
 }
 
 impl TestRateLimiter {
@@ -734,14 +737,32 @@ impl TestRateLimiter {
 
     /// Every quota that was checked, in order.
     pub fn seen(&self) -> Vec<Quota> {
+        lock(&self.seen)
+            .iter()
+            .map(|(quota, _)| quota.clone())
+            .collect()
+    }
+
+    /// Every quota that was checked, with the configured ceiling it was given.
+    ///
+    /// The subject and the ceiling are recorded separately because that is how the
+    /// port takes them, and asserting on the pair is the only way to see that a
+    /// channel's configured `limits` (design §8.2, §11) actually reached the
+    /// limiter rather than being read and dropped on the way.
+    pub fn seen_with_ceilings(&self) -> Vec<QuotaCheck> {
         lock(&self.seen).clone()
     }
 }
 
 #[async_trait::async_trait]
 impl RateLimiter for TestRateLimiter {
-    async fn check(&self, quota: &Quota, _now: OffsetDateTime) -> PortResult<Allowance> {
-        lock(&self.seen).push(quota.clone());
+    async fn check(
+        &self,
+        quota: &Quota,
+        configured: Option<u32>,
+        _now: OffsetDateTime,
+    ) -> PortResult<Allowance> {
+        lock(&self.seen).push((quota.clone(), configured));
         Ok(if lock(&self.limited).contains(quota) {
             Allowance::Limited {
                 retry_after_seconds: 60,

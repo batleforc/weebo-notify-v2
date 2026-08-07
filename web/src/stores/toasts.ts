@@ -74,10 +74,9 @@ export const useToasts = defineStore("toasts", () => {
     const preferences = usePreferences();
     if (
       preferences.stayQuiet({
-        channel: event.channel_id,
-        priority: event.priority,
         notification: event.notification_id,
         groupKey: event.payload.group_key ?? null,
+        mutedByDnd: event.muted_by_dnd ?? false,
       })
     ) {
       return;

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use notify_domain::{Device, DeviceId, DevicePublicKey, PushTransport};
-use notify_ports::{AuditEntry, AuditLog, Clock, DeviceRepository, Failure};
+use notify_ports::{AuditEntry, AuditLog, Clock, DeviceRepository, Failure, actions};
 
 use crate::authz::Caller;
 
@@ -67,7 +67,7 @@ impl EnrolDevice {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "device.enrolled",
+                action: actions::DEVICE_ENROLLED,
                 target: Some(device.id.to_string()),
                 channel: None,
                 detail: serde_json::to_value(device.transport.name()).ok(),
@@ -151,7 +151,7 @@ impl RevokeDevice {
             self.audit
                 .record(&AuditEntry {
                     actor: caller.principal.clone(),
-                    action: "device.revoked",
+                    action: actions::DEVICE_REVOKED,
                     target: Some(id.to_string()),
                     channel: None,
                     detail: None,
@@ -286,7 +286,7 @@ mod tests {
                 .store
                 .audit_entries()
                 .iter()
-                .any(|entry| entry.action == "device.revoked")
+                .any(|entry| entry.action.as_str() == "device.revoked")
         );
     }
 

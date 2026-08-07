@@ -10,8 +10,8 @@
 //! the fan-out poke carries.
 
 use notify_domain::{
-    Author, ChannelId, Content, Cursor, ExternalId, Notification, NotificationId, NotificationKind,
-    Priority, Revision, RevisionId, State, Status, TombstoneReason, Ttl,
+    AttachmentId, Author, ChannelId, Content, Cursor, ExternalId, Notification, NotificationId,
+    NotificationKind, Priority, Revision, RevisionId, State, Status, TombstoneReason, Ttl,
 };
 use notify_ports::{
     Audience, EventPayload, ExpiredNotification, InboxQuery, NotificationRepository, Page,
@@ -443,6 +443,83 @@ impl NotificationRepository for PgStore {
             .map_err(|error| fail("notification", error))?;
 
         Ok(claimed)
+    }
+
+    async fn attachment_is_visible(
+        &self,
+        attachment: &AttachmentId,
+        channels: &[ChannelId],
+    ) -> PortResult<bool> {
+        if channels.is_empty() {
+            // A caller who can read nothing can be told so without a query.
+            return Ok(false);
+        }
+
+        let channels: Vec<String> = channels.iter().map(|id| id.as_str().to_owned()).collect();
+
+        // `deleted_at IS NULL` and the expiry check together: an attachment stops
+        // being downloadable exactly when the last notification showing it stops
+        // being readable, which is the same moment the sweep may collect the object.
+        let (visible,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (
+                 SELECT 1
+                 FROM revisions r
+                 JOIN notifications n ON n.id = r.notification_id
+                 WHERE r.content->'image'->>'kind' = 'attachment'
+                   AND r.content->'image'->>'ref' = $1
+                   AND n.channel_id = ANY($2)
+                   AND n.deleted_at IS NULL
+                   AND (n.expires_at IS NULL OR n.expires_at > now())
+             )",
+        )
+        .bind(attachment.to_string())
+        .bind(&channels)
+        .fetch_one(self.pool())
+        .await
+        .map_err(|error| fail("notification", error))?;
+
+        Ok(visible)
+    }
+
+    async fn orphaned_attachments(
+        &self,
+        deleted_before: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<AttachmentId>> {
+        // `doomed` is the same window `purge` deletes, written the same way so the
+        // two agree about which rows are on their way out.
+        //
+        // `NOT EXISTS` rather than `NOT IN`: the subquery selects a JSON extraction
+        // that is NULL for every revision without an attachment image, and `NOT IN`
+        // over a set containing NULL is never true — it would return nothing at all,
+        // forever, and look exactly like "no orphans to collect".
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "WITH doomed AS (
+                 SELECT id FROM notifications
+                 WHERE deleted_at IS NOT NULL AND deleted_at < $1
+                 ORDER BY deleted_at
+                 LIMIT $2
+             )
+             SELECT DISTINCT mine.content->'image'->>'ref' AS attachment
+             FROM revisions mine
+             WHERE mine.notification_id IN (SELECT id FROM doomed)
+               AND mine.content->'image'->>'kind' = 'attachment'
+               AND NOT EXISTS (
+                   SELECT 1 FROM revisions others
+                   WHERE others.content->'image'->>'kind' = 'attachment'
+                     AND others.content->'image'->>'ref' = mine.content->'image'->>'ref'
+                     AND others.notification_id NOT IN (SELECT id FROM doomed)
+               )",
+        )
+        .bind(deleted_before)
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("notification", error))?;
+
+        rows.into_iter()
+            .map(|(id,)| parse("attachment.id", &id, str::parse::<AttachmentId>))
+            .collect()
     }
 
     async fn purge(&self, deleted_before: OffsetDateTime, limit: u32) -> PortResult<u64> {

@@ -26,18 +26,18 @@ mod e2e {
     use std::sync::Arc;
 
     use notify_domain::{
-        ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, Author, Channel, ChannelId, ChannelPolicy,
-        ContentDraft, Cursor, Day, Device, DeviceId, DevicePublicKey, Dnd, DndScope, ExternalId,
-        GroupBinding, HumanDuration, Interaction, InteractionLog, Membership, Notification,
-        NotificationId, Principal, Priority, PushTransport, QuietHours, Receipt, ReceiptKind,
-        RevisionDraft, Scope, ServiceAccount, ServiceAccountId, Silence, SilenceTarget, State,
-        Status, TombstoneReason, Ttl, User, UserId, WallClock,
+        ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, AttachmentId, Author, Channel, ChannelId,
+        ChannelPolicy, ContentDraft, Cursor, Day, Device, DeviceId, DevicePublicKey, Dnd, DndScope,
+        ExternalId, GroupBinding, HumanDuration, Image, Interaction, InteractionLog, Membership,
+        Notification, NotificationId, Principal, Priority, PushTransport, QuietHours, Receipt,
+        ReceiptKind, RevisionDraft, Scope, ServiceAccount, ServiceAccountId, Silence,
+        SilenceTarget, State, Status, TombstoneReason, Ttl, User, UserId, WallClock,
     };
     use notify_persistence_pg::{PgLeaderElection, PgStore};
     use notify_ports::{
-        Allowance, ApiKeyRepository, AuditEntry, AuditLog, AuditQuery, ChannelRepository, Claim,
-        DeviceRepository, EventPayload, EventStore, IdempotencyStore, InboxQuery,
-        InteractionRepository, LeaderElection, NotificationRepository, PageRequest,
+        Allowance, ApiKeyRepository, AttachmentRegistry, AuditEntry, AuditLog, AuditQuery,
+        ChannelRepository, Claim, DeviceRepository, EventPayload, EventStore, IdempotencyStore,
+        InboxQuery, InteractionRepository, LeaderElection, NotificationRepository, PageRequest,
         PreferenceRepository, Quota, RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery,
         ServiceAccountRepository, StoredApiKey, SyncQuery, UserRepository,
     };
@@ -74,6 +74,9 @@ mod e2e {
     // ambiguous. These name the port instead of scattering `Trait::method(&store,
     // …)` over every call, and they read like what the use cases actually hold.
     fn notifications(store: &PgStore) -> &dyn NotificationRepository {
+        store
+    }
+    fn registry(store: &PgStore) -> &dyn AttachmentRegistry {
         store
     }
     fn channels(store: &PgStore) -> &dyn ChannelRepository {
@@ -643,6 +646,265 @@ mod e2e {
             "somebody has it on screen and needs to drop it"
         );
         assert!(page.expired.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_attachments_of_doomed_rows_are_named_and_the_others_are_not() {
+        // The JSON path this walks — `content->'image'->>'ref'` — is the kind of
+        // thing that type-checks in Rust and matches nothing in Postgres, so it is
+        // asserted against a real database rather than against the in-memory double
+        // that shares none of its semantics.
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        let doomed_image = AttachmentId::generate();
+        let shared_image = AttachmentId::generate();
+
+        let with_image = |reference| {
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    image: Some(Image::Attachment { reference }),
+                    ..ContentDraft::titled("screenshot")
+                },
+            )
+        };
+
+        let (doomed, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            with_image(doomed_image),
+            None,
+            now(),
+        )
+        .await;
+        let (also_doomed, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            with_image(shared_image),
+            None,
+            now(),
+        )
+        .await;
+        // Names the same object and is *not* on its way out.
+        let (_, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            with_image(shared_image),
+            None,
+            now(),
+        )
+        .await;
+        // No image at all: must not appear as a stray `NULL`.
+        let (plain, _) = publish(&store, &channel, &alice, "no picture").await;
+
+        for id in [doomed.id, also_doomed.id, plain.id] {
+            store
+                .mark_deleted(id, now() - Duration::days(10))
+                .await
+                .unwrap();
+        }
+
+        let orphaned = store
+            .orphaned_attachments(now() - Duration::days(7), 100)
+            .await
+            .unwrap();
+
+        assert!(
+            orphaned.contains(&doomed_image),
+            "an object nothing else references goes with its notification"
+        );
+        assert!(
+            !orphaned.contains(&shared_image),
+            "a live notification still needs it — deleting it would be data loss"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signed_upload_nobody_referenced_becomes_collectable_once_it_is_old() {
+        // D25, against a real schema: the registry is the only record of an id until
+        // a revision names it, and the `NOT EXISTS` join is what decides whether one
+        // ever did.
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        let orphan = AttachmentId::generate();
+        let recent = AttachmentId::generate();
+        registry(&store)
+            .record(orphan, &channel, now() - Duration::days(3))
+            .await
+            .unwrap();
+        registry(&store)
+            .record(recent, &channel, now())
+            .await
+            .unwrap();
+
+        let stale = registry(&store)
+            .unreferenced(now() - Duration::days(1), 100)
+            .await
+            .unwrap();
+
+        assert!(stale.contains(&orphan), "signed three days ago, never used");
+        assert!(
+            !stale.contains(&recent),
+            "signed just now — the publisher may still be uploading"
+        );
+
+        // And it stops being collectable the moment something references it.
+        let referenced = AttachmentId::generate();
+        registry(&store)
+            .record(referenced, &channel, now() - Duration::days(3))
+            .await
+            .unwrap();
+        publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    image: Some(Image::Attachment {
+                        reference: referenced,
+                    }),
+                    ..ContentDraft::titled("used it")
+                },
+            ),
+            None,
+            now(),
+        )
+        .await;
+
+        let stale = registry(&store)
+            .unreferenced(now() - Duration::days(1), 100)
+            .await
+            .unwrap();
+        assert!(!stale.contains(&referenced));
+
+        // Forgetting is what keeps the table from growing with every upload ever.
+        assert_eq!(registry(&store).forget(&[orphan]).await.unwrap(), 1);
+        let stale = registry(&store)
+            .unreferenced(now() - Duration::days(1), 100)
+            .await
+            .unwrap();
+        assert!(!stale.contains(&orphan));
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_visible_exactly_where_a_notification_shows_it() {
+        // The authorisation behind `GET /attachments/{id}`, against a real schema:
+        // an attachment has no access control of its own, so what entitles somebody
+        // to the bytes is being able to read something that shows them.
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let elsewhere = seeded_channel(&store, &alice).await;
+
+        let reference = AttachmentId::generate();
+        let (shown, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    image: Some(Image::Attachment { reference }),
+                    ..ContentDraft::titled("screenshot")
+                },
+            ),
+            None,
+            now(),
+        )
+        .await;
+
+        assert!(
+            notifications(&store)
+                .attachment_is_visible(&reference, std::slice::from_ref(&channel))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !notifications(&store)
+                .attachment_is_visible(&reference, &[elsewhere])
+                .await
+                .unwrap(),
+            "a channel that does not show it grants nothing"
+        );
+        assert!(
+            !notifications(&store)
+                .attachment_is_visible(&reference, &[])
+                .await
+                .unwrap(),
+            "a caller who can read nothing is answered without a query"
+        );
+        assert!(
+            !notifications(&store)
+                .attachment_is_visible(&AttachmentId::generate(), std::slice::from_ref(&channel))
+                .await
+                .unwrap(),
+            "an id nothing references is not visible anywhere"
+        );
+
+        // And it stops being visible the moment the last notification showing it is
+        // gone — the same instant the sweep may collect the object.
+        notifications(&store)
+            .mark_deleted(shown.id, now())
+            .await
+            .unwrap();
+        assert!(
+            !notifications(&store)
+                .attachment_is_visible(&reference, &[channel])
+                .await
+                .unwrap(),
+            "a deleted notification stops entitling anybody to its image"
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_nothing_is_not_a_query() {
+        let store = store!();
+        assert_eq!(registry(&store).forget(&[]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn nothing_expiring_means_nothing_to_collect() {
+        // Guards the `NOT IN` trap the query deliberately avoids: over a set that
+        // contains a NULL, `NOT IN` is never true, and this call would return an
+        // empty list forever while looking exactly like a clean bucket.
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let reference = AttachmentId::generate();
+
+        publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    image: Some(Image::Attachment { reference }),
+                    ..ContentDraft::titled("current")
+                },
+            ),
+            None,
+            now(),
+        )
+        .await;
+
+        let orphaned = store
+            .orphaned_attachments(now() - Duration::days(7), 100)
+            .await
+            .unwrap();
+
+        assert!(
+            !orphaned.contains(&reference),
+            "nothing was deleted, so nothing is collectable"
+        );
     }
 
     #[tokio::test]
@@ -1890,6 +2152,51 @@ mod e2e {
     // --- The audit log -----------------------------------------------------
 
     #[tokio::test]
+    async fn every_action_this_build_emits_can_be_read_back() {
+        // The write path takes any string and the read path only accepts a closed
+        // list, so an action somebody emits without adding it to that list produces
+        // a row that `GET /admin/audit` cannot hydrate — and the failure is not on
+        // the row, it is on the *whole query*. One `PATCH /channels/{id}` would make
+        // the audit log unreadable, which is the one log that has to survive an
+        // incident (design §13).
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        for action in notify_ports::AUDIT_ACTIONS {
+            audit(&store)
+                .record(&AuditEntry {
+                    actor: alice.clone(),
+                    action: *action,
+                    target: Some("t".to_owned()),
+                    channel: Some(channel.clone()),
+                    detail: None,
+                    at: now(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let page = audit(&store)
+            .query(&AuditQuery {
+                channel: Some(channel.clone()),
+                page: PageRequest::of_size(100),
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!("an action this build writes cannot be read back: {error}")
+            });
+
+        for action in notify_ports::AUDIT_ACTIONS {
+            assert!(
+                page.items.iter().any(|entry| entry.action == *action),
+                "{action} was written and did not come back"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn the_audit_log_is_browsable_by_actor_action_and_channel() {
         let store = store!();
         let (_, alice) = user();
@@ -1898,9 +2205,9 @@ mod e2e {
         let at = now();
 
         for (actor, action) in [
-            (&alice, "apikey.created"),
-            (&alice, "apikey.revoked"),
-            (&bob, "device.enrolled"),
+            (&alice, notify_ports::actions::APIKEY_CREATED),
+            (&alice, notify_ports::actions::APIKEY_REVOKED),
+            (&bob, notify_ports::actions::DEVICE_ENROLLED),
         ] {
             audit(&store)
                 .record(&AuditEntry {
@@ -1924,7 +2231,8 @@ mod e2e {
             .unwrap();
         assert_eq!(by_actor.items.len(), 2);
         assert_eq!(
-            by_actor.items[0].action, "apikey.revoked",
+            by_actor.items[0].action.as_str(),
+            "apikey.revoked",
             "newest first: a review starts from what just happened"
         );
 
@@ -1974,7 +2282,7 @@ mod e2e {
             audit(&store)
                 .record(&AuditEntry {
                     actor: alice.clone(),
-                    action: "channel.member_added",
+                    action: notify_ports::actions::CHANNEL_MEMBER_ADDED,
                     target: None,
                     channel: None,
                     detail: None,
@@ -2020,11 +2328,11 @@ mod e2e {
 
         // Ten a minute (design §8.2), consumed on the way in.
         for attempt in 1..=10 {
-            let allowance = store.check(&mine, at).await.unwrap();
+            let allowance = store.check(&mine, None, at).await.unwrap();
             assert!(allowance.is_allowed(), "attempt {attempt} should pass");
         }
 
-        let refused = store.check(&mine, at).await.unwrap();
+        let refused = store.check(&mine, None, at).await.unwrap();
         let Allowance::Limited {
             retry_after_seconds,
         } = refused
@@ -2034,14 +2342,14 @@ mod e2e {
         assert!((1..=60).contains(&retry_after_seconds));
 
         assert!(
-            store.check(&theirs, at).await.unwrap().is_allowed(),
+            store.check(&theirs, None, at).await.unwrap().is_allowed(),
             "one publisher in a retry loop must not take the endpoint down for everybody"
         );
 
         // The next window starts clean.
         assert!(
             store
-                .check(&mine, at + Duration::minutes(1))
+                .check(&mine, None, at + Duration::minutes(1))
                 .await
                 .unwrap()
                 .is_allowed()

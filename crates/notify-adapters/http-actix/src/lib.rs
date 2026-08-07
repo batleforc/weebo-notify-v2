@@ -41,11 +41,13 @@
 mod extract;
 mod problem;
 mod routes;
+mod slots;
 mod state;
 
 pub use extract::Authenticated;
 pub use problem::{ApiError, Problem};
 pub use routes::configure;
+pub use slots::StreamSlots;
 pub use state::ApiState;
 
 /// The request and response shapes that exist only at this boundary.

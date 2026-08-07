@@ -12,7 +12,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { Dnd } from "@/api/generated";
-import { active, covers, muted, usePreferences } from "@/stores/preferences";
+import { active, covers, usePreferences } from "@/stores/preferences";
 
 const USER = "usr_01J";
 
@@ -105,54 +105,6 @@ describe("whether a do-not-disturb is on", () => {
   });
 });
 
-describe("whether an arrival should make a noise", () => {
-  const quiet = dnd({
-    quiet_hours: [
-      { start: "22:00", end: "08:00", timezone: "Europe/Paris", days: [] },
-    ],
-  });
-  const night = at("2026-01-15T01:00:00Z");
-  const afternoon = at("2026-01-15T13:00:00Z");
-
-  it("is muted inside a quiet window", () => {
-    expect(muted(quiet, "ci-infra", "default", night)).toBe(true);
-  });
-
-  it("is not muted outside one", () => {
-    expect(muted(quiet, "ci-infra", "default", afternoon)).toBe(false);
-  });
-
-  it("lets an excepted channel through — the on-call case", () => {
-    const oncall = { ...quiet, exceptions: ["cluster-ovh-1"] };
-
-    expect(muted(oncall, "cluster-ovh-1", "default", night)).toBe(false);
-    expect(muted(oncall, "ci-infra", "default", night)).toBe(true);
-  });
-
-  it("reaches only the channels in its scope", () => {
-    const narrow = {
-      ...quiet,
-      scope: { kind: "channels" as const, channels: ["ci-infra"] },
-    };
-
-    expect(muted(narrow, "ci-infra", "default", night)).toBe(true);
-    expect(muted(narrow, "cluster-ovh-1", "default", night)).toBe(false);
-  });
-
-  it("keeps `urgent` quiet unless the recipient opted in", () => {
-    // The publisher chooses how insistent a notification is; the person receiving
-    // it chooses what may wake them (§2.3, §7.4).
-    expect(muted(quiet, "ci-infra", "urgent", night)).toBe(true);
-    expect(
-      muted({ ...quiet, urgent_bypasses: true }, "ci-infra", "urgent", night),
-    ).toBe(false);
-    // And the opt-in is about `urgent` alone.
-    expect(
-      muted({ ...quiet, urgent_bypasses: true }, "ci-infra", "high", night),
-    ).toBe(true);
-  });
-});
-
 describe("the store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -190,18 +142,37 @@ describe("the store", () => {
 
     expect(
       preferences.stayQuiet({
-        channel: "ci-infra",
-        priority: "default",
         notification: "ntf_01J",
       }),
     ).toBe(true);
     expect(
       preferences.stayQuiet({
-        channel: "ci-infra",
-        priority: "default",
         notification: "ntf_01K",
       }),
     ).toBe(false);
+  });
+
+  it("takes the server's word for the do-not-disturb half", () => {
+    // D22: the rule has four clauses and used to exist three times. The server
+    // holds the preference, applies it per reader, and says so on the event; this
+    // client reads the answer instead of deriving it again.
+    const preferences = usePreferences();
+
+    expect(
+      preferences.stayQuiet({ notification: "ntf_01J", mutedByDnd: true }),
+    ).toBe(true);
+    expect(
+      preferences.stayQuiet({ notification: "ntf_01J", mutedByDnd: false }),
+    ).toBe(false);
+  });
+
+  it("treats a missing answer as nobody having said anything", () => {
+    // A push handed over by the service worker carries no event envelope, so it
+    // carries no flag. Silent-when-unsure would drop a notification somebody asked
+    // for; noisy-when-unsure costs a popup.
+    const preferences = usePreferences();
+
+    expect(preferences.stayQuiet({ notification: "ntf_01J" })).toBe(false);
   });
 
   it("stays quiet for a whole group when the silence is group-scoped", () => {
@@ -216,8 +187,6 @@ describe("the store", () => {
 
     expect(
       preferences.stayQuiet({
-        channel: "ci-infra",
-        priority: "default",
         notification: "ntf_01K",
         groupKey: "deploy:prod",
       }),
@@ -226,8 +195,6 @@ describe("the store", () => {
     // against a value, never against `undefined`.
     expect(
       preferences.stayQuiet({
-        channel: "ci-infra",
-        priority: "default",
         notification: "ntf_01K",
         groupKey: null,
       }),

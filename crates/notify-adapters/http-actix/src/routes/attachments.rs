@@ -1,15 +1,16 @@
-//! `POST /attachments/presign` — signing the way into the bucket (design §6.1, §8).
+//! `POST /attachments/presign` and `GET /attachments/{id}` — the way in and out of
+//! the bucket (design §6.1, §8).
 //!
-//! One route, and it is the only one attachments need on this side: the bytes go
-//! **client → bucket** and never through here (§6.1), so there is no upload
-//! handler to write and no 25 MiB body to hold. What this returns is a credential
-//! with an expiry, which is why every check lives in the use case behind it rather
-//! than anywhere downstream — after the signature the client is talking to the
-//! bucket, not to us.
+//! Two routes, one per direction, and neither carries bytes: they go **client →
+//! bucket** and **bucket → client**, never through here (§6.1), so there is no
+//! upload handler to write and no 25 MiB body to hold. What each returns is a
+//! credential with an expiry, which is why every check lives in the use case
+//! behind it rather than anywhere downstream — after the signature the client is
+//! talking to the bucket, not to us.
 
-use actix_web::{post, web};
-use notify_domain::ChannelId;
-use notify_ports::PresignedUpload;
+use actix_web::{get, post, web};
+use notify_domain::{AttachmentId, ChannelId};
+use notify_ports::{PresignedDownload, PresignedUpload};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
@@ -64,4 +65,30 @@ pub(crate) async fn presign(
             .execute(&caller.0, &channel, &body.content_type, body.content_length)
             .await?,
     ))
+}
+
+/// Sign a download of an attachment a notification shows.
+#[utoipa::path(
+    get,
+    path = "/attachments/{id}",
+    tag = "notifications",
+    params(("id" = String, Path, description = "The attachment id a payload references")),
+    responses(
+        (status = 200, description = "A short-lived signed download", body = PresignedDownload),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 404, description = "No such attachment, or none the caller may see — \
+                                      deliberately the same answer", body = Problem),
+        (status = 501, description = "This deployment has no object store", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/attachments/{id}")]
+pub(crate) async fn download(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    id: web::Path<String>,
+) -> Result<web::Json<PresignedDownload>, ApiError> {
+    let id: AttachmentId = id.into_inner().parse()?;
+
+    Ok(web::Json(state.attachment.execute(&caller.0, id).await?))
 }

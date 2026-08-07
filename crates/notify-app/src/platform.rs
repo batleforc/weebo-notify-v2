@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use notify_domain::{ChannelId, Scope, TrustPolicies};
-use notify_ports::{AuditEntry, AuditLog, AuditQuery, ChannelRepository, Failure, Page};
+use notify_ports::{AuditEntry, AuditLog, AuditQuery, ChannelRepository, Failure, Page, actions};
 use time::OffsetDateTime;
 
 use crate::authz::Caller;
@@ -293,7 +293,7 @@ impl SelfJoin {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "platform.channel.self_join",
+                action: actions::PLATFORM_CHANNEL_SELF_JOIN,
                 target: Some(id.to_string()),
                 channel: Some(id.clone()),
                 detail: None,
@@ -469,7 +469,7 @@ mod tests {
             entries
                 .items
                 .iter()
-                .any(|entry| entry.action == "platform.channel.self_join"),
+                .any(|entry| entry.action.as_str() == "platform.channel.self_join"),
             "reading somebody's channel has to leave a trace a later reader can find"
         );
     }

@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use futures::stream::BoxStream;
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyPrefix, Channel, ChannelId, Cursor, DeliveryId, Device, DeviceId, Dnd,
-    ExternalId, InteractionRecord, Notification, NotificationId, Principal, Receipt, ReceiptKind,
-    Recorded, Revision, Scope, ServiceAccount, ServiceAccountId, Silence, Status, TombstoneReason,
-    User, UserId,
+    ApiKey, ApiKeyId, ApiKeyPrefix, AttachmentId, Channel, ChannelId, Cursor, DeliveryId, Device,
+    DeviceId, Dnd, ExternalId, InteractionRecord, Notification, NotificationId, Principal, Receipt,
+    ReceiptKind, Recorded, Revision, Scope, ServiceAccount, ServiceAccountId, Silence, Status,
+    TombstoneReason, User, UserId,
 };
 use time::OffsetDateTime;
 
@@ -86,6 +86,11 @@ struct State {
     /// Channels whose notification expired without ever being delivered — the
     /// "N expired while you were away" counter (design §7.2bis).
     expired_counters: Vec<(Cursor, ChannelId)>,
+    /// Upload ids a presign handed out: `(id, channel, requested_at)` — design
+    /// §7.2bis, D25. Here rather than on the bucket double for the same reason
+    /// `PgStore` owns it: answering "does any live revision reference this" needs
+    /// the revisions.
+    presigns: Vec<(AttachmentId, ChannelId, OffsetDateTime)>,
     pokes: Vec<Poke>,
     subscribers: Vec<UnboundedSender<Poke>>,
     pushes: Vec<(DeviceId, PushMessage)>,
@@ -171,6 +176,29 @@ impl InMemory {
     /// An empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The rows a purge with this window would delete.
+    ///
+    /// Shared by `purge` and `orphaned_attachments` rather than written twice, so
+    /// the two cannot disagree about which rows are on their way out — which is
+    /// what makes "an attachment only the doomed reference" mean anything.
+    fn doomed(
+        state: &State,
+        deleted_before: OffsetDateTime,
+        limit: u32,
+    ) -> Vec<notify_domain::NotificationId> {
+        state
+            .notifications
+            .iter()
+            .filter(|row| {
+                row.value
+                    .deleted_at
+                    .is_some_and(|deleted| deleted < deleted_before)
+            })
+            .take(limit as usize)
+            .map(|row| row.value.id)
+            .collect()
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -544,20 +572,61 @@ impl NotificationRepository for InMemory {
         Ok(claimed)
     }
 
+    async fn attachment_is_visible(
+        &self,
+        attachment: &AttachmentId,
+        channels: &[ChannelId],
+    ) -> PortResult<bool> {
+        let state = self.state();
+        let now = OffsetDateTime::now_utc();
+
+        Ok(state.revisions.iter().any(|row| {
+            attachment_of(&row.value) == Some(*attachment)
+                && state.notifications.iter().any(|owner| {
+                    owner.value.id == row.value.notification_id
+                        && channels.contains(&owner.value.channel)
+                        && !owner.value.is_gone(now)
+                })
+        }))
+    }
+
+    async fn orphaned_attachments(
+        &self,
+        deleted_before: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<AttachmentId>> {
+        let state = self.state();
+        let doomed = Self::doomed(&state, deleted_before, limit);
+
+        // Referenced by a revision of something that is staying: the same "only"
+        // the port's documentation insists on, and the reason this is a set
+        // difference rather than a filter.
+        let surviving: Vec<AttachmentId> = state
+            .revisions
+            .iter()
+            .filter(|row| !doomed.contains(&row.value.notification_id))
+            .filter_map(|row| attachment_of(&row.value))
+            .collect();
+
+        let mut orphaned: Vec<AttachmentId> = Vec::new();
+        for row in &state.revisions {
+            if !doomed.contains(&row.value.notification_id) {
+                continue;
+            }
+            if let Some(id) = attachment_of(&row.value)
+                && !surviving.contains(&id)
+                && !orphaned.contains(&id)
+            {
+                orphaned.push(id);
+            }
+        }
+        Ok(orphaned)
+    }
+
     async fn purge(&self, deleted_before: OffsetDateTime, limit: u32) -> PortResult<u64> {
         let mut state = self.state();
 
-        let doomed: Vec<NotificationId> = state
-            .notifications
-            .iter()
-            .filter(|row| {
-                row.value
-                    .deleted_at
-                    .is_some_and(|deleted| deleted < deleted_before)
-            })
-            .take(limit as usize)
-            .map(|row| row.value.id)
-            .collect();
+        let doomed = Self::doomed(&state, deleted_before, limit);
 
         state
             .notifications
@@ -567,6 +636,63 @@ impl NotificationRepository for InMemory {
             .retain(|row| !doomed.contains(&row.value.notification_id));
 
         Ok(doomed.len() as u64)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::AttachmentRegistry for InMemory {
+    async fn record(
+        &self,
+        id: AttachmentId,
+        channel: &ChannelId,
+        at: OffsetDateTime,
+    ) -> PortResult<()> {
+        let mut state = self.state();
+        if !state.presigns.iter().any(|(known, _, _)| *known == id) {
+            state.presigns.push((id, channel.clone(), at));
+        }
+        Ok(())
+    }
+
+    async fn unreferenced(
+        &self,
+        older_than: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<AttachmentId>> {
+        let state = self.state();
+        let referenced: Vec<AttachmentId> = state
+            .revisions
+            .iter()
+            .filter_map(|row| attachment_of(&row.value))
+            .collect();
+
+        Ok(state
+            .presigns
+            .iter()
+            .filter(|(_, _, at)| *at < older_than)
+            .map(|(id, _, _)| *id)
+            .filter(|id| !referenced.contains(id))
+            .take(limit as usize)
+            .collect())
+    }
+
+    async fn forget(&self, ids: &[AttachmentId]) -> PortResult<u64> {
+        let mut state = self.state();
+        let before = state.presigns.len();
+        state.presigns.retain(|(id, _, _)| !ids.contains(id));
+        Ok((before - state.presigns.len()) as u64)
+    }
+}
+
+/// The attachment a revision points at, if it points at one.
+///
+/// A `data:` image is inline in the payload and owns no object, so it is not an
+/// attachment to collect — the same distinction design §2.3 draws at the 48 KiB
+/// line.
+fn attachment_of(revision: &Revision) -> Option<AttachmentId> {
+    match revision.content.image.as_ref()? {
+        notify_domain::Image::Attachment { reference } => Some(*reference),
+        notify_domain::Image::DataUri { .. } => None,
     }
 }
 
@@ -1522,7 +1648,7 @@ impl AuditLog for InMemory {
                     && query
                         .action
                         .as_ref()
-                        .is_none_or(|action| entry.action == action)
+                        .is_none_or(|action| entry.action.as_str() == action)
                     && query
                         .channel
                         .as_ref()
@@ -2619,7 +2745,10 @@ mod tests {
         let store = InMemory::new();
         let alice = user();
 
-        for action in ["apikey.created", "channel.member_added"] {
+        for action in [
+            crate::actions::APIKEY_CREATED,
+            crate::actions::CHANNEL_MEMBER_ADDED,
+        ] {
             AuditLog::record(
                 &store,
                 &AuditEntry {
@@ -2639,7 +2768,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            all.items[0].action, "channel.member_added",
+            all.items[0].action.as_str(),
+            "channel.member_added",
             "an incident review reads backwards"
         );
 

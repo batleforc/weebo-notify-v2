@@ -12,8 +12,8 @@ use notify_app::{
     DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, ExchangeToken,
     GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox,
     ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers,
-    PostReceipt, PresignAttachment, PublishNotification, ReadAvatar, ReadChannel, ReadDnd,
-    ReadProfile, ReadReceipts, ReadReconciliation, RecordInteraction, RequeueDeadLetter,
+    PostReceipt, PresignAttachment, PublishNotification, ReadAttachment, ReadAvatar, ReadChannel,
+    ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation, RecordInteraction, RequeueDeadLetter,
     ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SetAvatar,
     SetDnd, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
@@ -33,6 +33,15 @@ pub struct ApiState {
     /// connections it holds, how far behind a client was — and a use case that
     /// recorded its own would be one that knows it is being watched.
     pub metrics: Arc<dyn Metrics>,
+
+    /// The live connections this replica holds, so `GET /stream` and `GET /ws` can
+    /// enforce the ceiling of design §8.2.
+    ///
+    /// Here for the same reason `metrics` is: it is a fact about *this process*, not
+    /// a decision about who may see what. `Arc` and not a plain field because
+    /// [`ApiState`] is cloned into every worker and one shared count is the point —
+    /// twenty per worker would be twenty times the ceiling.
+    pub streams: Arc<crate::slots::StreamSlots>,
 
     /// Credential to caller, for the extractor.
     pub authenticate: Authenticate,
@@ -85,6 +94,8 @@ pub struct ApiState {
 
     /// `POST /attachments/presign`.
     pub presign: PresignAttachment,
+    /// `GET /attachments/{id}`.
+    pub attachment: ReadAttachment,
 
     /// `GET /sync`.
     pub sync: SyncBacklog,

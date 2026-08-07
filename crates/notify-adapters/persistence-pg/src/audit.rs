@@ -25,7 +25,7 @@ impl AuditLog for PgStore {
         tracing::info!(
             audit = true,
             actor = %entry.actor.reference(),
-            action = entry.action,
+            action = entry.action.as_str(),
             target = entry.target.as_deref().unwrap_or("-"),
             channel = entry.channel.as_ref().map_or("-", ChannelId::as_str),
             "administrative action"
@@ -38,7 +38,7 @@ impl AuditLog for PgStore {
         .bind(entry.at)
         .bind(entry.actor.reference())
         .bind(to_json("audit.actor", &entry.actor)?)
-        .bind(entry.action)
+        .bind(entry.action.as_str())
         .bind(entry.target.as_deref())
         .bind(entry.channel.as_ref().map(ChannelId::as_str))
         .bind(entry.detail.clone())
@@ -125,40 +125,18 @@ fn hydrate(row: &PgRow) -> PortResult<AuditEntry> {
     })
 }
 
-/// The audit vocabulary, as design §13 fixes it.
+/// The vocabulary lives in the port (`notify_ports::AUDIT_ACTIONS`), not here.
 ///
-/// A closed list rather than `String::leak`: leaking would let a malformed row grow
-/// the process's memory, and silently accepting an unknown action would let a
-/// review filter on a value that means nothing.
-const ACTIONS: &[&str] = &[
-    "apikey.created",
-    "apikey.revoked",
-    "channel.created",
-    "channel.deleted",
-    "channel.member_added",
-    "channel.member_removed",
-    "device.enrolled",
-    "device.revoked",
-    "dlq.requeued",
-    // The platform role reading somebody else's channel (§5.4, T30). Membership
-    // stays the one door to content, and this is the record that the door was used.
-    "platform.channel.self_join",
-    "service_account.created",
-    "service_account.disabled",
-    "trust_policy.changed",
-];
-
-fn intern_action(action: &str) -> PortResult<&'static str> {
-    ACTIONS
-        .iter()
-        .find(|known| **known == action)
-        .copied()
-        .ok_or_else(|| {
-            notify_ports::PortError::corrupt(
-                "audit.action",
-                format!("`{action}` is not in the audit vocabulary of this build"),
-            )
-        })
+/// It used to live here, privately, while the emitters wrote literals — and the
+/// two drifted in both directions without anything failing until a row was read.
+/// Interning against the same list the writers name is what makes that impossible.
+fn intern_action(action: &str) -> PortResult<notify_ports::AuditAction> {
+    notify_ports::AuditAction::parse(action).ok_or_else(|| {
+        notify_ports::PortError::corrupt(
+            "audit.action",
+            format!("`{action}` is not in the audit vocabulary of this build"),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -168,21 +146,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_vocabulary_covers_what_the_use_cases_actually_record() {
-        // These strings are written by notify-app; a mismatch would store an entry
-        // that cannot be read back, which is the one failure mode an audit log must
-        // not have.
-        for action in [
-            "apikey.created",
-            "apikey.revoked",
-            "channel.created",
-            "channel.deleted",
-            "channel.member_added",
-            "channel.member_removed",
-            "device.enrolled",
-            "device.revoked",
-        ] {
-            assert!(intern_action(action).is_ok(), "{action} is not interned");
+    fn every_action_in_the_vocabulary_interns() {
+        // This test used to hold its **own** copy of the list, which is why it
+        // passed while two actions the build emits were missing from the one it was
+        // supposed to be checking: a hand-written mirror of a hand-written list
+        // agrees with itself and with nothing else. It now walks the shared
+        // vocabulary, so there is no second copy to be right about.
+        for action in notify_ports::AUDIT_ACTIONS {
+            assert!(
+                intern_action(action.as_str()).is_ok(),
+                "{action} is not interned"
+            );
         }
     }
 
@@ -195,10 +169,10 @@ mod tests {
 
     #[test]
     fn the_vocabulary_has_no_duplicates() {
-        let mut seen = ACTIONS.to_vec();
+        let mut seen = notify_ports::AUDIT_ACTIONS.to_vec();
         seen.sort_unstable();
         seen.dedup();
 
-        assert_eq!(seen.len(), ACTIONS.len());
+        assert_eq!(seen.len(), notify_ports::AUDIT_ACTIONS.len());
     }
 }

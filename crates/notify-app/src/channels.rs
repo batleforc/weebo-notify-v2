@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use notify_domain::{Channel, ChannelId, DomainError, Membership, PolicyEdit, Principal, Scope};
-use notify_ports::{AuditEntry, AuditLog, ChannelRepository, Clock, Failure, Page, PageRequest};
+use notify_ports::{
+    AuditEntry, AuditLog, ChannelRepository, Clock, Failure, Page, PageRequest, actions,
+};
 
 use crate::authz::{Authorizer, Caller};
 
@@ -140,7 +142,7 @@ impl CreateChannel {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "channel.created",
+                action: actions::CHANNEL_CREATED,
                 target: Some(channel.id.to_string()),
                 channel: Some(channel.id.clone()),
                 detail: None,
@@ -208,7 +210,7 @@ impl ManageMembers {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "channel.member_added",
+                action: actions::CHANNEL_MEMBER_ADDED,
                 target: Some(principal.reference()),
                 channel: Some(channel_id.clone()),
                 detail: serde_json::to_value(&scopes).ok(),
@@ -247,9 +249,9 @@ impl ManageMembers {
                 .record(&AuditEntry {
                     actor: caller.principal.clone(),
                     action: if leaving {
-                        "channel.member_left"
+                        actions::CHANNEL_MEMBER_LEFT
                     } else {
-                        "channel.member_removed"
+                        actions::CHANNEL_MEMBER_REMOVED
                     },
                     target: Some(principal.reference()),
                     channel: Some(channel_id.clone()),
@@ -329,7 +331,7 @@ impl UpdateChannel {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "channel.policy_updated",
+                action: actions::CHANNEL_POLICY_UPDATED,
                 target: Some(channel_id.to_string()),
                 channel: Some(channel_id.clone()),
                 // The resulting policy rather than the request: an audit log is read
@@ -388,7 +390,7 @@ impl DeleteChannel {
             self.audit
                 .record(&AuditEntry {
                     actor: caller.principal.clone(),
-                    action: "channel.deleted",
+                    action: actions::CHANNEL_DELETED,
                     target: Some(channel_id.to_string()),
                     channel: Some(channel_id.clone()),
                     detail: None,
@@ -549,7 +551,7 @@ mod tests {
         assert!(
             audit
                 .iter()
-                .any(|entry| entry.action == "channel.member_added")
+                .any(|entry| entry.action.as_str() == "channel.member_added")
         );
     }
 
@@ -681,7 +683,7 @@ mod tests {
                 .store
                 .audit_entries()
                 .iter()
-                .any(|entry| entry.action == "channel.policy_updated")
+                .any(|entry| entry.action.as_str() == "channel.policy_updated")
         );
 
         let bob = Principal::User {
@@ -735,7 +737,7 @@ mod tests {
                 .store
                 .audit_entries()
                 .iter()
-                .any(|entry| entry.action == "channel.policy_updated"),
+                .any(|entry| entry.action.as_str() == "channel.policy_updated"),
             "an audit entry for a policy that did not move is a false record"
         );
     }
@@ -762,7 +764,7 @@ mod tests {
                 .store
                 .audit_entries()
                 .iter()
-                .any(|entry| entry.action == "channel.deleted")
+                .any(|entry| entry.action.as_str() == "channel.deleted")
         );
     }
 }

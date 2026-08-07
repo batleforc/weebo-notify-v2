@@ -55,6 +55,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(identity::list_keys)
             .service(identity::revoke_key)
             .service(attachments::presign)
+            .service(attachments::download)
             .service(federation::exchange)
             .service(push::webpush_key)
             .service(preferences::read_dnd)

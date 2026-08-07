@@ -14,7 +14,7 @@
 //! "RustFS": swapping in MinIO, Garage or real S3 must be configuration, not code
 //! (design §15).
 
-use notify_domain::AttachmentId;
+use notify_domain::{AttachmentId, ChannelId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use url::Url;
@@ -61,6 +61,7 @@ pub struct PresignedUpload {
 }
 
 /// A signed download.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresignedDownload {
     /// Where to GET the bytes.
@@ -111,9 +112,54 @@ pub trait AttachmentStore: Send + Sync {
     /// would mean a signing round trip per row of an inbox.
     async fn get(&self, id: AttachmentId) -> PortResult<Option<StoredObject>>;
 
-    /// Delete an object, when its notification is purged.
+    /// Delete an object, when its notification is purged or when the id it was
+    /// signed under turned out never to be used (design §7.2bis).
     async fn delete(&self, id: AttachmentId) -> PortResult<()>;
 
     /// Whether the bucket is reachable, for `/readyz` (design §13).
     async fn health(&self) -> PortResult<()>;
+}
+
+/// What the object store was handed, so it can be swept (design §7.2bis, D25).
+///
+/// Separate from [`AttachmentStore`] because they are different machines: that one
+/// is the bucket, this one is the database remembering what we signed. Folding
+/// them together would put a table write behind a trait whose other implementation
+/// talks S3, and the composition root could no longer wire a real bucket against
+/// no registry — which is exactly what a deployment with no `[attachments]` is.
+///
+/// A row means "a URL was signed for this id", never "an object exists". Nothing
+/// tells us whether the client uploaded, and nothing needs to: deleting a key that
+/// was never written succeeds.
+#[async_trait::async_trait]
+pub trait AttachmentRegistry: Send + Sync {
+    /// Remember that a URL was signed.
+    ///
+    /// Called after the signature rather than before, so a signing failure leaves
+    /// no row claiming an upload nobody can make.
+    async fn record(
+        &self,
+        id: AttachmentId,
+        channel: &ChannelId,
+        at: OffsetDateTime,
+    ) -> PortResult<()>;
+
+    /// Ids signed before `older_than` that no live revision references.
+    ///
+    /// The age bound is not politeness: between signing a URL and publishing the
+    /// notification that names it, an id is legitimately unreferenced, and a sweep
+    /// landing in that window would delete an upload that was on its way. The
+    /// presigned URL itself lives fifteen minutes, so anything past a day is a
+    /// publisher that never came back.
+    async fn unreferenced(
+        &self,
+        older_than: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<AttachmentId>>;
+
+    /// Drop rows once their objects have been dealt with.
+    ///
+    /// Called with what was actually deleted, so an id whose object refused to go
+    /// keeps its row and comes back on the next sweep.
+    async fn forget(&self, ids: &[AttachmentId]) -> PortResult<u64>;
 }

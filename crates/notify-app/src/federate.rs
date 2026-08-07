@@ -92,7 +92,9 @@ impl ExchangeToken {
         };
         if let Allowance::Limited {
             retry_after_seconds,
-        } = self.limiter.check(&quota, self.clock.now()).await?
+            // No override: the exchange happens before any channel is known — that is
+            // the point of checking it first (§5.3).
+        } = self.limiter.check(&quota, None, self.clock.now()).await?
         {
             return Err(Failure::RateLimited {
                 retry_after_seconds,

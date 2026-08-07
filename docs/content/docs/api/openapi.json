@@ -650,6 +650,73 @@
         ]
       }
     },
+    "/api/v1/attachments/{id}": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Sign a download of an attachment a notification shows.",
+        "operationId": "download",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The attachment id a payload references",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A short-lived signed download",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresignedDownload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such attachment, or none the caller may see — deliberately the same answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "This deployment has no object store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/auth/token/exchange": {
       "post": {
         "tags": [
@@ -2814,6 +2881,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many live connections held by this principal on this replica (design §8.2)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3160,6 +3237,16 @@
           },
           "422": {
             "description": "That cursor is not one of ours",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many live connections held by this principal on this replica (design §8.2)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3579,7 +3666,7 @@
         "properties": {
           "action": {
             "type": "string",
-            "description": "What they did, in a stable dotted vocabulary: `apikey.created`,\n`channel.member_added`, `service_account.disabled`, `dlq.requeued`.\n\nA closed set rather than free text, because this is what an incident review\nfilters on."
+            "description": "What they did — one of the constants in [`actions`]."
           },
           "actor": {
             "$ref": "#/components/schemas/Principal",
@@ -3735,6 +3822,15 @@
           "default_priority": {
             "$ref": "#/components/schemas/Priority",
             "description": "Priority applied when a publisher says nothing."
+          },
+          "publish_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "This channel's own publish ceiling, per minute, overriding the 600/min of\ndesign §8.2. `None` means the published default applies.\n\n**GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),\nand deliberately absent from the `PATCH /channels/{id}` body: a publisher\nwho could raise their own channel's ceiling through the API would be a\npublisher for whom the ceiling is a suggestion. A dynamic channel has no\nconfiguration file to be named in, so it keeps the default — which is the\nright answer rather than a gap, the default being what §8.2 publishes.\n\nDefaulted on the wire so a policy stored before this field existed still\ndeserialises; the policy is persisted as JSON, so there is no column and no\nmigration behind this.",
+            "minimum": 0
           },
           "receipts_enabled": {
             "type": "boolean",
@@ -5176,6 +5272,26 @@
           "content_type": {
             "type": "string",
             "description": "The declared media type. Imposed in the signature, so an upload that lies is\nrefused by the bucket rather than discovered later."
+          }
+        }
+      },
+      "PresignedDownload": {
+        "type": "object",
+        "description": "A signed download.",
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the signature stops working."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where to GET the bytes."
           }
         }
       },

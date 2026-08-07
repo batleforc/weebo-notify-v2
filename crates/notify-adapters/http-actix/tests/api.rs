@@ -82,6 +82,9 @@ impl Harness {
             // the exporter is exercised where it lives (`notify-metrics-prometheus`)
             // and the recording sites are two lines each.
             metrics: Arc::new(notify_ports::NoMetrics),
+            // Real, unlike the metrics: this one refuses requests, so a harness
+            // that stubbed it would test a server that has no ceiling.
+            streams: Arc::new(notify_http_actix::StreamSlots::new()),
             authenticate: Authenticate::new(
                 Arc::new(tokens.clone()),
                 Arc::new(store.clone()),
@@ -168,7 +171,22 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
-            presign: PresignAttachment::new(Arc::new(attachments.clone()), authorizer.clone()),
+            presign: PresignAttachment::new(
+                notify_app::Attachments {
+                    store: Arc::new(attachments.clone()),
+                    registry: Arc::new(store.clone()),
+                },
+                authorizer.clone(),
+                Arc::new(clock.clone()),
+            ),
+            attachment: notify_app::ReadAttachment::new(
+                notify_app::Attachments {
+                    store: Arc::new(attachments.clone()),
+                    registry: Arc::new(store.clone()),
+                },
+                Arc::new(store.clone()),
+                authorizer.clone(),
+            ),
             sync: SyncBacklog::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -914,6 +932,83 @@ async fn a_stream_frame_outside_a_quiet_period_carries_no_flag_at_all() {
         .expect("the stream produced no revision frame");
 
     assert!(frame["muted_by_dnd"].is_null(), "{frame}");
+}
+
+#[actix_web::test]
+async fn a_reader_cannot_hold_more_connections_than_section_8_2_allows() {
+    // The ceiling reaching an actual client. §8.2 publishes "connexions SSE/WS par
+    // user: 20" and nothing enforced it: both transports served every connection
+    // asked for. The registry is unit-tested next door; what this adds is that the
+    // handler consults it, and that a refusal is the `429` with the `Retry-After`
+    // §8.2 names rather than a stream that opens and stays silent.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let open = async |app: &_| {
+        let request = test::TestRequest::get()
+            .uri("/api/v1/stream")
+            .insert_header(AUTH)
+            .to_request();
+        test::call_service(app, request).await
+    };
+
+    // Held, not dropped: each response owns the receiving half of its stream, so
+    // letting one go would hand its slot straight back and the twenty-first would
+    // fit. Holding them is what makes this a test of the ceiling.
+    let mut held = Vec::new();
+    for n in 0..notify_domain::limits::MAX_STREAMS_PER_PRINCIPAL {
+        let response = open(&app).await;
+        assert_eq!(response.status(), StatusCode::OK, "connection {n} of 20");
+        held.push(response);
+    }
+
+    let refused = open(&app).await;
+
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        refused
+            .headers()
+            .get("retry-after")
+            .expect("a 429 without Retry-After turns a polite client into a busy loop")
+            .to_str()
+            .unwrap(),
+        "30"
+    );
+
+    let problem: Value = test::read_body_json(refused).await;
+    assert_eq!(problem["code"], "rate.limited");
+}
+
+#[actix_web::test]
+async fn the_websocket_shares_the_connection_ceiling_with_the_stream() {
+    // One ceiling for both, as §8.2 writes it ("connexions SSE/WS"). Two counters
+    // would mean forty, and a client that alternates transports would never be
+    // refused by either.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let mut held = Vec::new();
+    for _ in 0..notify_domain::limits::MAX_STREAMS_PER_PRINCIPAL {
+        let request = test::TestRequest::get()
+            .uri("/api/v1/stream")
+            .insert_header(AUTH)
+            .to_request();
+        held.push(test::call_service(&app, request).await);
+    }
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/ws")
+        .insert_header(AUTH)
+        .to_request();
+    let refused = test::call_service(&app, request).await;
+
+    assert_eq!(
+        refused.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "SSE connections fill the socket ceiling too"
+    );
 }
 
 #[actix_web::test]

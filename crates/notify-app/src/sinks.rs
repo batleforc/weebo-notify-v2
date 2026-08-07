@@ -31,7 +31,7 @@ use std::sync::Arc;
 use notify_domain::{ChannelId, DeliveryId, RetryPolicy};
 use notify_ports::{
     AuditEntry, AuditLog, Clock, DeadLetter, Failure, LeaderElection, SinkDelivery, SinkDispatcher,
-    SinkOutcome, SinkQueue, SinkRegistry,
+    SinkOutcome, SinkQueue, SinkRegistry, actions,
 };
 
 use crate::authz::Caller;
@@ -306,7 +306,7 @@ impl RequeueDeadLetter {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "dlq.requeued",
+                action: actions::DLQ_REQUEUED,
                 target: Some(id.to_string()),
                 channel: None,
                 detail: None,

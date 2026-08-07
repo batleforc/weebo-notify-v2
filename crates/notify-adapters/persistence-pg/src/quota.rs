@@ -18,11 +18,11 @@ use crate::mapping::fail;
 /// Every window is a minute, which is the unit design §8.2 states its limits in.
 const WINDOW: Duration = Duration::minutes(1);
 
-/// The ceiling for each quota, straight from design §8.2.
+/// The published default for each quota, straight from design §8.2.
 ///
 /// A closed match rather than a lookup table: adding a [`Quota`] variant then fails
 /// to compile here until somebody decides what it is worth.
-const fn ceiling(quota: &Quota) -> i32 {
+const fn default_ceiling(quota: &Quota) -> i32 {
     match quota {
         // 60/min with a burst of 120: the burst is the ceiling, and the steady rate
         // is what a well-behaved publisher stays under.
@@ -33,6 +33,19 @@ const fn ceiling(quota: &Quota) -> i32 {
         // Full-text is the expensive read; the command palette debounces client-side.
         Quota::Search { .. } => 30,
     }
+}
+
+/// What this request is actually measured against.
+///
+/// The configured override of design §8.2 wins when there is one, and the default
+/// applies when there is not. Nothing is clamped to the default in either
+/// direction: an operator who writes `publish_per_min = 5000` on a channel meant
+/// to carry a firehose has said so in GitOps (§11), and silently holding them to
+/// 600 would be a limit that lies about itself.
+fn ceiling(quota: &Quota, configured: Option<u32>) -> i32 {
+    configured
+        .and_then(|limit| i32::try_from(limit).ok())
+        .unwrap_or_else(|| default_ceiling(quota))
 }
 
 /// The row a quota counts against.
@@ -47,7 +60,12 @@ fn key(quota: &Quota) -> String {
 
 #[async_trait::async_trait]
 impl RateLimiter for PgStore {
-    async fn check(&self, quota: &Quota, now: OffsetDateTime) -> PortResult<Allowance> {
+    async fn check(
+        &self,
+        quota: &Quota,
+        configured: Option<u32>,
+        now: OffsetDateTime,
+    ) -> PortResult<Allowance> {
         let window_start = floor_to_window(now);
 
         // Consumed on the way in, in one statement: a caller that is over the limit
@@ -72,7 +90,7 @@ impl RateLimiter for PgStore {
         .await
         .map_err(|error| fail("rate_limit", error))?;
 
-        let ceiling = ceiling(quota);
+        let ceiling = ceiling(quota, configured);
         if count > ceiling {
             // Seconds until the window rolls, so `Retry-After` is a fact rather than
             // a guess a client has to back off around.
@@ -158,27 +176,71 @@ mod tests {
     #[test]
     fn the_published_ceilings_are_the_ones_in_the_design() {
         assert_eq!(
-            ceiling(&Quota::PublishPerKey { key: String::new() }),
+            ceiling(&Quota::PublishPerKey { key: String::new() }, None),
             120,
             "60/min with a burst of 120 (design §8.2)"
         );
         assert_eq!(
-            ceiling(&Quota::PublishPerChannel {
-                channel: String::new()
-            }),
+            ceiling(
+                &Quota::PublishPerChannel {
+                    channel: String::new()
+                },
+                None
+            ),
             600
         );
         assert_eq!(
-            ceiling(&Quota::TokenExchange {
-                subject: String::new()
-            }),
+            ceiling(
+                &Quota::TokenExchange {
+                    subject: String::new()
+                },
+                None
+            ),
             10
         );
         assert_eq!(
-            ceiling(&Quota::Search {
-                principal: String::new()
-            }),
+            ceiling(
+                &Quota::Search {
+                    principal: String::new()
+                },
+                None
+            ),
             30
+        );
+    }
+
+    #[test]
+    fn a_channel_that_configures_its_own_ceiling_gets_it() {
+        // §8.2: "défauts globaux, surchargeables par canal". The override wins in
+        // both directions — a channel can be given more room than the default as
+        // well as less, because an operator who writes the number has said what
+        // they want and a limit that silently ignores it is worse than no limit.
+        let channel = Quota::PublishPerChannel {
+            channel: "ci-infra".to_owned(),
+        };
+
+        assert_eq!(ceiling(&channel, Some(30)), 30, "a quieter channel");
+        assert_eq!(ceiling(&channel, Some(5_000)), 5_000, "a firehose");
+        assert_eq!(
+            ceiling(&channel, None),
+            600,
+            "and no configuration is the published default"
+        );
+    }
+
+    #[test]
+    fn a_configured_ceiling_too_large_for_the_counter_falls_back() {
+        // The counter is an `i32` because that is what the column is. A number past
+        // it is an operator typo, and the published default is a far better answer
+        // than a panic or a silently negative ceiling that refuses everything.
+        assert_eq!(
+            ceiling(
+                &Quota::PublishPerChannel {
+                    channel: String::new()
+                },
+                Some(u32::MAX)
+            ),
+            600
         );
     }
 }

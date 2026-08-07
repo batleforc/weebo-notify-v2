@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use notify_domain::{DomainError, Origin, Principal, ServiceAccount, ServiceAccountId};
 use notify_ports::{
-    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, ServiceAccountRepository,
+    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, ServiceAccountRepository, actions,
 };
 
 use crate::authz::Caller;
@@ -136,7 +136,7 @@ impl CreateServiceAccount {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "service_account.created",
+                action: actions::SERVICE_ACCOUNT_CREATED,
                 target: Some(account.id.as_str().to_owned()),
                 channel: None,
                 detail: None,
@@ -213,7 +213,7 @@ impl DeactivateServiceAccount {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "service_account.disabled",
+                action: actions::SERVICE_ACCOUNT_DISABLED,
                 target: Some(account.id.as_str().to_owned()),
                 channel: None,
                 // How many credentials stopped working, which is the number an

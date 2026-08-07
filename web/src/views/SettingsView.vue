@@ -14,6 +14,7 @@ import { computed, onMounted, ref } from "vue";
 import { readProfile, setAvatar, updateProfile } from "@/api/generated";
 import type { Profile, ProfileField } from "@/api/generated/types.gen";
 import { failureOf } from "@/api/problem";
+import { avatarObjectUrl } from "@/lib/avatar";
 import { useSession } from "@/auth/session";
 import DndPanel from "@/components/settings/DndPanel.vue";
 import PushPanel from "@/components/settings/PushPanel.vue";
@@ -22,7 +23,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { apiBaseUrl } from "@/config";
 import { useUi } from "@/stores/ui";
 
 const session = useSession();
@@ -40,12 +40,20 @@ const claimed = computed(
   () => new Set<ProfileField>(profile.value?.overridden ?? []),
 );
 
-/** The avatar URL, which changes id on every upload — so it can be cached hard. */
-const avatarUrl = computed(() =>
-  profile.value?.avatar
-    ? `${apiBaseUrl}/api/v1/avatars/${profile.value.avatar}`
-    : null,
-);
+/**
+ * The avatar, as an object URL.
+ *
+ * Not `<img src="${apiBaseUrl}/api/v1/avatars/${id}">`, which is what this was
+ * and which could never have worked: that route is authenticated and this
+ * application keeps zero cookies (§5.1), so a browser `<img>` request carries no
+ * credential and answered 401 every time. The bytes are fetched through the API
+ * client instead — see `lib/avatar`.
+ */
+const avatarUrl = ref<string | null>(null);
+
+async function showAvatar(id: string | null | undefined): Promise<void> {
+  avatarUrl.value = id ? await avatarObjectUrl(id) : null;
+}
 
 function hydrate(next: Profile): void {
   profile.value = next;

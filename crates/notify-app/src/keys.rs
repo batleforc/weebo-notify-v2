@@ -13,7 +13,7 @@ use notify_domain::{
 };
 use notify_ports::{
     ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, KeyGenerator, SecretHasher,
-    StoredApiKey,
+    StoredApiKey, actions,
 };
 use time::OffsetDateTime;
 
@@ -147,7 +147,7 @@ impl CreateApiKey {
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone(),
-                action: "apikey.created",
+                action: actions::APIKEY_CREATED,
                 // The prefix, never the secret. An audit log that quotes a
                 // credential is a credential store nobody thinks of as one.
                 target: Some(prefix.to_string()),
@@ -235,7 +235,7 @@ impl RevokeApiKey {
             self.audit
                 .record(&AuditEntry {
                     actor: caller.principal.clone(),
-                    action: "apikey.revoked",
+                    action: actions::APIKEY_REVOKED,
                     target: Some(key.prefix.to_string()),
                     channel: key.channels.first().cloned(),
                     detail: None,
@@ -486,7 +486,7 @@ mod tests {
                 .store
                 .audit_entries()
                 .iter()
-                .any(|entry| entry.action == "apikey.revoked")
+                .any(|entry| entry.action.as_str() == "apikey.revoked")
         );
     }
 

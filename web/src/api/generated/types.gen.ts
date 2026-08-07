@@ -196,11 +196,7 @@ export type AttachmentId = string;
  */
 export type AuditEntry = {
     /**
-     * What they did, in a stable dotted vocabulary: `apikey.created`,
-     * `channel.member_added`, `service_account.disabled`, `dlq.requeued`.
-     *
-     * A closed set rather than free text, because this is what an incident review
-     * filters on.
+     * What they did — one of the constants in [`actions`].
      */
     action: string;
     /**
@@ -334,6 +330,22 @@ export type ChannelPolicy = {
      * Priority applied when a publisher says nothing.
      */
     default_priority: Priority;
+    /**
+     * This channel's own publish ceiling, per minute, overriding the 600/min of
+     * design §8.2. `None` means the published default applies.
+     *
+     * **GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),
+     * and deliberately absent from the `PATCH /channels/{id}` body: a publisher
+     * who could raise their own channel's ceiling through the API would be a
+     * publisher for whom the ceiling is a suggestion. A dynamic channel has no
+     * configuration file to be named in, so it keeps the default — which is the
+     * right answer rather than a gap, the default being what §8.2 publishes.
+     *
+     * Defaulted on the wire so a policy stored before this field existed still
+     * deserialises; the policy is persisted as JSON, so there is no column and no
+     * migration behind this.
+     */
+    publish_per_minute?: number | null;
     /**
      * Whether delivery and read receipts are collected and shown as "seen by
      * 3/5" (design §7.3). Opt-in: a channel that tells publishers who read what
@@ -1258,6 +1270,20 @@ export type PresignBody = {
      * refused by the bucket rather than discovered later.
      */
     content_type: string;
+};
+
+/**
+ * A signed download.
+ */
+export type PresignedDownload = {
+    /**
+     * When the signature stops working.
+     */
+    expires_at: string;
+    /**
+     * Where to GET the bytes.
+     */
+    url: string;
 };
 
 /**
@@ -2542,6 +2568,44 @@ export type PresignResponses = {
 
 export type PresignResponse = PresignResponses[keyof PresignResponses];
 
+export type DownloadData = {
+    body?: never;
+    path: {
+        /**
+         * The attachment id a payload references
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/attachments/{id}';
+};
+
+export type DownloadErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No such attachment, or none the caller may see — deliberately the same answer
+     */
+    404: Problem;
+    /**
+     * This deployment has no object store
+     */
+    501: Problem;
+};
+
+export type DownloadError = DownloadErrors[keyof DownloadErrors];
+
+export type DownloadResponses = {
+    /**
+     * A short-lived signed download
+     */
+    200: PresignedDownload;
+};
+
+export type DownloadResponse = DownloadResponses[keyof DownloadResponses];
+
 export type ExchangeData = {
     body: ExchangeBody;
     path?: never;
@@ -3731,6 +3795,10 @@ export type StreamErrors = {
      * That cursor is not one of ours
      */
     422: Problem;
+    /**
+     * Too many live connections held by this principal on this replica (design §8.2)
+     */
+    429: Problem;
 };
 
 export type StreamError = StreamErrors[keyof StreamErrors];
@@ -3925,6 +3993,10 @@ export type WebsocketErrors = {
      * That cursor is not one of ours
      */
     422: Problem;
+    /**
+     * Too many live connections held by this principal on this replica (design §8.2)
+     */
+    429: Problem;
 };
 
 export type WebsocketError = WebsocketErrors[keyof WebsocketErrors];

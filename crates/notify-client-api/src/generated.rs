@@ -746,7 +746,7 @@ on, or offboarding that human kills the bot (design §5.2).*/
     ///  ],
     ///  "properties": {
     ///    "action": {
-    ///      "description": "What they did, in a stable dotted vocabulary: `apikey.created`,\n`channel.member_added`, `service_account.disabled`, `dlq.requeued`.\n\nA closed set rather than free text, because this is what an incident review\nfilters on.",
+    ///      "description": "What they did — one of the constants in [`actions`].",
     ///      "type": "string"
     ///    },
     ///    "actor": {
@@ -776,11 +776,7 @@ on, or offboarding that human kills the bot (design §5.2).*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AuditEntry {
-        /**What they did, in a stable dotted vocabulary: `apikey.created`,
-`channel.member_added`, `service_account.disabled`, `dlq.requeued`.
-
-A closed set rather than free text, because this is what an incident review
-filters on.*/
+        ///What they did — one of the constants in [`actions`].
         pub action: ::std::string::String,
         pub actor: Principal,
         ///When.
@@ -1408,6 +1404,15 @@ screen belonging to a channel they may not share with the reader (§2.4).*/
     ///    "default_priority": {
     ///      "$ref": "#/components/schemas/Priority"
     ///    },
+    ///    "publish_per_minute": {
+    ///      "description": "This channel's own publish ceiling, per minute, overriding the 600/min of\ndesign §8.2. `None` means the published default applies.\n\n**GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),\nand deliberately absent from the `PATCH /channels/{id}` body: a publisher\nwho could raise their own channel's ceiling through the API would be a\npublisher for whom the ceiling is a suggestion. A dynamic channel has no\nconfiguration file to be named in, so it keeps the default — which is the\nright answer rather than a gap, the default being what §8.2 publishes.\n\nDefaulted on the wire so a policy stored before this field existed still\ndeserialises; the policy is persisted as JSON, so there is no column and no\nmigration behind this.",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
     ///    "receipts_enabled": {
     ///      "description": "Whether delivery and read receipts are collected and shown as \"seen by\n3/5\" (design §7.3). Opt-in: a channel that tells publishers who read what\nis a product decision, not a default.",
     ///      "type": "boolean"
@@ -1422,6 +1427,21 @@ screen belonging to a channel they may not share with the reader (§2.4).*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ChannelPolicy {
         pub default_priority: Priority,
+        /**This channel's own publish ceiling, per minute, overriding the 600/min of
+design §8.2. `None` means the published default applies.
+
+**GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),
+and deliberately absent from the `PATCH /channels/{id}` body: a publisher
+who could raise their own channel's ceiling through the API would be a
+publisher for whom the ceiling is a suggestion. A dynamic channel has no
+configuration file to be named in, so it keeps the default — which is the
+right answer rather than a gap, the default being what §8.2 publishes.
+
+Defaulted on the wire so a policy stored before this field existed still
+deserialises; the policy is persisted as JSON, so there is no column and no
+migration behind this.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub publish_per_minute: ::std::option::Option<i32>,
         /**Whether delivery and read receipts are collected and shown as "seen by
 3/5" (design §7.3). Opt-in: a channel that tells publishers who read what
 is a product decision, not a default.*/
@@ -4958,6 +4978,40 @@ bound to the channel afterwards (design §6.1).*/
 refused by the bucket rather than discovered later.*/
         pub content_type: ::std::string::String,
     }
+    ///A signed download.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A signed download.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "expires_at",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "expires_at": {
+    ///      "description": "When the signature stops working.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "url": {
+    ///      "description": "Where to GET the bytes.",
+    ///      "type": "string",
+    ///      "format": "uri"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PresignedDownload {
+        ///When the signature stops working.
+        pub expires_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///Where to GET the bytes.
+        pub url: ::std::string::String,
+    }
     ///A signed upload.
     ///
     /// <details><summary>JSON schema</summary>
@@ -8379,6 +8433,57 @@ Sends a `POST` request to `/api/v1/attachments/presign`
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /**Sign a download of an attachment a notification shows
+
+Sends a `GET` request to `/api/v1/attachments/{id}`
+
+Arguments:
+- `id`: The attachment id a payload references
+*/
+    pub async fn download<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<types::PresignedDownload>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/attachments/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "download",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            404u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            501u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /**Exchange a forge ID token for a short-lived weebo-notify token
 
 Sends a `POST` request to `/api/v1/auth/token/exchange`
@@ -10016,6 +10121,9 @@ because that one is the browser reconnecting rather than the page asking.
             422u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
+            429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
@@ -10280,6 +10388,9 @@ because that one is the browser reconnecting rather than the page asking.
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            429u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),
