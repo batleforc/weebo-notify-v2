@@ -2660,9 +2660,9 @@ export type DownloadErrors = {
      */
     401: Problem;
     /**
-     * No such attachment, or none the caller may see — deliberately the same answer
+     * No such attachment, or none the caller may see — deliberately the same answer (`notification.gone`)
      */
-    404: Problem;
+    409: Problem;
     /**
      * This deployment has no object store
      */
@@ -2698,9 +2698,9 @@ export type ThumbnailErrors = {
      */
     401: Problem;
     /**
-     * No such attachment, none the caller may see, or nothing was ever derived from it — deliberately the same answer
+     * No such attachment, none the caller may see, or nothing was ever derived from it — deliberately the same answer (`notification.gone`)
      */
-    404: Problem;
+    409: Problem;
 };
 
 export type ThumbnailError = ThumbnailErrors[keyof ThumbnailErrors];
@@ -2763,9 +2763,9 @@ export type ReadAvatarErrors = {
      */
     401: Problem;
     /**
-     * No such object
+     * No such object (`field.malformed`)
      */
-    404: Problem;
+    422: Problem;
 };
 
 export type ReadAvatarError = ReadAvatarErrors[keyof ReadAvatarErrors];

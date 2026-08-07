@@ -76,8 +76,8 @@ pub(crate) async fn presign(
     responses(
         (status = 200, description = "A short-lived signed download", body = PresignedDownload),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 404, description = "No such attachment, or none the caller may see — \
-                                      deliberately the same answer", body = Problem),
+        (status = 409, description = "No such attachment, or none the caller may see — \
+                                      deliberately the same answer (`notification.gone`)", body = Problem),
         (status = 501, description = "This deployment has no object store", body = Problem),
     ),
     security(("bearer" = []))
@@ -107,9 +107,9 @@ pub(crate) async fn download(
     responses(
         (status = 200, description = "The thumbnail", content_type = "image/png"),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 404, description = "No such attachment, none the caller may see, or \
+        (status = 409, description = "No such attachment, none the caller may see, or \
                                       nothing was ever derived from it — deliberately \
-                                      the same answer", body = Problem),
+                                      the same answer (`notification.gone`)", body = Problem),
     ),
     security(("bearer" = []))
 )]

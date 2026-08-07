@@ -8760,7 +8760,7 @@ Arguments:
             401u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
-            404u16 => {
+            409u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             501u16 => {
@@ -8809,7 +8809,7 @@ Arguments:
             401u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
-            404u16 => {
+            409u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),
@@ -8897,7 +8897,7 @@ Arguments:
             401u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
-            404u16 => {
+            422u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

@@ -167,7 +167,7 @@ pub(crate) async fn set_avatar(
     responses(
         (status = 200, description = "The image", content_type = "image/png"),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 404, description = "No such object", body = Problem),
+        (status = 422, description = "No such object (`field.malformed`)", body = Problem),
     ),
     security(("bearer" = []))
 )]
