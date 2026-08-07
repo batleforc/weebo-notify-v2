@@ -14,7 +14,6 @@ import { computed, onMounted, ref } from "vue";
 import { readProfile, setAvatar, updateProfile } from "@/api/generated";
 import type { Profile, ProfileField } from "@/api/generated/types.gen";
 import { failureOf } from "@/api/problem";
-import { avatarObjectUrl } from "@/lib/avatar";
 import { useSession } from "@/auth/session";
 import DndPanel from "@/components/settings/DndPanel.vue";
 import PushPanel from "@/components/settings/PushPanel.vue";
@@ -23,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { avatarObjectUrl } from "@/lib/avatar";
 import { useUi } from "@/stores/ui";
 
 const session = useSession();
@@ -57,6 +57,16 @@ async function showAvatar(id: string | null | undefined): Promise<void> {
 
 function hydrate(next: Profile): void {
   profile.value = next;
+  // Here rather than in `load`, because this is the one funnel every answer goes
+  // through — `load`, `save`, `release` and `upload` all end up in it. Wiring it to
+  // any single caller is how `showAvatar` ended up with no caller at all, and the
+  // symptom was silent: `avatarUrl` stayed null, `v-if` hid the `<img>`, and the
+  // fallback initials rendered exactly as they do for somebody with no avatar.
+  //
+  // Not awaited: the profile has to paint now, and the face arrives when it
+  // arrives. `avatarObjectUrl` caches by id and never rejects, so a repeat call
+  // costs nothing and a failure leaves the initials up.
+  void showAvatar(next.avatar);
   draft.value = {
     display_name: next.display_name ?? "",
     timezone: next.timezone ?? "",

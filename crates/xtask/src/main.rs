@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 mod coverage;
 mod downgrade;
 mod federation;
+mod password;
 mod vapid;
 
 #[derive(Debug, Parser)]
@@ -72,6 +73,14 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+
+    /// Bcrypt the password on stdin, for the Dex leg of the identity matrix (§3.2).
+    BcryptHash {
+        /// Bcrypt cost. Ten is what `htpasswd -C 10` uses in the branch next door,
+        /// and matching it keeps the three branches comparable.
+        #[arg(long, default_value_t = 10)]
+        cost: u32,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -80,6 +89,7 @@ fn main() -> anyhow::Result<()> {
         Command::CoverageGate { lcov, base } => coverage::gate(&lcov, base.as_deref()),
         Command::VapidKey { output, force } => vapid::generate(&output, force),
         Command::FederationKey { output, force } => federation::generate(&output, force),
+        Command::BcryptHash { cost } => password::bcrypt_stdin(cost),
     }
 }
 

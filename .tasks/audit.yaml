@@ -33,6 +33,24 @@ tasks:
           done
 
   container:
-    desc: "Scan the repository and the Containerfile for CVEs, misconfigurations and secrets (trivy)"
+    desc: "Scan the repository and the Containerfiles for CVEs, misconfigurations and secrets (trivy)"
+    # This reads the Containerfiles rather than the images: trivy's dockerfile
+    # scanner recognises the `Containerfile` name, so both are covered here with no
+    # engine and no build. What it CANNOT see is the base images' package lists —
+    # that is `audit:image` below, and the two are separate because only one of them
+    # can run in an Eclipse Che workspace (§12.4).
     cmds:
       - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity HIGH,CRITICAL .
+
+  image:
+    desc: "Scan the built server and web images for CVEs (trivy) — needs them built and a container engine"
+    # Not in `audit:default`, deliberately. It needs images that exist, so putting it
+    # there would make `task audit` fail on every machine that has not just run
+    # `task build:image` — and a gate that fails for the wrong reason is a gate
+    # people learn to ignore. The release workflow runs it where the images are.
+    vars:
+      IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
+      IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'
+    cmds:
+      - trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed {{.IMAGE_REPO}}:{{.IMAGE_TAG}}
+      - trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed {{.IMAGE_REPO}}-web:{{.IMAGE_TAG}}

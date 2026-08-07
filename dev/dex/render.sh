@@ -2,8 +2,10 @@
 # Render dev/dex/config.template.yaml with credentials generated right now, and
 # print the environment the compatibility suite needs (design §3.2, D7).
 #
-# Called by the `oidc-compat` CI job before starting Dex, and usable by hand on a
-# machine with a container engine. Two properties are the point:
+# Called by the `oidc-compat` CI job before starting Dex, and by `task dev:dex` —
+# under compose, where it brings a container up, and in an Eclipse Che workspace,
+# where the sidecar is already scheduled and only the process has to start. Two
+# properties are the point:
 #
 #   * the password and the client secret are generated per run and never committed.
 #     Dex is CI-only, so no local ergonomics argue for a fixed one the way
@@ -35,8 +37,17 @@ elif command -v htpasswd >/dev/null 2>&1; then
   # hash it only reports at the first login attempt.
   hash="$(htpasswd -bnBC 10 "" "$password" | tr -d ':\n' | sed 's/^\$2y/\$2a/')"
 else
-  echo "need caddy or htpasswd (apache2-utils) to bcrypt the Dex password" >&2
-  exit 1
+  # The branch that cannot be missing, and the reason this script now runs
+  # everywhere. An Eclipse Che workspace has neither of the two above — mise ships
+  # tools, not Apache — and this leg is precisely the one D7 says has never once
+  # been observed running, so a script that stops here is a matrix that stays
+  # unread. `cargo` is present by definition: this is a Rust workspace.
+  #
+  # Slower than a binary already on the box, hence last. The password goes in on
+  # stdin rather than in an argument, unlike the caddy branch above: `ps` shows an
+  # argument to every process on the machine.
+  hash="$(printf %s "$password" |
+    cargo run --quiet --manifest-path "$here/../../Cargo.toml" -p xtask -- bcrypt-hash)"
 fi
 
 mkdir -p "$(dirname "$out")"

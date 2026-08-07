@@ -12,7 +12,9 @@ metadata:
 #
 #   * Authentik — too heavy (~1.5 GiB with worker and Redis). Fidelity is exercised
 #     in local compose (`task dev:auth`) and in the `oidc-compat` CI matrix (§3.2);
-#     that trade is the whole point of the three-tier auth strategy (§12.1).
+#     that trade is the whole point of the three-tier auth strategy (§12.1). Dex,
+#     which is one small Go binary, IS here now — see the component below: it is the
+#     leg of that matrix D7 says has never once been observed running.
 #
 #   * The identity provider — not a container at all any more. `task dev:oidc` runs
 #     the `oidc-mock` binary from this workspace inside the `tools` container, next
@@ -56,6 +58,75 @@ components:
       memoryLimit: 128Mi
       endpoints:
         - {name: redis, targetPort: 6379, exposure: internal}
+  # The strict-minimal leg of the identity matrix (§3.2, T29, D14.4/D7): a provider
+  # that emits no `groups` claim for anybody. It exists here for the same reason it
+  # exists in compose — so a red `oidc-compat` run can be reproduced by hand, which
+  # is the only moment anybody wants Dex — and because §15 makes this matrix the
+  # only independent reading of OIDC the project ever gets.
+  #
+  # `sleep infinity` rather than `dex serve`, deliberately: the config it reads does
+  # not exist until `task dev:dex` renders it (the password is generated per run and
+  # never committed, §3.2). A container whose command needs a file the workspace has
+  # not written yet crashloops on every fresh start, and a crashlooping sidecar is
+  # how a workspace stops starting at all. It waits; `run-dex` below starts the
+  # process once the file is there.
+  - name: dex
+    container:
+      image: ghcr.io/dexidp/dex:v2.45.1
+      memoryLimit: 128Mi
+      # `${PROJECT_SOURCE}/dev/dex/config.local.yaml` has to be readable from in
+      # here, which is why this container sees the project sources at all.
+      mountSources: true
+      command: ["/bin/sh", "-c", "sleep infinity"]
+      endpoints:
+        - {name: dex, targetPort: 5556, exposure: internal}
+  # A real browser, which is the thing this project has never had (§14.4: D19, D21,
+  # D26 — all three read « écrit, jamais vu »). The web suite runs under jsdom, and
+  # jsdom answers questions about logic; it cannot say whether a command palette
+  # looks right, whether a notification image lays out without shifting the row, or
+  # whether the focus comes back where §10.1 says it should.
+  #
+  # The split is deliberate: the browser lives here, whatever drives it lives in
+  # `tools`. Everything shares the pod, so a Playwright or CDP client there reaches
+  # `127.0.0.1:9222` and the Vite dev server on `:5173` with no networking to set
+  # up.
+  #
+  # `mountSources: true`, unlike the reference devfile upstream, and it is worth
+  # saying why the obvious reading is wrong. "It only renders pages, it does not
+  # read the repository" holds for a CDP screenshot — those bytes come back over
+  # the wire. It stops holding for everything else the two sides have to hand each
+  # other: a Chrome download, a Playwright trace or video, an artefact written to a
+  # path the driver then reads, a built `dist/` opened over `file://`. Without a
+  # directory both containers can see, each of those needs its own transport.
+  #
+  # Two ways in, for two different questions:
+  #   * `cdp` (9222) / `webdriver` (9515) — internal, for a test that asserts;
+  #   * `novnc` (6080) — a public Che route, for a human to actually LOOK. That one
+  #     is the point: D21 and D26 are open because nobody could.
+  - name: browser
+    container:
+      image: ghcr.io/batleforc/weebodevimage/che-browser:main
+      memoryLimit: 3Gi
+      memoryRequest: 1Gi
+      cpuLimit: "2"
+      cpuRequest: "500m"
+      mountSources: true
+      endpoints:
+        - {name: novnc, targetPort: 6080, exposure: public, protocol: https, secure: true}
+        - {name: cdp, targetPort: 9222, exposure: internal, protocol: http}
+        - {name: webdriver, targetPort: 9515, exposure: internal, protocol: http}
+  # NO Tauri component, and the attempt is worth recording so it is not retried.
+  #
+  # One was written here: a `rust:1-bookworm` sidecar plus a command that
+  # `apt-get install`s the seven packages of §12.4. It cannot work, for the same
+  # reason the `tools` container cannot — a DevWorkspace applies its security
+  # context to the WHOLE pod, so no container in it has root, and `apt-get` fails
+  # in a sidecar exactly as it fails next door. Scheduling a container is not the
+  # same capability as being root inside one, and D13 needs the second.
+  #
+  # So §12.4's original sentence stands: the fix belongs to the image. The diff is
+  # ready in `docs/upstream/che-min-mise-tauri.md`, and once `che-min-mise` carries
+  # the packages nothing here changes at all — `tools` inherits from the parent.
   - name: pg-data
     volume: {size: 2Gi}
   - name: rustfs-data
@@ -104,5 +175,15 @@ commands:
     exec:
       component: tools
       commandLine: "task dev:docs"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: run}
+  # Two steps and not one, because the config is rendered by the workspace and read
+  # by the sidecar: `task dev:dex` writes it in `tools`, this starts the process in
+  # `dex`. If it stops on a permission error, the rendered file is 0600 and owned by
+  # the workspace user (dev/dex/render.sh) — the task prints the one-line fix.
+  - id: run-dex
+    exec:
+      component: dex
+      commandLine: "dex serve ${PROJECT_SOURCE}/dev/dex/config.local.yaml"
       workingDir: "${PROJECT_SOURCE}"
       group: {kind: run}

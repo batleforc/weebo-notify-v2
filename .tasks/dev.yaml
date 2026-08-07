@@ -128,11 +128,28 @@ tasks:
     # generated per run and never committed (§3.2); the rendered file is gitignored.
     cmds:
       - cmd: |
-          {{.CHE_GUARD}}
+          set -eu
+          # The guard is NOT at the top here, unlike its neighbours. Those no-op
+          # under Che because the devfile starts their sidecar with everything it
+          # needs; this config does not exist until the line below writes it, so the
+          # rendering is the half that has to happen in both worlds. Only the
+          # bringing-up differs, and that is what the branch says.
           dev/dex/render.sh dev/dex/config.local.yaml > dev/dex/env.local
-          {{.COMPOSE}} --profile dex up -d --wait
+          if [ -n "${DEVWORKSPACE_ID:-}" ]; then
+            echo "Config rendered. The sidecar is already scheduled, so start the"
+            echo "process in it rather than a container here (devfile.yaml):"
+            echo "  run-dex          # from the Che command palette, or:"
+            echo "  kubectl exec -c dex \$HOSTNAME -- dex serve \$PWD/dev/dex/config.local.yaml"
+            echo
+            echo "If that stops on a permission error, the rendered file is 0600 and"
+            echo "the sidecar runs as another user:  chmod 644 dev/dex/config.local.yaml"
+          else
+            {{.COMPOSE}} --profile dex up -d --wait
+            echo
+            echo "Dex is up."
+          fi
           echo
-          echo "Dex is up. Run the compatibility leg against it with:"
+          echo "Run the compatibility leg against it with:"
           echo "  set -a; . dev/dex/env.local; set +a; task test:oidc-compat"
 
   seed:

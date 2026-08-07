@@ -14,6 +14,10 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# Bcrypting the Dex development password (design §3.2, D7). Dex wants bcrypt and
+# nothing else, and this is what lets `dev/dex/render.sh` run on a machine that has
+# neither caddy nor htpasswd — which is every Eclipse Che workspace.
+bcrypt = { version = "0.19", default-features = false, features = ["std", "zeroize", "getrandom"] }
 clap.workspace = true
 # The VAPID key generator: `pkcs8` on top of the workspace's features, because the
 # key is written in the PKCS#8 PEM form `[push.webpush]` reads.

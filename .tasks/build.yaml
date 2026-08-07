@@ -2,9 +2,17 @@ version: "3"
 
 # Building what gets shipped, as opposed to what gets tested.
 #
-# One target so far. The server image belongs here too and is not written yet
-# (§14.4, D17): there is no Containerfile in this repository, and the release
-# workflow says so with a warning rather than pretending otherwise.
+# Three targets: the bundle, and the two images that carry it and the server (D17).
+# The image tasks need a container engine, which an Eclipse Che workspace does not
+# have (§12.4) — they exist so the release workflow and a developer with podman run
+# the same command, rather than the workflow growing its own private incantation.
+
+vars:
+  # Overridable, because who publishes this decides where. The release workflow
+  # passes its own.
+  IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
+  IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'
+  ENGINE: '{{.ENGINE | default "docker"}}'
 
 tasks:
   web:
@@ -47,3 +55,37 @@ tasks:
           pnpm -C web build
           echo ""
           echo "Smoke build only — this bundle points at ${VITE_API_BASE_URL} and is not deployable."
+
+  image:
+    desc: "Build the server image — override IMAGE_REPO/IMAGE_TAG/ENGINE (needs a container engine)"
+    # No `--build-arg` here, unlike the web image below: the server reads its
+    # configuration at runtime from a mounted file (§11), so nothing about a
+    # deployment is baked in. That asymmetry is the point of ADR-0019 and worth
+    # noticing rather than smoothing over.
+    cmds:
+      - "{{.ENGINE}} build -f Containerfile -t {{.IMAGE_REPO}}:{{.IMAGE_TAG}} ."
+
+  web:image:
+    desc: "Build the web bundle image — needs VITE_API_BASE_URL, VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID"
+    # The same three variables `build:web` refuses to go without, passed as build
+    # arguments because a deployment is a build (ADR-0019). The Containerfile
+    # checks them too — the same refusal in both places, because whoever runs
+    # `podman build` by hand never sees this task.
+    cmds:
+      - cmd: |
+          missing=""
+          for name in VITE_API_BASE_URL VITE_OIDC_ISSUER VITE_OIDC_CLIENT_ID; do
+            eval "value=\${$name:-}"
+            [ -n "$value" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "missing:$missing" >&2
+            echo "" >&2
+            echo "A web bundle is built for one deployment (ADR-0019)." >&2
+            exit 1
+          fi
+          {{.ENGINE}} build -f web/Containerfile \
+            --build-arg "VITE_API_BASE_URL=$VITE_API_BASE_URL" \
+            --build-arg "VITE_OIDC_ISSUER=$VITE_OIDC_ISSUER" \
+            --build-arg "VITE_OIDC_CLIENT_ID=$VITE_OIDC_CLIENT_ID" \
+            -t "{{.IMAGE_REPO}}-web:{{.IMAGE_TAG}}" web

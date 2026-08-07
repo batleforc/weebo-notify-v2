@@ -1,0 +1,103 @@
+# What serves the bundle, and the three headers a `<meta>` tag cannot carry
+# (design §10.3, ADR-0019, §14.4/D17).
+#
+# ADR-0019 put the Content-Security-Policy in the page itself so it could not be
+# forgotten by whoever writes the ingress. Two directives are ignored there by
+# specification — `frame-ancestors` and `report-to` — and `Strict-Transport-Security`
+# was never a CSP directive at all. Until this file existed they had no emitter
+# anywhere, which is the half of D17 that is a security gap rather than a missing
+# artefact.
+#
+# The policy below is a SECOND policy, not a replacement. A browser enforces every
+# policy it is given, so the meta one keeps governing scripts and connections and
+# this one adds what it could not say. Repeating the whole policy here would create
+# two copies to keep in step — the exact shape D22 spent two increments removing.
+
+# Cache-Control by path, through a map rather than per-location `add_header`, and
+# the reason is a genuine nginx trap: `add_header` in a location block DISCARDS
+# every header inherited from the server block. Per-location caching rules would
+# therefore have silently dropped the security headers on exactly the assets that
+# have their own rule. One location, one set of headers, no inheritance to lose.
+map $uri $wnk_cache_control {
+    # Vite writes a content hash into every asset name, so a file that exists can
+    # never change identity — the only safe place for `immutable`.
+    default                       "public, max-age=31536000, immutable";
+    "~^/$"                        "no-cache";
+    "~^/index\.html$"             "no-cache";
+    # The service worker (ADR-0017). A cached one keeps serving a version of the
+    # application nobody can replace, which is how a PWA gets stuck on an old build.
+    "~^/sw\.js$"                  "no-cache";
+    "~^/manifest\.webmanifest$"   "no-cache";
+}
+
+server {
+    # 8080, because the image is `nginx-unprivileged`: there is no root here to bind
+    # a port below 1024 with.
+    listen       8080;
+    listen       [::]:8080;
+    server_name  _;
+
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    # An attacker learns the exact patch level of the server otherwise, which is
+    # free reconnaissance for a version-specific exploit.
+    server_tokens off;
+
+    gzip              on;
+    gzip_vary         on;
+    gzip_min_length   1024;
+    gzip_types        text/plain text/css application/javascript application/json
+                      application/manifest+json image/svg+xml;
+
+    location / {
+        # The SPA fallback: `/n/<id>` and `/c/<id>` are permalinks (§10.4) resolved
+        # by the router, so a deep link opened cold has to reach index.html rather
+        # than a 404 — a permalink that only works when you were already in the app
+        # is not a permalink.
+        try_files $uri $uri/ /index.html;
+
+        add_header Cache-Control $wnk_cache_control always;
+
+        # ── What the meta policy cannot say ──────────────────────────────────
+        # `'none'` and not `'self'`: nothing in this application frames itself, and
+        # the clickjacking this prevents is aimed at the action buttons of §2.3 —
+        # a transparent frame over "Approve" is the whole attack.
+        add_header Content-Security-Policy "frame-ancestors 'none'; report-to csp" always;
+        # Where violations go. It defaults to the 204 below rather than to nothing,
+        # so the endpoint named by `report-to` always exists: a `report-to` pointing
+        # at a missing endpoint is a policy that logs its own failures nowhere,
+        # which is the state this file was written to leave.
+        add_header Reporting-Endpoints "csp=\"${WNK_CSP_REPORT_URL}\"" always;
+        # Two years, and subdomains. Only ever sent over TLS by the browser's own
+        # rules, so this is safe behind an ingress that terminates it.
+        add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+
+        # ── The rest of the floor, cheap and uncontroversial ─────────────────
+        add_header X-Content-Type-Options "nosniff" always;
+        # No referrer at all: a URL here is `/n/<notification-id>`, so a referrer
+        # leaks an identifier to every origin the page ever talks to.
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Resource-Policy "same-origin" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+    }
+
+    # The default reporting endpoint. It accepts and discards, which sounds useless
+    # and is not: a violation becomes a line in an access log with a count, instead
+    # of a message in the console of somebody who is not looking. Point
+    # WNK_CSP_REPORT_URL at a real collector to do better.
+    location = /csp-report {
+        access_log /var/log/nginx/access.log;
+        return 204;
+    }
+
+    # Kubernetes and the compose healthcheck. Deliberately not `/` — that returns
+    # the SPA shell for every path, so it would report healthy on a bundle that is
+    # missing every asset it references.
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain always;
+        return 200 "ok\n";
+    }
+}

@@ -1,0 +1,17 @@
+# The web image builds with `web/` as its context, so the repository-root
+# `.containerignore` does not apply here — this file is not a duplicate of it.
+#
+# `.env.local` first, and it is the one that matters: it holds the origins a
+# developer points their own bundle at, and copying it into the context lets it beat
+# the `--build-arg` values the build was invoked with (Vite reads `.env.local` last).
+# The symptom would be an image serving a bundle wired to somebody's laptop.
+.env.local
+.env.*.local
+
+node_modules/
+dist/
+coverage/
+
+# Neither build reads them, and both invalidate the install layer when touched.
+*.md
+biome.jsonc

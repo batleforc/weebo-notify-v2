@@ -22,6 +22,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Where the images go. A variable rather than a literal because the mirror
+  # arrangement of §3.2 means this repository lives in two forges, and whoever
+  # deploys it may publish to neither of them.
+  IMAGE_REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/batleforc/weebo-notify
 
 jobs:
   gate:
@@ -60,8 +65,18 @@ jobs:
     name: Build and publish
     needs: gate
     runs-on: docker
+    permissions:
+      contents: write
+      packages: write
+      # What cosign keyless signs with (§3.2bis). Without it the signing step fails
+      # with an OIDC error that reads like a registry problem — the same trap §5.3
+      # documents for the other direction of this token.
+      id-token: write
     container:
       image: ghcr.io/catthehacker/ubuntu:act-24.04
+      # The image build needs an engine, and this job did not ask for one while it
+      # only echoed a warning.
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
 
     steps:
       - name: Checkout
@@ -82,12 +97,94 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build the server image
-        # TODO(M1): multi-arch build (amd64/arm64), cosign signature and Rekor
-        # provenance, per §3.2bis. Needs the Containerfile, which arrives with the
-        # deployable server.
+      - name: Install the toolchain
+        # The `gate` job installs it too, and this is not duplication to factor out:
+        # jobs do not share a filesystem, and the scan step below runs `task`.
         run: |
-          echo "::warning::Image build is not wired yet — it lands with the Containerfile in M1."
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Set up buildx
+        # Needed for the multi-arch build below: the stock builder emits one
+        # architecture, and §3.2bis asks for amd64 and arm64 from the same tag.
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU
+        # arm64 on an amd64 runner. Slow, and the alternative is a second runner
+        # nobody has yet — worth naming so the day one exists, this step goes away
+        # rather than being cargo-culted forward.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Build and push the server image
+        # THIS HAS NEVER RUN. The Containerfile it builds was written in a workspace
+        # with no container engine (§12.4), so the first execution of this step is
+        # its first test — the same state D7 and D12 are open for, and named here
+        # rather than discovered by whoever pushes the first tag.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.kind.outputs.tag }}
+            ${{ steps.kind.outputs.prerelease == 'false' && format('{0}:latest', env.IMAGE_NAME) || '' }}
+
+      - name: Build and push the web image
+        # The three build arguments are the deployment (ADR-0019): a bundle is built
+        # for one origin, so the release publishes the image for THIS instance's
+        # origins and a different deployment rebuilds it with its own. They are
+        # variables and not secrets — they end up readable inside the bundle.
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          file: ./web/Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}
+            VITE_OIDC_ISSUER=${{ vars.VITE_OIDC_ISSUER }}
+            VITE_OIDC_CLIENT_ID=${{ vars.VITE_OIDC_CLIENT_ID }}
+          tags: |
+            ${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}
+            ${{ steps.kind.outputs.prerelease == 'false' && format('{0}-web:latest', env.IMAGE_NAME) || '' }}
+
+      - name: Scan the published images
+        # After the push and not before it: what is scanned has to be what was
+        # published, and a scan of a locally-tagged image proves something about a
+        # layer stack that may not be the one that left the runner.
+        run: |
+          mise exec -- task audit:image \
+            IMAGE_REPO="${{ env.IMAGE_NAME }}" \
+            IMAGE_TAG="${{ steps.kind.outputs.tag }}"
+
+      - name: Sign the images
+        # cosign keyless: the identity is the workflow itself, and the signature
+        # lands in Rekor (§3.2bis). No private key to keep, which is the only key
+        # custody story that cannot leak — §15 lists the ones that can.
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes "${{ env.IMAGE_NAME }}:${{ steps.kind.outputs.tag }}"
+          cosign sign --yes "${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}"
 
       - name: Publish the release
         # Created as a draft, filled with artefacts and the changelog notes, then
