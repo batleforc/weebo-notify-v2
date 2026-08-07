@@ -2997,6 +2997,45 @@
         ]
       }
     },
+    "/api/v1/unread": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "The unread badge, per channel (design §7.3, §9.2, §10.4, §10bis).",
+        "operationId": "unread",
+        "responses": {
+          "200": {
+            "description": "One entry per channel with something unread; channels with nothing are absent, never zero",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UnreadCount"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/users/me/avatar": {
       "put": {
         "tags": [
@@ -6580,6 +6619,26 @@
           "ttl": {
             "$ref": "#/components/schemas/Ttl",
             "description": "What will actually be applied."
+          }
+        }
+      },
+      "UnreadCount": {
+        "type": "object",
+        "description": "What one channel's unread badge shows (design §7.3, §10.4).",
+        "required": [
+          "channel",
+          "unread"
+        ],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/ChannelId",
+            "description": "The channel the badge hangs off."
+          },
+          "unread": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many of its notifications this principal has not read.\n\nNever zero — a channel with nothing unread is absent from the list rather\nthan present with a zero, so that \"no badge\" has one representation instead\nof two.",
+            "minimum": 0
           }
         }
       },

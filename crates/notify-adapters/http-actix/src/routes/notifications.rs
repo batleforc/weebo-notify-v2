@@ -6,7 +6,7 @@ use notify_domain::{
     ChannelId, ExternalId, Notification, NotificationId, Priority, Revision, RevisionDraft, State,
     Status,
 };
-use notify_ports::Page;
+use notify_ports::{Page, UnreadCount};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
@@ -343,6 +343,32 @@ pub(crate) async fn delete_one(
     let id: NotificationId = path.into_inner().parse()?;
     state.delete_notification.execute(&caller.0, id).await?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+/// The unread badge, per channel (design §7.3, §9.2, §10.4, §10bis).
+#[utoipa::path(
+    get,
+    path = "/unread",
+    tag = "notifications",
+    responses(
+        (
+            status = 200,
+            description = "One entry per channel with something unread; channels with nothing are absent, never zero",
+            body = Vec<UnreadCount>,
+        ),
+        (status = 401, description = "No usable credential", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/unread")]
+pub(crate) async fn unread(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+) -> Result<web::Json<Vec<UnreadCount>>, ApiError> {
+    // No `?channels=`, unlike the inbox: the sidebar draws every badge at once, and
+    // a caller after one channel reads one entry out of the answer rather than
+    // paying a round trip per channel.
+    Ok(web::Json(state.unread.execute(&caller.0).await?))
 }
 
 /// Search within the caller's channels.

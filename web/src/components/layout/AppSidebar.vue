@@ -17,17 +17,24 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
-import { lookOf, priorityLabel, stateLabel } from "@/lib/notification";
+import {
+  lookOf,
+  priorityLabel,
+  stateLabel,
+  unreadLabel,
+} from "@/lib/notification";
 import { useChannels } from "@/stores/channels";
 import { useConsole } from "@/stores/console";
 import { emptyFilters, useInbox } from "@/stores/inbox";
 import { useUi } from "@/stores/ui";
+import { useUnread } from "@/stores/unread";
 
 const channels = useChannels();
 const inbox = useInbox();
 const session = useSession();
 const platform = useConsole();
 const ui = useUi();
+const unread = useUnread();
 
 // One probe per session, at the first render that needs the answer (§10.4bis).
 onMounted(() => {
@@ -168,6 +175,21 @@ const connection = computed(() => {
         <span class="truncate">{{ channel.display_name || channel.id }}</span>
         <Badge v-if="channel.origin === 'managed'" variant="muted" class="ml-auto">
           managed
+        </Badge>
+        <!--
+          A number and not a dot: §10.3's "jamais la couleur seule" applies here
+          too, and "3 non lues" is what a screen reader must say — the digits alone
+          would be read as a bare number next to a channel name.
+          `ml-auto` only when no `managed` badge already took it, so the two never
+          fight over the right edge.
+        -->
+        <Badge
+          v-if="unread.countOf(channel.id) > 0"
+          variant="default"
+          :class="channel.origin === 'managed' ? '' : 'ml-auto'"
+          :aria-label="unreadLabel(unread.countOf(channel.id))"
+        >
+          {{ unread.countOf(channel.id) }}
         </Badge>
       </Button>
     </section>

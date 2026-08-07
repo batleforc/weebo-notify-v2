@@ -2174,6 +2174,24 @@ export type TtlResolution = {
 };
 
 /**
+ * What one channel's unread badge shows (design §7.3, §10.4).
+ */
+export type UnreadCount = {
+    /**
+     * The channel the badge hangs off.
+     */
+    channel: ChannelId;
+    /**
+     * How many of its notifications this principal has not read.
+     *
+     * Never zero — a channel with nothing unread is absent from the list rather
+     * than present with a zero, so that "no badge" has one representation instead
+     * of two.
+     */
+    unread: number;
+};
+
+/**
  * A human, created on first OIDC login.
  */
 export type UserId = string;
@@ -3860,6 +3878,31 @@ export type SyncResponses = {
 };
 
 export type SyncResponse = SyncResponses[keyof SyncResponses];
+
+export type UnreadData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/unread';
+};
+
+export type UnreadErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+};
+
+export type UnreadError = UnreadErrors[keyof UnreadErrors];
+
+export type UnreadResponses = {
+    /**
+     * One entry per channel with something unread; channels with nothing are absent, never zero
+     */
+    200: Array<UnreadCount>;
+};
+
+export type UnreadResponse = UnreadResponses[keyof UnreadResponses];
 
 export type SetAvatarData = {
     /**

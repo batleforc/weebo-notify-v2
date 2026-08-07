@@ -1,9 +1,10 @@
 /**
- * The half of the palette this workspace can verify.
+ * The half of the palette a test can answer for.
  *
- * There is no browser here, so what the palette *looks* like is reviewed by whoever
- * runs it. What it *offers*, in what order, and on which keystroke is decided by
- * pure functions, and those are pinned below.
+ * What it *offers*, in what order, and on which keystroke — pure functions, pinned
+ * below. What it *looks like* is a different question with a different instrument:
+ * the workspace has a real browser now (§12.4), and what it showed the first time
+ * anybody pointed it here is written at the top of `CommandPalette.vue`.
  */
 
 import { describe, expect, it } from "vitest";

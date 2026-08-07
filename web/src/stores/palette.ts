@@ -6,7 +6,7 @@
  * It holds what is typed, what the server answered, and whether the palette is
  * open. The *matching* lives in `lib/palette.ts` as pure functions, because that is
  * the part whose behaviour has to be pinned by tests rather than by opening the app
- * — there is no browser in this workspace.
+ * — a ranking is not something looking at a screenshot can check.
  *
  * # Why the server is asked at all
  *

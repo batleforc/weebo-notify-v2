@@ -1,7 +1,7 @@
 //! Delivery and read receipts (design §7.3).
 
 use notify_domain::{Cursor, DeviceId, NotificationId, Principal, Receipt, ReceiptId, ReceiptKind};
-use notify_ports::{Audience, EventPayload, PortResult, ReceiptRepository};
+use notify_ports::{Audience, EventPayload, PortResult, ReceiptRepository, Visibility};
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
 
@@ -10,7 +10,11 @@ use crate::mapping::{append_event, enum_from_text, enum_to_text, fail, from_json
 
 #[async_trait::async_trait]
 impl ReceiptRepository for PgStore {
-    async fn record(&self, receipt: &Receipt) -> PortResult<Option<Cursor>> {
+    async fn record(
+        &self,
+        receipt: &Receipt,
+        visibility: Visibility,
+    ) -> PortResult<Option<Cursor>> {
         let mut transaction = self
             .pool()
             .begin()
@@ -58,20 +62,37 @@ impl ReceiptRepository for PgStore {
             return Ok(None);
         }
 
-        let cursor = append_event(
-            &mut transaction,
-            &Audience::Channel { id: channel },
-            &EventPayload::Receipt(receipt.clone()),
-            receipt.at,
-        )
-        .await?;
+        // A private read by a service account reaches nobody: `Audience::User` needs
+        // a user, and §5.2bis keeps bots out of readership anyway. The row is still
+        // written — it is what the badge counts — so this is a poke nobody needed,
+        // not a receipt nobody recorded.
+        let audience = match visibility {
+            Visibility::Channel => Some(Audience::Channel { id: channel }),
+            Visibility::Reader => match &receipt.principal {
+                Principal::User { id } => Some(Audience::User { id: *id }),
+                _ => None,
+            },
+        };
+
+        let cursor = match audience {
+            Some(audience) => Some(
+                append_event(
+                    &mut transaction,
+                    &audience,
+                    &EventPayload::Receipt(receipt.clone()),
+                    receipt.at,
+                )
+                .await?,
+            ),
+            None => None,
+        };
 
         transaction
             .commit()
             .await
             .map_err(|error| fail("receipt", error))?;
 
-        Ok(Some(cursor))
+        Ok(cursor)
     }
 
     async fn list_for(&self, notification: NotificationId) -> PortResult<Vec<Receipt>> {
@@ -85,26 +106,6 @@ impl ReceiptRepository for PgStore {
         .map_err(|error| fail("receipt", error))?;
 
         rows.iter().map(hydrate).collect()
-    }
-
-    async fn has_seen(
-        &self,
-        notification: NotificationId,
-        principal: &Principal,
-    ) -> PortResult<bool> {
-        // The one question the unread badge asks; not worth loading every receipt
-        // to answer it.
-        sqlx::query_scalar(
-            "SELECT EXISTS (
-                 SELECT 1 FROM receipts
-                 WHERE notification_id = $1 AND principal_ref = $2 AND kind = 'seen'
-             )",
-        )
-        .bind(notification.to_string())
-        .bind(principal.reference())
-        .fetch_one(self.pool())
-        .await
-        .map_err(|error| fail("receipt", error))
     }
 }
 

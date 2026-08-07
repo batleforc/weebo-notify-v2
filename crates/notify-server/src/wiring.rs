@@ -13,16 +13,16 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Authenticate, Authorizer, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel,
-    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, DrainSinks,
-    EnrolDevice, ExchangeToken, Fanout, GetNotification, ListApiKeys, ListChannels,
-    ListDeadLetters, ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts,
-    ListTrustPolicies, ManageMembers, PostReceipt, PresignAttachment, PublishNotification,
-    PurgeExpired, ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
-    ReconciliationLog, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SelfJoin, SendDndDigests, SetAvatar, SetDnd,
-    SilenceNotification, SyncBacklog, UlidKeyGenerator, UpdateChannel, UpdateProfile,
-    UpsertNotification,
+    Attribution, Authenticate, Authorizer, BrowseAudit, ChannelInventory, CountUnread,
+    CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
+    DeleteNotification, DrainSinks, EnrolDevice, ExchangeToken, Fanout, GetNotification,
+    ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox, ListInteractions,
+    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt,
+    PresignAttachment, PublishNotification, PurgeExpired, ReadAvatar, ReadChannel, ReadDnd,
+    ReadProfile, ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction,
+    RequeueDeadLetter, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
+    SelfJoin, SendDndDigests, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
+    UlidKeyGenerator, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_s3::{S3Attachments, S3Config};
 use notify_avatars::ImageAvatarProcessor;
@@ -179,6 +179,11 @@ impl Application {
         // there, and may this caller see it".
         let get = GetNotification::new(repository.clone(), authorizer.clone(), clock.clone());
 
+        // Shared by everything that writes something a client shows an author for
+        // (§2.4). One value rather than a pair of `Arc`s repeated at each call
+        // site, so that a fourth writer cannot be wired without it.
+        let attribution = Attribution::new(repository.clone(), repository.clone());
+
         // Federation (§5.3). `None` here is what makes the exchange answer 501 and
         // every CI token fail to authenticate — one absent block, one behaviour.
         let federation = federation_tokens(config, clock.clone())?;
@@ -230,6 +235,7 @@ impl Application {
                 clock.clone(),
                 authorizer.clone(),
                 fanout.clone(),
+                attribution.clone(),
             ),
             upsert: UpsertNotification::new(
                 repository.clone(),
@@ -238,6 +244,7 @@ impl Application {
                 clock.clone(),
                 authorizer.clone(),
                 fanout.clone(),
+                attribution.clone(),
             ),
             delete_notification: DeleteNotification::new(
                 repository.clone(),
@@ -255,12 +262,14 @@ impl Application {
                 repository.clone(),
                 clock.clone(),
             ),
+            unread: CountUnread::new(repository.clone(), authorizer.clone()),
 
             record_interaction: RecordInteraction::new(
                 repository.clone(),
                 get.clone(),
                 clock.clone(),
                 fanout.clone(),
+                attribution.clone(),
             ),
             interactions: ListInteractions::new(repository.clone(), get.clone()),
             silence: SilenceNotification::new(

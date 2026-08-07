@@ -6,7 +6,7 @@ use notify_client_api::types::{
     Actions, AddMemberBody, AttachmentId, Channel, ChannelId, ChannelPolicyBody, CreateChannelBody,
     Device, Dnd, DndDraft, EnrolBody, ExchangeBody, ExternalId, Image, MintedToken, Notification,
     PresignBody, Principal, Priority, Progress, PublishBody, Published, PushTransport,
-    RevisionDraft, Scope, State, Status, Ttl,
+    RevisionDraft, Scope, State, Status, Ttl, UnreadCount,
 };
 
 use crate::config::Profile;
@@ -185,6 +185,25 @@ impl Session {
                 None => return Ok(all),
             }
         }
+    }
+
+    /// `GET /unread` — how many notifications this caller has not read, per channel.
+    ///
+    /// The badge §9.2 draws in the TUI sidebar and §10bis.3bis/3ter want on the tray
+    /// and the dock. It lives here rather than in any one of them because the design
+    /// asks for "trois rendus, une seule vérité" — a count computed separately per
+    /// front end is three truths that disagree the moment one of them is stale.
+    ///
+    /// Not paginated, unlike [`Session::channels`]: the answer holds one entry per
+    /// channel with something unread, so it is bounded by a sidebar rather than by
+    /// a feed.
+    pub async fn unread(&self) -> Result<Vec<UnreadCount>, ClientError> {
+        Ok(self
+            .api
+            .unread()
+            .await
+            .map_err(ClientError::from)?
+            .into_inner())
     }
 
     /// `POST /channels` — create one, with the caller as its first manager.

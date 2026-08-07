@@ -9,9 +9,20 @@
  * doit être pilotable sans souris").
  *
  * What it offers and in what order is decided by `lib/palette.ts`, and what it asks
- * the server is decided by `stores/palette.ts`. Both are tested; the appearance of
- * this file is not, and cannot be here — there is no browser in the development
- * environment (§14.4, D21).
+ * the server is decided by `stores/palette.ts`. Both were tested from the day this
+ * was written; how it *looked* was not, because there was no browser in the
+ * workspace (§14.4, D21). There is one now (§12.4), and opening this on a real
+ * list of fifteen channels showed three things a jsdom suite cannot ask about:
+ *
+ *   * the keyboard cursor and the mouse hover rendered the *same* grey, so two
+ *     rows looked equally chosen and `Enter` was a guess. The active row now
+ *     carries a left bar and a weight as well as a background — the same "never
+ *     colour alone" rule §10.3 applies to statuses, for the same reason;
+ *   * wrapping from the first row to the last selected something **off-screen**,
+ *     because nothing scrolled the list. A palette that cannot be driven to its
+ *     own last row is not the mouse-free surface §10.4 asks for;
+ *   * a screen reader was told nothing at all: a `<div>` of `<button>`s has no
+ *     selection to announce. It is a listbox now, and says which row is current.
  */
 import {
   DialogContent,
@@ -48,17 +59,25 @@ const groups = computed(() => {
     "actions",
   ];
 
+  // Each row carries the index it has in the flat walk below. Computed here
+  // rather than searched for at render time, so that the position the arrows move
+  // through and the position a row reports are the same number by construction.
+  let index = 0;
   return order
     .map((group) => ({
       group,
       title: titles[group],
-      items: palette.items.filter((item) => item.group === group),
+      items: palette.items
+        .filter((item) => item.group === group)
+        .map((item) => ({ item, index: index++ })),
     }))
     .filter((entry) => entry.items.length > 0);
 });
 
 /** The flat order the arrows walk, which is the order the groups render in. */
-const walk = computed(() => groups.value.flatMap((entry) => entry.items));
+const walk = computed(() =>
+  groups.value.flatMap((entry) => entry.items.map((row) => row.item)),
+);
 
 watch(
   () => palette.items,
@@ -80,6 +99,11 @@ watch(
   },
 );
 
+/** The DOM id of a row, which is what `aria-activedescendant` has to name. */
+function rowId(index: number): string {
+  return `palette-option-${index}`;
+}
+
 function move(delta: number): void {
   const count = walk.value.length;
   if (count === 0) {
@@ -88,6 +112,24 @@ function move(delta: number): void {
   // Wrapping, because a list that stops at both ends makes people reach for the
   // mouse to get back to the top.
   active.value = (active.value + delta + count) % count;
+  void reveal();
+}
+
+/**
+ * Bring the active row into view.
+ *
+ * The list scrolls (`max-h-[50vh]`) and the selection is ours rather than the
+ * browser's — no element is focused, so nothing scrolls on its own. Wrapping from
+ * the first row to the last is where that bites hardest: the selection lands at
+ * the bottom of a list still showing its top.
+ *
+ * `block: "nearest"` so a row already visible does not make the list jump.
+ * Guarded, because jsdom has no layout and therefore no `scrollIntoView`.
+ */
+async function reveal(): Promise<void> {
+  await nextTick();
+  const row = document.getElementById(rowId(active.value));
+  row?.scrollIntoView?.({ block: "nearest" });
 }
 
 async function choose(item: PaletteItem | undefined): Promise<void> {
@@ -127,10 +169,20 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
           type="text"
           class="w-full border-b border-border bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
           placeholder="Chercher une notification, un canal, un écran…"
+          role="combobox"
+          aria-controls="palette-results"
+          aria-expanded="true"
+          autocomplete="off"
+          :aria-activedescendant="walk.length ? rowId(active) : undefined"
           @input="palette.type(($event.target as HTMLInputElement).value)"
         />
 
-        <div class="max-h-[50vh] overflow-y-auto p-1">
+        <div
+          id="palette-results"
+          role="listbox"
+          aria-label="Résultats"
+          class="max-h-[50vh] overflow-y-auto p-1"
+        >
           <p
             v-if="palette.error"
             class="px-3 py-2 text-sm text-destructive"
@@ -144,23 +196,26 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
               {{ entry.title }}
             </p>
             <button
-              v-for="item in entry.items"
-              :key="item.id"
+              v-for="row in entry.items"
+              :id="rowId(row.index)"
+              :key="row.item.id"
               type="button"
-              class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm"
+              role="option"
+              :aria-selected="row.index === active"
+              class="flex w-full items-center gap-2 rounded-md border-l-2 px-3 py-2 text-left text-sm"
               :class="
-                walk[active]?.id === item.id
-                  ? 'bg-accent text-accent-foreground'
-                  : 'hover:bg-accent/50'
+                row.index === active
+                  ? 'border-primary bg-accent font-medium text-accent-foreground'
+                  : 'border-transparent hover:bg-accent/50'
               "
-              @click="choose(item)"
+              @click="choose(row.item)"
             >
-              <span class="truncate">{{ item.label }}</span>
+              <span class="truncate">{{ row.item.label }}</span>
               <span
-                v-if="item.hint && item.hint !== item.label"
+                v-if="row.item.hint && row.item.hint !== row.item.label"
                 class="ml-auto truncate text-xs text-muted-foreground"
               >
-                {{ item.hint }}
+                {{ row.item.hint }}
               </span>
             </button>
           </div>

@@ -11,11 +11,12 @@
 
 use notify_domain::{
     AttachmentId, Author, ChannelId, Content, Cursor, ExternalId, Notification, NotificationId,
-    NotificationKind, Priority, Revision, RevisionId, State, Status, TombstoneReason, Ttl,
+    NotificationKind, Principal, Priority, Revision, RevisionId, State, Status, TombstoneReason,
+    Ttl,
 };
 use notify_ports::{
     Audience, EventPayload, ExpiredNotification, InboxQuery, NotificationRepository, Page,
-    PageRequest, PortResult, RevisionEvent, SearchQuery,
+    PageRequest, PortResult, RevisionEvent, SearchQuery, UnreadCount,
 };
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
@@ -259,6 +260,59 @@ impl NotificationRepository for PgStore {
         .map_err(|error| fail("notification", error))?;
 
         page_of(rows, limit, |row| hydrate(&row))
+    }
+
+    async fn unread_counts(
+        &self,
+        principal: &Principal,
+        channels: &[ChannelId],
+    ) -> PortResult<Vec<UnreadCount>> {
+        let names: Vec<String> = channels
+            .iter()
+            .map(|channel| channel.as_str().to_owned())
+            .collect();
+
+        // `NOT EXISTS` rather than a `LEFT JOIN ... IS NULL`: Postgres can stop at
+        // the first receipt it finds for a notification, where the join builds the
+        // whole matched set before discarding it. On the table this counts — one
+        // row per person per notification read — the difference is the difference
+        // between a badge and a slow badge.
+        //
+        // The two visibility clauses are the ones `list` applies, and they are here
+        // for the reason the port documents: a badge that counts rows a listing
+        // will not show sends its reader hunting for a notification that is gone.
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT n.channel_id, COUNT(*)
+               FROM notifications n
+              WHERE n.channel_id = ANY ($1)
+                AND n.deleted_at IS NULL
+                AND (n.expires_at IS NULL OR n.expires_at > $2)
+                AND NOT EXISTS (
+                      SELECT 1 FROM receipts r
+                       WHERE r.notification_id = n.id
+                         AND r.principal_ref = $3
+                         AND r.kind = 'seen'
+                    )
+              GROUP BY n.channel_id",
+        )
+        .bind(&names)
+        .bind(OffsetDateTime::now_utc())
+        .bind(principal.reference())
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("notification", error))?;
+
+        rows.into_iter()
+            .map(|(channel, unread)| {
+                Ok(UnreadCount {
+                    channel: parse("notification.channel", &channel, ChannelId::parse)?,
+                    // `COUNT(*)` is non-negative by construction; the cast cannot
+                    // wrap, and a `try_into` here would be an error branch no input
+                    // can reach.
+                    unread: unread.unsigned_abs(),
+                })
+            })
+            .collect()
     }
 
     async fn revisions(&self, id: NotificationId, page: PageRequest) -> PortResult<Page<Revision>> {

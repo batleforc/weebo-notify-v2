@@ -32,6 +32,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(notifications::get_one)
             .service(notifications::revisions)
             .service(notifications::delete_one)
+            .service(notifications::unread)
             .service(notifications::search)
             .service(interactions::record)
             .service(interactions::list_interactions)

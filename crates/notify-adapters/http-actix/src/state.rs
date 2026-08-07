@@ -8,14 +8,15 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Authenticate, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel, CreateServiceAccount,
-    DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice, ExchangeToken,
-    GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox,
-    ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers,
-    PostReceipt, PresignAttachment, PublishNotification, ReadAttachment, ReadAvatar, ReadChannel,
-    ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation, RecordInteraction, RequeueDeadLetter,
-    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SetAvatar,
-    SetDnd, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
+    Authenticate, BrowseAudit, ChannelInventory, CountUnread, CreateApiKey, CreateChannel,
+    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
+    ExchangeToken, GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices,
+    ListInbox, ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies,
+    ManageMembers, PostReceipt, PresignAttachment, PublishNotification, ReadAttachment, ReadAvatar,
+    ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation, RecordInteraction,
+    RequeueDeadLetter, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
+    SelfJoin, SetAvatar, SetDnd, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile,
+    UpsertNotification,
 };
 use notify_ports::{EventBus, Metrics};
 
@@ -61,6 +62,8 @@ pub struct ApiState {
     pub revisions: ListRevisions,
     /// `GET /search`.
     pub search: SearchNotifications,
+    /// `GET /unread`.
+    pub unread: CountUnread,
 
     /// `POST /notifications/{id}/interactions`.
     pub record_interaction: RecordInteraction,

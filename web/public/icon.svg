@@ -10,10 +10,17 @@
     full square on purpose: it is what gets cropped, and a transparent one would
     be given a background nobody chose.
 
-    The two colours are the dark theme's `--background` and `--foreground` (§10.2)
-    resolved to hex, which is the one place raw colour is unavoidable: an OS reads
-    this file before any stylesheet exists. They have to be updated by hand if the
-    tokens move — the manifest alongside carries the same note.
+    The two colours are the dark theme's `background` and `foreground` tokens
+    (§10.2) resolved to hex, which is the one place raw colour is unavoidable: an
+    OS reads this file before any stylesheet exists. They have to be updated by
+    hand if the tokens move; the manifest alongside carries the same note.
+
+    Their CSS names are written without the leading dashes on purpose, and this is
+    not pedantry: XML forbids a double hyphen anywhere inside a comment, so writing
+    the custom properties in full made this document fail to parse. Chrome answered
+    `Download error or resource isn't a valid image`, the installed PWA had no
+    icon, and nothing failed anywhere else — a manifest icon is fetched by the
+    browser, never by the suite. Found by loading the page (M4quatervicies).
   -->
   <rect width="512" height="512" rx="112" fill="#18181b" />
   <g fill="#fafafa">

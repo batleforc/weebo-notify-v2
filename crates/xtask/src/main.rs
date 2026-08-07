@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 mod coverage;
 mod downgrade;
 mod federation;
+mod notifyd;
 mod password;
 mod vapid;
 
@@ -74,6 +75,21 @@ enum Command {
         force: bool,
     },
 
+    /// Answer `org.freedesktop.Notifications`, so `--notify-send` can be seen (D19).
+    ///
+    /// Needs a session bus: `task desktop:notifyd` starts one in the browser sidecar and
+    /// points `DBUS_SESSION_BUS_ADDRESS` at it.
+    Notifyd {
+        /// Exit once this many notifications have arrived. Omit to run for ever,
+        /// which is what a developer watching the TUI wants.
+        #[arg(long)]
+        expect: Option<u32>,
+        /// Give up after this many seconds without having seen `--expect` of them.
+        /// A scripted check that hangs is a scripted check nobody runs twice.
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+
     /// Bcrypt the password on stdin, for the Dex leg of the identity matrix (§3.2).
     BcryptHash {
         /// Bcrypt cost. Ten is what `htpasswd -C 10` uses in the branch next door,
@@ -89,6 +105,9 @@ fn main() -> anyhow::Result<()> {
         Command::CoverageGate { lcov, base } => coverage::gate(&lcov, base.as_deref()),
         Command::VapidKey { output, force } => vapid::generate(&output, force),
         Command::FederationKey { output, force } => federation::generate(&output, force),
+        Command::Notifyd { expect, timeout } => {
+            notifyd::run(expect, timeout.map(std::time::Duration::from_secs))
+        }
         Command::BcryptHash { cost } => password::bcrypt_stdin(cost),
     }
 }

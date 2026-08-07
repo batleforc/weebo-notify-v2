@@ -9,10 +9,10 @@
  * # Why the matching lives here and not in the component
  *
  * Everything below is a pure function over data. That is deliberate: the ranking is
- * the part that decides whether the palette feels right, it is the part that breaks
- * silently, and it is the only part this workspace can actually verify — there is
- * no browser here, so the component's appearance is reviewed by whoever runs it and
- * the behaviour is reviewed by the suite.
+ * the part that decides whether the palette feels right, and it is the part that
+ * breaks silently. It stays here now that the workspace has a browser (§12.4,
+ * `task browser:`) for a reason that has not changed: a screenshot answers what a
+ * row looks like, never why one row sorts above another.
  *
  * # The matching rule
  *

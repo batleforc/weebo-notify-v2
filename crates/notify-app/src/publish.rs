@@ -31,6 +31,7 @@ use notify_ports::{
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
+use crate::attribution::Attribution;
 use crate::authz::{Authorizer, Caller};
 use crate::fanout::Fanout;
 
@@ -67,6 +68,10 @@ struct Writer {
     clock: Arc<dyn Clock>,
     authorizer: Authorizer,
     fanout: Fanout,
+    /// The name a client shows next to this revision (design §2.4, and the
+    /// reasoning for naming here rather than on the read path is in
+    /// [`crate::attribution`]).
+    attribution: Attribution,
 }
 
 impl core::fmt::Debug for Writer {
@@ -126,7 +131,7 @@ impl Writer {
         draft: RevisionDraft,
         now: OffsetDateTime,
     ) -> Result<Published, Failure> {
-        let author = notify_domain::Author::anonymous(caller.principal.clone());
+        let author = self.attribution.author(&caller.principal).await;
         let (notification, written) = Notification::create(
             NotificationId::generate(),
             channel.id.clone(),
@@ -162,7 +167,7 @@ impl Writer {
         draft: RevisionDraft,
         now: OffsetDateTime,
     ) -> Result<Published, Failure> {
-        let author = notify_domain::Author::anonymous(caller.principal.clone());
+        let author = self.attribution.author(&caller.principal).await;
         let written = notification.revise(draft, author, now, &channel.policy)?;
 
         let cursor = self
@@ -222,6 +227,7 @@ impl PublishNotification {
         clock: Arc<dyn Clock>,
         authorizer: Authorizer,
         fanout: Fanout,
+        attribution: Attribution,
     ) -> Self {
         Self {
             writer: Writer {
@@ -231,6 +237,7 @@ impl PublishNotification {
                 clock,
                 authorizer,
                 fanout,
+                attribution,
             },
         }
     }
@@ -336,6 +343,7 @@ impl UpsertNotification {
         clock: Arc<dyn Clock>,
         authorizer: Authorizer,
         fanout: Fanout,
+        attribution: Attribution,
     ) -> Self {
         Self {
             writer: Writer {
@@ -345,6 +353,7 @@ impl UpsertNotification {
                 clock,
                 authorizer,
                 fanout,
+                attribution,
             },
         }
     }
@@ -475,6 +484,7 @@ mod tests {
                 Arc::new(clock.clone()),
                 authorizer.clone(),
                 fanout.clone(),
+                Attribution::new(Arc::new(store.clone()), Arc::new(store.clone())),
             ),
             upsert: UpsertNotification::new(
                 Arc::new(store.clone()),
@@ -483,6 +493,7 @@ mod tests {
                 Arc::new(clock.clone()),
                 authorizer,
                 fanout,
+                Attribution::new(Arc::new(store.clone()), Arc::new(store.clone())),
             ),
             store,
             clock,
@@ -514,6 +525,53 @@ mod tests {
         assert!(!published.replayed);
         assert_eq!(published.notification.status(), Status::Info);
         assert_eq!(fixture.store.pokes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_revision_carries_the_publisher_s_name_and_not_their_id() {
+        // The property every inbox row and every timeline entry depended on and
+        // nothing checked (§2.4). Falsify it by removing the `Attribution` call in
+        // `Writer::create`: this asserts on the ULID instead, which is exactly what
+        // the application rendered until this increment.
+        let fixture = fixture(ChannelPolicy::default());
+        let id = fixture.alice.as_user().unwrap();
+        let user = notify_domain::User::from_claims(
+            id,
+            "alice-subject",
+            None,
+            Some("Alice Martin"),
+            OffsetDateTime::now_utc(),
+        )
+        .unwrap();
+        notify_ports::UserRepository::upsert(&fixture.store, &user)
+            .await
+            .unwrap();
+
+        let caller = Caller::member(fixture.alice.clone());
+        let published = fixture
+            .publish
+            .execute(&caller, request(None))
+            .await
+            .unwrap();
+
+        assert_eq!(published.revision.author.label(), "Alice Martin");
+
+        // And the second revision too: `revise` is a different code path, and it
+        // was the one carrying half the bug.
+        let revised = fixture
+            .upsert
+            .execute(
+                &caller,
+                UpsertRequest {
+                    channel: channel_id(),
+                    external_id: ExternalId::parse("build-4711").unwrap(),
+                    draft: RevisionDraft::simple(ContentDraft::titled("deploy prod")),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(revised.revision.author.label(), "Alice Martin");
+        assert_ne!(published.revision.author.label(), id.to_string());
     }
 
     #[tokio::test]

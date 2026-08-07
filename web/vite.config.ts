@@ -53,6 +53,10 @@ function csp(mode: string): Plugin {
                 content: contentSecurityPolicy({
                   apiBaseUrl: env.VITE_API_BASE_URL,
                   oidcIssuer: env.VITE_OIDC_ISSUER,
+                  // Not in the loop above: a deployment with no object store is
+                  // a deployment that shows no attachments, which is a working
+                  // one. Failing its build would be wrong.
+                  attachmentOrigin: env.VITE_ATTACHMENT_ORIGIN || undefined,
                   hashes: inlineScriptHashes(html),
                 }),
               },

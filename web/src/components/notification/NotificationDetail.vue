@@ -29,6 +29,7 @@ import { useChannels } from "@/stores/channels";
 import { useDetail } from "@/stores/detail";
 import ActionBar from "./ActionBar.vue";
 import Markdown from "./Markdown.vue";
+import NotificationImage from "./NotificationImage.vue";
 import RevisionTimeline from "./RevisionTimeline.vue";
 import StatusDot from "./StatusDot.vue";
 
@@ -83,12 +84,20 @@ async function copyPermalink(): Promise<void> {
   }, 2000);
 }
 
-// Opening a notification is what `seen` means (§7.3) — but only where the channel
-// collects receipts, so a channel that does not is not told who read what.
+// Opening a notification is what `seen` means (§7.3), and it is posted on **every**
+// channel — including the ones that collect no receipts.
+//
+// It used to be gated on `showsReceipts`, on the reasoning that a channel opting out
+// of receipts should not be told who read what. That is still true, and it is the
+// server that enforces it: a `seen` on such a channel is recorded and broadcast only
+// to the reader's own connections, never to the channel (D27). Gating it here as
+// well meant the unread badge never dropped on a default channel — `receipts_enabled`
+// is false unless an operator says otherwise — so the badge sat at the channel's
+// full size for ever.
 watch(
-  () => [detail.id, showsReceipts.value] as const,
-  ([id, collects]) => {
-    if (id && collects) {
+  () => detail.id,
+  (id) => {
+    if (id) {
       void detail.markSeen();
     }
   },
@@ -255,12 +264,12 @@ watch(
           Pas de corps — le titre dit tout.
         </p>
 
-        <img
-          v-if="image && image.kind === 'data_uri'"
-          :src="image.uri"
-          alt=""
-          class="max-h-64 rounded-md border border-border object-contain"
-        />
+        <!--
+          Both kinds, since M4quatervicies. The `kind === 'data_uri'` guard that
+          used to be here was the whole of D26: an attachment reference — what the
+          CLI produces above 48 KiB — matched nothing and rendered nothing.
+        -->
+        <NotificationImage v-if="image" :image="image" />
 
         <ActionBar
           v-if="detail.actions.length"

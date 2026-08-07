@@ -26,13 +26,55 @@
 /// headless server, a container, a terminal over ssh — is the normal case for this
 /// CLI, and a TUI that reported a failed popup on every arrival would be worse than
 /// one that quietly does not pop.
-///
-/// **Unverified here.** There is no desktop session in this workspace, so this
-/// function has never run against a real daemon (§14.4, D19).
 pub(crate) fn relay(title: &str, body: &str) {
-    let _ = notify_rust::Notification::new()
+    let _ = show(title, body);
+}
+
+/// The same call, with its outcome kept.
+///
+/// Split out of [`relay`] for one reason: a function that swallows its own errors
+/// can never be verified by anything. D19 read "écrite, jamais vue" for that as much
+/// as for the missing desktop — there was no daemon here *and* no way to tell a
+/// delivery from a no-op. The swallowing stays, one level up, where it belongs.
+fn show(
+    title: &str,
+    body: &str,
+) -> Result<notify_rust::NotificationHandle, notify_rust::error::Error> {
+    notify_rust::Notification::new()
         .summary(title)
         .body(body)
         .appname("weebo-notify")
-        .show();
+        .show()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deliver to a real notification daemon over a real session bus (D19).
+    ///
+    /// Skipped unless `DBUS_SESSION_BUS_ADDRESS` names a bus, exactly as the
+    /// Postgres conformance suite skips without `WNK_TEST_DATABASE_URL`: the
+    /// developer machines that have a desktop session run it for free, and this
+    /// workspace gets one from `task desktop:check`.
+    ///
+    /// What it proves is narrow and worth stating: that what §9.2 sends is a
+    /// message a daemon accepts. `xtask notifyd` decodes all eight arguments of the
+    /// specification's `susssasa{sv}i` strictly, so a malformed one fails there
+    /// rather than being drawn as an empty popup.
+    #[test]
+    fn an_arrival_reaches_a_real_notification_daemon() {
+        let Ok(address) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
+            eprintln!("skipped: no DBUS_SESSION_BUS_ADDRESS — `task desktop:notifyd` starts one");
+            return;
+        };
+
+        let delivered = show("etcd degraded", "cluster-ovh-1 · haute");
+
+        assert!(
+            delivered.is_ok(),
+            "the desktop relay of §9.2 did not reach the daemon on {address}: {:?}",
+            delivered.err()
+        );
+    }
 }

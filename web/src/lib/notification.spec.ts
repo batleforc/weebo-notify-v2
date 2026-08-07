@@ -1,6 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { accentOf, authorLabel, isLoud, lookOf } from "./notification";
+import {
+  accentOf,
+  authorLabel,
+  isLoud,
+  lookOf,
+  unreadLabel,
+} from "./notification";
+
+describe("unreadLabel", () => {
+  it("agrees with the count, which the digit alone never had to", () => {
+    // The badge draws "1"; only the label has to be a sentence, and only the
+    // reader who cannot see the digit is told it. It said "1 non lues" until
+    // the page was opened.
+    expect(unreadLabel(1)).toBe("1 non lue");
+    expect(unreadLabel(2)).toBe("2 non lues");
+    expect(unreadLabel(11)).toBe("11 non lues");
+  });
+});
 
 describe("lookOf", () => {
   it("gives every status an icon, not only a colour (§10.3)", () => {

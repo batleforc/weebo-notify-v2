@@ -8,9 +8,10 @@ use notify_domain::{
 };
 use notify_ports::{
     ChannelRepository, Clock, DeviceRepository, Failure, InteractionRepository, ReceiptRepository,
-    UserRepository,
+    UserRepository, Visibility,
 };
 
+use crate::attribution::Attribution;
 use crate::authz::Caller;
 use crate::fanout::Fanout;
 use crate::read::GetNotification;
@@ -23,6 +24,9 @@ pub struct RecordInteraction {
     get: GetNotification,
     clock: Arc<dyn Clock>,
     fanout: Fanout,
+    /// §2.4 names interactions alongside revisions: "Alice a acquitté" and not
+    /// "`usr_01K`… a acquitté".
+    attribution: Attribution,
 }
 
 impl core::fmt::Debug for RecordInteraction {
@@ -39,12 +43,14 @@ impl RecordInteraction {
         get: GetNotification,
         clock: Arc<dyn Clock>,
         fanout: Fanout,
+        attribution: Attribution,
     ) -> Self {
         Self {
             interactions,
             get,
             clock,
             fanout,
+            attribution,
         }
     }
 
@@ -66,7 +72,7 @@ impl RecordInteraction {
         let existing = self.interactions.list_for(notification_id).await?;
         let mut log = InteractionLog::from_records(existing);
 
-        let author = notify_domain::Author::anonymous(caller.principal.clone());
+        let author = self.attribution.author(&caller.principal).await;
         let outcome = log.record(
             &notification.head.content.actions,
             notification_id,
@@ -252,17 +258,37 @@ impl PostReceipt {
             }
         }
 
-        // Receipts are opt-in per channel (design §7.3). A channel that does not
-        // collect them records nothing and says so with `None`, rather than failing
-        // a client that cannot know the policy.
+        // Receipts are opt-in per channel (design §7.3) — and what the opt-in governs
+        // is **who is shown** the reading, not whether it happens. §7.3 says it in
+        // those words: "si activé sur le canal : les membres autorisés *voient* « vu
+        // par 3/5 »".
+        //
+        // Reading it as "do not record" is what D27 turned out to be. `receipts_
+        // enabled` defaults to false, so on a default channel nothing was ever
+        // written, and an unread badge counting rows without a `seen` would have sat
+        // at the channel's full size for ever — a number that only grows.
+        //
+        // So a `seen` is always recorded, and only its audience moves. `delivered`
+        // keeps the old gate: it is per device, it feeds nothing but the readership
+        // panel, and nobody's badge depends on it.
         let collects = self
             .channels
             .get(&notification.channel)
             .await?
             .is_some_and(|channel| channel.policy.receipts_enabled);
-        if !collects {
-            return Ok(None);
-        }
+
+        let visibility = if collects {
+            Visibility::Channel
+        } else {
+            if kind == ReceiptKind::Delivered {
+                return Ok(None);
+            }
+            // Recorded, and told to nobody but the reader's own connections: the
+            // badge has to drop on the laptop when the phone reads it, while the
+            // other members of a channel that collects nothing must not learn that
+            // anybody read anything.
+            Visibility::Reader
+        };
 
         let receipt = Receipt {
             id: ReceiptId::generate(),
@@ -273,11 +299,24 @@ impl PostReceipt {
             at: self.clock.now(),
         };
 
-        if let Some(cursor) = self.receipts.record(&receipt).await? {
-            self.fanout.poke_channel(&notification, cursor).await;
-            return Ok(Some(receipt));
+        let cursor = self.receipts.record(&receipt, visibility).await?;
+
+        match (visibility, cursor) {
+            // The channel learns, as "vu par 3/5" requires.
+            (Visibility::Channel, Some(cursor)) => {
+                self.fanout.poke_channel(&notification, cursor).await;
+                Ok(Some(receipt))
+            }
+            // Only the reader learns. `poke_user` and not `poke_channel`, which is
+            // the entire difference between a private read and a published one.
+            (Visibility::Reader, Some(cursor)) => {
+                if let Principal::User { id } = caller.principal {
+                    self.fanout.poke_user(id, cursor).await;
+                }
+                Ok(Some(receipt))
+            }
+            (_, None) => Ok(None),
         }
-        Ok(None)
     }
 }
 
@@ -476,6 +515,7 @@ mod tests {
                 get.clone(),
                 Arc::new(clock.clone()),
                 fanout.clone(),
+                Attribution::new(Arc::new(store.clone()), Arc::new(store.clone())),
             ),
             list: ListInteractions::new(Arc::new(store.clone()), get.clone()),
             silence: SilenceNotification::new(
@@ -738,6 +778,173 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "\"seen by 3/5\" must not be inflatable by a retry"
+        );
+    }
+
+    // --- What `receipts_enabled` governs, and what it does not (D27) ------
+
+    /// A second channel with the **default** policy — receipts off.
+    ///
+    /// The default matters: it is what every channel is until an operator says
+    /// otherwise, so this is the ordinary case and not an exotic one.
+    async fn quiet_channel(fixture: &Fixture) -> Notification {
+        let id = ChannelId::parse("cluster-ovh-1").unwrap();
+        let mut channel = Channel::dynamic(id.clone(), None).unwrap();
+        assert!(
+            !channel.policy.receipts_enabled,
+            "this test is about the default; if the default changed, it is testing nothing"
+        );
+        channel.upsert_member(
+            Membership::new(
+                fixture.alice.clone(),
+                vec![Scope::Publish, Scope::Subscribe],
+            )
+            .unwrap(),
+        );
+        fixture.store.seed_channel(channel);
+
+        let (notification, written) = Notification::create(
+            NotificationId::generate(),
+            id,
+            None,
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("etcd degraded")),
+            Author::anonymous(fixture.alice.clone()),
+            fixture.clock.now(),
+            &ChannelPolicy::default(),
+        )
+        .unwrap();
+        NotificationRepository::insert(&fixture.store, &notification, &written.revision)
+            .await
+            .unwrap();
+        notification
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_collects_no_receipts_still_records_that_you_read_it() {
+        let fixture = fixture();
+        let notification = quiet_channel(&fixture).await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        fixture
+            .receipt
+            .execute(&caller, notification.id, ReceiptKind::Seen, None)
+            .await
+            .unwrap();
+
+        // This is the whole of D27. `receipts_enabled` defaults to false, so reading
+        // it as "do not record" left the badge counting every notification for ever
+        // on every default channel — a number that only ever grows.
+        let unread = notify_ports::NotificationRepository::unread_counts(
+            &fixture.store,
+            &fixture.alice,
+            &[ChannelId::parse("cluster-ovh-1").unwrap()],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            unread.is_empty(),
+            "a channel that collects no receipts must still know that its reader read it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_private_read_is_told_to_the_reader_and_to_nobody_else() {
+        let fixture = fixture();
+        let notification = quiet_channel(&fixture).await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        fixture
+            .receipt
+            .execute(&caller, notification.id, ReceiptKind::Seen, None)
+            .await
+            .unwrap();
+
+        // §7.3's opt-in is about who is *shown* the reading. Broadcasting the receipt
+        // to the channel would tell the other members exactly what the channel opted
+        // out of telling them — the badge would have bought its correctness with a
+        // leak.
+        let events = notify_ports::EventStore::sync(
+            &fixture.store,
+            fixture.alice.as_user().unwrap(),
+            &notify_ports::SyncQuery {
+                after: None,
+                channels: Vec::new(),
+                groups: Vec::new(),
+                page: notify_ports::PageRequest::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let receipts: Vec<_> = events
+            .events
+            .iter()
+            .filter(|event| matches!(event.payload, notify_ports::EventPayload::Receipt(_)))
+            .collect();
+
+        assert_eq!(receipts.len(), 1, "the reader's own connections must learn");
+        assert!(
+            receipts[0].audience.channel().is_none(),
+            "a private read must not be addressed to the channel"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delivery_acknowledgement_keeps_the_old_gate() {
+        let fixture = fixture();
+        let notification = quiet_channel(&fixture).await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        // `delivered` is per device, feeds nothing but the readership panel, and no
+        // badge depends on it — so a channel that collects nothing still collects
+        // nothing. Only `seen` earned the exception.
+        assert!(
+            fixture
+                .receipt
+                .execute(&caller, notification.id, ReceiptKind::Delivered, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_collects_receipts_still_tells_the_channel() {
+        let fixture = fixture();
+        // The default fixture channel has `receipts_enabled = true`.
+        let notification = seed(&fixture, None).await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        fixture
+            .receipt
+            .execute(&caller, notification.id, ReceiptKind::Seen, None)
+            .await
+            .unwrap();
+
+        let events = notify_ports::EventStore::sync(
+            &fixture.store,
+            fixture.alice.as_user().unwrap(),
+            &notify_ports::SyncQuery {
+                after: None,
+                channels: Vec::new(),
+                groups: Vec::new(),
+                page: notify_ports::PageRequest::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let receipt = events
+            .events
+            .iter()
+            .find(|event| matches!(event.payload, notify_ports::EventPayload::Receipt(_)))
+            .unwrap();
+
+        assert!(
+            receipt.audience.channel().is_some(),
+            "\"vu par 3/5\" is built from a channel event; moving every receipt to \
+             the reader would have broken it silently"
         );
     }
 

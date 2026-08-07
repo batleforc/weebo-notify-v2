@@ -101,12 +101,14 @@ pub use interactions::InteractionRepository;
 pub use leader::{LeaderElection, LeaderGuard};
 pub use media::{AvatarProcessor, ImageRejection, ProcessedImage};
 pub use metrics::{Metrics, NoMetrics, PushResult, StreamKind};
-pub use notifications::{ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery};
+pub use notifications::{
+    ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery, UnreadCount,
+};
 pub use pagination::{Page, PageRequest};
 pub use preferences::{DeferredTally, PreferenceRepository};
 pub use push::{PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport};
 pub use quota::{Allowance, Quota, RateLimiter};
-pub use receipts::ReceiptRepository;
+pub use receipts::{ReceiptRepository, Visibility};
 pub use sinks::{
     DeadLetter, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkRegistry, SinkTarget,
 };

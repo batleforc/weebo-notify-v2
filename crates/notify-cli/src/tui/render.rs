@@ -54,7 +54,13 @@ fn channels(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(index, channel)| {
-            let label = sanitise(channel.id.as_str());
+            // Digits and not a coloured dot: a terminal sidebar has no room for a
+            // legend, and "3" says what "•" only hints at (§9.2). Absent from the
+            // map means nothing unread, which is why there is no zero branch.
+            let label = match app.unread.get(channel.id.as_str()) {
+                Some(unread) => format!("{} ({unread})", sanitise(channel.id.as_str())),
+                None => sanitise(channel.id.as_str()),
+            };
             ListItem::new(label).style(selection(index == app.selected_channel))
         })
         .collect();

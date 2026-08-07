@@ -60,6 +60,22 @@ export interface PolicyInputs {
   apiBaseUrl: string;
   /** `VITE_OIDC_ISSUER` — discovery, JWKS and the token endpoint. */
   oidcIssuer: string;
+  /**
+   * `VITE_ATTACHMENT_ORIGIN` — where presigned attachment URLs point (§6.1).
+   *
+   * Optional, and the only input here that is. The other two are what the
+   * application *is*; this one is what its object store happens to be, and a
+   * deployment that publishes no images never needs it. Absent, `img-src` names
+   * it not at all and an attachment renders as the caption
+   * `NotificationImage.vue` shows — which is a visible failure, not a silent one.
+   *
+   * It cannot be derived: `GET /attachments/{id}` answers with a URL minted by
+   * whatever `[storage] endpoint` the server was configured with, and this bundle
+   * has never seen the server's configuration. It cannot be read at runtime
+   * either — a policy is fixed when the document is parsed, and by the time a
+   * presign comes back the browser has long stopped listening.
+   */
+  attachmentOrigin?: string;
   /** Source expressions from {@link inlineScriptHashes}. */
   hashes: string[];
 }
@@ -74,10 +90,15 @@ export interface PolicyInputs {
 export function contentSecurityPolicy({
   apiBaseUrl,
   oidcIssuer,
+  attachmentOrigin,
   hashes,
 }: PolicyInputs): string {
   const api = originOf(apiBaseUrl);
   const issuer = originOf(oidcIssuer);
+  // Not `originOf` on a possibly-absent value: an empty string would throw, and a
+  // build must not fail over an optional input. An origin that is already an
+  // origin passes through unchanged.
+  const bucket = attachmentOrigin ? originOf(attachmentOrigin) : null;
 
   return [
     "default-src 'none'",
@@ -92,10 +113,12 @@ export function contentSecurityPolicy({
     // injection can, so this is the one directive where the cost is worth it.
     "style-src 'self' 'unsafe-inline'",
     // `data:` for the inline images §2.3 allows in a payload (png/jpeg/webp,
-    // validated server-side); the API origin for avatars. Bodies cannot contain
-    // an `<img>` at all — DOMPurify forbids the tag — so no third-party image
-    // origin has to be allowed here.
-    `img-src 'self' data: ${api}`,
+    // validated server-side); the API origin for avatars; the object store for
+    // the attachment half of the same field, which is served by presigned URL and
+    // therefore from an origin that is not the API's (§6.1, D26). Bodies cannot
+    // contain an `<img>` at all — DOMPurify forbids the tag — so beyond those
+    // three no image origin is allowed, and in particular never `https:`.
+    ["img-src 'self' data:", api, bucket].filter(Boolean).join(" "),
     "font-src 'self'",
     // The API and the identity provider, and nothing else. This is the directive
     // that makes a stolen token hard to send anywhere: an injected script that

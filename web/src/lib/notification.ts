@@ -77,6 +77,17 @@ export function priorityLabel(priority: Priority): string {
   return PRIORITY_LABEL[priority] ?? priority;
 }
 
+/**
+ * What a screen reader says for the sidebar's unread badge (§7.3, §10.4).
+ *
+ * Here rather than inline in the template because French agrees the participle with
+ * the count: the badge said "1 non lues" until somebody opened the page, which is
+ * the one reader who would have been told so is the one who cannot see the digit.
+ */
+export function unreadLabel(count: number): string {
+  return count === 1 ? "1 non lue" : `${count} non lues`;
+}
+
 /** Whether a priority earns a badge of its own — only the loud end does. */
 export function isLoud(priority: Priority): boolean {
   return priority === "high" || priority === "urgent";

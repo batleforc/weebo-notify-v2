@@ -16,14 +16,15 @@ use std::sync::Arc;
 
 use actix_web::{App, http::StatusCode, test, web};
 use notify_app::{
-    Authenticate, Authorizer, BrowseAudit, ChannelInventory, CreateApiKey, CreateChannel,
-    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
-    Fanout, GetNotification, ListApiKeys, ListChannels, ListDevices, ListInbox, ListInteractions,
-    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt,
-    PresignAttachment, PublishNotification, ReadAvatar, ReadChannel, ReadDnd, ReadProfile,
-    ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction, ResolveStreamStart,
-    RevokeApiKey, RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd,
-    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
+    Attribution, Authenticate, Authorizer, BrowseAudit, ChannelInventory, CountUnread,
+    CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
+    DeleteNotification, EnrolDevice, Fanout, GetNotification, ListApiKeys, ListChannels,
+    ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts,
+    ListTrustPolicies, ManageMembers, PostReceipt, PresignAttachment, PublishNotification,
+    ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
+    ReconciliationLog, RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice,
+    SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
+    UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_avatars::ImageAvatarProcessor;
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
@@ -76,6 +77,10 @@ impl Harness {
             Arc::new(clock.clone()),
         );
 
+        // The same store answers for users and service accounts, so a publish made
+        // through this harness carries the display name the profile holds (§2.4).
+        let attribution = Attribution::new(Arc::new(store.clone()), Arc::new(store.clone()));
+
         let state = ApiState {
             bus: Arc::new(store.clone()),
             // Nothing here asserts on a number, so the harness measures nothing —
@@ -100,6 +105,7 @@ impl Harness {
                 Arc::new(clock.clone()),
                 authorizer.clone(),
                 fanout.clone(),
+                attribution.clone(),
             ),
             upsert: UpsertNotification::new(
                 Arc::new(store.clone()),
@@ -108,6 +114,7 @@ impl Harness {
                 Arc::new(clock.clone()),
                 authorizer.clone(),
                 fanout.clone(),
+                attribution.clone(),
             ),
             delete_notification: DeleteNotification::new(
                 Arc::new(store.clone()),
@@ -124,11 +131,13 @@ impl Harness {
                 Arc::new(limiter.clone()),
                 Arc::new(clock.clone()),
             ),
+            unread: CountUnread::new(Arc::new(store.clone()), authorizer.clone()),
             record_interaction: RecordInteraction::new(
                 Arc::new(store.clone()),
                 get.clone(),
                 Arc::new(clock.clone()),
                 fanout.clone(),
+                attribution.clone(),
             ),
             interactions: ListInteractions::new(Arc::new(store.clone()), get.clone()),
             silence: SilenceNotification::new(

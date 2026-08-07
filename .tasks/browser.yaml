@@ -1,0 +1,79 @@
+version: "3"
+
+silent: true
+
+# Driving the browser that the devfile schedules next door (design §12.4).
+#
+# Three debts were open on the same three words — « écrit, jamais vu » (D19, D21,
+# D26). M4tervicies put a real Chrome in the pod and stopped there, because a
+# browser nobody can drive is a browser nobody looks through. This is the other
+# half, and it is deliberately small: `dev/browser/cdp.mjs` speaks CDP over the
+# WebSocket Node 24 already ships, so there is no dependency to install and no
+# browser to download — the one to use is already running.
+#
+# Two ways in, for two questions:
+#   * these tasks, for a question with an answer (`shot`, `eval`);
+#   * the `novnc` route Che publishes, for a human who wants to *look*. Open it
+#     from the endpoints list; it is the same browser, so a page opened here is
+#     the page seen there.
+#
+# Outside Che these no-op rather than fail: the sidecar comes from the devfile,
+# and `dev/compose.yaml` has no browser — looking at a page on a laptop is what
+# the laptop's own browser is for.
+
+vars:
+  NO_BROWSER: |
+    if ! curl -sf -o /dev/null http://127.0.0.1:9222/json/version; then
+      echo "No browser on 127.0.0.1:9222."
+      if [ -z "$DEVWORKSPACE_ID" ]; then
+        echo "Not in an Eclipse Che workspace — use your own browser (§12.4)."
+      else
+        echo "The sidecar is declared in devfile.yaml; restart the workspace from it."
+      fi
+      exit 0
+    fi
+
+tasks:
+  check:
+    desc: "Say whether the browser sidecar is reachable, and which page it is showing"
+    cmds:
+      - cmd: |
+          {{.NO_BROWSER}}
+          curl -s http://127.0.0.1:9222/json/version | grep -o '"Browser": *"[^"]*"'
+          node dev/browser/cdp.mjs where
+
+  open:
+    desc: "Point the browser at a URL — `task browser:open URL=http://localhost:5173/`"
+    cmds:
+      - cmd: |
+          {{.NO_BROWSER}}
+          node dev/browser/cdp.mjs open "{{.URL}}"
+    requires:
+      vars: [URL]
+
+  shot:
+    desc: "Screenshot the current page — `task browser:shot OUT=/tmp/inbox.png`"
+    # Deliberately separate from `open`: a Vue app mounts after the load event, so
+    # the useful sequence is open, look, and shoot again if it caught a skeleton.
+    cmds:
+      - cmd: |
+          {{.NO_BROWSER}}
+          node dev/browser/cdp.mjs shot "{{.OUT}}"
+    requires:
+      vars: [OUT]
+
+  eval:
+    desc: "Evaluate JavaScript in the page — `task browser:eval JS='location.href'`"
+    cmds:
+      - cmd: |
+          {{.NO_BROWSER}}
+          node dev/browser/cdp.mjs eval "{{.JS}}"
+    requires:
+      vars: [JS]
+
+  logs:
+    desc: "Drain the page's console and errors for a second — where a CSP refusal shows up"
+    cmds:
+      - cmd: |
+          {{.NO_BROWSER}}
+          node dev/browser/cdp.mjs logs

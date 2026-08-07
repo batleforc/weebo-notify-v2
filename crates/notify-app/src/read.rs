@@ -11,10 +11,69 @@ use notify_domain::{
 };
 use notify_ports::{
     Allowance, Clock, Failure, InboxQuery, NotificationRepository, Page, PageRequest, Quota,
-    RateLimiter, SearchQuery,
+    RateLimiter, SearchQuery, UnreadCount,
 };
 
 use crate::authz::{Authorizer, Caller};
+
+/// `GET /api/v1/unread` — the badge (design §7.3, §9.2, §10.4, §10bis).
+///
+/// # Why this is a route of its own
+///
+/// It could have hung off `GET /channels`, which is what the sidebar renders. It
+/// does not, and the reason is how the two change: a channel list changes when an
+/// operator edits configuration, and is cached accordingly; an unread count
+/// changes every time anybody publishes or anybody reads. Folding the second into
+/// the first would mean either re-fetching the channel list constantly or showing
+/// a badge as stale as the configuration.
+///
+/// Flat under `/api/v1`, next to `/search`, `/sync` and `/receipts`, rather than
+/// under an `/inbox` prefix that would have exactly one member: like those, this
+/// is a question about everything the caller can read, not about one resource.
+///
+/// # What "unread" means here, stated once
+///
+/// A notification the caller may read, still live, with no `seen` receipt from
+/// them. `seen` is recorded on every channel since the increment that added this
+/// (§7.3): the channel's `receipts_enabled` policy governs whether *other people*
+/// are shown who read it, never whether the reading is recorded. Without that,
+/// this count would be permanently equal to the channel's size wherever an
+/// operator had left receipts off — a badge that only ever grows.
+#[derive(Clone)]
+pub struct CountUnread {
+    notifications: Arc<dyn NotificationRepository>,
+    authorizer: Authorizer,
+}
+
+impl core::fmt::Debug for CountUnread {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CountUnread").finish_non_exhaustive()
+    }
+}
+
+impl CountUnread {
+    /// Wire it.
+    #[must_use]
+    pub fn new(notifications: Arc<dyn NotificationRepository>, authorizer: Authorizer) -> Self {
+        Self {
+            notifications,
+            authorizer,
+        }
+    }
+
+    /// Count, over every channel the caller may read.
+    ///
+    /// No channel filter parameter, unlike the inbox: a badge is drawn for the
+    /// whole sidebar at once, and a caller wanting one channel reads the one entry
+    /// out of the answer rather than paying a round trip per channel.
+    pub async fn execute(&self, caller: &Caller) -> Result<Vec<UnreadCount>, Failure> {
+        let readable = self.authorizer.readable_channels(caller).await?;
+        Ok(self
+            .notifications
+            .unread_counts(&caller.principal, &readable)
+            .await?)
+    }
+}
 
 /// `GET /api/v1/channels/{id}/notifications` — the inbox (design §8).
 #[derive(Clone)]
@@ -345,6 +404,7 @@ mod tests {
         revisions: ListRevisions,
         search: SearchNotifications,
         delete: DeleteNotification,
+        unread: CountUnread,
         alice: Principal,
     }
 
@@ -393,10 +453,11 @@ mod tests {
             ),
             delete: DeleteNotification::new(
                 Arc::new(store.clone()),
-                authorizer,
+                authorizer.clone(),
                 Arc::new(clock.clone()),
                 fanout,
             ),
+            unread: CountUnread::new(Arc::new(store.clone()), authorizer),
             get,
             store,
             clock,
@@ -462,6 +523,123 @@ mod tests {
         assert!(
             page.is_empty(),
             "`?channels=` must not be a way into somebody else's channel"
+        );
+    }
+
+    /// Mark a notification read, the way `PostReceipt` eventually does.
+    ///
+    /// Straight at the port rather than through the use case: what is under test
+    /// here is the counting, and routing it through the receipt path would make
+    /// these tests fail for reasons that belong to `interact.rs`.
+    async fn mark_seen(fixture: &Fixture, notification: NotificationId, who: &Principal) {
+        notify_ports::ReceiptRepository::record(
+            &fixture.store,
+            &notify_domain::Receipt {
+                id: notify_domain::ReceiptId::generate(),
+                notification_id: notification,
+                principal: who.clone(),
+                device: None,
+                kind: notify_domain::ReceiptKind::Seen,
+                at: fixture.clock.now(),
+            },
+            // The channel here collects no receipts, which is the default and the
+            // case the badge has to work in — so this is the private read.
+            notify_ports::Visibility::Reader,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_badge_counts_what_the_caller_has_not_read_and_stops_counting_what_they_have() {
+        let fixture = fixture();
+        let first = seed(&fixture, "ci-infra", "one").await;
+        seed(&fixture, "ci-infra", "two").await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        assert_eq!(
+            fixture.unread.execute(&caller).await.unwrap(),
+            vec![UnreadCount {
+                channel: channel_id("ci-infra"),
+                unread: 2,
+            }]
+        );
+
+        mark_seen(&fixture, first.id, &fixture.alice).await;
+
+        assert_eq!(
+            fixture.unread.execute(&caller).await.unwrap(),
+            vec![UnreadCount {
+                channel: channel_id("ci-infra"),
+                unread: 1,
+            }],
+            "reading one of two must decrement the badge, not clear it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_with_nothing_unread_is_absent_rather_than_zero() {
+        let fixture = fixture();
+        let only = seed(&fixture, "ci-infra", "one").await;
+        let caller = Caller::member(fixture.alice.clone());
+
+        mark_seen(&fixture, only.id, &fixture.alice).await;
+
+        // Not `[{channel, unread: 0}]`. "No badge" has one representation, so that
+        // a client renders a badge per entry instead of filtering the answer first.
+        assert!(fixture.unread.execute(&caller).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_badge_never_counts_a_channel_the_caller_cannot_read() {
+        let fixture = fixture();
+        let bob = Principal::User {
+            id: UserId::generate(),
+        };
+        let mut theirs = Channel::dynamic(channel_id("cluster-ovh-1"), None).unwrap();
+        theirs.upsert_member(Membership::new(bob, vec![Scope::Subscribe]).unwrap());
+        fixture.store.seed_channel(theirs);
+        seed(&fixture, "cluster-ovh-1", "not for alice").await;
+
+        // The count is taken over `readable_channels`, so a channel alice is not in
+        // cannot reach the answer — a badge is a smaller leak than a listing, and a
+        // leak all the same.
+        assert!(
+            fixture
+                .unread
+                .execute(&Caller::member(fixture.alice.clone()))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn one_reader_receipt_does_not_clear_another_readers_badge() {
+        let fixture = fixture();
+        let only = seed(&fixture, "ci-infra", "one").await;
+        let bob = Principal::User {
+            id: UserId::generate(),
+        };
+        let mut channel = Channel::dynamic(channel_id("ci-infra"), None).unwrap();
+        channel
+            .upsert_member(Membership::new(fixture.alice.clone(), vec![Scope::Subscribe]).unwrap());
+        channel.upsert_member(Membership::new(bob.clone(), vec![Scope::Subscribe]).unwrap());
+        fixture.store.seed_channel(channel);
+
+        mark_seen(&fixture, only.id, &bob).await;
+
+        assert_eq!(
+            fixture
+                .unread
+                .execute(&Caller::member(fixture.alice.clone()))
+                .await
+                .unwrap(),
+            vec![UnreadCount {
+                channel: channel_id("ci-infra"),
+                unread: 1,
+            }],
+            "unread is per principal; bob reading it says nothing about alice"
         );
     }
 

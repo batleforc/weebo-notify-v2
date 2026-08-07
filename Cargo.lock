@@ -6739,6 +6739,7 @@ dependencies = [
  "anyhow",
  "bcrypt",
  "clap",
+ "dbus",
  "ed25519-dalek",
  "getrandom 0.3.4",
  "jsonwebtoken",
@@ -6746,6 +6747,7 @@ dependencies = [
  "p256 0.14.0",
  "prettyplease",
  "progenitor",
+ "serde",
  "serde_json",
  "syn 2.0.119",
 ]

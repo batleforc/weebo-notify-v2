@@ -11,6 +11,8 @@ includes:
   adr: ./.tasks/adr.yaml
   release: ./.tasks/release.yaml
   tauri: ./.tasks/tauri.yaml
+  browser: ./.tasks/browser.yaml
+  desktop: ./.tasks/desktop.yaml
 
 tasks:
   init:

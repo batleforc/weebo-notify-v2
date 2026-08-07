@@ -37,6 +37,7 @@
 
 pub mod accounts;
 pub mod attachments;
+pub mod attribution;
 pub mod auth;
 pub mod authz;
 pub mod channels;
@@ -57,6 +58,7 @@ pub mod sync;
 
 pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
 pub use attachments::{Attachments, PresignAttachment, ReadAttachment};
+pub use attribution::Attribution;
 pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{
@@ -83,7 +85,7 @@ pub use publish::{
     PublishNotification, PublishRequest, Published, UpsertNotification, UpsertRequest,
 };
 pub use read::{
-    DeleteNotification, GetNotification, InboxFilters, ListInbox, ListRevisions,
+    CountUnread, DeleteNotification, GetNotification, InboxFilters, ListInbox, ListRevisions,
     SearchNotifications,
 };
 pub use sinks::{DrainReport, DrainSinks, ListDeadLetters, RequeueDeadLetter};

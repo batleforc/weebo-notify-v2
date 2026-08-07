@@ -41,6 +41,6 @@ pub mod types {
     pub use notify_client_api::types::{
         Action, ActionKey, Actions, Channel, ChannelId, ChannelPolicyBody, Day, Device, Dnd,
         DndDraft, DndScope, Image, Notification, Principal, Priority, Progress, Published,
-        QuietHours, Scope, State, Status, Ttl, UserId, WallClock,
+        QuietHours, Scope, State, Status, Ttl, UnreadCount, UserId, WallClock,
     };
 }

@@ -31,11 +31,13 @@ use crate::eventbus::{EventBus, Poke};
 use crate::idempotency::{Claim, IdempotencyStore};
 use crate::identities::{ApiKeyRepository, ServiceAccountRepository, StoredApiKey, UserRepository};
 use crate::interactions::InteractionRepository;
-use crate::notifications::{ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery};
+use crate::notifications::{
+    ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery, UnreadCount,
+};
 use crate::pagination::{Page, PageRequest};
 use crate::preferences::{DeferredTally, PreferenceRepository};
 use crate::push::{PushDispatcher, PushMessage, PushOutcome};
-use crate::receipts::ReceiptRepository;
+use crate::receipts::{ReceiptRepository, Visibility};
 use crate::sinks::{DeadLetter, SinkDelivery, SinkQueue};
 
 /// A row plus the cursor it was last written at.
@@ -422,6 +424,41 @@ impl NotificationRepository for InMemory {
         }
 
         Ok(paginate(&matched, query.page.effective_limit()))
+    }
+
+    async fn unread_counts(
+        &self,
+        principal: &Principal,
+        channels: &[ChannelId],
+    ) -> PortResult<Vec<UnreadCount>> {
+        let state = self.state();
+        let now = OffsetDateTime::now_utc();
+
+        let seen: std::collections::HashSet<NotificationId> = state
+            .receipts
+            .iter()
+            .filter(|receipt| receipt.principal == *principal && receipt.kind == ReceiptKind::Seen)
+            .map(|receipt| receipt.notification_id)
+            .collect();
+
+        let mut counts: std::collections::BTreeMap<ChannelId, u64> =
+            std::collections::BTreeMap::new();
+        for row in &state.notifications {
+            let notification = &row.value;
+            // `State::is_live` and not a hand-written pair of conditions: it is what
+            // `list` above applies, and the port promises the two answers agree.
+            if State::is_live(notification, now)
+                && channels.contains(&notification.channel)
+                && !seen.contains(&notification.id)
+            {
+                *counts.entry(notification.channel.clone()).or_default() += 1;
+            }
+        }
+
+        Ok(counts
+            .into_iter()
+            .map(|(channel, unread)| UnreadCount { channel, unread })
+            .collect())
     }
 
     async fn revisions(&self, id: NotificationId, page: PageRequest) -> PortResult<Page<Revision>> {
@@ -900,7 +937,11 @@ impl DeviceRepository for InMemory {
 
 #[async_trait::async_trait]
 impl ReceiptRepository for InMemory {
-    async fn record(&self, receipt: &Receipt) -> PortResult<Option<Cursor>> {
+    async fn record(
+        &self,
+        receipt: &Receipt,
+        visibility: Visibility,
+    ) -> PortResult<Option<Cursor>> {
         let mut state = self.state();
 
         let already = state.receipts.iter().any(|existing| {
@@ -924,13 +965,25 @@ impl ReceiptRepository for InMemory {
             ));
         };
 
-        let cursor = state.append(
-            Audience::Channel { id: channel },
-            EventPayload::Receipt(receipt.clone()),
-            receipt.at,
-        );
+        // The same split the real store makes, and it has to be here too: a use-case
+        // test that asserts "nobody else was told" would pass against a double that
+        // always broadcast, which is the failure mode this whole increment is about.
+        let audience = match visibility {
+            Visibility::Channel => Some(Audience::Channel { id: channel }),
+            // Only a user has private connections to poke. A service account, a
+            // channel key and a CI job have no inbox and no badge (§5.2bis), so the
+            // row is written and nothing is appended.
+            Visibility::Reader => match &receipt.principal {
+                Principal::User { id } => Some(Audience::User { id: *id }),
+                _ => None,
+            },
+        };
+
+        let cursor = audience.map(|audience| {
+            state.append(audience, EventPayload::Receipt(receipt.clone()), receipt.at)
+        });
         state.receipts.push(receipt.clone());
-        Ok(Some(cursor))
+        Ok(cursor)
     }
 
     async fn list_for(&self, notification: NotificationId) -> PortResult<Vec<Receipt>> {
@@ -941,18 +994,6 @@ impl ReceiptRepository for InMemory {
             .filter(|receipt| receipt.notification_id == notification)
             .cloned()
             .collect())
-    }
-
-    async fn has_seen(
-        &self,
-        notification: NotificationId,
-        principal: &Principal,
-    ) -> PortResult<bool> {
-        Ok(self.state().receipts.iter().any(|receipt| {
-            receipt.notification_id == notification
-                && receipt.principal == *principal
-                && receipt.kind == ReceiptKind::Seen
-        }))
     }
 }
 
@@ -1893,6 +1934,7 @@ mod tests {
                 kind: ReceiptKind::Seen,
                 at: now(),
             },
+            Visibility::Channel,
         )
         .await
         .unwrap();
@@ -1988,6 +2030,7 @@ mod tests {
                 kind: ReceiptKind::Delivered,
                 at: now(),
             },
+            Visibility::Channel,
         )
         .await
         .unwrap();

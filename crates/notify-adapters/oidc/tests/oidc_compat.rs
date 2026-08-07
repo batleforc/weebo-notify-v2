@@ -73,6 +73,24 @@ impl Provider {
     const fn emits_groups(self) -> bool {
         !matches!(self, Self::Dex)
     }
+
+    /// Whether `sub` happens to be the username this suite signs in with.
+    ///
+    /// Found by running the Dex leg for the first time, which is the whole reason
+    /// D7 was worth closing: the suite asserted `claims.subject == username` on
+    /// every provider, and Dex answers an opaque
+    /// `CiQ5YTFlMDAwMC0…SBWxvY2Fs` — a base64 of its internal id and connector.
+    ///
+    /// **Dex is right and the assertion was wrong.** OIDC makes `sub` opaque and
+    /// provider-chosen; nothing entitles a relying party to read a username out of
+    /// it, and a provider that puts one there is being convenient, not conformant.
+    /// The equality therefore holds only where this suite *arranged* it — the mock,
+    /// whose identities file sets it, and the Authentik blueprint, which maps it —
+    /// and the property the code actually depends on (§5.1: a user is keyed by
+    /// `oidc_subject`) is **stability**, which is asserted for everybody below.
+    const fn subject_is_username(self) -> bool {
+        !matches!(self, Self::Dex)
+    }
 }
 
 /// Which of the test accounts to sign in as.
@@ -362,6 +380,52 @@ fn verifier(issuer: &Url) -> OidcVerifier {
         .expect("the verifier builds against a live issuer")
 }
 
+/// What every provider owes about `sub`, and what only some of them owe.
+///
+/// Non-empty and *stable* is the contract §5.1 relies on: `find_by_subject` is how
+/// a returning human is recognised, so a subject that changed between two logins
+/// would silently mint a second account holding none of the first one's channels.
+/// That is asserted against whatever is running. Equality with the username is
+/// asserted only where this suite arranged it — see [`Provider::subject_is_username`].
+fn assert_subject(fixture: &Fixture, subject: &str, account: Account) {
+    assert!(
+        !subject.is_empty(),
+        "{:?} returned an empty `sub`; §5.1 keys every user on it",
+        fixture.provider
+    );
+
+    if fixture.provider.subject_is_username() {
+        assert_eq!(subject, fixture.username(account));
+    }
+}
+
+#[actix_web::test]
+async fn the_subject_is_the_same_on_a_second_login() {
+    // The property `assert_subject` cannot check from one token, and the one that
+    // matters: §5.1 recognises a returning human by `sub` alone. A provider whose
+    // subject moved between logins would mint a second account each time, holding
+    // none of the first one's channels — and the symptom would appear days later,
+    // as "my channels are gone", nowhere near the login that caused it.
+    let fixture = Fixture::start();
+
+    let first = verifier(&fixture.issuer)
+        .verify(&fixture.token_for(Account::InGroups).await)
+        .await
+        .expect("the issuer is reachable")
+        .expect("the token is accepted");
+    let second = verifier(&fixture.issuer)
+        .verify(&fixture.token_for(Account::InGroups).await)
+        .await
+        .expect("the issuer is reachable")
+        .expect("the token is accepted");
+
+    assert_eq!(
+        first.subject, second.subject,
+        "{:?} gave two different subjects for one account",
+        fixture.provider
+    );
+}
+
 #[actix_web::test]
 async fn a_token_from_a_live_provider_verifies_through_the_production_path() {
     let fixture = Fixture::start();
@@ -373,7 +437,7 @@ async fn a_token_from_a_live_provider_verifies_through_the_production_path() {
         .expect("the issuer is reachable")
         .expect("the token is accepted");
 
-    assert_eq!(claims.subject, fixture.username(Account::InGroups));
+    assert_subject(&fixture, &claims.subject, Account::InGroups);
 
     if fixture.provider.emits_groups() {
         assert!(
@@ -399,7 +463,7 @@ async fn an_account_with_no_groups_verifies_and_carries_none() {
         .expect("the issuer is reachable")
         .expect("a group-less token is still a valid token");
 
-    assert_eq!(claims.subject, fixture.username(Account::Groupless));
+    assert_subject(&fixture, &claims.subject, Account::Groupless);
     assert!(
         claims.groups.is_empty(),
         "an account in no group must arrive carrying none, so that an empty list \

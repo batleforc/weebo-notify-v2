@@ -1,0 +1,102 @@
+version: "3"
+
+silent: true
+
+# The desktop relay of §9.2, made observable (D19).
+#
+# D19, D21 and D26 all read « écrit, jamais vu ». The browser sidecar closed the
+# last two; it could never close this one, because `--notify-send` targets a
+# notification daemon and not a page. What it *does* provide, unintentionally, is
+# the missing half: `dbus-daemon` ships inside that image, and both containers
+# mount the sources, so a session bus socket on the shared path is reachable from
+# `tools`.
+#
+# The other half is a process owning `org.freedesktop.Notifications`, which no
+# rootless workspace can install — mise carries no dunst, mako or dbus-daemon, and
+# the pod's security context applies to every container (§12.4, established by
+# M4tervicies). So `xtask notifyd` answers the four methods of the specification
+# itself. It is a test instrument and not a desktop: it proves that what §9.2 sends
+# is a message a daemon accepts, with the summary and body intact, which is exactly
+# what nothing here could say before.
+#
+# Outside Che these no-op rather than fail, and the reason inverts: a laptop with a
+# desktop session already has a real daemon, so `task test:notify-send` there runs
+# against GNOME or KDE and means more than it does here.
+
+vars:
+  BUS_PATH: '{{.ROOT_DIR}}/dev/.dbus/session'
+  BUS_ADDRESS: 'unix:path={{.ROOT_DIR}}/dev/.dbus/session'
+
+  # A bus is either already in the environment (a real desktop) or ours to start.
+  NEED_BUS: |
+    if [ -n "$DBUS_SESSION_BUS_ADDRESS" ]; then
+      echo "Using the session bus already in the environment."
+    elif [ -S "{{.BUS_PATH}}" ]; then
+      export DBUS_SESSION_BUS_ADDRESS="{{.BUS_ADDRESS}}"
+      echo "Using the workspace bus at {{.BUS_PATH}}."
+    else
+      echo "No session bus. Start one with \`task desktop:bus\` (Eclipse Che),"
+      echo "or run this on a machine that has a desktop session."
+      exit 0
+    fi
+
+tasks:
+  bus:
+    desc: "Start a D-Bus session bus in the browser sidecar, on a path `tools` can reach (§12.4)"
+    cmds:
+      - cmd: |
+          if [ -z "$DEVWORKSPACE_ID" ]; then
+            echo "Not in an Eclipse Che workspace — your desktop session already has a bus."
+            exit 0
+          fi
+          if [ -S "{{.BUS_PATH}}" ]; then
+            echo "Already listening on {{.BUS_PATH}}."
+            exit 0
+          fi
+          mkdir -p "$(dirname "{{.BUS_PATH}}")"
+          # In the sidecar rather than here: `dbus-daemon` is in that image and in
+          # no other, and there is no way to install one on this side.
+          kubectl exec "$HOSTNAME" -c browser -- \
+            dbus-daemon --session --nopidfile --fork \
+                        --address="{{.BUS_ADDRESS}}" --print-address
+          echo "Point clients at DBUS_SESSION_BUS_ADDRESS={{.BUS_ADDRESS}}"
+
+  notifyd:
+    desc: "Answer org.freedesktop.Notifications and print what arrives, as JSON (D19)"
+    deps: [bus]
+    cmds:
+      - cmd: |
+          {{.NEED_BUS}}
+          cargo run --quiet -p xtask -- notifyd {{.CLI_ARGS}}
+
+  check:
+    desc: "Prove `--notify-send` reaches a real daemon: start one, deliver to it, assert (D19)"
+    deps: [bus]
+    cmds:
+      - cmd: |
+          {{.NEED_BUS}}
+
+          # The daemon has to be up before the test sends, and has to stop on its
+          # own afterwards — a check that leaves a process behind is a check that
+          # fails the second time it is run.
+          cargo build --quiet -p xtask
+          cargo run --quiet -p xtask -- notifyd --expect 1 --timeout 60 > "{{.ROOT_DIR}}/target/notifyd.json" &
+          daemon=$!
+          trap 'kill $daemon 2>/dev/null || true' EXIT
+
+          # Wait for the name to be owned rather than sleeping a guessed interval.
+          for _ in $(seq 1 50); do
+            grep -q "owning" "{{.ROOT_DIR}}/target/notifyd.json" 2>/dev/null && break
+            sleep 0.2
+          done
+
+          # `--bins`: notify-cli is a binary crate, so its unit tests live there.
+          cargo test --quiet -p notify-cli --bins -- tui::desktop::tests --nocapture
+          wait $daemon || true
+
+          echo
+          echo "What the daemon received:"
+          grep '^{' "{{.ROOT_DIR}}/target/notifyd.json" || {
+            echo "  nothing — the relay did not reach the bus"
+            exit 1
+          }

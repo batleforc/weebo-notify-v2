@@ -1,6 +1,8 @@
 //! The state, the messages, and the only function allowed to change one into the
 //! other (design §9.2).
 
+use std::collections::BTreeMap;
+
 use chrono::TimeDelta;
 use crossterm::event::{KeyCode, KeyModifiers};
 use notify_client_core::types::{Channel, Notification, State, Status};
@@ -162,6 +164,12 @@ pub(crate) struct App {
     /// first question somebody asks with two windows open.
     pub holds_stream: bool,
     pub channels: Vec<Channel>,
+    /// Unread per channel id (§7.3, §9.2) — the sidebar badge.
+    ///
+    /// A map and not a field on [`Row`]: the count is a property of the channel,
+    /// and the server omits the channels with nothing unread, so an absent key and
+    /// a zero mean the same thing here by construction.
+    pub unread: BTreeMap<String, u64>,
     pub inbox: Vec<Row>,
     pub focus: Pane,
     pub selected_channel: usize,
@@ -201,6 +209,7 @@ impl App {
             profile,
             holds_stream,
             channels: Vec::new(),
+            unread: BTreeMap::new(),
             inbox: Vec::new(),
             focus: Pane::Inbox,
             selected_channel: 0,
@@ -354,6 +363,30 @@ impl App {
         match session.channels().await {
             Ok(channels) => self.channels = channels,
             Err(error) => self.status = format!("canaux: {error}"),
+        }
+
+        // A badge that fails to load leaves the sidebar without one rather than
+        // taking the frame down with it: the channel list and the inbox are what
+        // this screen is for, and a stale count is worse than no count.
+        match session.unread().await {
+            Ok(counts) => {
+                // `u64::try_from` and not a cast: the generated client widens the
+                // schema's unsigned count to `i64` (it is a boundary, not an
+                // interface — see `notify_client_core`), and an entry that failed
+                // to be a positive count is dropped rather than rendered as `(0)`.
+                // That keeps this map's invariant — every key is a badge worth
+                // drawing — which is the same one the port states server-side.
+                self.unread = counts
+                    .into_iter()
+                    .filter_map(|count| {
+                        u64::try_from(count.unread)
+                            .ok()
+                            .filter(|unread| *unread > 0)
+                            .map(|unread| (count.channel.to_string(), unread))
+                    })
+                    .collect();
+            }
+            Err(error) => self.status = format!("non-lus: {error}"),
         }
 
         // Only the holder writes: two front ends syncing the same cursor would

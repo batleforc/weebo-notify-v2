@@ -39,7 +39,7 @@ mod e2e {
         ChannelRepository, Claim, DeviceRepository, EventPayload, EventStore, IdempotencyStore,
         InboxQuery, InteractionRepository, LeaderElection, NotificationRepository, PageRequest,
         PreferenceRepository, Quota, RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery,
-        ServiceAccountRepository, StoredApiKey, SyncQuery, UserRepository,
+        ServiceAccountRepository, StoredApiKey, SyncQuery, UnreadCount, UserRepository, Visibility,
     };
     use time::{Duration, OffsetDateTime};
 
@@ -612,14 +612,17 @@ mod e2e {
         .await;
 
         receipts(&store)
-            .record(&Receipt {
-                id: notify_domain::ReceiptId::generate(),
-                notification_id: published.id,
-                principal: alice.clone(),
-                device: None,
-                kind: ReceiptKind::Seen,
-                at: now() - Duration::days(29),
-            })
+            .record(
+                &Receipt {
+                    id: notify_domain::ReceiptId::generate(),
+                    notification_id: published.id,
+                    principal: alice.clone(),
+                    device: None,
+                    kind: ReceiptKind::Seen,
+                    at: now() - Duration::days(29),
+                },
+                Visibility::Channel,
+            )
             .await
             .unwrap();
 
@@ -1528,9 +1531,19 @@ mod e2e {
             at: now(),
         };
 
-        assert!(receipts(&store).record(&receipt).await.unwrap().is_some());
         assert!(
-            receipts(&store).record(&receipt).await.unwrap().is_none(),
+            receipts(&store)
+                .record(&receipt, Visibility::Channel)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            receipts(&store)
+                .record(&receipt, Visibility::Channel)
+                .await
+                .unwrap()
+                .is_none(),
             "a retried acknowledgement must not inflate `seen by 3/5`"
         );
 
@@ -1541,10 +1554,30 @@ mod e2e {
                 .len(),
             1
         );
-        assert!(store.has_seen(published.id, &alice).await.unwrap());
+        // The badge's question, asked the way D27 settled it: one aggregate over the
+        // channel, not a predicate per notification. Alice has read the only row, so
+        // her channel is *absent* rather than present with a zero — the port promises
+        // one representation of "no badge" instead of two.
+        assert!(
+            notifications(&store)
+                .unread_counts(&alice, std::slice::from_ref(&channel))
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         let (_, bob) = user();
-        assert!(!store.has_seen(published.id, &bob).await.unwrap());
+        assert_eq!(
+            notifications(&store)
+                .unread_counts(&bob, std::slice::from_ref(&channel))
+                .await
+                .unwrap(),
+            vec![UnreadCount {
+                channel: channel.clone(),
+                unread: 1,
+            }],
+            "a receipt is one principal's, and must not clear anybody else's badge"
+        );
     }
 
     #[tokio::test]

@@ -24,12 +24,14 @@ import { useInbox } from "@/stores/inbox";
 import { usePalette } from "@/stores/palette";
 import { usePreferences } from "@/stores/preferences";
 import { useToasts } from "@/stores/toasts";
+import { useUnread } from "@/stores/unread";
 
 const channels = useChannels();
 const detail = useDetail();
 const inbox = useInbox();
 const preferences = usePreferences();
 const toasts = useToasts();
+const unread = useUnread();
 const route = useRoute();
 const router = useRouter();
 
@@ -64,6 +66,10 @@ onMounted(async () => {
     // has to be applied first, or the toast it should have silenced is already up.
     preferences.ingest(event);
     toasts.arrival(event);
+    // The badge is the server's count, so an event only says *ask again* — and
+    // says it for every kind, because a revision adds to it, a tombstone takes
+    // away, and a receipt of ours clears it. `refresh` coalesces the burst.
+    unread.refresh();
   });
 
   // A push the worker handed over because this tab is visible (see `public/sw.js`)
@@ -85,7 +91,12 @@ onMounted(async () => {
   // worker, and the person waiting for the inbox should not wait for one.
   void register(() => void resubscribe());
 
-  await Promise.all([channels.load(), inbox.load(), preferences.load()]);
+  await Promise.all([
+    channels.load(),
+    inbox.load(),
+    preferences.load(),
+    unread.load(),
+  ]);
   inbox.start();
 });
 
@@ -94,6 +105,7 @@ onBeforeUnmount(() => {
   unsubscribe?.();
   unhandPush?.();
   inbox.stop();
+  unread.stop();
 });
 
 /** `/n/<id>` is a permalink: opening it must open the panel (§10.4). */

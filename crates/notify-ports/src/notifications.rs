@@ -16,13 +16,27 @@
 //! 404 loses.
 
 use notify_domain::{
-    AttachmentId, ChannelId, Cursor, ExternalId, Notification, NotificationId, Priority, Revision,
-    State, Status,
+    AttachmentId, ChannelId, Cursor, ExternalId, Notification, NotificationId, Principal, Priority,
+    Revision, State, Status,
 };
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
 use crate::pagination::{Page, PageRequest};
+
+/// What one channel's unread badge shows (design §7.3, §10.4).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UnreadCount {
+    /// The channel the badge hangs off.
+    pub channel: ChannelId,
+    /// How many of its notifications this principal has not read.
+    ///
+    /// Never zero — a channel with nothing unread is absent from the list rather
+    /// than present with a zero, so that "no badge" has one representation instead
+    /// of two.
+    pub unread: u64,
+}
 
 /// Filters for an inbox listing (design §8, `GET /channels/{id}/notifications`).
 ///
@@ -117,6 +131,27 @@ pub trait NotificationRepository: Send + Sync {
 
     /// List an inbox.
     async fn list(&self, query: &InboxQuery) -> PortResult<Page<Notification>>;
+
+    /// How many notifications this principal has not read, per channel (§7.3).
+    ///
+    /// The unread badge §9.2, §10.4 and §10bis all promise, and the reason it is a
+    /// repository method rather than something a client folds over its inbox page:
+    /// a badge counts a whole channel, and a page is a page. Counting client-side
+    /// would make the number mean "unread among the fifty rows I happen to have
+    /// loaded", which is a different number that looks like the right one.
+    ///
+    /// Same visibility rules as [`NotificationRepository::list`] — deleted and
+    /// expired rows are not counted, because a badge that outlives the thing it
+    /// counts sends its reader looking for a notification that is gone.
+    ///
+    /// Channels with nothing unread are **omitted** rather than returned as zero:
+    /// the caller renders a badge per non-zero entry, and a list of zeroes is a
+    /// list the caller has to filter anyway.
+    async fn unread_counts(
+        &self,
+        principal: &Principal,
+        channels: &[ChannelId],
+    ) -> PortResult<Vec<UnreadCount>>;
 
     /// The revision history of one notification, oldest first (design §8).
     async fn revisions(&self, id: NotificationId, page: PageRequest) -> PortResult<Page<Revision>>;

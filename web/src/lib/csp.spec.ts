@@ -62,6 +62,39 @@ describe("the shipped policy", () => {
     expect(images).not.toContain("https:");
   });
 
+  it("names the object store when there is one, so attachments can render", () => {
+    // D26's second half, and the one nothing else can catch: the dev server does
+    // not stamp this policy at all (`vite.config.ts`), so an attachment renders
+    // perfectly under `pnpm dev` and is blocked in every built bundle. Only a test
+    // sees that difference before a deployment does.
+    const images = directive(
+      contentSecurityPolicy({
+        ...INPUTS,
+        attachmentOrigin: "https://s3.weebo.test/weebo-notify-attachments",
+      }),
+      "img-src",
+    );
+
+    // The path is gone: a source expression carrying one matches nothing, quietly.
+    expect(images).toContain("https://s3.weebo.test");
+    expect(images).not.toContain(
+      "https://s3.weebo.test/weebo-notify-attachments",
+    );
+  });
+
+  it("stays valid for a deployment that has no object store", () => {
+    // An empty value must not become `img-src 'self' data: … undefined`, which is
+    // a directive with a garbage source in it rather than one source fewer.
+    const policy = contentSecurityPolicy({ ...INPUTS, attachmentOrigin: "" });
+
+    expect(directive(policy, "img-src")).toEqual([
+      "'self'",
+      "data:",
+      "https://notify.test",
+    ]);
+    expect(policy).not.toContain("undefined");
+  });
+
   it("keeps a page from being repointed by an injected base tag", () => {
     expect(directive(contentSecurityPolicy(INPUTS), "base-uri")).toEqual([
       "'none'",

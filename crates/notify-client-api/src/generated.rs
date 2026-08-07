@@ -7707,6 +7707,42 @@ deliberate operator decision, not something a publisher can opt into.*/
         pub clamped_from: ::std::option::Option<HumanDuration>,
         pub ttl: Ttl,
     }
+    ///What one channel's unread badge shows (design §7.3, §10.4).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What one channel's unread badge shows (design §7.3, §10.4).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "channel",
+    ///    "unread"
+    ///  ],
+    ///  "properties": {
+    ///    "channel": {
+    ///      "$ref": "#/components/schemas/ChannelId"
+    ///    },
+    ///    "unread": {
+    ///      "description": "How many of its notifications this principal has not read.\n\nNever zero — a channel with nothing unread is absent from the list rather\nthan present with a zero, so that \"no badge\" has one representation instead\nof two.",
+    ///      "type": "integer",
+    ///      "format": "int64",
+    ///      "minimum": 0.0
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct UnreadCount {
+        pub channel: ChannelId,
+        /**How many of its notifications this principal has not read.
+
+Never zero — a channel with nothing unread is absent from the list rather
+than present with a zero, so that "no badge" has one representation instead
+of two.*/
+        pub unread: i64,
+    }
     ///A human, created on first OIDC login.
     ///
     /// <details><summary>JSON schema</summary>
@@ -10186,6 +10222,49 @@ caller — `curl /sync` from a shell has no cursor to keep.
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The unread badge, per channel (design §7.3, §9.2, §10.4, §10bis)
+
+Sends a `GET` request to `/api/v1/unread`
+
+*/
+    pub async fn unread<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::UnreadCount>>,
+        Error<types::Problem>,
+    > {
+        let url = format!("{}/api/v1/unread", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "unread",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),
