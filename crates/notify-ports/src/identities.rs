@@ -99,6 +99,17 @@ pub trait ApiKeyRepository: Send + Sync {
     /// Revoke a key, effective immediately. Returns whether one was there.
     async fn revoke(&self, id: ApiKeyId, at: OffsetDateTime) -> PortResult<bool>;
 
+    /// Set, or clear, a key's own publish ceiling (design §8.2, D24).
+    ///
+    /// The caller (`notify_app::SetApiKeyLimit`) has already fetched the key to
+    /// authorise and to compare the old value, so this trusts the id and writes —
+    /// no existence check, no return value to report one with.
+    async fn set_publish_limit(
+        &self,
+        id: ApiKeyId,
+        publish_per_minute: Option<u32>,
+    ) -> PortResult<()>;
+
     /// Revoke every key of a principal at once — what deactivating a service
     /// account does (design §8, scenario T25).
     async fn revoke_all_for(&self, owner: &Principal, at: OffsetDateTime) -> PortResult<u64>;

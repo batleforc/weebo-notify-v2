@@ -426,6 +426,15 @@ from this — by design and by test (scenario T12).*/
     ///    "prefix": {
     ///      "$ref": "#/components/schemas/ApiKeyPrefix"
     ///    },
+    ///    "publish_per_minute": {
+    ///      "description": "This key's own publish ceiling, overriding the channel's (design §8.2, D24).\n\n`None` on every key by default — the channel's own `publish_per_minute`\nstill applies, this only *narrows* it further for one noisy key. Settable\nonly by a platform-admin (§5.4): a key that could raise its own ceiling\nwould not be a ceiling.",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
     ///    "revoked_at": {
     ///      "description": "Set on revocation, which takes effect immediately.",
     ///      "type": [
@@ -468,6 +477,14 @@ answerable before a revocation.*/
         >,
         pub owner: ApiKeyOwner,
         pub prefix: ApiKeyPrefix,
+        /**This key's own publish ceiling, overriding the channel's (design §8.2, D24).
+
+`None` on every key by default — the channel's own `publish_per_minute`
+still applies, this only *narrows* it further for one noisy key. Settable
+only by a platform-admin (§5.4): a key that could raise its own ceiling
+would not be a ceiling.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub publish_per_minute: ::std::option::Option<i32>,
         ///Set on revocation, which takes effect immediately.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
@@ -523,6 +540,42 @@ answerable before a revocation.*/
     impl ::std::fmt::Display for ApiKeyId {
         fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
             self.0.fmt(f)
+        }
+    }
+    ///Narrow (or clear) one key's own rate-limit ceiling.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Narrow (or clear) one key's own rate-limit ceiling.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "publish_per_minute": {
+    ///      "description": "The new ceiling, or `null` to remove it and fall back to the channel's own\n(design §8.2).",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ApiKeyLimitBody {
+        /**The new ceiling, or `null` to remove it and fall back to the channel's own
+(design §8.2).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub publish_per_minute: ::std::option::Option<i32>,
+    }
+    impl ::std::default::Default for ApiKeyLimitBody {
+        fn default() -> Self {
+            Self {
+                publish_per_minute: Default::default(),
+            }
         }
     }
     /**The owner of an API key, which is what decides who a publish is attributed to
@@ -4548,6 +4601,14 @@ answerable before a revocation.*/
         >,
         pub owner: ApiKeyOwner,
         pub prefix: ApiKeyPrefix,
+        /**This key's own publish ceiling, overriding the channel's (design §8.2, D24).
+
+`None` on every key by default — the channel's own `publish_per_minute`
+still applies, this only *narrows* it further for one noisy key. Settable
+only by a platform-admin (§5.4): a key that could raise its own ceiling
+would not be a ceiling.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub publish_per_minute: ::std::option::Option<i32>,
         ///Set on revocation, which takes effect immediately.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
@@ -8659,6 +8720,64 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24)
+
+Deliberately not open to the key's own owner — see
+[`notify_app::SetApiKeyLimit`]'s docs for why a self-service ceiling would not
+be one.
+
+Sends a `PATCH` request to `/api/v1/apikeys/{id}/limit`
+
+Arguments:
+- `id`: API key id
+- `body`
+*/
+    pub async fn set_key_limit<'a>(
+        &'a self,
+        id: &'a str,
+        body: &'a types::ApiKeyLimitBody,
+    ) -> Result<ResponseValue<types::ApiKey>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/apikeys/{}/limit", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .patch(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_key_limit",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

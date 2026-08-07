@@ -1277,6 +1277,7 @@ mod e2e {
             owner: ApiKeyOwner::User { id: alice_id },
             scopes: vec![Scope::Publish],
             channels: Vec::new(),
+            publish_per_minute: None,
             created_at: now(),
             expires_at: None,
             last_used_at: None,
@@ -1325,6 +1326,59 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn a_platform_admins_ceiling_on_a_key_round_trips_through_a_widened_column() {
+        // D24: the domain value is `u32`, the column is `BIGINT` precisely so this
+        // never has to refuse a value it wrote itself — proved here with a real
+        // value near the top of `u32`'s range, not just a small round number.
+        let store = store!();
+        let (alice_id, _alice) = user();
+        let key = ApiKey {
+            id: ApiKeyId::generate(),
+            prefix: ApiKeyPrefix::parse(fresh_prefix().as_str()).unwrap(),
+            label: None,
+            owner: ApiKeyOwner::User { id: alice_id },
+            scopes: vec![Scope::Publish],
+            channels: Vec::new(),
+            publish_per_minute: None,
+            created_at: now(),
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+        };
+        keys(&store)
+            .insert(&StoredApiKey {
+                key: key.clone(),
+                secret_hash: "$argon2id$stub".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        keys(&store)
+            .set_publish_limit(key.id, Some(u32::MAX - 1))
+            .await
+            .unwrap();
+        assert_eq!(
+            ApiKeyRepository::get(&store, key.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .publish_per_minute,
+            Some(u32::MAX - 1)
+        );
+
+        keys(&store).set_publish_limit(key.id, None).await.unwrap();
+        assert_eq!(
+            ApiKeyRepository::get(&store, key.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .publish_per_minute,
+            None,
+            "clearing it is the same operation as setting one, and it round-trips too"
+        );
+    }
+
+    #[tokio::test]
     async fn critical_t25_disabling_a_service_account_takes_every_key_with_it() {
         let store = store!();
         let account = ServiceAccountId::parse(&format!("bot-{}", ulid_slug())).unwrap();
@@ -1342,6 +1396,7 @@ mod e2e {
                 },
                 scopes: vec![Scope::Publish],
                 channels: Vec::new(),
+                publish_per_minute: None,
                 created_at: now(),
                 expires_at: None,
                 last_used_at: None,

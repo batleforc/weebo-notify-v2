@@ -564,6 +564,84 @@
         ]
       }
     },
+    "/api/v1/apikeys/{id}/limit": {
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24).",
+        "description": "Deliberately not open to the key's own owner — see\n[`notify_app::SetApiKeyLimit`]'s docs for why a self-service ceiling would not\nbe one.",
+        "operationId": "set_key_limit",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "API key id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyLimitBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The key, with its new ceiling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKey"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a platform admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No such key (`field.malformed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/attachments/presign": {
       "post": {
         "tags": [
@@ -3654,6 +3732,15 @@
             "$ref": "#/components/schemas/ApiKeyPrefix",
             "description": "The lookup prefix, indexed so authentication is one indexed read rather\nthan a hash comparison against every key on the instance."
           },
+          "publish_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "This key's own publish ceiling, overriding the channel's (design §8.2, D24).\n\n`None` on every key by default — the channel's own `publish_per_minute`\nstill applies, this only *narrows* it further for one noisy key. Settable\nonly by a platform-admin (§5.4): a key that could raise its own ceiling\nwould not be a ceiling.",
+            "minimum": 0
+          },
           "revoked_at": {
             "type": [
               "string",
@@ -3674,6 +3761,21 @@
       "ApiKeyId": {
         "type": "string",
         "description": "An API key. Identifies the key, never its secret (design §5.2)."
+      },
+      "ApiKeyLimitBody": {
+        "type": "object",
+        "description": "Narrow (or clear) one key's own rate-limit ceiling.",
+        "properties": {
+          "publish_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The new ceiling, or `null` to remove it and fall back to the channel's own\n(design §8.2).",
+            "minimum": 0
+          }
+        }
       },
       "ApiKeyOwner": {
         "oneOf": [

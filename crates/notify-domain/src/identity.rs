@@ -308,6 +308,14 @@ pub struct ApiKey {
     /// Which channels it may do it in. Empty means none: a key with no channel
     /// list is inert, never universal.
     pub channels: Vec<ChannelId>,
+    /// This key's own publish ceiling, overriding the channel's (design §8.2, D24).
+    ///
+    /// `None` on every key by default — the channel's own `publish_per_minute`
+    /// still applies, this only *narrows* it further for one noisy key. Settable
+    /// only by a platform-admin (§5.4): a key that could raise its own ceiling
+    /// would not be a ceiling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_per_minute: Option<u32>,
     /// When it was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -454,6 +462,7 @@ mod tests {
             },
             scopes: vec![Scope::Publish],
             channels: vec![ChannelId::parse("ci-infra").unwrap()],
+            publish_per_minute: None,
             created_at: now(),
             expires_at: None,
             last_used_at: None,

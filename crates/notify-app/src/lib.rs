@@ -32,7 +32,7 @@
 //! | Reading | [`ListInbox`], [`GetNotification`], [`ListRevisions`], [`SearchNotifications`] |
 //! | Interaction | [`RecordInteraction`], [`ListInteractions`], [`SilenceNotification`], [`PostReceipt`], [`ReadReceipts`] |
 //! | Real time | [`SyncBacklog`], [`ResolveStreamStart`] |
-//! | Administration | [`ListChannels`], [`ReadChannel`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
+//! | Administration | [`ListChannels`], [`ReadChannel`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`SetApiKeyLimit`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
 //! | Background | [`PurgeExpired`] |
 
 pub mod accounts;
@@ -72,7 +72,8 @@ pub use interact::{
     ListInteractions, PostReceipt, ReadReceipts, RecordInteraction, SilenceNotification,
 };
 pub use keys::{
-    CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, RevokeApiKey, UlidKeyGenerator,
+    CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, RevokeApiKey, SetApiKeyLimit,
+    UlidKeyGenerator,
 };
 pub use maintenance::{PurgeExpired, PurgeReport};
 pub use platform::{

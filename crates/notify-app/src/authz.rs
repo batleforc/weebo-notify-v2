@@ -39,6 +39,10 @@ pub enum Grant {
         scopes: Vec<Scope>,
         /// Where it may do it.
         channels: Vec<ChannelId>,
+        /// This key's own publish ceiling, if a platform-admin set one (design
+        /// §8.2, D24). Carried here rather than re-fetched at quota-check time:
+        /// the key was already loaded to build this `Grant` in the first place.
+        publish_per_minute: Option<u32>,
     },
     /// Rights come from a federated CI token, resolved from a trust policy
     /// (design §5.3). Same shape as a key, different door.
@@ -59,7 +63,10 @@ impl Grant {
     pub fn carries(&self, channel: &ChannelId, scope: Scope) -> bool {
         match self {
             Self::Membership => false,
-            Self::ApiKey { scopes, channels } | Self::Federated { scopes, channels } => {
+            Self::ApiKey {
+                scopes, channels, ..
+            }
+            | Self::Federated { scopes, channels } => {
                 scopes.contains(&scope) && channels.contains(channel)
             }
         }
@@ -198,7 +205,10 @@ impl Authorizer {
                     .subscribed_ids(&caller.principal, &caller.groups)
                     .await?
             }
-            Grant::ApiKey { scopes, channels } | Grant::Federated { scopes, channels } => {
+            Grant::ApiKey {
+                scopes, channels, ..
+            }
+            | Grant::Federated { scopes, channels } => {
                 if scopes.contains(&Scope::Subscribe) {
                     channels.clone()
                 } else {
@@ -319,6 +329,7 @@ mod tests {
             grant: Grant::ApiKey {
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
             },
             groups: Vec::new(),
             platform_admin: false,
@@ -360,6 +371,7 @@ mod tests {
             grant: Grant::ApiKey {
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
             },
             groups: Vec::new(),
             platform_admin: false,
@@ -386,6 +398,7 @@ mod tests {
             grant: Grant::ApiKey {
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
             },
             groups: Vec::new(),
             platform_admin: false,

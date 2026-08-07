@@ -55,6 +55,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(identity::create_key)
             .service(identity::list_keys)
             .service(identity::revoke_key)
+            .service(identity::set_key_limit)
             .service(attachments::presign)
             .service(attachments::download)
             .service(attachments::thumbnail)

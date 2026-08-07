@@ -284,6 +284,7 @@ impl Authenticate {
             grant: Grant::ApiKey {
                 scopes: stored.key.scopes.clone(),
                 channels: stored.key.channels.clone(),
+                publish_per_minute: stored.key.publish_per_minute,
             },
             // A key carries its own scopes and its own channel list (§5.2). Giving
             // it its owner's groups on top would hand it rights nobody granted it —
@@ -396,6 +397,7 @@ mod tests {
                 owner,
                 scopes: vec![Scope::Publish],
                 channels: vec![ChannelId::parse("ci-infra").unwrap()],
+                publish_per_minute: None,
                 created_at: fixture.clock.now(),
                 expires_at,
                 last_used_at: None,
@@ -609,6 +611,7 @@ mod tests {
             Grant::ApiKey {
                 scopes: vec![Scope::Publish],
                 channels: vec![ChannelId::parse("ci-infra").unwrap()],
+                publish_per_minute: None,
             }
         );
     }

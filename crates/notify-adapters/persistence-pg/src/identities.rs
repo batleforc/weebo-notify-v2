@@ -275,14 +275,14 @@ fn hydrate_service_account(row: &PgRow) -> PortResult<ServiceAccount> {
 /// Every column of a key, secret hash included. Only [`ApiKeyRepository::find_by_prefix`]
 /// asks for the hash; everything else goes through [`SELECT_KEY`].
 const SELECT_STORED_KEY: &str = "
-    SELECT id, prefix, secret_hash, label, owner, scopes, channels, created_at, expires_at,
-           last_used_at, revoked_at
+    SELECT id, prefix, secret_hash, label, owner, scopes, channels, publish_per_minute,
+           created_at, expires_at, last_used_at, revoked_at
     FROM api_keys ";
 
 /// The public half.
 const SELECT_KEY: &str = "
-    SELECT id, prefix, NULL AS secret_hash, label, owner, scopes, channels, created_at,
-           expires_at, last_used_at, revoked_at
+    SELECT id, prefix, NULL AS secret_hash, label, owner, scopes, channels,
+           publish_per_minute, created_at, expires_at, last_used_at, revoked_at
     FROM api_keys ";
 
 #[async_trait::async_trait]
@@ -346,8 +346,8 @@ impl ApiKeyRepository for PgStore {
         sqlx::query(
             "INSERT INTO api_keys
                  (id, prefix, secret_hash, label, owner_ref, owner, scopes, channels,
-                  created_at, expires_at, last_used_at, revoked_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                  publish_per_minute, created_at, expires_at, last_used_at, revoked_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(key.id.to_string())
         .bind(key.prefix.as_str())
@@ -357,6 +357,10 @@ impl ApiKeyRepository for PgStore {
         .bind(to_json("api_key.owner", &key.owner)?)
         .bind(&scopes)
         .bind(&channels)
+        // Never set at creation (design §8.2, D24) — bound anyway rather than
+        // relying on the column default, so a key row always names every field
+        // `hydrate_key` reads back.
+        .bind(key.publish_per_minute.map(i64::from))
         .bind(key.created_at)
         .bind(key.expires_at)
         .bind(key.last_used_at)
@@ -365,6 +369,20 @@ impl ApiKeyRepository for PgStore {
         .await
         .map_err(|error| fail("api_key.prefix", error))
         .map(|_| ())
+    }
+
+    async fn set_publish_limit(
+        &self,
+        id: ApiKeyId,
+        publish_per_minute: Option<u32>,
+    ) -> PortResult<()> {
+        sqlx::query("UPDATE api_keys SET publish_per_minute = $2 WHERE id = $1")
+            .bind(id.to_string())
+            .bind(publish_per_minute.map(i64::from))
+            .execute(self.pool())
+            .await
+            .map_err(|error| fail("api_key", error))
+            .map(|_| ())
     }
 
     async fn touch(&self, id: ApiKeyId, at: OffsetDateTime) -> PortResult<()> {
@@ -424,6 +442,9 @@ fn hydrate_key(row: &PgRow) -> PortResult<ApiKey> {
     let owner: serde_json::Value = row.try_get("owner").map_err(|e| fail("api_key", e))?;
     let scopes: Vec<String> = row.try_get("scopes").map_err(|e| fail("api_key", e))?;
     let channels: Vec<String> = row.try_get("channels").map_err(|e| fail("api_key", e))?;
+    let publish_per_minute: Option<i64> = row
+        .try_get("publish_per_minute")
+        .map_err(|e| fail("api_key", e))?;
 
     Ok(ApiKey {
         id: parse("api_key.id", &id, str::parse::<ApiKeyId>)?,
@@ -438,6 +459,10 @@ fn hydrate_key(row: &PgRow) -> PortResult<ApiKey> {
             .iter()
             .map(|channel| parse("api_key.channel", channel, ChannelId::parse))
             .collect::<PortResult<Vec<_>>>()?,
+        // Widened to `BIGINT` in storage precisely so this never has to refuse a
+        // value we wrote ourselves; `u32::MAX` is a wide-enough net for anything
+        // that came from `set_publish_limit`'s own `u32` parameter.
+        publish_per_minute: publish_per_minute.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
         created_at: row.try_get("created_at").map_err(|e| fail("api_key", e))?,
         expires_at: row.try_get("expires_at").map_err(|e| fail("api_key", e))?,
         last_used_at: row

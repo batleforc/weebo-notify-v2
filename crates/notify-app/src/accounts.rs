@@ -355,6 +355,7 @@ mod tests {
                 owner: owner.clone(),
                 scopes: vec![Scope::Publish],
                 channels: Vec::new(),
+                publish_per_minute: None,
                 created_at: fixture.clock.now(),
                 expires_at: None,
                 last_used_at: None,

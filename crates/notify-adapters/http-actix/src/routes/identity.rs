@@ -1,6 +1,6 @@
 //! Devices and API keys (design §5.2, §8).
 
-use actix_web::{HttpResponse, delete, get, post, web};
+use actix_web::{HttpResponse, delete, get, patch, post, web};
 use notify_domain::{
     ApiKey, ApiKeyId, ApiKeyOwner, ChannelId, Device, DeviceId, DevicePublicKey, PushTransport,
     Scope,
@@ -214,4 +214,56 @@ pub(crate) async fn revoke_key(
     let id: ApiKeyId = path.into_inner().parse()?;
     state.revoke_key.execute(&caller.0, id).await?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+/// Narrow (or clear) one key's own rate-limit ceiling.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ApiKeyLimitBody {
+    /// The new ceiling, or `null` to remove it and fall back to the channel's own
+    /// (design §8.2).
+    #[serde(default)]
+    pub publish_per_minute: Option<u32>,
+}
+
+/// Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24).
+///
+/// Deliberately not open to the key's own owner — see
+/// [`notify_app::SetApiKeyLimit`]'s docs for why a self-service ceiling would not
+/// be one.
+#[utoipa::path(
+    patch,
+    path = "/apikeys/{id}/limit",
+    tag = "auth",
+    params(("id" = String, Path, description = "API key id")),
+    request_body = ApiKeyLimitBody,
+    responses(
+        (status = 200, description = "The key, with its new ceiling", body = ApiKey),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not a platform admin", body = Problem),
+        (status = 422, description = "No such key (`field.malformed`)", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[patch("/apikeys/{id}/limit")]
+pub(crate) async fn set_key_limit(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+    body: web::Json<ApiKeyLimitBody>,
+) -> Result<web::Json<ApiKey>, ApiError> {
+    let id: ApiKeyId = path.into_inner().parse()?;
+
+    let Some(key) = state
+        .set_key_limit
+        .execute(&caller.0, id, body.into_inner().publish_per_minute)
+        .await?
+    else {
+        return Err(notify_domain::DomainError::Malformed {
+            field: "id",
+            reason: "no such key",
+        }
+        .into());
+    };
+
+    Ok(web::Json(key))
 }

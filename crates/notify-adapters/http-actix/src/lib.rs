@@ -59,7 +59,7 @@ pub use state::ApiState;
 pub mod dto {
     pub use crate::routes::accounts::CreateAccountBody;
     pub use crate::routes::channels::{AddMemberBody, ChannelPolicyBody, CreateChannelBody};
-    pub use crate::routes::identity::{CreateKeyBody, EnrolBody, MintedKey};
+    pub use crate::routes::identity::{ApiKeyLimitBody, CreateKeyBody, EnrolBody, MintedKey};
     pub use crate::routes::interactions::{ReceiptBody, RecordedInteraction, SilenceBody};
     pub use crate::routes::notifications::{InboxParams, PageParams, PublishBody, SearchParams};
     pub use crate::routes::profile::{AvatarUpload, ProfileBody};

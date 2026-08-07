@@ -1292,6 +1292,18 @@ impl ApiKeyRepository for InMemory {
         }
         Ok(revoked)
     }
+
+    async fn set_publish_limit(
+        &self,
+        id: ApiKeyId,
+        publish_per_minute: Option<u32>,
+    ) -> PortResult<()> {
+        let mut state = self.state();
+        if let Some(stored) = state.api_keys.iter_mut().find(|stored| stored.key.id == id) {
+            stored.key.publish_per_minute = publish_per_minute;
+        }
+        Ok(())
+    }
 }
 
 // --- Idempotency -----------------------------------------------------------
@@ -2675,6 +2687,7 @@ mod tests {
                     owner: ApiKeyOwner::ServiceAccount { id: bot.clone() },
                     scopes: vec![Scope::Publish],
                     channels: vec![channel_id("ci-infra")],
+                    publish_per_minute: None,
                     created_at: now(),
                     expires_at: None,
                     last_used_at: None,
@@ -2722,6 +2735,7 @@ mod tests {
                     },
                     scopes: vec![Scope::Publish],
                     channels: vec![channel_id("ci-infra")],
+                    publish_per_minute: None,
                     created_at: now(),
                     expires_at: None,
                     last_used_at: None,

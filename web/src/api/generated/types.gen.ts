@@ -138,6 +138,15 @@ export type ApiKey = {
      */
     prefix: ApiKeyPrefix;
     /**
+     * This key's own publish ceiling, overriding the channel's (design §8.2, D24).
+     *
+     * `None` on every key by default — the channel's own `publish_per_minute`
+     * still applies, this only *narrows* it further for one noisy key. Settable
+     * only by a platform-admin (§5.4): a key that could raise its own ceiling
+     * would not be a ceiling.
+     */
+    publish_per_minute?: number | null;
+    /**
      * Set on revocation, which takes effect immediately.
      */
     revoked_at?: string | null;
@@ -151,6 +160,17 @@ export type ApiKey = {
  * An API key. Identifies the key, never its secret (design §5.2).
  */
 export type ApiKeyId = string;
+
+/**
+ * Narrow (or clear) one key's own rate-limit ceiling.
+ */
+export type ApiKeyLimitBody = {
+    /**
+     * The new ceiling, or `null` to remove it and fall back to the channel's own
+     * (design §8.2).
+     */
+    publish_per_minute?: number | null;
+};
 
 /**
  * The owner of an API key, which is what decides who a publish is attributed to
@@ -2600,6 +2620,44 @@ export type RevokeKeyResponses = {
 };
 
 export type RevokeKeyResponse = RevokeKeyResponses[keyof RevokeKeyResponses];
+
+export type SetKeyLimitData = {
+    body: ApiKeyLimitBody;
+    path: {
+        /**
+         * API key id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/apikeys/{id}/limit';
+};
+
+export type SetKeyLimitErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a platform admin
+     */
+    403: Problem;
+    /**
+     * No such key (`field.malformed`)
+     */
+    422: Problem;
+};
+
+export type SetKeyLimitError = SetKeyLimitErrors[keyof SetKeyLimitErrors];
+
+export type SetKeyLimitResponses = {
+    /**
+     * The key, with its new ceiling
+     */
+    200: ApiKey;
+};
+
+export type SetKeyLimitResponse = SetKeyLimitResponses[keyof SetKeyLimitResponses];
 
 export type PresignData = {
     body: PresignBody;

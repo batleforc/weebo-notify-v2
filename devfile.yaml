@@ -22,7 +22,7 @@ metadata:
 #     to schedule, and the inline-YAML generator this file used to carry is gone
 #     with it.
 parent:
-  uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml
+  uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-mise-webkit/devfile.yaml
 components:
   - name: postgres
     container:

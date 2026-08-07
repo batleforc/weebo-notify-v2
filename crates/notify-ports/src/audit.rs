@@ -169,6 +169,8 @@ pub mod actions {
     pub const APIKEY_CREATED: AuditAction = AuditAction("apikey.created");
     /// An API key was revoked, which takes effect immediately.
     pub const APIKEY_REVOKED: AuditAction = AuditAction("apikey.revoked");
+    /// A platform-admin set (or cleared) a key's own publish ceiling (§8.2, D24).
+    pub const APIKEY_LIMIT_SET: AuditAction = AuditAction("apikey.limit_set");
     /// A channel was created through the API.
     pub const CHANNEL_CREATED: AuditAction = AuditAction("channel.created");
     /// A channel was deleted through the API.
@@ -230,6 +232,7 @@ pub mod actions {
 pub const AUDIT_ACTIONS: &[AuditAction] = &[
     actions::APIKEY_CREATED,
     actions::APIKEY_REVOKED,
+    actions::APIKEY_LIMIT_SET,
     actions::CHANNEL_CREATED,
     actions::CHANNEL_DELETED,
     actions::CHANNEL_MEMBER_ADDED,

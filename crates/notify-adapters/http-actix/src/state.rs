@@ -15,8 +15,8 @@ use notify_app::{
     ManageMembers, PostReceipt, PresignAttachment, PublishNotification, ReadAttachment,
     ReadAttachmentThumbnail, ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts,
     ReadReconciliation, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification,
-    SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
+    RevokeDevice, SearchNotifications, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd,
+    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_ports::{EventBus, Metrics};
 
@@ -126,6 +126,8 @@ pub struct ApiState {
     pub keys: ListApiKeys,
     /// `DELETE /apikeys/{id}`.
     pub revoke_key: RevokeApiKey,
+    /// `PATCH /apikeys/{id}/limit`.
+    pub set_key_limit: SetApiKeyLimit,
 
     /// `POST /devices`.
     pub enrol_device: EnrolDevice,

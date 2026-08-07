@@ -21,7 +21,7 @@ use notify_app::{
     PresignAttachment, PublishNotification, PurgeExpired, ReadAvatar, ReadChannel, ReadDnd,
     ReadProfile, ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction,
     RequeueDeadLetter, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
-    SelfJoin, SendDndDigests, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
+    SelfJoin, SendDndDigests, SetApiKeyLimit, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
     UlidKeyGenerator, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_s3::{S3Attachments, S3Config};
@@ -400,6 +400,11 @@ impl Application {
             ),
             keys: ListApiKeys::new(repository.clone()),
             revoke_key: RevokeApiKey::new(repository.clone(), repository.clone(), clock.clone()),
+            set_key_limit: SetApiKeyLimit::new(
+                repository.clone(),
+                repository.clone(),
+                clock.clone(),
+            ),
 
             enrol_device: EnrolDevice::new(repository.clone(), repository.clone(), clock.clone()),
             devices: ListDevices::new(repository.clone()),

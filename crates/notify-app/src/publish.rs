@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
 use crate::attribution::Attribution;
-use crate::authz::{Authorizer, Caller};
+use crate::authz::{Authorizer, Caller, Grant};
 use crate::fanout::Fanout;
 
 /// How long a replayed `Idempotency-Key` response stays available (design §8).
@@ -104,10 +104,18 @@ impl Writer {
             channel: channel.id.to_string(),
         };
 
-        // Only the channel's own quota is configurable: §8.2 hangs `limits` off
-        // `[[channels.managed]]`, and a key's budget is a property of the key.
+        // A key's own ceiling, if a platform-admin set one (§8.2, D24) — carried on
+        // the grant because that is where the key was already loaded. Membership
+        // and federated callers have no key of their own to narrow, so `None`.
+        let key_limit = match &caller.grant {
+            Grant::ApiKey {
+                publish_per_minute, ..
+            } => *publish_per_minute,
+            Grant::Membership | Grant::Federated { .. } => None,
+        };
+
         for (quota, configured) in [
-            (per_key, None),
+            (per_key, key_limit),
             (per_channel, channel.policy.publish_per_minute),
         ] {
             if let Allowance::Limited {
@@ -438,7 +446,6 @@ mod tests {
     use notify_ports::test_utils::{InMemory, InMemoryAttachments, TestClock, TestRateLimiter};
 
     use super::*;
-    use crate::authz::Grant;
 
     /// Resolves or refuses every thumbnail the same way, so a test can assert the
     /// *wiring* in [`Writer::derive_thumbnail`] — a source that exists gets a
@@ -830,7 +837,8 @@ mod tests {
                     Some(30)
                 ),
             ],
-            "the channel's own ceiling travels; a key's budget is not configurable"
+            "the channel's own ceiling travels; a caller with no key of its own \
+             (this one authenticates through membership) carries no per-key one"
         );
     }
 
@@ -856,6 +864,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_keys_own_ceiling_reaches_the_limiter_alongside_the_channels() {
+        // D24's half of §8.2: a platform-admin's per-key override travels the same
+        // way the channel's own `limits` does (`a_channels_configured_ceiling_reaches_the_limiter`),
+        // just carried on the grant instead of the channel.
+        let fixture = fixture(ChannelPolicy {
+            publish_per_minute: Some(30),
+            ..ChannelPolicy::default()
+        });
+        let capped = Caller {
+            principal: fixture.alice.clone(),
+            grant: Grant::ApiKey {
+                scopes: vec![Scope::Publish],
+                channels: vec![channel_id()],
+                publish_per_minute: Some(5),
+            },
+            groups: Vec::new(),
+            platform_admin: false,
+        };
+
+        fixture
+            .publish
+            .execute(&capped, request(None))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.limiter.seen_with_ceilings(),
+            vec![
+                (
+                    Quota::PublishPerKey {
+                        key: fixture.alice.reference()
+                    },
+                    Some(5)
+                ),
+                (
+                    Quota::PublishPerChannel {
+                        channel: channel_id().to_string()
+                    },
+                    Some(30)
+                ),
+            ],
+            "both ceilings travel to the limiter, independently"
+        );
+    }
+
+    #[tokio::test]
     async fn critical_t14_one_limited_publisher_does_not_affect_the_others() {
         let fixture = fixture(ChannelPolicy::default());
         let noisy = Caller {
@@ -863,6 +917,7 @@ mod tests {
             grant: Grant::ApiKey {
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id()],
+                publish_per_minute: None,
             },
             groups: Vec::new(),
             platform_admin: false,

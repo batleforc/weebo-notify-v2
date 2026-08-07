@@ -23,8 +23,8 @@ use notify_app::{
     ListTrustPolicies, ManageMembers, PostReceipt, PresignAttachment, PublishNotification,
     ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
     ReconciliationLog, RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice,
-    SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
-    UpdateChannel, UpdateProfile, UpsertNotification,
+    SearchNotifications, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd, SilenceNotification,
+    SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_avatars::{ImageAttachmentThumbnailer, ImageAvatarProcessor};
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
@@ -101,7 +101,10 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(StubSecretHasher),
                 Arc::new(clock.clone()),
-            ),
+            )
+            // A fixed group name so `alice_as_platform_admin` below has something
+            // to grant — no other test in this harness had ever needed the role.
+            .with_platform_admins(vec!["platform-admins".to_owned()]),
             publish: PublishNotification::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -255,6 +258,11 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
+            set_key_limit: SetApiKeyLimit::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
             enrol_device: EnrolDevice::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -356,6 +364,23 @@ impl Harness {
 
         id
     }
+
+    /// A second token for the same alice, this one carrying the group
+    /// `Authenticate` is wired to treat as platform-admin (§5.4, D24) — no other
+    /// test in this harness had ever needed the role.
+    fn alice_as_platform_admin(&self) {
+        self.tokens.register(
+            "alice-admin-token",
+            VerifiedClaims {
+                issuer: Url::parse("https://idp.example").unwrap(),
+                subject: "alice".to_owned(),
+                email: Some("alice@weebo.local".to_owned()),
+                display_name: Some("Alice Martin".to_owned()),
+                groups: vec!["platform-admins".to_owned()],
+                expires_at: self.clock.now() + Duration::hours(1),
+            },
+        );
+    }
 }
 
 /// Build the test server the same way the composition root builds the real one.
@@ -370,6 +395,7 @@ macro_rules! service {
 }
 
 const AUTH: (&str, &str) = ("Authorization", "Bearer alice-token");
+const ADMIN_AUTH: (&str, &str) = ("Authorization", "Bearer alice-admin-token");
 
 /// A stand-in for what the composition root derives from the VAPID key. Not a real
 /// point: nothing here decodes it, and the property under test is that it reaches a
@@ -709,6 +735,66 @@ async fn a_key_authenticates_the_same_endpoints_a_token_does() {
     let response = test::call_service(&app, request).await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[actix_web::test]
+async fn a_platform_admin_narrows_a_keys_own_ceiling() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    harness.alice_as_platform_admin();
+    let app = service!(state);
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/apikeys")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "owner": { "owner": "user", "id": harness.alice.to_string() },
+            "scopes": ["publish"],
+            "channels": ["ci-infra"],
+        }))
+        .to_request();
+    let minted: Value = test::call_and_read_body_json(&app, request).await;
+    let id = minted["id"].as_str().unwrap().to_owned();
+
+    let request = test::TestRequest::patch()
+        .uri(&format!("/api/v1/apikeys/{id}/limit"))
+        .insert_header(ADMIN_AUTH)
+        .set_json(json!({ "publish_per_minute": 5 }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let updated: Value = test::read_body_json(response).await;
+    assert_eq!(updated["publish_per_minute"], 5);
+}
+
+#[actix_web::test]
+async fn the_keys_own_owner_cannot_narrow_its_own_ceiling() {
+    // D24, over the wire: a self-service ceiling would not be one.
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/apikeys")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "owner": { "owner": "user", "id": harness.alice.to_string() },
+            "scopes": ["publish"],
+            "channels": ["ci-infra"],
+        }))
+        .to_request();
+    let minted: Value = test::call_and_read_body_json(&app, request).await;
+    let id = minted["id"].as_str().unwrap().to_owned();
+
+    let request = test::TestRequest::patch()
+        .uri(&format!("/api/v1/apikeys/{id}/limit"))
+        .insert_header(AUTH)
+        .set_json(json!({ "publish_per_minute": 1 }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[actix_web::test]
@@ -1490,10 +1576,13 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
         "/api/v1/admin/trust-policies",
         "/api/v1/admin/reconciliation",
         "/api/v1/attachments/presign",
+        "/api/v1/attachments/{id}",
+        "/api/v1/attachments/{id}/thumbnail",
         "/api/v1/devices",
         "/api/v1/devices/{id}",
         "/api/v1/apikeys",
         "/api/v1/apikeys/{id}",
+        "/api/v1/apikeys/{id}/limit",
         "/api/v1/users/me/profile",
         "/api/v1/users/me/avatar",
         "/api/v1/avatars/{id}",
@@ -1562,8 +1651,11 @@ async fn every_operation_design_8_lists_is_served_and_not_only_its_path() {
         ("get", "/api/v1/apikeys"),
         ("post", "/api/v1/apikeys"),
         ("delete", "/api/v1/apikeys/{id}"),
+        ("patch", "/api/v1/apikeys/{id}/limit"),
         ("post", "/api/v1/auth/token/exchange"),
         ("post", "/api/v1/attachments/presign"),
+        ("get", "/api/v1/attachments/{id}"),
+        ("get", "/api/v1/attachments/{id}/thumbnail"),
         ("get", "/api/v1/admin/audit"),
         ("get", "/api/v1/admin/channels"),
         ("post", "/api/v1/admin/channels/{channel}/join"),

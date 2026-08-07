@@ -1,4 +1,5 @@
-//! API keys: minting, listing and revoking (design §5.2).
+//! API keys: minting, listing, revoking, and a platform-admin's ceiling over one
+//! (design §5.2, §8.2, D24).
 //!
 //! The secret is returned **once**, at creation, and there is no endpoint that can
 //! show it again — only its Argon2 hash is stored. That is enforced by the shape of
@@ -131,6 +132,9 @@ impl CreateApiKey {
             owner: request.owner,
             scopes: request.scopes,
             channels: request.channels,
+            // Never set at creation, whoever mints the key: only a platform-admin
+            // may narrow it, and only after it exists (§8.2, D24).
+            publish_per_minute: None,
             created_at: now,
             expires_at: request.expires_at,
             last_used_at: None,
@@ -247,6 +251,84 @@ impl RevokeApiKey {
     }
 }
 
+/// `PATCH /api/v1/apikeys/{id}/limit` — a platform-admin's ceiling on one key's
+/// own publish rate (design §8.2, D24).
+#[derive(Clone)]
+pub struct SetApiKeyLimit {
+    keys: Arc<dyn ApiKeyRepository>,
+    audit: Arc<dyn AuditLog>,
+    clock: Arc<dyn Clock>,
+}
+
+impl core::fmt::Debug for SetApiKeyLimit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SetApiKeyLimit").finish_non_exhaustive()
+    }
+}
+
+impl SetApiKeyLimit {
+    /// Wire it.
+    #[must_use]
+    pub fn new(
+        keys: Arc<dyn ApiKeyRepository>,
+        audit: Arc<dyn AuditLog>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self { keys, audit, clock }
+    }
+
+    /// Set, or clear (`None`), the caller's chosen key's ceiling.
+    ///
+    /// Platform-admin only, and deliberately not also the key's own owner the way
+    /// [`RevokeApiKey`] is: a key that could raise its own ceiling would not be a
+    /// ceiling. The role check comes before the lookup, unlike `RevokeApiKey`'s
+    /// ownership check — there is no legitimate reason a non-admin would ever ask
+    /// this question about *any* key, including their own, so there is nothing to
+    /// gain by answering "no such key" first.
+    ///
+    /// `None` covers both a missing id and a caller without the role — same
+    /// reasoning as `RevokeApiKey`, a different door.
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        id: ApiKeyId,
+        publish_per_minute: Option<u32>,
+    ) -> Result<Option<ApiKey>, Failure> {
+        caller.ensure_platform_admin()?;
+
+        let Some(mut key) = self.keys.get(id).await? else {
+            return Ok(None);
+        };
+
+        if key.publish_per_minute == publish_per_minute {
+            // Nothing moved: the same rule `UpdateChannel` follows for its own
+            // policy — no write, no audit entry claiming a change that did not
+            // happen.
+            return Ok(Some(key));
+        }
+
+        let now = self.clock.now();
+        self.keys.set_publish_limit(id, publish_per_minute).await?;
+        key.publish_per_minute = publish_per_minute;
+
+        self.audit
+            .record(&AuditEntry {
+                actor: caller.principal.clone().into(),
+                action: actions::APIKEY_LIMIT_SET,
+                target: Some(key.prefix.to_string()),
+                channel: key.channels.first().cloned(),
+                // The resulting value, not the request body — an audit log is read
+                // to answer "what was it set to" (same reasoning as
+                // `CHANNEL_POLICY_UPDATED`).
+                detail: Some(serde_json::json!({ "publish_per_minute": publish_per_minute })),
+                at: now,
+            })
+            .await?;
+
+        Ok(Some(key))
+    }
+}
+
 /// Where a key's prefix comes from in production: 8 characters of the key id.
 ///
 /// A separate generator port exists so tests can be deterministic; this is the real
@@ -290,12 +372,14 @@ mod tests {
     use notify_ports::test_utils::{CountingKeyGenerator, InMemory, StubSecretHasher, TestClock};
 
     use super::*;
+    use crate::authz::Grant;
 
     struct Fixture {
         store: InMemory,
         create: CreateApiKey,
         list: ListApiKeys,
         revoke: RevokeApiKey,
+        set_limit: SetApiKeyLimit,
         alice: Principal,
     }
 
@@ -327,10 +411,24 @@ mod tests {
             revoke: RevokeApiKey::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+            ),
+            set_limit: SetApiKeyLimit::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
                 Arc::new(clock),
             ),
             store,
             alice,
+        }
+    }
+
+    fn platform_admin(principal: Principal) -> Caller {
+        Caller {
+            principal,
+            grant: Grant::Membership,
+            groups: Vec::new(),
+            platform_admin: true,
         }
     }
 
@@ -488,6 +586,167 @@ mod tests {
                 .iter()
                 .any(|entry| entry.action.as_str() == "apikey.revoked")
         );
+    }
+
+    // --- D24 · a platform-admin's ceiling on one key -----------------------
+
+    #[tokio::test]
+    async fn a_platform_admin_sets_a_keys_own_ceiling() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let minted = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::Channel { id: channel_id() },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(minted.key.publish_per_minute, None);
+
+        let admin = platform_admin(Principal::User {
+            id: UserId::generate(),
+        });
+        let updated = fixture
+            .set_limit
+            .execute(&admin, minted.key.id, Some(5))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(updated.publish_per_minute, Some(5));
+        assert!(
+            fixture
+                .store
+                .audit_entries()
+                .iter()
+                .any(|entry| entry.action.as_str() == "apikey.limit_set")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_keys_own_owner_cannot_set_its_ceiling() {
+        // The whole point of D24: a self-service ceiling is not a ceiling. Same
+        // caller that minted the key, no platform role.
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let minted = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::Channel { id: channel_id() },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .set_limit
+                .execute(&caller, minted.key.id, Some(5))
+                .await
+                .unwrap_err()
+                .code(),
+            Some("platform.role_required")
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_a_nonexistent_keys_limit_answers_none() {
+        let fixture = fixture(vec![Scope::Publish]);
+        let admin = platform_admin(Principal::User {
+            id: UserId::generate(),
+        });
+
+        assert_eq!(
+            fixture
+                .set_limit
+                .execute(&admin, ApiKeyId::generate(), Some(5))
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_the_same_limit_twice_writes_no_second_audit_entry() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let minted = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::Channel { id: channel_id() },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+        let admin = platform_admin(Principal::User {
+            id: UserId::generate(),
+        });
+
+        fixture
+            .set_limit
+            .execute(&admin, minted.key.id, Some(5))
+            .await
+            .unwrap();
+        fixture
+            .set_limit
+            .execute(&admin, minted.key.id, Some(5))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .store
+                .audit_entries()
+                .iter()
+                .filter(|entry| entry.action.as_str() == "apikey.limit_set")
+                .count(),
+            1,
+            "a PATCH that changes nothing is idempotent, not a second event"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_a_limit_is_the_same_operation_as_setting_one() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let minted = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::Channel { id: channel_id() },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+        let admin = platform_admin(Principal::User {
+            id: UserId::generate(),
+        });
+        fixture
+            .set_limit
+            .execute(&admin, minted.key.id, Some(5))
+            .await
+            .unwrap();
+
+        let cleared = fixture
+            .set_limit
+            .execute(&admin, minted.key.id, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cleared.publish_per_minute, None);
     }
 
     #[test]
