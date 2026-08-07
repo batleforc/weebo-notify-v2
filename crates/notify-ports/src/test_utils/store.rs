@@ -21,6 +21,7 @@ use time::OffsetDateTime;
 
 use crate::audit::{AuditEntry, AuditLog, AuditQuery};
 use crate::channels::ChannelRepository;
+use crate::declarations::{Declaration, DeclarationKind, DeclarationStore};
 use crate::devices::DeviceRepository;
 use crate::error::{PortError, PortResult};
 use crate::event::{
@@ -85,6 +86,8 @@ struct State {
     api_keys: Vec<StoredApiKey>,
     reservations: Vec<Reservation>,
     audit: Vec<Row<AuditEntry>>,
+    /// What GitOps last applied, per kind (design §11, §13, D28).
+    declarations: Vec<(DeclarationKind, Declaration)>,
     /// Channels whose notification expired without ever being delivered — the
     /// "N expired while you were away" counter (design §7.2bis).
     expired_counters: Vec<(Cursor, ChannelId)>,
@@ -1660,6 +1663,41 @@ impl SinkQueue for InMemory {
     }
 }
 
+// --- What GitOps last applied (design §11, §13, D28) -----------------------
+
+#[async_trait::async_trait]
+impl DeclarationStore for InMemory {
+    async fn snapshot(&self, kind: DeclarationKind) -> PortResult<Vec<Declaration>> {
+        let mut found: Vec<Declaration> = self
+            .state()
+            .declarations
+            .iter()
+            .filter(|(stored, _)| *stored == kind)
+            .map(|(_, declaration)| declaration.clone())
+            .collect();
+        // Ordered like the real store, so a test cannot pass here on an order
+        // Postgres would not have produced.
+        found.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(found)
+    }
+
+    async fn apply(
+        &self,
+        kind: DeclarationKind,
+        declarations: &[Declaration],
+        _at: OffsetDateTime,
+    ) -> PortResult<()> {
+        let mut state = self.state();
+        // Replace, not merge — the property the port states, and the one a
+        // withdrawn trust policy depends on.
+        state.declarations.retain(|(stored, _)| *stored != kind);
+        state
+            .declarations
+            .extend(declarations.iter().map(|d| (kind, d.clone())));
+        Ok(())
+    }
+}
+
 // --- Audit -----------------------------------------------------------------
 
 #[async_trait::async_trait]
@@ -2795,7 +2833,7 @@ mod tests {
             AuditLog::record(
                 &store,
                 &AuditEntry {
-                    actor: alice.clone(),
+                    actor: alice.clone().into(),
                     action,
                     target: None,
                     channel: Some(channel_id("ci-infra")),

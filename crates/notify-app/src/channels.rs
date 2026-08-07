@@ -141,7 +141,7 @@ impl CreateChannel {
         self.channels.upsert(&channel).await?;
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::CHANNEL_CREATED,
                 target: Some(channel.id.to_string()),
                 channel: Some(channel.id.clone()),
@@ -209,7 +209,7 @@ impl ManageMembers {
 
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::CHANNEL_MEMBER_ADDED,
                 target: Some(principal.reference()),
                 channel: Some(channel_id.clone()),
@@ -247,7 +247,7 @@ impl ManageMembers {
             self.channels.upsert(&channel).await?;
             self.audit
                 .record(&AuditEntry {
-                    actor: caller.principal.clone(),
+                    actor: caller.principal.clone().into(),
                     action: if leaving {
                         actions::CHANNEL_MEMBER_LEFT
                     } else {
@@ -330,7 +330,7 @@ impl UpdateChannel {
         self.channels.upsert(&channel).await?;
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::CHANNEL_POLICY_UPDATED,
                 target: Some(channel_id.to_string()),
                 channel: Some(channel_id.clone()),
@@ -389,7 +389,7 @@ impl DeleteChannel {
         if deleted {
             self.audit
                 .record(&AuditEntry {
-                    actor: caller.principal.clone(),
+                    actor: caller.principal.clone().into(),
                     action: actions::CHANNEL_DELETED,
                     target: Some(channel_id.to_string()),
                     channel: Some(channel_id.clone()),

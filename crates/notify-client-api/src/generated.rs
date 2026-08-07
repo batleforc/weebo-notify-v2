@@ -731,6 +731,58 @@ on, or offboarding that human kills the bot (design §5.2).*/
             self.0.fmt(f)
         }
     }
+    /**Who performed an audited action.
+
+# Why this is not just a [`Principal`]
+
+§5 has four kinds of principal and every one of them authenticated: a person, a
+bot, a channel key, a CI job. The reconciler is none of them. It applies a file
+(§11), at boot or on `SIGHUP`, and nobody "did" that — which is exactly why §13's
+promise that trust policy changes are journalled had no emitter for so long
+(D28): there was no honest value to put in this field.
+
+Widening it here rather than adding a fifth `Principal` is deliberate. A
+`Principal` is what publishes, holds a membership and reads a channel; a fifth
+variant would be representable in all of those, and every match over the four
+would gain an arm that means "cannot happen". The configuration is an actor of
+the **audit log** and of nothing else, so it is named here and nowhere else.
+
+The wire form stays flat — `{"kind":"user","id":…}` beside `{"kind":
+"configuration"}` — so a reader that already switches on `kind` gains a case
+rather than a nesting level.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Who performed an audited action.\n\n# Why this is not just a [`Principal`]\n\n§5 has four kinds of principal and every one of them authenticated: a person, a\nbot, a channel key, a CI job. The reconciler is none of them. It applies a file\n(§11), at boot or on `SIGHUP`, and nobody \"did\" that — which is exactly why §13's\npromise that trust policy changes are journalled had no emitter for so long\n(D28): there was no honest value to put in this field.\n\nWidening it here rather than adding a fifth `Principal` is deliberate. A\n`Principal` is what publishes, holds a membership and reads a channel; a fifth\nvariant would be representable in all of those, and every match over the four\nwould gain an arm that means \"cannot happen\". The configuration is an actor of\nthe **audit log** and of nothing else, so it is named here and nowhere else.\n\nThe wire form stays flat — `{\"kind\":\"user\",\"id\":…}` beside `{\"kind\":\n\"configuration\"}` — so a reader that already switches on `kind` gains a case\nrather than a nesting level.",
+    ///  "oneOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/Configured"
+    ///    },
+    ///    {
+    ///      "$ref": "#/components/schemas/Principal"
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged)]
+    pub enum AuditActor {
+        Configured(Configured),
+        Principal(Principal),
+    }
+    impl ::std::convert::From<Configured> for AuditActor {
+        fn from(value: Configured) -> Self {
+            Self::Configured(value)
+        }
+    }
+    impl ::std::convert::From<Principal> for AuditActor {
+        fn from(value: Principal) -> Self {
+            Self::Principal(value)
+        }
+    }
     ///One administrative act.
     ///
     /// <details><summary>JSON schema</summary>
@@ -750,7 +802,7 @@ on, or offboarding that human kills the bot (design §5.2).*/
     ///      "type": "string"
     ///    },
     ///    "actor": {
-    ///      "$ref": "#/components/schemas/Principal"
+    ///      "$ref": "#/components/schemas/AuditActor"
     ///    },
     ///    "at": {
     ///      "description": "When.",
@@ -778,7 +830,7 @@ on, or offboarding that human kills the bot (design §5.2).*/
     pub struct AuditEntry {
         ///What they did — one of the constants in [`actions`].
         pub action: ::std::string::String,
-        pub actor: Principal,
+        pub actor: AuditActor,
         ///When.
         pub at: ::chrono::DateTime<::chrono::offset::Utc>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -1595,6 +1647,116 @@ operator decision, so it stays in configuration.*/
     impl ::std::fmt::Display for ChoiceOptionKey {
         fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
             self.0.fmt(f)
+        }
+    }
+    /**The single-valued tag behind [`AuditActor::Configuration`].
+
+A one-variant enum rather than a unit struct so that serde and utoipa both emit
+the `{"kind":"configuration"}` object the flat wire form needs.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The single-valued tag behind [`AuditActor::Configuration`].\n\nA one-variant enum rather than a unit struct so that serde and utoipa both emit\nthe `{\"kind\":\"configuration\"}` object the flat wire form needs.",
+    ///  "oneOf": [
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "kind"
+    ///      ],
+    ///      "properties": {
+    ///        "kind": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "configuration"
+    ///          ]
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub enum Configured {
+        #[serde(rename = "kind")]
+        Kind(ConfiguredKind),
+    }
+    impl ::std::convert::From<ConfiguredKind> for Configured {
+        fn from(value: ConfiguredKind) -> Self {
+            Self::Kind(value)
+        }
+    }
+    ///`ConfiguredKind`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "configuration"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum ConfiguredKind {
+        #[serde(rename = "configuration")]
+        Configuration,
+    }
+    impl ::std::fmt::Display for ConfiguredKind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Configuration => f.write_str("configuration"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for ConfiguredKind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "configuration" => Ok(Self::Configuration),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for ConfiguredKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for ConfiguredKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for ConfiguredKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
         }
     }
     ///The validated body of a revision.
@@ -6285,7 +6447,8 @@ operator needs to know *which* dependency is holding the replica back.*/
     ///    "at",
     ///    "channels",
     ///    "pending",
-    ///    "removed"
+    ///    "removed",
+    ///    "trigger"
     ///  ],
     ///  "properties": {
     ///    "accounts": {
@@ -6314,6 +6477,9 @@ operator needs to know *which* dependency is holding the replica back.*/
     ///      "description": "Channels that left the configuration and were archived or deleted.",
     ///      "type": "integer",
     ///      "minimum": 0.0
+    ///    },
+    ///    "trigger": {
+    ///      "$ref": "#/components/schemas/Trigger"
     ///    }
     ///  }
     ///}
@@ -6336,6 +6502,7 @@ channel" with nothing to connect it to.*/
         pub pending: ::std::vec::Vec<::std::string::String>,
         ///Channels that left the configuration and were archived or deleted.
         pub removed: u64,
+        pub trigger: Trigger,
     }
     /**What recording an interaction did.
 
@@ -7531,6 +7698,88 @@ not — the stream and the backlog carry identical events. It sits here with
             value.parse()
         }
     }
+    ///What made a reconciliation pass happen (design §11, §10.4bis).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What made a reconciliation pass happen (design §11, §10.4bis).",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "boot",
+    ///    "timer",
+    ///    "sighup"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum Trigger {
+        #[serde(rename = "boot")]
+        Boot,
+        #[serde(rename = "timer")]
+        Timer,
+        #[serde(rename = "sighup")]
+        Sighup,
+    }
+    impl ::std::fmt::Display for Trigger {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Boot => f.write_str("boot"),
+                Self::Timer => f.write_str("timer"),
+                Self::Sighup => f.write_str("sighup"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for Trigger {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "boot" => Ok(Self::Boot),
+                "timer" => Ok(Self::Timer),
+                "sighup" => Ok(Self::Sighup),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for Trigger {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for Trigger {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for Trigger {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
     ///One trust policy as the console shows it.
     ///
     /// <details><summary>JSON schema</summary>
@@ -8515,6 +8764,52 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             501u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Fetch the small square derived from an attachment (design §2.3, §10.3, D30)
+
+Bytes and not a signed URL, unlike its sibling above — the reason is the same
+one the avatar route documents: a thumbnail renders next to every visible row
+of a possibly virtualised list, and a presign per render would mean a signing
+round trip per row.
+
+Sends a `GET` request to `/api/v1/attachments/{id}/thumbnail`
+
+Arguments:
+- `id`: The attachment id a payload references
+*/
+    pub async fn thumbnail<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<ByteStream>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/attachments/{}/thumbnail", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self.client.get(url).headers(header_map).build()?;
+        let info = OperationInfo {
+            operation_id: "thumbnail",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => Ok(ResponseValue::stream(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            404u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

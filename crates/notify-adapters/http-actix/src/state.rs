@@ -12,11 +12,11 @@ use notify_app::{
     CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
     ExchangeToken, GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices,
     ListInbox, ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies,
-    ManageMembers, PostReceipt, PresignAttachment, PublishNotification, ReadAttachment, ReadAvatar,
-    ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation, RecordInteraction,
-    RequeueDeadLetter, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
-    SelfJoin, SetAvatar, SetDnd, SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile,
-    UpsertNotification,
+    ManageMembers, PostReceipt, PresignAttachment, PublishNotification, ReadAttachment,
+    ReadAttachmentThumbnail, ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts,
+    ReadReconciliation, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
+    RevokeDevice, SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification,
+    SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_ports::{EventBus, Metrics};
 
@@ -99,6 +99,8 @@ pub struct ApiState {
     pub presign: PresignAttachment,
     /// `GET /attachments/{id}`.
     pub attachment: ReadAttachment,
+    /// `GET /attachments/{id}/thumbnail`.
+    pub attachment_thumbnail: ReadAttachmentThumbnail,
 
     /// `GET /sync`.
     pub sync: SyncBacklog,

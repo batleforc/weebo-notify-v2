@@ -197,6 +197,9 @@ impl Writer {
         self.fanout
             .queue_sinks(notification, revision, cursor)
             .await;
+        // Last: real-time delivery must not wait on a bucket fetch and a decode
+        // for a thumbnail nobody has asked to see yet (design D30).
+        self.fanout.derive_thumbnail(revision).await;
     }
 }
 
@@ -432,10 +435,39 @@ mod tests {
         Channel, ChannelPolicy, ContentDraft, Membership, Principal, State, Status, TtlPolicy,
         UserId,
     };
-    use notify_ports::test_utils::{InMemory, TestClock, TestRateLimiter};
+    use notify_ports::test_utils::{InMemory, InMemoryAttachments, TestClock, TestRateLimiter};
 
     use super::*;
     use crate::authz::Grant;
+
+    /// Resolves or refuses every thumbnail the same way, so a test can assert the
+    /// *wiring* in [`Writer::derive_thumbnail`] — a source that exists gets a
+    /// thumbnail stored, a rejection or a missing source does not — without a
+    /// real decoder. `notify-app` cannot depend on `notify-avatars` (an
+    /// adapter), so this stands in for it the same way `InMemoryAttachments`
+    /// stands in for `S3Attachments`.
+    #[derive(Debug, Clone, Default)]
+    struct StubThumbnailer {
+        refuse: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl notify_ports::AttachmentThumbnailer for StubThumbnailer {
+        async fn thumbnail(
+            &self,
+            bytes: &[u8],
+        ) -> notify_ports::PortResult<
+            Result<notify_ports::ProcessedImage, notify_ports::ImageRejection>,
+        > {
+            if self.refuse {
+                return Ok(Err(notify_ports::ImageRejection::Unsupported));
+            }
+            Ok(Ok(notify_ports::ProcessedImage {
+                content_type: "image/png".to_owned(),
+                bytes: bytes.to_vec(),
+            }))
+        }
+    }
 
     struct Fixture {
         store: InMemory,
@@ -444,6 +476,7 @@ mod tests {
         publish: PublishNotification,
         upsert: UpsertNotification,
         alice: Principal,
+        attachments: InMemoryAttachments,
     }
 
     fn channel_id() -> ChannelId {
@@ -451,9 +484,20 @@ mod tests {
     }
 
     fn fixture(policy: ChannelPolicy) -> Fixture {
+        build(policy, false)
+    }
+
+    /// A fixture whose thumbnailer refuses every source, for the branch where a
+    /// publish must succeed anyway (design D30).
+    fn fixture_refusing_thumbnails(policy: ChannelPolicy) -> Fixture {
+        build(policy, true)
+    }
+
+    fn build(policy: ChannelPolicy, refuse_thumbnails: bool) -> Fixture {
         let store = InMemory::new();
         let clock = TestClock::new();
         let limiter = TestRateLimiter::new();
+        let attachments = InMemoryAttachments::new();
         let alice = Principal::User {
             id: UserId::generate(),
         };
@@ -466,6 +510,9 @@ mod tests {
         store.seed_channel(channel);
 
         let authorizer = Authorizer::new(Arc::new(store.clone()));
+        let thumbnailer: Arc<dyn notify_ports::AttachmentThumbnailer> = Arc::new(StubThumbnailer {
+            refuse: refuse_thumbnails,
+        });
         let fanout = Fanout::new(
             Arc::new(store.clone()),
             Arc::new(store.clone()),
@@ -474,7 +521,8 @@ mod tests {
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
             4_096,
-        );
+        )
+        .with_thumbnails(Arc::new(attachments.clone()), thumbnailer);
 
         Fixture {
             publish: PublishNotification::new(
@@ -499,6 +547,7 @@ mod tests {
             clock,
             limiter,
             alice,
+            attachments,
         }
     }
 
@@ -863,5 +912,116 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(published.revision.received_at, fixture.clock.now());
+    }
+
+    // --- D30: a thumbnail is derived eagerly, and never at the cost of the write ---
+
+    fn request_with_attachment(reference: notify_domain::AttachmentId) -> PublishRequest {
+        PublishRequest {
+            channel: channel_id(),
+            draft: RevisionDraft::simple(ContentDraft {
+                image: Some(notify_domain::Image::Attachment { reference }),
+                ..ContentDraft::titled("screenshot")
+            }),
+            idempotency_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn publishing_with_an_attachment_image_derives_and_stores_a_thumbnail() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let reference = notify_domain::AttachmentId::generate();
+        notify_ports::AttachmentStore::put(
+            &fixture.attachments,
+            reference,
+            "image/png",
+            b"source bytes".to_vec(),
+        )
+        .await
+        .unwrap();
+
+        fixture
+            .publish
+            .execute(&caller, request_with_attachment(reference))
+            .await
+            .unwrap();
+
+        let thumbnail =
+            notify_ports::AttachmentStore::get_thumbnail(&fixture.attachments, reference)
+                .await
+                .unwrap();
+        assert_eq!(
+            thumbnail.map(|object| object.bytes),
+            Some(b"source bytes".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reference_whose_upload_never_arrived_derives_nothing_and_still_publishes() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let never_uploaded = notify_domain::AttachmentId::generate();
+
+        let published = fixture
+            .publish
+            .execute(&caller, request_with_attachment(never_uploaded))
+            .await
+            .unwrap();
+
+        assert_eq!(published.revision.seq, 1);
+        assert!(
+            notify_ports::AttachmentStore::get_thumbnail(&fixture.attachments, never_uploaded)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_source_leaves_no_thumbnail_and_still_publishes() {
+        let fixture = fixture_refusing_thumbnails(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let reference = notify_domain::AttachmentId::generate();
+        notify_ports::AttachmentStore::put(
+            &fixture.attachments,
+            reference,
+            "image/gif",
+            b"an animated gif, say".to_vec(),
+        )
+        .await
+        .unwrap();
+
+        let published = fixture
+            .publish
+            .execute(&caller, request_with_attachment(reference))
+            .await
+            .unwrap();
+
+        assert_eq!(published.revision.seq, 1);
+        assert!(
+            notify_ports::AttachmentStore::get_thumbnail(&fixture.attachments, reference)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_revision_with_no_image_derives_nothing() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+
+        // `request(None)` carries no image at all — the common case, and the one
+        // that must not pay a bucket round trip it has nothing to make.
+        fixture
+            .publish
+            .execute(&caller, request(None))
+            .await
+            .unwrap();
+
+        // Nothing to assert against a store keyed by an id that was never
+        // minted; the property under test is that the call above did not panic
+        // or error reaching for `revision.content.image` on `None`.
     }
 }

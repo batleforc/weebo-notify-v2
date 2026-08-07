@@ -2,8 +2,14 @@ import { createPinia } from "pinia";
 import { createApp } from "vue";
 import App from "@/App.vue";
 import { installAuth } from "@/api/client";
+import { markDesktop } from "@/lib/desktop";
 import { router } from "@/router";
 import "@/styles/theme.css";
+
+// Before the app mounts, so the first paint is already dressed as a desktop app
+// (§10bis.3bis) — a frame of browser styling is exactly the artefact that section
+// says must not exist. A no-op in a browser.
+markDesktop(document.documentElement);
 
 const app = createApp(App);
 

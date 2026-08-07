@@ -15,6 +15,7 @@ import AppToaster from "@/components/layout/AppToaster.vue";
 import CommandPalette from "@/components/layout/CommandPalette.vue";
 import NotificationDetail from "@/components/notification/NotificationDetail.vue";
 import { Button } from "@/components/ui/button";
+import { onDeepLink } from "@/lib/deeplink";
 import { opensPalette } from "@/lib/palette";
 import { resubscribe } from "@/lib/push";
 import { register } from "@/lib/service-worker";
@@ -54,6 +55,7 @@ function onKeydown(event: KeyboardEvent): void {
 }
 let unsubscribe: (() => void) | null = null;
 let unhandPush: (() => void) | null = null;
+let unlisten: (() => void) | null = null;
 
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
@@ -91,6 +93,15 @@ onMounted(async () => {
   // worker, and the person waiting for the inbox should not wait for one.
   void register(() => void resubscribe());
 
+  // The desktop shell hands over `weebo-notify://n/<id>` clicks (§10bis.3quater).
+  // `router.push` and not the History API: the guard that survives a permalink
+  // opened while signed out lives on the router (see `router/index.ts`), and the
+  // first draft of the shell bypassed it by driving `pushState` directly.
+  // A no-op in a browser, and not awaited — the inbox must not wait for it.
+  void onDeepLink((path) => void router.push(path)).then((stop) => {
+    unlisten = stop;
+  });
+
   await Promise.all([
     channels.load(),
     inbox.load(),
@@ -104,6 +115,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   unsubscribe?.();
   unhandPush?.();
+  unlisten?.();
   inbox.stop();
   unread.stop();
 });

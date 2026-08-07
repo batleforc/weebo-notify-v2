@@ -28,6 +28,14 @@ members = [
     "crates/xtask",
 ]
 
+# The desktop shell is written here and built nowhere yet (M5, D13). It declares its
+# own `[workspace]`, so this is belt and braces — but the explicit line is what tells
+# a reader that the omission is a decision and not an oversight: on Linux Tauri links
+# against a GTK/WebKit stack that `mise` cannot install and a Che workspace cannot
+# `apt-get` (§12.4), so a member here would break every gate for everybody working on
+# the server. It becomes a member the day the dev image carries the stack.
+exclude = ["web/src-tauri"]
+
 [workspace.package]
 # ONE version for the whole product (design §3.2bis). Bumped by `cog bump`, which
 # propagates it to web/package.json and tauri.conf.json via .hooks/sync-version.sh.
@@ -167,10 +175,17 @@ reqwest = { version = "0.13", default-features = false, features = [
 # --- Cryptography outside the auth adapter ---
 # Real ES256 keys: the JWKS tests and the development identity provider both sign
 # with one, so they exercise the production verification path rather than a mock
-# of it. `sha2` is the PKCE S256 challenge, and nothing else.
+# of it. `sha2` is the PKCE S256 challenge, and the KDF below.
 p256 = { version = "0.14", features = ["ecdsa", "pem"] }
 sha2 = "0.10"
 base64 = "0.22"
+# The sealed box of design §6.2 (M6): X25519 for the ephemeral ECDH, `sha2` (above)
+# as the HKDF hash, XChaCha20-Poly1305 for the AEAD. `x25519-dalek` builds on
+# `curve25519-dalek`, already in the graph under `ed25519-dalek` (the federation
+# signing key, notify-oidc) — one elliptic-curve implementation, two points on it.
+x25519-dalek = { version = "3", features = ["getrandom"] }
+hkdf = "0.12"
+chacha20poly1305 = "0.11"
 
 http = "1"
 rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }

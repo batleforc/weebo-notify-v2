@@ -21,8 +21,9 @@
 //! So enrolling a browser, a desktop or a CLI is *registering a transport*, with no
 //! client-side crypto at all. Only mobile devices generate a keypair in hardware
 //! and publish its public half, and the server re-encrypts to it at delivery.
-//! Sealed-box delivery itself lands with M6; the invariant is enforced from the
-//! start so no device can be enrolled that would later have to be re-enrolled.
+//! Sealed-box delivery landed with M6 (`notify-push-unifiedpush`, APNs still to
+//! come in M7); the invariant was enforced from the start so no device could be
+//! enrolled that would later have to be re-enrolled.
 
 use core::fmt;
 

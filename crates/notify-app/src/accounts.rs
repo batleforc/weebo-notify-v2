@@ -135,7 +135,7 @@ impl CreateServiceAccount {
 
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::SERVICE_ACCOUNT_CREATED,
                 target: Some(account.id.as_str().to_owned()),
                 channel: None,
@@ -212,7 +212,7 @@ impl DeactivateServiceAccount {
 
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::SERVICE_ACCOUNT_DISABLED,
                 target: Some(account.id.as_str().to_owned()),
                 channel: None,

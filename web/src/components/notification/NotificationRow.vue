@@ -17,6 +17,7 @@ import {
   priorityLabel,
 } from "@/lib/notification";
 import type { Row } from "@/stores/inbox";
+import NotificationThumb from "./NotificationThumb.vue";
 import StatusDot from "./StatusDot.vue";
 
 const props = defineProps<{
@@ -52,6 +53,9 @@ const progress = computed(() => head.value.content.progress ?? null);
     @click="$emit('open')"
   >
     <StatusDot :status="head.status" :state="head.state" class="mt-0.5 shrink-0" />
+
+    <!-- §10.3, D30: the fourth surface a notification's image reaches. -->
+    <NotificationThumb v-if="head.content.image" :image="head.content.image" />
 
     <span class="min-w-0 flex-1">
       <span class="flex items-baseline gap-2">

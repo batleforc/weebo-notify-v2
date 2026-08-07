@@ -1,12 +1,14 @@
-//! Decoding an avatar (design §2.4, §15).
+//! Decoding user-supplied images (design §2.4, §15).
 //!
 //! # Why this is a port and not a function call
 //!
-//! §15 names avatar decoding **the only media-decoding surface the server has**:
-//! bytes supplied by a user, handed to a codec, inside the process that holds
-//! everybody's notifications. That earns the same treatment as password hashing —
-//! a named contract with the rules written down, and an implementation swappable
-//! behind it (the [`SecretHasher`] precedent).
+//! §15 used to name avatar decoding **the only** media-decoding surface the
+//! server has. D30 widened that to two: a row's attachment thumbnail is derived
+//! the same way, from bytes this server itself fetched out of its own bucket
+//! rather than bytes a client posted, but they are still bytes an uploader chose
+//! and a codec has to run over. That earns the same treatment as password
+//! hashing — a named contract with the rules written down, and an implementation
+//! swappable behind it (the [`SecretHasher`] precedent) — for both.
 //!
 //! It also means the rules live here, where they can be read, rather than being
 //! implied by whichever decoder happens to be wired in:
@@ -48,7 +50,7 @@ pub enum ImageRejection {
     #[error("the image is larger than the maximum accepted dimensions")]
     TooLarge,
     /// An animated image: refused whatever its size.
-    #[error("animated images are not accepted as avatars")]
+    #[error("animated images are not accepted")]
     Animated,
     /// It decoded, but into something unusable.
     #[error("the image could not be decoded")]
@@ -64,4 +66,26 @@ pub trait AvatarProcessor: Send + Sync {
     /// turns that into a `422`. A `PortError` is reserved for the implementation
     /// itself failing.
     async fn process(&self, bytes: &[u8]) -> PortResult<Result<ProcessedImage, ImageRejection>>;
+}
+
+/// Turns an attachment's bytes into the small square a list row shows next to it
+/// (design §2.3, §10.3, D30).
+///
+/// The **second** media-decoding surface this server has, and extending §15's
+/// boundary to allow it was D30's decision, not an incidental one — see the
+/// module's own docs above. It earns the identical defence: dimensions checked
+/// before a full decode, animated formats refused, the output re-encoded rather
+/// than passed through.
+///
+/// What tells it apart from [`AvatarProcessor`] is not the pipeline, which an
+/// implementation is free to share, but who ever sees a rejection. An avatar
+/// upload's caller is a person who gets a `422` back; a thumbnail is derived
+/// after the fact, best-effort, from an object this server already accepted —
+/// nobody is waiting on this call, so nothing here ever becomes an HTTP response.
+/// A row with no thumbnail is indistinguishable from a row nothing was ever
+/// derived for, which is deliberate: see [`crate::attachments::AttachmentStore`].
+#[async_trait::async_trait]
+pub trait AttachmentThumbnailer: Send + Sync {
+    /// Decode, crop to the thumbnail square and re-encode.
+    async fn thumbnail(&self, bytes: &[u8]) -> PortResult<Result<ProcessedImage, ImageRejection>>;
 }

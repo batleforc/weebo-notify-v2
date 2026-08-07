@@ -20,20 +20,26 @@
 //! regeneration is a change here and not in three user interfaces.
 
 mod config;
+mod deeplink;
+mod dnd;
 mod election;
 mod error;
 mod session;
 mod signal;
 mod store;
 mod sync;
+mod tray;
 
 pub use config::{ConfigError, DEFAULT_PROFILE, Profile};
+pub use deeplink::{DeepLink, SCHEME, parse_deep_link};
+pub use dnd::DndPreset;
 pub use election::{StreamLease, lock_path, try_hold_stream};
 pub use error::ClientError;
 pub use session::{Revision, Session};
 pub use signal::{StreamSignal, StreamWatch, signal_path};
 pub use store::{CacheEntry, CachedNotification, Store, store_path};
 pub use sync::SyncOutcome;
+pub use tray::{Link, Tray, TrayIcon, tray};
 
 /// The value types a front end needs to name — re-exported so nothing above has to
 /// depend on the generated crate directly.

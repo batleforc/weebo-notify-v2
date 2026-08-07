@@ -234,6 +234,75 @@ impl ReadAttachment {
     }
 }
 
+/// `GET /api/v1/attachments/{id}/thumbnail` — the small square a row shows
+/// (design §2.3, §10.3, D30).
+///
+/// Served through the API and not by a presigned URL, for the reason next to
+/// [`ReadAttachment::execute`]'s doc for the avatar: a thumbnail renders next to
+/// every visible row of a possibly virtualised list, and a signature per render
+/// would mean a signing round trip per row.
+#[derive(Clone)]
+pub struct ReadAttachmentThumbnail {
+    attachments: Attachments,
+    notifications: Arc<dyn notify_ports::NotificationRepository>,
+    authorizer: Authorizer,
+}
+
+impl core::fmt::Debug for ReadAttachmentThumbnail {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReadAttachmentThumbnail")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReadAttachmentThumbnail {
+    /// Wire it.
+    #[must_use]
+    pub fn new(
+        attachments: Attachments,
+        notifications: Arc<dyn notify_ports::NotificationRepository>,
+        authorizer: Authorizer,
+    ) -> Self {
+        Self {
+            attachments,
+            notifications,
+            authorizer,
+        }
+    }
+
+    /// The bytes, if the caller may see them.
+    ///
+    /// # Why one refusal covers three different reasons
+    ///
+    /// The same rule [`ReadAttachment::execute`] documents, extended by one more
+    /// case: a caller who cannot read the notification, an id no notification
+    /// shows, and an attachment nothing was ever derived from (an unsupported
+    /// format, an upload that never arrived, or one this build has not gotten to
+    /// yet) all answer identically. Telling the third apart from the first two
+    /// would mean confirming an attachment's *existence* to somebody who cannot
+    /// read what shows it — exactly the enumeration `ReadAttachment` refuses.
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        id: notify_domain::AttachmentId,
+    ) -> Result<notify_ports::StoredObject, Failure> {
+        let channels = self.authorizer.readable_channels(caller).await?;
+        if !self
+            .notifications
+            .attachment_is_visible(&id, &channels)
+            .await?
+        {
+            return Err(DomainError::NotificationGone.into());
+        }
+
+        self.attachments
+            .store
+            .get_thumbnail(id)
+            .await?
+            .ok_or_else(|| DomainError::NotificationGone.into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
@@ -583,6 +652,81 @@ mod tests {
                 .await
                 .is_ok(),
             "refusing a client for punctuation is a support ticket, not a defence"
+        );
+    }
+
+    fn thumbnail_reader_of(fixture: &Fixture) -> ReadAttachmentThumbnail {
+        ReadAttachmentThumbnail::new(
+            Attachments {
+                store: Arc::new(fixture.bucket.clone()),
+                registry: Arc::new(fixture.store.clone()),
+            },
+            Arc::new(fixture.store.clone()),
+            Authorizer::new(Arc::new(fixture.store.clone())),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_member_can_read_a_thumbnail_derived_for_what_a_notification_shows() {
+        let fixture = fixture();
+        let reference = notify_domain::AttachmentId::generate();
+        shown_in(&fixture.store, &fixture.bucket, &fixture.alice, reference).await;
+        fixture
+            .bucket
+            .put_thumbnail(reference, "image/png", b"thumb-bytes".to_vec())
+            .await
+            .unwrap();
+
+        let object = thumbnail_reader_of(&fixture)
+            .execute(&Caller::member(fixture.reader.clone()), reference)
+            .await
+            .unwrap();
+
+        assert_eq!(object.bytes, b"thumb-bytes");
+    }
+
+    #[tokio::test]
+    async fn a_visible_attachment_with_no_derived_thumbnail_is_not_downloadable() {
+        // Best-effort derivation (D30) means this is an ordinary state, not a bug:
+        // an unsupported format, or a publish/revise that has not run yet.
+        let fixture = fixture();
+        let reference = notify_domain::AttachmentId::generate();
+        shown_in(&fixture.store, &fixture.bucket, &fixture.alice, reference).await;
+
+        assert_eq!(
+            thumbnail_reader_of(&fixture)
+                .execute(&Caller::member(fixture.reader.clone()), reference)
+                .await
+                .unwrap_err()
+                .code(),
+            Some("notification.gone")
+        );
+    }
+
+    #[tokio::test]
+    async fn somebody_who_cannot_read_the_channel_cannot_read_its_thumbnail_either() {
+        let fixture = fixture();
+        let reference = notify_domain::AttachmentId::generate();
+        shown_in(&fixture.store, &fixture.bucket, &fixture.alice, reference).await;
+        fixture
+            .bucket
+            .put_thumbnail(reference, "image/png", b"thumb-bytes".to_vec())
+            .await
+            .unwrap();
+
+        let stranger = Caller::member(Principal::User {
+            id: UserId::generate(),
+        });
+
+        assert_eq!(
+            thumbnail_reader_of(&fixture)
+                .execute(&stranger, reference)
+                .await
+                .unwrap_err()
+                .code(),
+            Some("notification.gone"),
+            "the refusal must not distinguish \"not yours\" from \"nothing derived\", \
+             or the endpoint enumerates the bucket one id at a time"
         );
     }
 

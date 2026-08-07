@@ -57,7 +57,7 @@ pub mod sinks;
 pub mod sync;
 
 pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
-pub use attachments::{Attachments, PresignAttachment, ReadAttachment};
+pub use attachments::{Attachments, PresignAttachment, ReadAttachment, ReadAttachmentThumbnail};
 pub use attribution::Attribution;
 pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
@@ -67,7 +67,7 @@ pub use channels::{
 pub use devices::{EnrolDevice, ListDevices, RevokeDevice};
 pub use digest::{DigestReport, SendDndDigests};
 pub use fanout::Fanout;
-pub use federate::ExchangeToken;
+pub use federate::{ExchangeToken, LivePolicies};
 pub use interact::{
     ListInteractions, PostReceipt, ReadReceipts, RecordInteraction, SilenceNotification,
 };
@@ -77,7 +77,7 @@ pub use keys::{
 pub use maintenance::{PurgeExpired, PurgeReport};
 pub use platform::{
     BrowseAudit, ChannelCard, ChannelInventory, ListTrustPolicies, ReadReconciliation,
-    Reconciliation, ReconciliationLog, SelfJoin, TrustPolicyCard,
+    Reconciliation, ReconciliationLog, SelfJoin, Trigger, TrustPolicyCard,
 };
 pub use preferences::{ReadDnd, SetDnd};
 pub use profiles::{ReadAvatar, ReadProfile, SetAvatar, UpdateProfile};

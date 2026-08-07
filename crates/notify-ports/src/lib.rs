@@ -50,6 +50,7 @@ pub mod attachments;
 pub mod audit;
 pub mod channels;
 pub mod clock;
+pub mod declarations;
 pub mod devices;
 pub mod error;
 pub mod event;
@@ -82,9 +83,14 @@ pub use attachments::{
     AttachmentRegistry, AttachmentStore, PresignedDownload, PresignedUpload, StoredObject,
     UploadRequest,
 };
-pub use audit::{AUDIT_ACTIONS, AuditAction, AuditEntry, AuditLog, AuditQuery, actions};
+pub use audit::{
+    AUDIT_ACTIONS, AuditAction, AuditActor, AuditEntry, AuditLog, AuditQuery, Configured, actions,
+};
 pub use channels::ChannelRepository;
 pub use clock::{Clock, SystemClock};
+// `diff` stays behind its module: a bare `diff` at the crate root says nothing
+// about what it compares.
+pub use declarations::{Changed, Changes, Declaration, DeclarationKind, DeclarationStore};
 pub use devices::DeviceRepository;
 pub use error::{Failure, PortError, PortResult};
 pub use event::{
@@ -99,7 +105,7 @@ pub use identities::{
 };
 pub use interactions::InteractionRepository;
 pub use leader::{LeaderElection, LeaderGuard};
-pub use media::{AvatarProcessor, ImageRejection, ProcessedImage};
+pub use media::{AttachmentThumbnailer, AvatarProcessor, ImageRejection, ProcessedImage};
 pub use metrics::{Metrics, NoMetrics, PushResult, StreamKind};
 pub use notifications::{
     ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery, UnreadCount,

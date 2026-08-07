@@ -357,6 +357,11 @@ pub(crate) enum DndCommand {
         /// When it lifts, as an RFC 3339 instant, e.g. `2026-08-05T09:00:00Z`.
         #[arg(long, value_name = "INSTANT")]
         until: Option<String>,
+
+        /// Until the next 08:00 on your own clock — the same choice the tray menu
+        /// offers (§10bis.3ter), and the same calculation behind it.
+        #[arg(long, conflicts_with_all = ["duration", "until"])]
+        until_morning: bool,
     },
 
     /// End the quiet period now. Leaves the weekly schedule alone.
@@ -413,21 +418,42 @@ pub(crate) async fn dnd(
     let wanted = match command {
         DndCommand::Status => return render_draft(&current, output),
 
-        DndCommand::On { duration, until } => {
-            let until = match (duration, until) {
-                (Some(duration), _) => now_plus(&duration)?,
-                (None, Some(instant)) => instant.parse().map_err(|_| {
+        DndCommand::On {
+            duration,
+            until,
+            until_morning,
+        } => {
+            let until = match (duration, until, until_morning) {
+                (Some(duration), _, _) => now_plus(&duration)?,
+                (None, Some(instant), _) => instant.parse().map_err(|_| {
                     CliError::Usage(
                         "`--until` wants an RFC 3339 instant, e.g. `2026-08-05T09:00:00Z`"
                             .to_owned(),
                     )
                 })?,
-                (None, None) => {
+                (None, None, true) => {
+                    // The preference's zone, not this machine's (§7.4): somebody
+                    // travelling keeps their own mornings. A preference with no
+                    // schedule has no zone to borrow, and UTC is the honest answer
+                    // rather than a guess from the laptop.
+                    let timezone = current
+                        .quiet_hours
+                        .first()
+                        .map_or("UTC", |window| window.timezone.as_str());
+
+                    notify_client_core::DndPreset::UntilMorning
+                        .until(now_utc()?, timezone)?
+                        .ok_or_else(|| {
+                            CliError::Usage("`--until-morning` produced no deadline".to_owned())
+                        })?
+                }
+                (None, None, false) => {
                     // Refused rather than guessed at: §7.4 makes the quick toggle a
                     // deadline, and an unbounded one is what somebody sets at 3am
                     // and rediscovers a quarter later.
                     return Err(CliError::Usage(
-                        "say how long: `--for 2h`, or `--until <instant>`".to_owned(),
+                        "say how long: `--for 2h`, `--until <instant>`, or `--until-morning`"
+                            .to_owned(),
                     ));
                 }
             };
@@ -569,6 +595,22 @@ fn parse_day(raw: &str) -> Result<Day, CliError> {
 /// The client's clock and not the server's, which is a real difference and a small
 /// one: the two disagree by seconds, and the alternative is an endpoint that takes a
 /// duration purely so the arithmetic happens on the other side.
+/// This machine.s clock, as chrono sees it.
+///
+/// Through `time` rather than `chrono::Utc::now`: the workspace takes chrono without
+/// its `clock` feature — it is here for the shapes progenitor emits, not as a second
+/// source of the current time.
+fn now_utc() -> Result<chrono::DateTime<chrono::Utc>, CliError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| CliError::Usage("this machine's clock is before 1970".to_owned()))?;
+    let now = i64::try_from(now.as_secs())
+        .map_err(|_| CliError::Usage("this machine's clock is out of range".to_owned()))?;
+
+    chrono::DateTime::from_timestamp(now, 0)
+        .ok_or_else(|| CliError::Usage("this machine's clock is out of range".to_owned()))
+}
+
 fn now_plus(duration: &str) -> Result<chrono::DateTime<chrono::Utc>, CliError> {
     let (value, unit) = duration.split_at(
         duration
@@ -593,16 +635,7 @@ fn now_plus(duration: &str) -> Result<chrono::DateTime<chrono::Utc>, CliError> {
         }
     };
 
-    // Through `time` rather than `chrono::Utc::now`: the workspace takes chrono
-    // without its `clock` feature — it is here for the shapes progenitor emits, not
-    // as a second source of the current time.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| CliError::Usage("this machine's clock is before 1970".to_owned()))?;
-    let now = i64::try_from(now.as_secs())
-        .map_err(|_| CliError::Usage("this machine's clock is out of range".to_owned()))?;
-
-    chrono::DateTime::from_timestamp(now, 0)
-        .and_then(|at| at.checked_add_signed(chrono::TimeDelta::seconds(seconds)))
+    now_utc()?
+        .checked_add_signed(chrono::TimeDelta::seconds(seconds))
         .ok_or_else(|| CliError::Usage(format!("`{duration}` is further away than time goes")))
 }

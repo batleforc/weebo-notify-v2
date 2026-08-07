@@ -2,10 +2,30 @@ version: "3"
 
 # The Tauri desktop shell (design §10bis.3, milestone M5).
 #
-# Nothing here builds anything yet. What it does is answer, in one command and
-# before anybody spends an afternoon on a link error, whether *this machine* can
-# build the shell at all — because on Linux Tauri v2 links against a GTK/WebKit
-# stack that is neither vendored nor installable by `mise`.
+# `doctor` answers, in one command and before anybody spends an afternoon on a link
+# error, whether *this machine* can build the shell at all — because on Linux Tauri
+# v2 links against a GTK/WebKit stack that is neither vendored nor installable by
+# `mise`.
+#
+# `build` and `dev` exist since M5 was started ahead of that stack: the shell is
+# written in `web/src-tauri`, outside the cargo workspace, and **has never been
+# compiled by anything**. Both tasks run the doctor first, so the answer on a machine
+# without the libraries is a paragraph rather than a wall of `pkg-config` output.
+#
+# What *is* built and tested everywhere is the half that does not need a webview:
+# `notify_client_core::tray` (§10bis.3ter) and `::deeplink` (§10bis.3quater) are
+# ordinary library code under `task test`.
+
+vars:
+  # Reported by `doctor`, reused as a gate by the two below. Duplicating the library
+  # list would be two lists to keep in step, so this asks the task instead.
+  NEED_STACK: |
+    if ! pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
+      task tauri:doctor
+      echo
+      echo "Nothing was built. See design §14.1 (M5) and §14.4 (D13)."
+      exit 0
+    fi
 
 tasks:
   doctor:
@@ -64,3 +84,30 @@ tasks:
 
           See design §12.4 and §14.1 (M5).
           EOF
+
+  build:
+    desc: "Build the desktop shell — needs the GTK/WebKit stack (§10bis.3, M5)"
+    cmds:
+      - cmd: |
+          {{.NEED_STACK}}
+          # `--no-default-features` is not used: the shell wants the tray, and a
+          # build that quietly dropped it would produce an app that runs and has no
+          # way to live in the background (§10bis.3ter).
+          cd web/src-tauri && cargo build --release
+
+  dev:
+    desc: "Run the desktop shell against the Vite dev server (§10bis.3, M5)"
+    cmds:
+      - cmd: |
+          {{.NEED_STACK}}
+          # Single quotes: backticks inside a double-quoted string are command
+          # substitution, so this line used to *run* the dev server it names.
+          echo 'Start `task dev:web` in another terminal first — the shell loads :5173.'
+          cd web/src-tauri && cargo run
+
+  check:
+    desc: "Type-check the desktop shell without building it — still needs the stack"
+    cmds:
+      - cmd: |
+          {{.NEED_STACK}}
+          cd web/src-tauri && cargo clippy --all-targets -- -D warnings

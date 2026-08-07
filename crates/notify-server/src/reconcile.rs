@@ -27,7 +27,10 @@ use notify_domain::{
     Channel, ChannelId, ChannelPolicy, GroupBinding, Membership, Origin, Principal, ServiceAccount,
     ServiceAccountId, TtlPolicy,
 };
-use notify_ports::{ChannelRepository, Clock, ServiceAccountRepository, UserRepository};
+use notify_ports::{
+    AuditAction, AuditActor, AuditEntry, AuditLog, ChannelRepository, Clock, Declaration,
+    DeclarationKind, DeclarationStore, ServiceAccountRepository, UserRepository, actions,
+};
 use time::OffsetDateTime;
 
 use crate::config::{Access, Config, ManagedChannel, OnRemoved};
@@ -43,6 +46,8 @@ pub(crate) struct ReconcileReport {
     pub removed: usize,
     /// Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
     pub pending: Vec<String>,
+    /// Audit entries this pass wrote — zero unless the file moved (§13, D28).
+    pub journalled: usize,
 }
 
 impl ReconcileReport {
@@ -51,9 +56,14 @@ impl ReconcileReport {
     /// The timestamp is passed in rather than taken here: this type is what a pass
     /// *did*, and when it happened is what the caller observed. It also keeps the
     /// conversion testable without a clock.
-    pub(crate) fn as_pass(&self, at: OffsetDateTime) -> notify_app::Reconciliation {
+    pub(crate) fn as_pass(
+        &self,
+        at: OffsetDateTime,
+        trigger: notify_app::Trigger,
+    ) -> notify_app::Reconciliation {
         notify_app::Reconciliation {
             at,
+            trigger,
             channels: self.channels,
             accounts: self.accounts,
             removed: self.removed,
@@ -62,12 +72,72 @@ impl ReconcileReport {
     }
 }
 
+/// The three audit actions one kind of declaration can produce.
+struct Vocabulary {
+    added: AuditAction,
+    changed: AuditAction,
+    /// `None` where nothing withdraws this kind — see the service account arm.
+    removed: Option<AuditAction>,
+}
+
+/// `[[trust_policy]]` blocks, as the log identifies them.
+///
+/// Keyed by issuer **and** subject, because §5.3 lets one forge carry several
+/// subject patterns with different rights: keying on the issuer alone would make
+/// "a second branch pattern was granted" indistinguishable from "the existing one
+/// was edited", and both would be reported against the same target.
+fn trust_policies(config: &Config) -> anyhow::Result<Vec<Declaration>> {
+    config
+        .trust_policy
+        .iter()
+        .map(|policy| {
+            Ok(Declaration {
+                key: format!("{} {}", policy.issuer, policy.subject),
+                snapshot: serde_json::to_value(policy)?,
+            })
+        })
+        .collect()
+}
+
+/// `[[channels.managed]]` blocks, keyed by channel id.
+fn managed_channels(config: &Config) -> anyhow::Result<Vec<Declaration>> {
+    config
+        .channels
+        .managed
+        .iter()
+        .map(|channel| {
+            Ok(Declaration {
+                key: channel.id.clone(),
+                snapshot: serde_json::to_value(channel)?,
+            })
+        })
+        .collect()
+}
+
+/// `[[service_accounts]]` blocks, keyed by account id.
+fn managed_accounts(config: &Config) -> anyhow::Result<Vec<Declaration>> {
+    config
+        .service_accounts
+        .iter()
+        .map(|account| {
+            Ok(Declaration {
+                key: account.id.clone(),
+                snapshot: serde_json::to_value(account)?,
+            })
+        })
+        .collect()
+}
+
 /// Puts the database back the way the configuration says.
 pub(crate) struct Reconciler {
     channels: Arc<dyn ChannelRepository>,
     accounts: Arc<dyn ServiceAccountRepository>,
     users: Arc<dyn UserRepository>,
     clock: Arc<dyn Clock>,
+    /// What the last pass applied, so this one can say what moved (§13, D28).
+    declarations: Arc<dyn DeclarationStore>,
+    /// Where that goes.
+    audit: Arc<dyn AuditLog>,
 }
 
 impl core::fmt::Debug for Reconciler {
@@ -82,12 +152,16 @@ impl Reconciler {
         accounts: Arc<dyn ServiceAccountRepository>,
         users: Arc<dyn UserRepository>,
         clock: Arc<dyn Clock>,
+        declarations: Arc<dyn DeclarationStore>,
+        audit: Arc<dyn AuditLog>,
     ) -> Self {
         Self {
             channels,
             accounts,
             users,
             clock,
+            declarations,
+            audit,
         }
     }
 
@@ -137,7 +211,136 @@ impl Reconciler {
 
         report.removed = self.drop_departed(config, &declared).await?;
 
+        // Last, and after the writes: a pass that fails half way must not have
+        // announced changes it did not finish applying. The cost is the opposite
+        // failure — applied but unannounced, if the process dies here — and that is
+        // the right way round, because the next pass re-diffs against the same
+        // stored snapshot and announces them then.
+        report.journalled = self.journal(config).await?;
+
         Ok(report)
+    }
+
+    /// Write what the file changed since the last pass into the audit log (§13).
+    ///
+    /// Returns how many entries were written, which is zero on a steady instance —
+    /// the property that keeps this log readable, given the pass runs every minute.
+    async fn journal(&self, config: &Config) -> anyhow::Result<usize> {
+        let at = self.clock.now();
+        let mut written = 0;
+
+        for (kind, declarations, vocabulary) in [
+            (
+                DeclarationKind::TrustPolicy,
+                trust_policies(config),
+                Vocabulary {
+                    added: actions::TRUST_POLICY_ADDED,
+                    changed: actions::TRUST_POLICY_CHANGED,
+                    removed: Some(actions::TRUST_POLICY_REMOVED),
+                },
+            ),
+            (
+                DeclarationKind::Channel,
+                managed_channels(config),
+                Vocabulary {
+                    added: actions::MANAGED_CHANNEL_ADDED,
+                    changed: actions::MANAGED_CHANNEL_CHANGED,
+                    removed: Some(actions::MANAGED_CHANNEL_REMOVED),
+                },
+            ),
+            (
+                DeclarationKind::ServiceAccount,
+                managed_accounts(config),
+                // No `removed`: `drop_departed` archives channels, and nothing
+                // withdraws a service account — an account that leaves the file
+                // stays, because its keys and its history do. Inventing an action
+                // for something no code path can produce is exactly what
+                // M4duovicies removed `trust_policy.changed` for.
+                Vocabulary {
+                    added: actions::MANAGED_ACCOUNT_ADDED,
+                    changed: actions::MANAGED_ACCOUNT_CHANGED,
+                    removed: None,
+                },
+            ),
+        ] {
+            let declarations = declarations?;
+            let before = self.declarations.snapshot(kind).await?;
+            let changes = notify_ports::declarations::diff(&before, &declarations);
+
+            for added in &changes.added {
+                self.record(
+                    &vocabulary.added,
+                    kind,
+                    &added.key,
+                    &added.snapshot,
+                    None,
+                    at,
+                )
+                .await?;
+                written += 1;
+            }
+            for change in &changes.changed {
+                self.record(
+                    &vocabulary.changed,
+                    kind,
+                    &change.current.key,
+                    &change.current.snapshot,
+                    Some(&change.previous.snapshot),
+                    at,
+                )
+                .await?;
+                written += 1;
+            }
+            for removed in &changes.removed {
+                if let Some(action) = vocabulary.removed {
+                    self.record(&action, kind, &removed.key, &removed.snapshot, None, at)
+                        .await?;
+                    written += 1;
+                }
+            }
+
+            if !changes.is_empty() {
+                self.declarations.apply(kind, &declarations, at).await?;
+            }
+        }
+
+        Ok(written)
+    }
+
+    /// One audit entry, from the configuration rather than from anybody (§11, D28).
+    async fn record(
+        &self,
+        action: &AuditAction,
+        kind: DeclarationKind,
+        key: &str,
+        snapshot: &serde_json::Value,
+        previous: Option<&serde_json::Value>,
+        at: OffsetDateTime,
+    ) -> anyhow::Result<()> {
+        let mut detail = serde_json::json!({ "declaration": snapshot });
+        if let Some(previous) = previous
+            && let Some(object) = detail.as_object_mut()
+        {
+            object.insert("previous".to_owned(), previous.clone());
+        }
+
+        self.audit
+            .record(&AuditEntry {
+                actor: AuditActor::configuration(),
+                action: *action,
+                target: Some(key.to_owned()),
+                // A managed channel's entry names its channel, so the console's
+                // per-channel filter finds it; the other two kinds are not about
+                // one channel, and a trust policy naming the first of several it
+                // grants would be a half-truth.
+                channel: (kind == DeclarationKind::Channel)
+                    .then(|| ChannelId::parse(key))
+                    .transpose()?,
+                detail: Some(detail),
+                at,
+            })
+            .await?;
+        Ok(())
     }
 
     /// Turn one `[[channels.managed]]` block into a channel.
@@ -284,6 +487,8 @@ mod tests {
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
+            Arc::new(store.clone()),
+            Arc::new(store.clone()),
         )
     }
 
@@ -302,6 +507,246 @@ mod tests {
             },
             ..Config::default()
         }
+    }
+
+    // --- What GitOps changed, in the log (design §13, D28) -------------------
+
+    /// The audit rows one pass wrote, oldest first.
+    async fn journal(store: &InMemory) -> Vec<notify_ports::AuditEntry> {
+        let mut entries =
+            notify_ports::AuditLog::query(store, &notify_ports::AuditQuery::default())
+                .await
+                .unwrap()
+                .items;
+        entries.reverse();
+        entries
+    }
+
+    fn trust_policy(
+        issuer: &str,
+        subject: &str,
+        channels: Vec<String>,
+    ) -> crate::config::TrustPolicy {
+        crate::config::TrustPolicy {
+            issuer: issuer.to_owned(),
+            subject: subject.to_owned(),
+            channels,
+            ..crate::config::TrustPolicy::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trust_policy_appearing_is_journalled_by_the_configuration() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let config = Config {
+            trust_policy: vec![trust_policy(
+                "https://forge.example",
+                "repo:weebo/infra:ref:refs/heads/main",
+                vec!["ci-infra".to_owned()],
+            )],
+            ..Config::default()
+        };
+
+        reconciler(&store, &clock).execute(&config).await.unwrap();
+
+        let entries = journal(&store).await;
+        assert_eq!(
+            entries.len(),
+            1,
+            "the policy that arrived, and nothing else"
+        );
+        assert_eq!(entries[0].action.as_str(), "trust_policy.added");
+        // The point of D28: `[[trust_policy]]` is what lets a forge publish here,
+        // and editing it left no trace at all in the log §13 says to replay.
+        assert_eq!(
+            entries[0].actor,
+            notify_ports::AuditActor::configuration(),
+            "nobody did this — a file did, and the log has to be able to say so"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_steady_instance_writes_nothing() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let config = Config {
+            trust_policy: vec![trust_policy("https://forge.example", "repo:a", vec![])],
+            ..Config::default()
+        };
+        let reconciler = reconciler(&store, &clock);
+
+        reconciler.execute(&config).await.unwrap();
+        let after_first = journal(&store).await.len();
+        reconciler.execute(&config).await.unwrap();
+        reconciler.execute(&config).await.unwrap();
+
+        // The pass runs every sixty seconds. A row per pass would bury the rows
+        // that matter under the ones that do not, which is the failure §13's own
+        // "what does not go in" paragraph is about.
+        assert_eq!(journal(&store).await.len(), after_first);
+    }
+
+    #[tokio::test]
+    async fn an_edited_policy_carries_both_sides() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let reconciler = reconciler(&store, &clock);
+
+        let before = Config {
+            trust_policy: vec![trust_policy("https://forge.example", "repo:a", vec![])],
+            ..Config::default()
+        };
+        reconciler.execute(&before).await.unwrap();
+
+        let after = Config {
+            trust_policy: vec![trust_policy(
+                "https://forge.example",
+                "repo:a",
+                vec!["ci-infra".to_owned()],
+            )],
+            ..Config::default()
+        };
+        reconciler.execute(&after).await.unwrap();
+
+        let entries = journal(&store).await;
+        let changed = entries
+            .iter()
+            .find(|entry| entry.action.as_str() == "trust_policy.changed")
+            .unwrap();
+        let detail = changed.detail.as_ref().unwrap();
+
+        // "A trust policy changed" is not the sentence §13 promises. What it
+        // changed *to*, and *from*, is the whole reason to read the log.
+        assert!(detail.get("declaration").is_some());
+        assert!(
+            detail.get("previous").is_some(),
+            "an operator cannot judge a change from one side of it"
+        );
+    }
+
+    #[tokio::test]
+    async fn widening_what_a_forge_may_do_is_journalled_as_a_change() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let reconciler = reconciler(&store, &clock);
+
+        let policy = |scopes: Vec<Scope>| crate::config::TrustPolicy {
+            issuer: "https://forge.example".to_owned(),
+            subject: "repo:a".to_owned(),
+            scopes,
+            ..crate::config::TrustPolicy::default()
+        };
+
+        reconciler
+            .execute(&Config {
+                trust_policy: vec![policy(vec![Scope::Publish])],
+                ..Config::default()
+            })
+            .await
+            .unwrap();
+        reconciler
+            .execute(&Config {
+                trust_policy: vec![policy(vec![Scope::Publish, Scope::Manage])],
+                ..Config::default()
+            })
+            .await
+            .unwrap();
+
+        // The snapshot is the whole block and not a chosen few fields: `scopes`
+        // decides what a forge may *do*, and a comparison that skipped it would call
+        // a widened policy unchanged — the quietest way to lose an audit trail.
+        assert!(
+            journal(&store)
+                .await
+                .iter()
+                .any(|entry| entry.action.as_str() == "trust_policy.changed")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_policy_is_journalled_as_removed() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let reconciler = reconciler(&store, &clock);
+
+        let before = Config {
+            trust_policy: vec![trust_policy("https://forge.example", "repo:a", vec![])],
+            ..Config::default()
+        };
+        reconciler.execute(&before).await.unwrap();
+        reconciler.execute(&Config::default()).await.unwrap();
+
+        // Withdrawing is the half an upsert-only store would lose, and it is the
+        // half that matters most: a forge that may no longer publish.
+        assert!(
+            journal(&store)
+                .await
+                .iter()
+                .any(|entry| entry.action.as_str() == "trust_policy.removed")
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_channels_and_accounts_are_journalled_too() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let config = Config {
+            service_accounts: vec![ManagedServiceAccount {
+                id: "svc_ci".to_owned(),
+                ..ManagedServiceAccount::default()
+            }],
+            channels: Channels {
+                managed: vec![ManagedChannel {
+                    id: "ci-infra".to_owned(),
+                    ..ManagedChannel::default()
+                }],
+                ..Channels::default()
+            },
+            ..Config::default()
+        };
+
+        reconciler(&store, &clock).execute(&config).await.unwrap();
+
+        // Doing trust policies alone would have fixed a third of the problem while
+        // looking like the whole of it: the same reconciler writes all three, and
+        // none of them were logged.
+        let actions: Vec<&str> = journal(&store)
+            .await
+            .iter()
+            .map(|entry| entry.action.as_str())
+            .collect();
+        assert!(actions.contains(&"managed.channel.added"), "{actions:?}");
+        assert!(
+            actions.contains(&"managed.service_account.added"),
+            "{actions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_managed_channel_entry_names_its_channel() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+
+        reconciler(&store, &clock)
+            .execute(&config(vec![ManagedChannel {
+                id: "ci-infra".to_owned(),
+                ..ManagedChannel::default()
+            }]))
+            .await
+            .unwrap();
+
+        // So the console's per-channel filter finds it. A trust policy has no one
+        // channel — it can grant several — so only this kind carries the field.
+        let entries = journal(&store).await;
+        let entry = entries
+            .iter()
+            .find(|entry| entry.action.as_str() == "managed.channel.added")
+            .unwrap();
+        assert_eq!(
+            entry.channel.as_ref().map(ChannelId::as_str),
+            Some("ci-infra")
+        );
     }
 
     #[tokio::test]

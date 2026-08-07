@@ -9,7 +9,9 @@
 //!   is no application key on the web at all (design §6.2).
 //! * **UnifiedPush and APNs** — a relay we do not control carries the bytes, so the
 //!   server seals the payload to the device's X25519 public key first. Sealing
-//!   itself lands with M6; the shape is here because the transports are.
+//!   landed with M6, in `notify-push-unifiedpush`'s `sealed_box` module; APNs (M7)
+//!   will need the same construction and does not share the module with it yet —
+//!   there was exactly one consumer when it was written.
 //! * **Too big to carry** — every push transport has a size cap, and a rich
 //!   notification can exceed it. Then we send a **poke**: identifiers only, and the
 //!   client fetches the real thing over TLS. Degrading to a poke is normal

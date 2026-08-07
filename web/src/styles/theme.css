@@ -179,6 +179,74 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* --- Desktop hygiene (§10bis.3bis) ------------------------------------
+   *
+   * "Zéro artefact navigateur" — the review test is that no screen feels like a
+   * site in a window. Everything below hangs off `.is-desktop`, which
+   * `lib/desktop.ts` puts on the root element only inside the Tauri shell, so the
+   * browser build keeps browser conventions and neither has to know about the
+   * other.
+   *
+   * All of it is presentation. Nothing here changes behaviour, and nothing may:
+   * the flag comes from the embedder, and a branch on it that gated *capability*
+   * would be a branch an embedder could lie its way through.
+   */
+  .is-desktop {
+    /* A native app does not let you drag-select its chrome. The exception is
+     * content — a notification body is text somebody may want to copy — so this
+     * is re-enabled below rather than applied narrowly here, because the default
+     * for an app is "not selectable" and the exceptions are few. */
+    user-select: none;
+    -webkit-user-select: none;
+
+    /* §10bis.3bis names this one specifically: `cursor: pointer` on a button is a
+     * web convention. Desktop toolkits keep the arrow, and the hand reads as "this
+     * is a link in a page". */
+    cursor: default;
+
+    /* The system stack, so the webview renders like the apps beside it rather than
+     * like a website. `system-ui` resolves to SF Pro, Segoe UI, or whatever the
+     * Linux desktop chose. */
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  .is-desktop button,
+  .is-desktop [role="button"],
+  .is-desktop a {
+    cursor: default;
+  }
+
+  /* Content stays selectable: it is the thing somebody came to read, and a
+   * notification body they cannot copy is a worse app, not a more native one. */
+  .is-desktop [data-selectable],
+  .is-desktop [data-selectable] * {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: auto;
+  }
+
+  /* No ghost image when a mark or an avatar is dragged — dragging an image out of
+   * a native window does nothing, and the translucent thumbnail is the giveaway
+   * that this is a browser. */
+  .is-desktop img {
+    -webkit-user-drag: none;
+    user-select: none;
+  }
+
+  /* Thin overlay scrollbars, the desktop idiom. The web build keeps the browser's
+   * own, which is what a browser's users expect. */
+  .is-desktop * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  /* The focus ring belongs to the keyboard. A native control that draws it on
+   * click looks wrong; one that never draws it is unusable without a mouse, which
+   * is why this narrows the ring rather than removing it. */
+  .is-desktop :focus:not(:focus-visible) {
+    outline: none;
+  }
+
   /* §10.5: animations are utilitarian, and somebody who asked their system to
    * stop moving things has already told us what they want. */
   @media (prefers-reduced-motion: reduce) {

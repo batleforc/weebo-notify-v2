@@ -26,7 +26,7 @@ use notify_app::{
     SearchNotifications, SelfJoin, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
     UpdateChannel, UpdateProfile, UpsertNotification,
 };
-use notify_avatars::ImageAvatarProcessor;
+use notify_avatars::{ImageAttachmentThumbnailer, ImageAvatarProcessor};
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
 use notify_http_actix::ApiState;
 use notify_ports::test_utils::{
@@ -70,6 +70,10 @@ impl Harness {
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
             4_096,
+        )
+        .with_thumbnails(
+            Arc::new(attachments.clone()),
+            Arc::new(ImageAttachmentThumbnailer::new()),
         );
         let get = GetNotification::new(
             Arc::new(store.clone()),
@@ -170,7 +174,7 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
-            trust_policies: ListTrustPolicies::new(notify_domain::TrustPolicies::default()),
+            trust_policies: ListTrustPolicies::new(notify_app::LivePolicies::default()),
             // Never reconciled in the harness, which is a state the console has to
             // render: `null` and not zeroes (§10.4bis).
             reconciliation: ReadReconciliation::new(ReconciliationLog::new()),
@@ -189,6 +193,14 @@ impl Harness {
                 Arc::new(clock.clone()),
             ),
             attachment: notify_app::ReadAttachment::new(
+                notify_app::Attachments {
+                    store: Arc::new(attachments.clone()),
+                    registry: Arc::new(store.clone()),
+                },
+                Arc::new(store.clone()),
+                authorizer.clone(),
+            ),
+            attachment_thumbnail: notify_app::ReadAttachmentThumbnail::new(
                 notify_app::Attachments {
                     store: Arc::new(attachments.clone()),
                     registry: Arc::new(store.clone()),

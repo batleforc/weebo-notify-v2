@@ -30,6 +30,19 @@ pub enum ClientError {
     #[error("the configured token is not a usable credential")]
     BadCredential,
 
+    /// A value this client was handed cannot be used.
+    ///
+    /// Distinct from [`ClientError::Refused`], which is the *server* saying no: this
+    /// is the client refusing to act on something it was given — a preference naming
+    /// a timezone that is not in this build's IANA database, most often. The detail
+    /// is meant to be shown, because the person reading it is the one who can fix
+    /// the value.
+    #[error("{detail}")]
+    Invalid {
+        /// What was wrong with it, phrased for whoever has to correct it.
+        detail: String,
+    },
+
     /// The local store could not be opened, read or written (design §9.3bis).
     ///
     /// Its own variant because it is the one failure that has nothing to do with
@@ -67,9 +80,10 @@ impl ClientError {
             Self::Refused(problem) => problem.status >= 500 || problem.status == 429,
             Self::Transport(_) => true,
             Self::Unexpected { status } => *status >= 500,
-            // Neither is fixed by asking again: a token with a newline in it stays
-            // unusable, and a full disk stays full.
-            Self::BadCredential | Self::Store { .. } => false,
+            // None is fixed by asking again: a token with a newline in it stays
+            // unusable, a full disk stays full, and a timezone that is not one will
+            // not become one on the second attempt.
+            Self::BadCredential | Self::Invalid { .. } | Self::Store { .. } => false,
         }
     }
 }

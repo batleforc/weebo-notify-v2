@@ -16,8 +16,16 @@ const html = computed(() => renderMarkdown(props.source));
 </script>
 
 <template>
+  <!--
+    `data-selectable` is what exempts this from the desktop build's
+    `user-select: none` (§10bis.3bis): the app's chrome is not draggable-select,
+    but a notification body is *content* — somebody wants to copy the error out of
+    it. Marked here rather than in the stylesheet because this component is the one
+    place that knows the difference.
+  -->
   <!-- eslint-disable-next-line vue/no-v-html -->
   <div
+    data-selectable
     :class="[
       'text-sm leading-relaxed [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2',
       '[&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs',

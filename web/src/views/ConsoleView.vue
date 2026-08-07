@@ -17,7 +17,7 @@
  * webhook, which is the door §5.4 closes.
  */
 import { onMounted } from "vue";
-
+import type { Trigger } from "@/api/generated/types.gen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -26,6 +26,11 @@ import { exact } from "@/lib/format";
 import { useConsole } from "@/stores/console";
 
 const platform = useConsole();
+
+/** What made the last pass happen (§11, §10.4bis). */
+function triggerLabel(trigger: Trigger): string {
+  return { boot: "démarrage", timer: "minuterie", sighup: "SIGHUP" }[trigger];
+}
 
 onMounted(() => {
   void platform.load();
@@ -73,9 +78,18 @@ onMounted(() => {
           que le socket soit ouvert, donc voir ceci veut dire qu'elle a échoué.
         </p>
         <div v-else class="space-y-1 rounded-md border border-border p-3 text-xs">
+          <!--
+            The trigger, not only the timestamp: §10.4bis asks this screen for « le
+            dernier SIGHUP », and the reconciler also runs every minute — so a bare
+            time is almost always the timer, and an operator who has just sent a
+            signal cannot tell whether it landed.
+          -->
           <p>
-            Dernière passe {{ exact(platform.gitops.at) }} ·
-            {{ platform.gitops.channels }} canaux ·
+            Dernière passe {{ exact(platform.gitops.at) }}
+            <span class="text-muted-foreground"
+              >({{ triggerLabel(platform.gitops.trigger) }})</span
+            >
+            · {{ platform.gitops.channels }} canaux ·
             {{ platform.gitops.accounts }} service accounts ·
             {{ platform.gitops.removed }} retirés
           </p>

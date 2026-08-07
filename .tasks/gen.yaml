@@ -9,11 +9,12 @@ vars:
 
 tasks:
   default:
-    desc: "Regenerate everything derived from the code: the OpenAPI spec and the Rust + TS clients"
+    desc: "Regenerate everything derived from the code: the OpenAPI spec, the Rust + TS clients and the desktop icons"
     cmds:
       - task: openapi
       - task: client:rust
       - task: client:ts
+      - task: icons
 
   openapi:
     desc: "Export the OpenAPI spec from the utoipa annotations (no server boot required)"
@@ -52,3 +53,12 @@ tasks:
   # against a real Postgres by `crates/notify-adapters/persistence-pg/tests/
   # conformance.rs` (run by `task test:e2e`). The trade is stated in that crate's
   # module documentation; the cost is that a typo fails a test rather than a build.
+
+  icons:
+    desc: "Rasterise the desktop icons from their SVG sources (§10bis.3ter, M5)"
+    # Derived and committed, exactly like the generated clients above: the sources
+    # are SVG so a change to the mark is reviewable, and the PNGs are what Tauri
+    # actually loads. Pure Rust — `librsvg` and ImageMagick are system packages this
+    # workspace cannot install (§12.4), which is the same wall the shell itself hits.
+    cmds:
+      - cargo run --quiet -p xtask -- icons

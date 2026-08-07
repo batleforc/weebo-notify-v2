@@ -6,7 +6,7 @@
 //!
 //! # An empty registry is a deployment's answer, not a stub
 //!
-//! Web Push is here since M3.5, UnifiedPush lands in M6 and APNs in M7 — but a
+//! Web Push is here since M3.5, UnifiedPush since M6, APNs lands in M7 — but a
 //! deployment with no `[push.webpush]` still gets an empty registry, and the
 //! delivery path is complete without one: a device enrolled with
 //! [`notify_domain::PushTransport::Stream`] is reachable only while its client holds

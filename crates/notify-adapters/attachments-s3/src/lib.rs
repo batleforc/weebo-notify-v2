@@ -96,11 +96,49 @@ impl S3Attachments {
         id.to_string()
     }
 
+    /// Where a derived thumbnail lives (design §2.3, D30).
+    ///
+    /// A subpath of the object's own key rather than a second id: ids are ULIDs,
+    /// so they contain no `/`, and this keeps a thumbnail findable — and
+    /// deletable — from nothing but the id its object was signed under, with no
+    /// second table mapping one to the other.
+    fn thumbnail_key(id: AttachmentId) -> String {
+        format!("{}/thumb", Self::key(id))
+    }
+
     fn fail(operation: &'static str, error: impl core::fmt::Display) -> PortError {
         tracing::warn!(%error, operation, "the object store refused");
         // `Corrupt` carries a message rather than a source, which is what an S3
         // error is by the time it is worth reporting: a status and a body.
         PortError::unavailable("attachments", StoreFailure(error.to_string()))
+    }
+
+    /// What `get` and `get_thumbnail` share: fetch a key, `None` for a missing one.
+    async fn get_key(&self, key: String) -> PortResult<Option<StoredObject>> {
+        let response = match self.bucket.get_object(&key).await {
+            Ok(response) => response,
+            Err(error) if is_missing(&error) => return Ok(None),
+            Err(error) => return Err(Self::fail("get_object", error)),
+        };
+
+        if response.status_code() == 404 {
+            return Ok(None);
+        }
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .cloned()
+            // The bucket is the only writer and it was told the type on the way in;
+            // a missing header is a store that does not echo them rather than a
+            // mystery file. PNG is what avatars — and thumbnails — are stored as
+            // (§2.4, D30).
+            .unwrap_or_else(|| "image/png".to_owned());
+
+        Ok(Some(StoredObject {
+            content_type,
+            bytes: response.to_vec(),
+        }))
     }
 }
 
@@ -173,6 +211,15 @@ impl AttachmentStore for S3Attachments {
         match self.bucket.delete_object(Self::key(id)).await {
             // Deleting something already gone is the desired state rather than an
             // error: the purge job (§7.2bis) retries, and retries have to be free.
+            Ok(_) => {}
+            Err(error) if is_missing(&error) => {}
+            Err(error) => return Err(Self::fail("delete_object", error)),
+        }
+
+        // Most attachments never had one — an unsupported format, or a reference
+        // purged before anything referenced it — so "already gone" is the common
+        // case here too, not an edge one.
+        match self.bucket.delete_object(Self::thumbnail_key(id)).await {
             Ok(_) => Ok(()),
             Err(error) if is_missing(&error) => Ok(()),
             Err(error) => Err(Self::fail("delete_object", error)),
@@ -188,29 +235,24 @@ impl AttachmentStore for S3Attachments {
     }
 
     async fn get(&self, id: AttachmentId) -> PortResult<Option<StoredObject>> {
-        let response = match self.bucket.get_object(Self::key(id)).await {
-            Ok(response) => response,
-            Err(error) if is_missing(&error) => return Ok(None),
-            Err(error) => return Err(Self::fail("get_object", error)),
-        };
+        self.get_key(Self::key(id)).await
+    }
 
-        if response.status_code() == 404 {
-            return Ok(None);
-        }
+    async fn put_thumbnail(
+        &self,
+        id: AttachmentId,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> PortResult<()> {
+        self.bucket
+            .put_object_with_content_type(Self::thumbnail_key(id), &bytes, content_type)
+            .await
+            .map_err(|error| Self::fail("put_object", error))?;
+        Ok(())
+    }
 
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .cloned()
-            // The bucket is the only writer and it was told the type on the way in;
-            // a missing header is a store that does not echo them rather than a
-            // mystery file. PNG is what avatars are stored as (§2.4).
-            .unwrap_or_else(|| "image/png".to_owned());
-
-        Ok(Some(StoredObject {
-            content_type,
-            bytes: response.to_vec(),
-        }))
+    async fn get_thumbnail(&self, id: AttachmentId) -> PortResult<Option<StoredObject>> {
+        self.get_key(Self::thumbnail_key(id)).await
     }
 
     async fn health(&self) -> PortResult<()> {

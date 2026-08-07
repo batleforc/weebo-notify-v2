@@ -38,3 +38,10 @@ progenitor.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 syn = "2"
+# Rasterising the desktop icons (M5). Pure Rust on purpose: `librsvg`, Inkscape and
+# ImageMagick are system packages, and this workspace has no root (§12.4) — the
+# same constraint that keeps the shell itself unbuildable here.
+#
+# No `text` feature: the marks are paths, so font shaping would be a font stack
+# pulled in to render nothing.
+resvg = { version = "0.48.1", default-features = false }

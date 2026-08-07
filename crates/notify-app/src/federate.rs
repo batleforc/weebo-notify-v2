@@ -28,6 +28,61 @@ use notify_ports::{
     RateLimiter, ReplayGuard,
 };
 
+/// The trust policies in force, swappable while the process runs (§5.3, §11, D31).
+///
+/// # Why this is not just a `TrustPolicies`
+///
+/// `[[trust_policy]]` decides which forge may publish here, and §11 says the
+/// configuration is re-read on `SIGHUP`. Held by value, it could not be: the set
+/// was cloned into this use case at boot, so a reload changed a file and nothing
+/// else. M4duodetricies made that safe by *not* pretending — a reload kept the
+/// running set and warned — and left the real fix here (D31).
+///
+/// # Why a lock and not an `ArcSwap`
+///
+/// Reads happen once per token exchange, which is a CI job logging in, not a hot
+/// path: a `RwLock` costs nothing measurable here and costs no dependency either.
+/// The same reasoning, and the same poisoning policy, as `ReconciliationLog`.
+#[derive(Debug, Clone, Default)]
+pub struct LivePolicies {
+    current: Arc<std::sync::RwLock<TrustPolicies>>,
+}
+
+impl LivePolicies {
+    /// Start from what the file said at boot.
+    #[must_use]
+    pub fn new(policies: TrustPolicies) -> Self {
+        Self {
+            current: Arc::new(std::sync::RwLock::new(policies)),
+        }
+    }
+
+    /// Replace the set in force — what a `SIGHUP` does (§11).
+    ///
+    /// Whole-set replacement, never a merge: a policy withdrawn from the file has to
+    /// stop granting anything, and that is the half a merge would lose. It is also
+    /// the half that matters, since it is the one that *removes* a right.
+    pub fn adopt(&self, policies: TrustPolicies) {
+        // A poisoned lock means a previous writer panicked mid-write. Writing through
+        // it is the safe choice here and it is worth saying why: the alternative is
+        // refusing the swap, which would leave a **withdrawn** policy in force for
+        // the life of the process.
+        match self.current.write() {
+            Ok(mut slot) => *slot = policies,
+            Err(poisoned) => *poisoned.into_inner() = policies,
+        }
+    }
+
+    /// The set in force right now.
+    #[must_use]
+    pub fn current(&self) -> TrustPolicies {
+        match self.current.read() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
 /// Exchange a forge ID token for a short-lived weebo-notify token.
 #[derive(Clone)]
 pub struct ExchangeToken {
@@ -36,7 +91,7 @@ pub struct ExchangeToken {
     channels: Arc<dyn ChannelRepository>,
     limiter: Arc<dyn RateLimiter>,
     clock: Arc<dyn Clock>,
-    policies: TrustPolicies,
+    policies: LivePolicies,
     audience: String,
 }
 
@@ -55,7 +110,7 @@ impl ExchangeToken {
         channels: Arc<dyn ChannelRepository>,
         limiter: Arc<dyn RateLimiter>,
         clock: Arc<dyn Clock>,
-        policies: TrustPolicies,
+        policies: LivePolicies,
         audience: String,
     ) -> Self {
         Self {
@@ -103,7 +158,9 @@ impl ExchangeToken {
 
         // Audience, anchored subject glob, channel-scoped precedence — all of it,
         // in one pure call with its own tests (design §5.3, scenario T11).
-        let grant = self.policies.decide(&claims, &self.audience)?;
+        // Read once per exchange rather than held: this is what makes a `SIGHUP`
+        // reach the path that decides who may publish (D31).
+        let grant = self.policies.current().decide(&claims, &self.audience)?;
 
         // Resolve the patterns *now*, against the channels that exist now. A token
         // carrying `ci-*` would push this work onto every later request, against a
@@ -187,6 +244,8 @@ mod tests {
         exchange: ExchangeToken,
         federation: StaticFederationVerifier,
         limiter: TestRateLimiter,
+        /// The same handle the exchange reads, so a test can swap under it (D31).
+        policies: LivePolicies,
     }
 
     fn claims(jti: &str) -> FederatedClaims {
@@ -206,6 +265,7 @@ mod tests {
         }
         let federation = StaticFederationVerifier::new();
         let limiter = TestRateLimiter::default();
+        let live = LivePolicies::new(TrustPolicies::new(policies));
 
         Fixture {
             exchange: ExchangeToken::new(
@@ -214,11 +274,12 @@ mod tests {
                 Arc::new(store),
                 Arc::new(limiter.clone()),
                 Arc::new(TestClock::new()),
-                TrustPolicies::new(policies),
+                live.clone(),
                 US.to_owned(),
             ),
             federation,
             limiter,
+            policies: live,
         }
     }
 
@@ -233,6 +294,42 @@ mod tests {
             scopes: vec![Scope::Publish],
             channel_scoped: false,
         }
+    }
+
+    // --- Trust policies swapped while the process runs (§11, D31) -----------
+
+    #[tokio::test]
+    async fn a_withdrawn_policy_stops_granting_without_a_restart() {
+        let fixture = fixture(vec![policy("repo:weebo/*", &["ci-*"])], &["ci-infra"]);
+        fixture.federation.register("first", claims("tok-1"));
+        fixture.federation.register("second", claims("tok-2"));
+
+        assert!(fixture.exchange.execute("first").await.is_ok());
+
+        // What D31 was: `[[trust_policy]]` was cloned into this use case at boot, so
+        // withdrawing it from the file changed a file and nothing else — the forge
+        // went on publishing until somebody restarted the process.
+        fixture.policies.adopt(TrustPolicies::new(Vec::new()));
+
+        assert!(
+            fixture.exchange.execute("second").await.is_err(),
+            "a policy withdrawn from the configuration must stop granting at once"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_policy_added_at_runtime_grants_without_a_restart() {
+        let fixture = fixture(Vec::new(), &["ci-infra"]);
+        fixture.federation.register("forge-token", claims("tok-1"));
+
+        assert!(fixture.exchange.execute("forge-token").await.is_err());
+
+        fixture
+            .policies
+            .adopt(TrustPolicies::new(vec![policy("repo:weebo/*", &["ci-*"])]));
+
+        let minted = fixture.exchange.execute("forge-token").await.unwrap();
+        assert_eq!(minted.channels, vec![ChannelId::parse("ci-infra").unwrap()]);
     }
 
     #[tokio::test]

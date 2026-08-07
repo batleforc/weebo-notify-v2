@@ -20,6 +20,80 @@ use time::OffsetDateTime;
 use crate::error::PortResult;
 use crate::pagination::{Page, PageRequest};
 
+/// Who performed an audited action.
+///
+/// # Why this is not just a [`Principal`]
+///
+/// §5 has four kinds of principal and every one of them authenticated: a person, a
+/// bot, a channel key, a CI job. The reconciler is none of them. It applies a file
+/// (§11), at boot or on `SIGHUP`, and nobody "did" that — which is exactly why §13's
+/// promise that trust policy changes are journalled had no emitter for so long
+/// (D28): there was no honest value to put in this field.
+///
+/// Widening it here rather than adding a fifth `Principal` is deliberate. A
+/// `Principal` is what publishes, holds a membership and reads a channel; a fifth
+/// variant would be representable in all of those, and every match over the four
+/// would gain an arm that means "cannot happen". The configuration is an actor of
+/// the **audit log** and of nothing else, so it is named here and nowhere else.
+///
+/// The wire form stays flat — `{"kind":"user","id":…}` beside `{"kind":
+/// "configuration"}` — so a reader that already switches on `kind` gains a case
+/// rather than a nesting level.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AuditActor {
+    /// The configuration file, applied by the reconciler.
+    ///
+    /// **First on purpose.** `untagged` tries the variants in order, and the two are
+    /// disjoint by their `kind`: `Principal` refuses `"configuration"` as an unknown
+    /// variant and [`Configured`] refuses everything else. Order still matters to a
+    /// reader, so it is written down rather than discovered.
+    Configuration(Configured),
+
+    /// Somebody or something that authenticated (design §5).
+    Principal(Principal),
+}
+
+/// The single-valued tag behind [`AuditActor::Configuration`].
+///
+/// A one-variant enum rather than a unit struct so that serde and utoipa both emit
+/// the `{"kind":"configuration"}` object the flat wire form needs.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Configured {
+    /// Applied from `[[trust_policy]]`, `[[channels.managed]]` or
+    /// `[[service_accounts]]` — GitOps, not a request (design §11).
+    Configuration,
+}
+
+impl AuditActor {
+    /// The reconciler, as the log names it.
+    #[must_use]
+    pub const fn configuration() -> Self {
+        Self::Configuration(Configured::Configuration)
+    }
+
+    /// The stable string the log is indexed and filtered on.
+    ///
+    /// `configuration` cannot collide with a principal's reference: a `UserId` and
+    /// the rest are prefixed ULIDs, and a CI subject always contains a colon.
+    #[must_use]
+    pub fn reference(&self) -> String {
+        match self {
+            Self::Configuration(_) => "configuration".to_owned(),
+            Self::Principal(principal) => principal.reference(),
+        }
+    }
+}
+
+impl From<Principal> for AuditActor {
+    fn from(principal: Principal) -> Self {
+        Self::Principal(principal)
+    }
+}
+
 /// One administrative action, from a closed vocabulary (design §13).
 ///
 /// # Why this is a type and not a `&'static str`
@@ -121,6 +195,32 @@ pub mod actions {
     pub const SERVICE_ACCOUNT_CREATED: AuditAction = AuditAction("service_account.created");
     /// A service account was disabled, taking every key it owns with it.
     pub const SERVICE_ACCOUNT_DISABLED: AuditAction = AuditAction("service_account.disabled");
+
+    // --- What GitOps changed (design §11, §13, D28) -------------------------
+    //
+    // One action per *change*, never one per pass. A row saying "a reconciliation
+    // ran" tells an operator that something was applied, which leaves them back at
+    // `git log` — the exact gap §13 promises this log closes. Absent changes emit
+    // nothing, so a steady instance reconciling every SIGHUP stays silent.
+
+    /// A `[[trust_policy]]` appeared — a forge may now publish here (§5.3).
+    pub const TRUST_POLICY_ADDED: AuditAction = AuditAction("trust_policy.added");
+    /// A `[[trust_policy]]` was edited: its issuer, channels or subjects moved.
+    pub const TRUST_POLICY_CHANGED: AuditAction = AuditAction("trust_policy.changed");
+    /// A `[[trust_policy]]` was withdrawn — that forge can no longer publish.
+    pub const TRUST_POLICY_REMOVED: AuditAction = AuditAction("trust_policy.removed");
+
+    /// A `[[channels.managed]]` block created a channel.
+    pub const MANAGED_CHANNEL_ADDED: AuditAction = AuditAction("managed.channel.added");
+    /// A managed channel's declaration changed — access, TTL, limits.
+    pub const MANAGED_CHANNEL_CHANGED: AuditAction = AuditAction("managed.channel.changed");
+    /// A managed channel left the configuration and was archived (never deleted).
+    pub const MANAGED_CHANNEL_REMOVED: AuditAction = AuditAction("managed.channel.removed");
+
+    /// A `[[service_accounts]]` block created an account.
+    pub const MANAGED_ACCOUNT_ADDED: AuditAction = AuditAction("managed.service_account.added");
+    /// A managed service account's declaration changed.
+    pub const MANAGED_ACCOUNT_CHANGED: AuditAction = AuditAction("managed.service_account.changed");
 }
 
 /// The closed vocabulary: every value [`AuditAction::parse`] accepts.
@@ -142,6 +242,14 @@ pub const AUDIT_ACTIONS: &[AuditAction] = &[
     actions::PLATFORM_CHANNEL_SELF_JOIN,
     actions::SERVICE_ACCOUNT_CREATED,
     actions::SERVICE_ACCOUNT_DISABLED,
+    actions::TRUST_POLICY_ADDED,
+    actions::TRUST_POLICY_CHANGED,
+    actions::TRUST_POLICY_REMOVED,
+    actions::MANAGED_CHANNEL_ADDED,
+    actions::MANAGED_CHANNEL_CHANGED,
+    actions::MANAGED_CHANNEL_REMOVED,
+    actions::MANAGED_ACCOUNT_ADDED,
+    actions::MANAGED_ACCOUNT_CHANGED,
 ];
 
 #[cfg(test)]
@@ -197,8 +305,8 @@ mod action_tests {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {
-    /// Who did it.
-    pub actor: Principal,
+    /// Who did it — or [`AuditActor::configuration`] where a file did (§11, D28).
+    pub actor: AuditActor,
     /// What they did — one of the constants in [`actions`].
     #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub action: AuditAction,
@@ -223,8 +331,9 @@ pub struct AuditEntry {
 /// Which entries to show (design §8, `GET /admin/audit`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuditQuery {
-    /// Restrict to one actor.
-    pub actor: Option<Principal>,
+    /// Restrict to one actor. Takes the configuration too, which is how an operator
+    /// asks "what did GitOps change" without reading every other row.
+    pub actor: Option<AuditActor>,
     /// Restrict to one action.
     pub action: Option<String>,
     /// Restrict to one channel.

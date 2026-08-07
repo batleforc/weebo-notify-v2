@@ -305,7 +305,7 @@ impl RequeueDeadLetter {
 
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::DLQ_REQUEUED,
                 target: Some(id.to_string()),
                 channel: None,

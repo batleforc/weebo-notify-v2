@@ -146,7 +146,7 @@ impl CreateApiKey {
 
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::APIKEY_CREATED,
                 // The prefix, never the secret. An audit log that quotes a
                 // credential is a credential store nobody thinks of as one.
@@ -234,7 +234,7 @@ impl RevokeApiKey {
         if revoked {
             self.audit
                 .record(&AuditEntry {
-                    actor: caller.principal.clone(),
+                    actor: caller.principal.clone().into(),
                     action: actions::APIKEY_REVOKED,
                     target: Some(key.prefix.to_string()),
                     channel: key.channels.first().cloned(),

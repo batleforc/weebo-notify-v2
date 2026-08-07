@@ -38,3 +38,6 @@ junit*.xml
 # socket is a live file descriptor, not a file: it belongs to the running pod and
 # means nothing anywhere else.
 dev/.dbus/
+
+# The desktop shell builds outside the cargo workspace (M5, D13).
+web/src-tauri/target/

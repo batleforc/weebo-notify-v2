@@ -513,7 +513,7 @@ pub(crate) struct Federation {
 pub(crate) struct Push {
     pub webpush: Option<WebPush>,
     pub apns: Option<serde_json::Value>,
-    pub unifiedpush: Option<serde_json::Value>,
+    pub unifiedpush: Option<UnifiedPush>,
 }
 
 /// `[push.webpush]` — RFC 8292 identification (design §11, M3.5).
@@ -534,6 +534,19 @@ pub(crate) struct WebPush {
     /// than a missing one.
     pub contact: String,
 }
+
+/// `[push.unifiedpush]` — enables the self-hosted UnifiedPush transport (design
+/// §11, §6.2, M6).
+///
+/// Empty on purpose, unlike `[push.webpush]`: there is no server-wide credential to
+/// hold. The destination is per-device (the distributor endpoint from `POST
+/// /devices`), and the payload is sealed to the device's own key rather than signed
+/// by this server's — nothing here identifies the server to a relay the way VAPID
+/// does. The section's only job is to exist, so an operator can turn the transport
+/// on without inventing a value to put under it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct UnifiedPush {}
 
 impl Config {
     /// Read the layered configuration.
@@ -558,6 +571,62 @@ impl Config {
 
         config.validate()?;
         Ok(config)
+    }
+
+    /// The configuration a `SIGHUP` may actually adopt (design §11, T21).
+    ///
+    /// # What a reload changes, and what it cannot
+    ///
+    /// §11 asks for reconciliation "au boot et sur SIGHUP", and reconciliation is
+    /// what this honours: `[[channels.managed]]` and `[[service_accounts]]`. They
+    /// are the sections the reconciler *applies to the database*, so re-reading them
+    /// is enough for them to take effect.
+    ///
+    /// Everything else was wired into a running object at boot — the listening
+    /// socket, the database pool, the OIDC verifier, the sink fleet, and the trust
+    /// policies the token exchange holds. Re-reading those would change a value
+    /// nothing consults.
+    ///
+    /// **Trust policies are adopted too, and only since D31 was closed.** They were
+    /// held by value inside the token exchange, so a reload could change the file
+    /// and nothing else; adopting them here would have written "a forge may now
+    /// publish" into the audit log (§13, D28) while the process went on refusing
+    /// that forge — an entry worse than none, since an incident review would date
+    /// the change to the wrong hour. `notify_app::LivePolicies` makes the swap real,
+    /// so the file and the running process now agree, and the journal tells the
+    /// truth about when rights moved.
+    ///
+    /// What *did* move and still cannot be adopted is reported by
+    /// [`Config::unreloadable`] rather than passed over, so an operator who edited
+    /// the wrong section is told.
+    pub(crate) fn reloaded_from(&self, file: Self) -> Self {
+        Self {
+            channels: file.channels,
+            service_accounts: file.service_accounts,
+            trust_policy: file.trust_policy,
+            ..self.clone()
+        }
+    }
+
+    /// Sections that differ in the file and that a reload cannot adopt (§11).
+    ///
+    /// The counterpart of [`Config::unhonoured`], and for the same reason: silence
+    /// here is how an operator spends an afternoon wondering why their edit did
+    /// nothing.
+    pub(crate) fn unreloadable(&self, file: &Self) -> Vec<String> {
+        let mut moved = Vec::new();
+
+        if self.server.bind != file.server.bind {
+            moved.push("[server] bind — the socket is bound at boot".to_owned());
+        }
+        if self.database.url != file.database.url {
+            moved.push("[database] url — the pool is connected at boot".to_owned());
+        }
+        if self.oidc.issuer != file.oidc.issuer || self.oidc.client_id != file.oidc.client_id {
+            moved.push("[oidc] — the verifier is built at boot".to_owned());
+        }
+
+        moved
     }
 
     /// Refuse a configuration this build cannot honour.
@@ -658,14 +727,12 @@ impl Config {
         // function exists to prevent: the one key that was silently dropped was the
         // one the drop-detector did not know about.
 
-        // `[push.webpush]` is honoured since M3.5 and is absent from this list on
-        // purpose: the composition root reads it, and a key it cannot use stops the
-        // process rather than warning here.
-        if self.push.apns.is_some() || self.push.unifiedpush.is_some() {
+        // `[push.webpush]` is honoured since M3.5 and `[push.unifiedpush]` since M6,
+        // both absent from this list on purpose: the composition root reads them,
+        // and a transport it cannot build stops the process rather than warning here.
+        if self.push.apns.is_some() {
             pending.push(
-                "[push.apns] / [push.unifiedpush] credentials — the relayed transports \
-                 land with M6 and M7 (§6.2)"
-                    .to_owned(),
+                "[push.apns] credentials — the relayed transport lands with M7 (§6.2)".to_owned(),
             );
         }
 
@@ -1102,5 +1169,133 @@ mod tests {
             "Web Push is wired: {pending:?}"
         );
         assert!(pending.iter().any(|line| line.contains("push.apns")));
+    }
+
+    #[test]
+    fn an_empty_unifiedpush_section_is_no_longer_reported_as_a_key_this_build_ignores() {
+        let path = with_config(
+            "unifiedpush-honoured",
+            "[push.unifiedpush]\n\
+             \n\
+             [push.apns]\n\
+             key_file = \"/secrets/apns.p8\"\n",
+        );
+
+        let pending = Config::load(&path).unwrap().unhonoured();
+
+        assert!(
+            !pending.iter().any(|line| line.contains("push.unifiedpush")),
+            "UnifiedPush is wired: {pending:?}"
+        );
+        assert!(pending.iter().any(|line| line.contains("push.apns")));
+    }
+
+    // --- What a SIGHUP adopts, and what it cannot (design §11, T21) ----------
+
+    #[test]
+    fn a_reload_adopts_the_managed_channels_and_accounts() {
+        let running = Config::default();
+        let file = Config {
+            channels: Channels {
+                managed: vec![ManagedChannel {
+                    id: "ci-infra".to_owned(),
+                    ..ManagedChannel::default()
+                }],
+                ..Channels::default()
+            },
+            service_accounts: vec![ManagedServiceAccount {
+                id: "svc_ci".to_owned(),
+                ..ManagedServiceAccount::default()
+            }],
+            ..Config::default()
+        };
+
+        // These are the two sections the reconciler applies *to the database*, so
+        // re-reading them is enough for them to take effect — which is exactly what
+        // §11 asks a SIGHUP for.
+        let reloaded = running.reloaded_from(file);
+
+        assert_eq!(reloaded.channels.managed.len(), 1);
+        assert_eq!(reloaded.service_accounts.len(), 1);
+    }
+
+    #[test]
+    fn a_reload_adopts_the_trust_policies() {
+        let running = Config {
+            trust_policy: vec![TrustPolicy {
+                issuer: "https://forge.example".to_owned(),
+                subject: "repo:weebo/infra:ref:refs/heads/main".to_owned(),
+                ..TrustPolicy::default()
+            }],
+            ..Config::default()
+        };
+        let file = Config {
+            trust_policy: vec![TrustPolicy {
+                issuer: "https://forge.example".to_owned(),
+                subject: "repo:somebody/else:ref:refs/heads/main".to_owned(),
+                ..TrustPolicy::default()
+            }],
+            ..Config::default()
+        };
+
+        let reloaded = running.reloaded_from(file.clone());
+
+        // Adopted only since D31 was closed. Before that, `[[trust_policy]]` was held
+        // by value inside the token exchange, so taking the file's version here would
+        // have made the reconciler journal "a forge may now publish" (§13, D28) while
+        // the process went on refusing it — an entry dating the change to the wrong
+        // hour, which is worse than no entry. `LivePolicies` makes the swap real, so
+        // the file, the running process and the journal now agree.
+        assert_eq!(
+            reloaded.trust_policy[0].subject, "repo:somebody/else:ref:refs/heads/main",
+            "a reload adopts the file's trust policies, and the swap makes that true"
+        );
+    }
+
+    #[test]
+    fn a_reload_says_what_it_could_not_adopt() {
+        let running = Config::default();
+        let file = Config {
+            trust_policy: vec![TrustPolicy {
+                issuer: "https://forge.example".to_owned(),
+                ..TrustPolicy::default()
+            }],
+            database: Database {
+                url: "postgres://elsewhere/db".to_owned(),
+                ..Database::default()
+            },
+            ..Config::default()
+        };
+
+        let moved = running.unreloadable(&file);
+
+        // Silence here is how somebody spends an afternoon wondering why their edit
+        // did nothing — the same reason `unhonoured` exists.
+        assert!(
+            moved.iter().any(|line| line.contains("database")),
+            "{moved:?}"
+        );
+        // And trust policies are *not* on this list any more: since D31 they are
+        // genuinely adopted, so warning about them would train an operator to ignore
+        // the warnings that still mean something.
+        assert!(
+            !moved.iter().any(|line| line.contains("trust_policy")),
+            "{moved:?}"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_file_has_nothing_to_report() {
+        let running = Config {
+            trust_policy: vec![TrustPolicy {
+                issuer: "https://forge.example".to_owned(),
+                ..TrustPolicy::default()
+            }],
+            ..Config::default()
+        };
+
+        // A SIGHUP that changed nothing must be quiet, or the warning stops meaning
+        // anything the one time it matters.
+        assert!(running.unreloadable(&running.clone()).is_empty());
     }
 }

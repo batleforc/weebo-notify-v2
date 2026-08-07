@@ -33,6 +33,7 @@
 mod attachments;
 mod audit;
 mod channels;
+mod declarations;
 mod devices;
 mod events;
 mod federation;

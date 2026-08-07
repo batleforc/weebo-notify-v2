@@ -717,6 +717,60 @@
         ]
       }
     },
+    "/api/v1/attachments/{id}/thumbnail": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Fetch the small square derived from an attachment (design §2.3, §10.3, D30).",
+        "description": "Bytes and not a signed URL, unlike its sibling above — the reason is the same\none the avatar route documents: a thumbnail renders next to every visible row\nof a possibly virtualised list, and a presign per render would mean a signing\nround trip per row.",
+        "operationId": "thumbnail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The attachment id a payload references",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The thumbnail",
+            "content": {
+              "image/png": {}
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such attachment, none the caller may see, or nothing was ever derived from it — deliberately the same answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/auth/token/exchange": {
       "post": {
         "tags": [
@@ -3694,6 +3748,19 @@
         "type": "string",
         "description": "An uploaded attachment, referenced by a payload rather than embedded in it\n(design §2.3)."
       },
+      "AuditActor": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Configured",
+            "description": "The configuration file, applied by the reconciler.\n\n**First on purpose.** `untagged` tries the variants in order, and the two are\ndisjoint by their `kind`: `Principal` refuses `\"configuration\"` as an unknown\nvariant and [`Configured`] refuses everything else. Order still matters to a\nreader, so it is written down rather than discovered."
+          },
+          {
+            "$ref": "#/components/schemas/Principal",
+            "description": "Somebody or something that authenticated (design §5)."
+          }
+        ],
+        "description": "Who performed an audited action.\n\n# Why this is not just a [`Principal`]\n\n§5 has four kinds of principal and every one of them authenticated: a person, a\nbot, a channel key, a CI job. The reconciler is none of them. It applies a file\n(§11), at boot or on `SIGHUP`, and nobody \"did\" that — which is exactly why §13's\npromise that trust policy changes are journalled had no emitter for so long\n(D28): there was no honest value to put in this field.\n\nWidening it here rather than adding a fifth `Principal` is deliberate. A\n`Principal` is what publishes, holds a membership and reads a channel; a fifth\nvariant would be representable in all of those, and every match over the four\nwould gain an arm that means \"cannot happen\". The configuration is an actor of\nthe **audit log** and of nothing else, so it is named here and nowhere else.\n\nThe wire form stays flat — `{\"kind\":\"user\",\"id\":…}` beside `{\"kind\":\n\"configuration\"}` — so a reader that already switches on `kind` gains a case\nrather than a nesting level."
+      },
       "AuditEntry": {
         "type": "object",
         "description": "One administrative act.",
@@ -3708,8 +3775,8 @@
             "description": "What they did — one of the constants in [`actions`]."
           },
           "actor": {
-            "$ref": "#/components/schemas/Principal",
-            "description": "Who did it."
+            "$ref": "#/components/schemas/AuditActor",
+            "description": "Who did it — or [`AuditActor::configuration`] where a file did (§11, D28)."
           },
           "at": {
             "type": "string",
@@ -3948,6 +4015,25 @@
       "ChoiceOptionKey": {
         "type": "string",
         "description": "One option of a `choice` action."
+      },
+      "Configured": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "configuration"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The single-valued tag behind [`AuditActor::Configuration`].\n\nA one-variant enum rather than a unit struct so that serde and utoipa both emit\nthe `{\"kind\":\"configuration\"}` object the flat wire form needs."
       },
       "Content": {
         "type": "object",
@@ -6002,6 +6088,7 @@
         "description": "What the last GitOps pass did (design §11, §10.4bis).",
         "required": [
           "at",
+          "trigger",
           "channels",
           "accounts",
           "removed",
@@ -6034,6 +6121,10 @@
             "type": "integer",
             "description": "Channels that left the configuration and were archived or deleted.",
             "minimum": 0
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/Trigger",
+            "description": "What caused this pass — boot, the timer, or `SIGHUP` (§11).\n\n§10.4bis asks this screen for \"le dernier SIGHUP\", which a timestamp alone\ncannot answer: the reconciler also runs every minute, so `at` is almost\nalways the timer and an operator who has just sent a signal cannot tell\nwhether it landed."
           }
         }
       },
@@ -6521,6 +6612,15 @@
         "enum": [
           "deleted",
           "expired"
+        ]
+      },
+      "Trigger": {
+        "type": "string",
+        "description": "What made a reconciliation pass happen (design §11, §10.4bis).",
+        "enum": [
+          "boot",
+          "timer",
+          "sighup"
         ]
       },
       "TrustPolicyCard": {

@@ -25,14 +25,17 @@ use notify_app::{
     UlidKeyGenerator, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_s3::{S3Attachments, S3Config};
-use notify_avatars::ImageAvatarProcessor;
+use notify_avatars::{ImageAttachmentThumbnailer, ImageAvatarProcessor};
 use notify_domain::{Pattern, TrustPolicies, TrustPolicy as DomainTrustPolicy};
 use notify_eventbus_pg::PgEventBus;
 use notify_http_actix::ApiState;
 use notify_metrics_prometheus::PrometheusMetrics;
 use notify_oidc::{Argon2SecretHasher, FederationTokens, OidcConfig, OidcVerifier};
 use notify_persistence_pg::{PgLeaderElection, PgStore};
-use notify_ports::{AttachmentStore, EventBus, SinkRegistry as _, SystemClock};
+use notify_ports::{
+    AttachmentStore, AttachmentThumbnailer, EventBus, SinkRegistry as _, SystemClock,
+};
+use notify_push_unifiedpush::UnifiedPush;
 use notify_push_webpush::{WebPush, WebPushConfig};
 use notify_sinks_email::{EmailSink, SmtpSettings};
 use notify_sinks_webhook::WebhookSink;
@@ -64,6 +67,10 @@ pub(crate) struct Application {
     pub routes: SinkRoutes,
     /// GitOps reconciliation.
     pub reconciler: Reconciler,
+    /// The trust policies the token exchange consults, so `SIGHUP` can swap them
+    /// (§5.3, §11, D31). Handed back rather than kept private for the same reason
+    /// `reconciliation_log` is: the writer is the run loop.
+    pub policies: notify_app::LivePolicies,
     /// Where each pass is left for `GET /admin/reconciliation` to read (§10.4bis).
     ///
     /// Handed back rather than kept inside the reconciler because the *writer* is
@@ -146,6 +153,10 @@ impl Application {
             None => Arc::new(NoAttachments),
         };
         let avatars = Arc::new(ImageAvatarProcessor::new());
+        // The other decoder §15/D30 names — see `notify_avatars`'s own module
+        // docs for why the two share a crate.
+        let thumbnailer: Arc<dyn AttachmentThumbnailer> =
+            Arc::new(ImageAttachmentThumbnailer::new());
 
         // The sinks `[[channels.managed.sinks]]` asks for, and the adapters that
         // serve them (§7.1bis). Built before the fan-out because the fan-out is
@@ -174,6 +185,11 @@ impl Application {
         } else {
             fanout.with_sinks(Arc::new(routes.clone()), repository.clone())
         };
+        // Unconditional, unlike sinks: an instance with no `[attachments]` still
+        // gets `NoAttachments`, whose `get` already answers `None` for every
+        // source — `Fanout::derive_thumbnail` finding nothing to fetch is that
+        // deployment's ordinary path, not a case this wiring needs to special-case.
+        let fanout = fanout.with_thumbnails(attachments.clone(), thumbnailer.clone());
 
         // Shared by everything that has to answer "is this notification still
         // there, and may this caller see it".
@@ -187,11 +203,14 @@ impl Application {
         // Federation (§5.3). `None` here is what makes the exchange answer 501 and
         // every CI token fail to authenticate — one absent block, one behaviour.
         let federation = federation_tokens(config, clock.clone())?;
-        let policies = trust_policies(config)?;
-        // Built twice rather than shared: the exchange consumes its copy by value,
-        // and handing the console an `Arc` of the same thing would tie a read-only
-        // screen to the lifetime of an authentication path.
-        let console_policies = trust_policies(config)?;
+        // One set, shared, and swappable on SIGHUP (D31). It used to be built twice
+        // — once for the exchange, once for the console — on the reasoning that a
+        // read-only screen should not be tied to an authentication path. The reason
+        // that reversed: §11 re-reads the file, and two copies would have meant two
+        // answers to "which forge may publish", with the console showing the one
+        // nobody enforces.
+        let policies = notify_app::LivePolicies::new(trust_policies(config)?);
+        let console_policies = policies.clone();
         // Written by the reconcile loop, read by the console. Cloned rather than
         // shared by reference because both halves outlive this function.
         let reconciliation_log = ReconciliationLog::new();
@@ -299,7 +318,7 @@ impl Application {
                     repository.clone(),
                     repository.clone(),
                     clock.clone(),
-                    policies,
+                    policies.clone(),
                     audience,
                 )
             }),
@@ -320,6 +339,14 @@ impl Application {
                 clock.clone(),
             ),
             attachment: notify_app::ReadAttachment::new(
+                notify_app::Attachments {
+                    store: attachments.clone(),
+                    registry: repository.clone(),
+                },
+                repository.clone(),
+                authorizer.clone(),
+            ),
+            attachment_thumbnail: notify_app::ReadAttachmentThumbnail::new(
                 notify_app::Attachments {
                     store: attachments.clone(),
                     registry: repository.clone(),
@@ -441,7 +468,14 @@ impl Application {
             clock.clone(),
         );
 
-        let reconciler = Reconciler::new(repository.clone(), repository.clone(), repository, clock);
+        let reconciler = Reconciler::new(
+            repository.clone(),
+            repository.clone(),
+            repository.clone(),
+            clock,
+            repository.clone(),
+            repository,
+        );
 
         Ok(Self {
             state,
@@ -452,6 +486,7 @@ impl Application {
             drain,
             routes,
             reconciler,
+            policies,
             reconciliation_log,
             transports,
             metrics,
@@ -512,34 +547,42 @@ fn sink_fleet(config: &Config, routes: &SinkRoutes) -> anyhow::Result<SinkFleet>
 ///
 /// Every failure here is an operator's, and every one of them is answered at startup
 /// rather than at the first push: a key file that cannot be read, a key that is not
-/// P-256, a contact no relay would accept. Finding out because somebody's phone
-/// stayed silent is the failure this refuses.
+/// P-256, a contact no relay would accept — UnifiedPush has nothing in this category
+/// to fail on, since `[push.unifiedpush]` holds no credential (design §6.2). Finding
+/// out because somebody's phone stayed silent is the failure this refuses.
 fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option<String>)> {
     let mut registry = TransportRegistry::empty();
+    let mut key = None;
 
-    let Some(settings) = &config.push.webpush else {
-        return Ok((registry, None));
-    };
+    if let Some(settings) = &config.push.webpush {
+        // The key is a path in the configuration and not the key itself (§11), so it
+        // can be mounted from whatever the cluster keeps secrets in without passing
+        // through a file that gets committed by accident.
+        let pem = std::fs::read_to_string(&settings.vapid_key_file).map_err(|error| {
+            anyhow::anyhow!(
+                "[push.webpush] vapid_key_file `{}` cannot be read: {error}",
+                settings.vapid_key_file.display()
+            )
+        })?;
 
-    // The key is a path in the configuration and not the key itself (§11), so it can
-    // be mounted from whatever the cluster keeps secrets in without passing through
-    // a file that gets committed by accident.
-    let pem = std::fs::read_to_string(&settings.vapid_key_file).map_err(|error| {
-        anyhow::anyhow!(
-            "[push.webpush] vapid_key_file `{}` cannot be read: {error}",
-            settings.vapid_key_file.display()
-        )
-    })?;
+        let webpush = WebPush::new(&WebPushConfig {
+            private_key_pem: pem,
+            contact: settings.contact.clone(),
+        })?;
 
-    let webpush = WebPush::new(&WebPushConfig {
-        private_key_pem: pem,
-        contact: settings.contact.clone(),
-    })?;
+        key = Some(webpush.public_key().to_owned());
+        registry = registry.with(Arc::new(webpush));
+    }
 
-    let key = webpush.public_key().to_owned();
-    registry = registry.with(Arc::new(webpush));
+    if config.push.unifiedpush.is_some() {
+        // Unlike Web Push, nothing here can fail on an operator's typo — there is no
+        // key to read (design §11, `[push.unifiedpush]`) — so the only way `new()`
+        // fails is the HTTP client itself, the same class of startup failure as
+        // everything else in this function.
+        registry = registry.with(Arc::new(UnifiedPush::new()?));
+    }
 
-    Ok((registry, Some(key)))
+    Ok((registry, key))
 }
 
 /// The federation adapter, when `[federation]` says there is one.
@@ -599,7 +642,7 @@ fn federation_tokens(
 /// A channel's `publishers` block becomes a policy over that one channel, marked
 /// `channel_scoped` so §11's precedence is a fact the domain reads rather than a
 /// shape it has to infer (M4.1).
-fn trust_policies(config: &Config) -> anyhow::Result<TrustPolicies> {
+pub(crate) fn trust_policies(config: &Config) -> anyhow::Result<TrustPolicies> {
     let mut policies = Vec::new();
 
     for policy in &config.trust_policy {
@@ -685,6 +728,26 @@ impl AttachmentStore for NoAttachments {
         Ok(None)
     }
 
+    async fn put_thumbnail(
+        &self,
+        _id: notify_domain::AttachmentId,
+        _content_type: &str,
+        _bytes: Vec<u8>,
+    ) -> notify_ports::PortResult<()> {
+        Err(unconfigured())
+    }
+
+    async fn get_thumbnail(
+        &self,
+        _id: notify_domain::AttachmentId,
+    ) -> notify_ports::PortResult<Option<notify_ports::StoredObject>> {
+        // `None`, like `get`: `Writer::derive_thumbnail` reads this to decide
+        // whether a source exists before it ever calls `put_thumbnail`, so an
+        // instance with no bucket configured derives nothing rather than erroring
+        // out of a publish over a feature it was never asked to provide.
+        Ok(None)
+    }
+
     async fn health(&self) -> notify_ports::PortResult<()> {
         // Healthy: an instance with no bucket configured is not a broken instance,
         // and reporting it unready would take the whole replica out over a feature
@@ -761,6 +824,26 @@ mod tests {
             key.unwrap().len(),
             87,
             "65 octets of uncompressed point, base64url"
+        );
+    }
+
+    #[test]
+    fn an_empty_unifiedpush_section_registers_the_transport_with_no_key_to_hand_out() {
+        let config = Config {
+            push: crate::config::Push {
+                unifiedpush: Some(crate::config::UnifiedPush {}),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (registry, key) = push_transports(&config).unwrap();
+
+        assert_eq!(registry.names(), vec!["unifiedpush"]);
+        assert!(
+            key.is_none(),
+            "UnifiedPush identifies no one to a relay the way VAPID does — there is \
+             nothing here for a device to subscribe with"
         );
     }
 

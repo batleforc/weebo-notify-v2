@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use notify_domain::{ChannelId, Scope, TrustPolicies};
+use notify_domain::{ChannelId, Scope};
 use notify_ports::{AuditEntry, AuditLog, AuditQuery, ChannelRepository, Failure, Page, actions};
 use time::OffsetDateTime;
 
@@ -130,6 +130,20 @@ pub struct ChannelCard {
     pub receipts_enabled: bool,
 }
 
+/// What made a reconciliation pass happen (design §11, §10.4bis).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trigger {
+    /// The process started.
+    Boot,
+    /// The interval elapsed. The common case, and the reason this enum exists: a
+    /// timer pass looks exactly like a signalled one in a timestamp.
+    Timer,
+    /// An operator sent `SIGHUP` and the file was re-read.
+    Sighup,
+}
+
 /// What the last GitOps pass did (design §11, §10.4bis).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -137,6 +151,13 @@ pub struct Reconciliation {
     /// When this replica last applied the configuration.
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
+    /// What caused this pass — boot, the timer, or `SIGHUP` (§11).
+    ///
+    /// §10.4bis asks this screen for "le dernier SIGHUP", which a timestamp alone
+    /// cannot answer: the reconciler also runs every minute, so `at` is almost
+    /// always the timer and an operator who has just sent a signal cannot tell
+    /// whether it landed.
+    pub trigger: Trigger,
     /// Managed channels written.
     pub channels: usize,
     /// Managed service accounts written.
@@ -292,7 +313,7 @@ impl SelfJoin {
 
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::PLATFORM_CHANNEL_SELF_JOIN,
                 target: Some(id.to_string()),
                 channel: Some(id.clone()),
@@ -314,13 +335,13 @@ impl SelfJoin {
 /// inside the boundary.
 #[derive(Clone, Debug)]
 pub struct ListTrustPolicies {
-    policies: TrustPolicies,
+    policies: crate::federate::LivePolicies,
 }
 
 impl ListTrustPolicies {
     /// Wire it with what the composition root parsed.
     #[must_use]
-    pub fn new(policies: TrustPolicies) -> Self {
+    pub fn new(policies: crate::federate::LivePolicies) -> Self {
         Self { policies }
     }
 
@@ -328,8 +349,12 @@ impl ListTrustPolicies {
     pub fn execute(&self, caller: &Caller) -> Result<Vec<TrustPolicyCard>, Failure> {
         caller.ensure_platform_admin()?;
 
+        // The set in force, not the one parsed at boot: a console that showed the
+        // file as it was read would answer "why was that pipeline refused" with
+        // yesterday.s configuration after a SIGHUP (D31).
         Ok(self
             .policies
+            .current()
             .configured()
             .iter()
             .map(|policy| TrustPolicyCard {

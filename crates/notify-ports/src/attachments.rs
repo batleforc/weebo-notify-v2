@@ -112,8 +112,34 @@ pub trait AttachmentStore: Send + Sync {
     /// would mean a signing round trip per row of an inbox.
     async fn get(&self, id: AttachmentId) -> PortResult<Option<StoredObject>>;
 
+    /// Write a thumbnail derived from an attachment (design §2.3, D30).
+    ///
+    /// The same exception `put` documents, extended to one more producer: this
+    /// server's own decoder, never a client. A thumbnail is never presigned or
+    /// uploaded — only ever derived from an object already accepted, and served
+    /// through the API for the reason `get`'s docs give for the avatar.
+    async fn put_thumbnail(
+        &self,
+        id: AttachmentId,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> PortResult<()>;
+
+    /// Read a derived thumbnail back, if one exists.
+    ///
+    /// `None` covers three states indistinguishably, and none of them are this
+    /// method's business to tell apart: the attachment does not exist, it exists
+    /// but nothing has derived a thumbnail from it yet, or derivation was tried
+    /// and refused (an animated GIF, say). A caller who needs to tell those apart
+    /// already has `exists` and `get`.
+    async fn get_thumbnail(&self, id: AttachmentId) -> PortResult<Option<StoredObject>>;
+
     /// Delete an object, when its notification is purged or when the id it was
     /// signed under turned out never to be used (design §7.2bis).
+    ///
+    /// Takes its thumbnail with it, if one was ever derived — an orphaned
+    /// derivative would be a second leak of exactly the kind D25 closed for the
+    /// original object.
     async fn delete(&self, id: AttachmentId) -> PortResult<()>;
 
     /// Whether the bucket is reachable, for `/readyz` (design §13).

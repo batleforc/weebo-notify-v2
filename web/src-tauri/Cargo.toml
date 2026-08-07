@@ -1,0 +1,39 @@
+# The desktop shell (design §10bis.3, milestone M5).
+#
+# `[workspace]` is empty **on purpose**: this crate is deliberately NOT a member of
+# the repository's cargo workspace. On Linux Tauri links against GTK/WebKit, which
+# `mise` cannot install and a Che workspace cannot `apt-get` (§12.4, D13) — so a
+# member here would break `cargo build --workspace`, `task test` and every gate for
+# everybody working on the server, on a machine that has no business building a
+# desktop app.
+#
+# The cost of that choice, stated plainly: nothing in this directory is compiled by
+# any gate in this repository today. It is written and unbuilt, exactly like the two
+# Containerfiles of D17, and it stays that way until the dev image carries the stack
+# — at which point this becomes a member and the gates pick it up.
+[workspace]
+
+[package]
+name = "weebo-notify-desktop"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "weebo-notify desktop shell"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The interesting half of this shell lives here and is tested by `task test` on any
+# machine: the tray state machine (§10bis.3ter) and the deep-link parser
+# (§10bis.3quater). What is left in `main.rs` is binding, which is the part that
+# genuinely needs a webview to mean anything.
+notify-client-core = { path = "../../crates/notify-client-core" }
+
+# The deep-link payload the front end listens for — one small object, and the shell
+# has no other reason to serialise anything.
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"

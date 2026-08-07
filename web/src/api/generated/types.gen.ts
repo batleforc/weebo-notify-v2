@@ -192,6 +192,29 @@ export type ApiKeyPrefix = string;
 export type AttachmentId = string;
 
 /**
+ * Who performed an audited action.
+ *
+ * # Why this is not just a [`Principal`]
+ *
+ * §5 has four kinds of principal and every one of them authenticated: a person, a
+ * bot, a channel key, a CI job. The reconciler is none of them. It applies a file
+ * (§11), at boot or on `SIGHUP`, and nobody "did" that — which is exactly why §13's
+ * promise that trust policy changes are journalled had no emitter for so long
+ * (D28): there was no honest value to put in this field.
+ *
+ * Widening it here rather than adding a fifth `Principal` is deliberate. A
+ * `Principal` is what publishes, holds a membership and reads a channel; a fifth
+ * variant would be representable in all of those, and every match over the four
+ * would gain an arm that means "cannot happen". The configuration is an actor of
+ * the **audit log** and of nothing else, so it is named here and nowhere else.
+ *
+ * The wire form stays flat — `{"kind":"user","id":…}` beside `{"kind":
+ * "configuration"}` — so a reader that already switches on `kind` gains a case
+ * rather than a nesting level.
+ */
+export type AuditActor = Configured | Principal;
+
+/**
  * One administrative act.
  */
 export type AuditEntry = {
@@ -200,9 +223,9 @@ export type AuditEntry = {
      */
     action: string;
     /**
-     * Who did it.
+     * Who did it — or [`AuditActor::configuration`] where a file did (§11, D28).
      */
-    actor: Principal;
+    actor: AuditActor;
     /**
      * When.
      */
@@ -406,6 +429,16 @@ export type ChoiceOption = {
  * One option of a `choice` action.
  */
 export type ChoiceOptionKey = string;
+
+/**
+ * The single-valued tag behind [`AuditActor::Configuration`].
+ *
+ * A one-variant enum rather than a unit struct so that serde and utoipa both emit
+ * the `{"kind":"configuration"}` object the flat wire form needs.
+ */
+export type Configured = {
+    kind: 'configuration';
+};
 
 /**
  * The validated body of a revision.
@@ -1752,6 +1785,15 @@ export type Reconciliation = {
      * Channels that left the configuration and were archived or deleted.
      */
     removed: number;
+    /**
+     * What caused this pass — boot, the timer, or `SIGHUP` (§11).
+     *
+     * §10.4bis asks this screen for "le dernier SIGHUP", which a timestamp alone
+     * cannot answer: the reconciler also runs every minute, so `at` is almost
+     * always the timer and an operator who has just sent a signal cannot tell
+     * whether it landed.
+     */
+    trigger: Trigger;
 };
 
 /**
@@ -2112,6 +2154,20 @@ export const TombstoneReason = { DELETED: 'deleted', EXPIRED: 'expired' } as con
  * (design §8.1).
  */
 export type TombstoneReason = typeof TombstoneReason[keyof typeof TombstoneReason];
+
+/**
+ * What made a reconciliation pass happen (design §11, §10.4bis).
+ */
+export const Trigger = {
+    BOOT: 'boot',
+    TIMER: 'timer',
+    SIGHUP: 'sighup'
+} as const;
+
+/**
+ * What made a reconciliation pass happen (design §11, §10.4bis).
+ */
+export type Trigger = typeof Trigger[keyof typeof Trigger];
 
 /**
  * One trust policy as the console shows it.
@@ -2623,6 +2679,38 @@ export type DownloadResponses = {
 };
 
 export type DownloadResponse = DownloadResponses[keyof DownloadResponses];
+
+export type ThumbnailData = {
+    body?: never;
+    path: {
+        /**
+         * The attachment id a payload references
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/attachments/{id}/thumbnail';
+};
+
+export type ThumbnailErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No such attachment, none the caller may see, or nothing was ever derived from it — deliberately the same answer
+     */
+    404: Problem;
+};
+
+export type ThumbnailError = ThumbnailErrors[keyof ThumbnailErrors];
+
+export type ThumbnailResponses = {
+    /**
+     * The thumbnail
+     */
+    200: unknown;
+};
 
 export type ExchangeData = {
     body: ExchangeBody;

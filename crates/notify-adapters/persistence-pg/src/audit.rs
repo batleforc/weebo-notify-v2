@@ -8,8 +8,8 @@
 //! administrative act is not something a client replays, and borrowing the stream's
 //! order would put "somebody revoked a key" into everybody's backlog.
 
-use notify_domain::{ChannelId, Principal};
-use notify_ports::{AuditEntry, AuditLog, AuditQuery, Page, PortResult};
+use notify_domain::ChannelId;
+use notify_ports::{AuditActor, AuditEntry, AuditLog, AuditQuery, Page, PortResult};
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
 
@@ -65,7 +65,7 @@ impl AuditLog for PgStore {
              ORDER BY seq DESC
              LIMIT $7",
         )
-        .bind(query.actor.as_ref().map(Principal::reference))
+        .bind(query.actor.as_ref().map(AuditActor::reference))
         .bind(query.action.as_deref())
         .bind(query.channel.as_ref().map(ChannelId::as_str))
         .bind(query.since)
@@ -109,7 +109,7 @@ fn hydrate(row: &PgRow) -> PortResult<AuditEntry> {
     let channel: Option<String> = row.try_get("channel_id").map_err(|e| fail("audit", e))?;
 
     Ok(AuditEntry {
-        actor: from_json::<Principal>("audit.actor", actor)?,
+        actor: from_json::<AuditActor>("audit.actor", actor)?,
         // `AuditEntry::action` is a `&'static str` because the vocabulary is a
         // closed set an incident review filters on. Interning here rather than
         // leaking the `String` keeps that true on the way back out — and a value

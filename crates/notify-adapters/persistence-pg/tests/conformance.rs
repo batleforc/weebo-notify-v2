@@ -36,10 +36,11 @@ mod e2e {
     use notify_persistence_pg::{PgLeaderElection, PgStore};
     use notify_ports::{
         Allowance, ApiKeyRepository, AttachmentRegistry, AuditEntry, AuditLog, AuditQuery,
-        ChannelRepository, Claim, DeviceRepository, EventPayload, EventStore, IdempotencyStore,
-        InboxQuery, InteractionRepository, LeaderElection, NotificationRepository, PageRequest,
-        PreferenceRepository, Quota, RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery,
-        ServiceAccountRepository, StoredApiKey, SyncQuery, UnreadCount, UserRepository, Visibility,
+        ChannelRepository, Claim, Declaration, DeclarationKind, DeclarationStore, DeviceRepository,
+        EventPayload, EventStore, IdempotencyStore, InboxQuery, InteractionRepository,
+        LeaderElection, NotificationRepository, PageRequest, PreferenceRepository, Quota,
+        RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery, ServiceAccountRepository,
+        StoredApiKey, SyncQuery, UnreadCount, UserRepository, Visibility,
     };
     use time::{Duration, OffsetDateTime};
 
@@ -98,6 +99,9 @@ mod e2e {
         store
     }
     fn audit(store: &PgStore) -> &dyn AuditLog {
+        store
+    }
+    fn declarations(store: &PgStore) -> &dyn DeclarationStore {
         store
     }
     fn receipts(store: &PgStore) -> &dyn ReceiptRepository {
@@ -1513,6 +1517,112 @@ mod e2e {
         assert_eq!(targets[0].label, "alice's");
     }
 
+    // --- What GitOps last applied (design §11, §13, D28) ---------------------
+
+    #[tokio::test]
+    async fn a_declaration_set_is_replaced_and_not_merged() {
+        let store = store!();
+
+        // Namespaced per run: this suite shares one database and deliberately
+        // leaves its rows behind.
+        //
+        // **This test is more invasive than the rest of the suite**, and it is worth
+        // knowing before running it against a database somebody is using: `apply`
+        // replaces a whole *kind* by design — that is what makes a withdrawn policy
+        // stop being stored — so it deletes whatever the running server last wrote.
+        // Nothing is lost, since the reconciler rebuilds the snapshot on its next
+        // pass, but that pass reports the difference: a handful of `added` and
+        // `removed` entries appear in the audit log with no configuration change
+        // behind them. Harmless in a test database, confusing in a shared one.
+        let kind = DeclarationKind::TrustPolicy;
+        let unique = notify_domain::ReceiptId::generate().to_string();
+        let key = |suffix: &str| format!("{unique}-{suffix}");
+
+        let first = vec![
+            Declaration {
+                key: key("kept"),
+                snapshot: serde_json::json!({ "channels": [] }),
+            },
+            Declaration {
+                key: key("gone"),
+                snapshot: serde_json::json!({ "channels": ["a"] }),
+            },
+        ];
+        declarations(&store)
+            .apply(kind, &first, now())
+            .await
+            .unwrap();
+
+        let stored = declarations(&store).snapshot(kind).await.unwrap();
+        let mine: Vec<_> = stored
+            .iter()
+            .filter(|d| d.key.starts_with(&unique))
+            .collect();
+        assert_eq!(mine.len(), 2);
+
+        let second = vec![Declaration {
+            key: key("kept"),
+            snapshot: serde_json::json!({ "channels": ["ci-infra"] }),
+        }];
+        declarations(&store)
+            .apply(kind, &second, now())
+            .await
+            .unwrap();
+
+        let stored = declarations(&store).snapshot(kind).await.unwrap();
+        let mine: Vec<_> = stored
+            .iter()
+            .filter(|d| d.key.starts_with(&unique))
+            .collect();
+
+        // The half an upsert would lose. A withdrawn trust policy has to stop being
+        // stored, or the next pass reports it as still present for ever.
+        assert_eq!(mine.len(), 1, "a withdrawn declaration must not survive");
+        assert_eq!(mine[0].key, key("kept"));
+        assert_eq!(
+            mine[0].snapshot,
+            serde_json::json!({ "channels": ["ci-infra"] }),
+            "and the one that stayed carries its new body, not its old one"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_configuration_can_be_an_audit_actor() {
+        let store = store!();
+        let channel = seeded_channel(&store, &user().1).await;
+
+        audit(&store)
+            .record(&AuditEntry {
+                actor: notify_ports::AuditActor::configuration(),
+                action: notify_ports::actions::TRUST_POLICY_ADDED,
+                target: Some("https://forge.example repo:a".to_owned()),
+                channel: Some(channel.clone()),
+                detail: Some(serde_json::json!({ "declaration": { "channels": [] } })),
+                at: now(),
+            })
+            .await
+            .unwrap();
+
+        // The round trip is the point: D28 had no emitter partly because there was
+        // no honest value for this field, and a value that can be written but not
+        // read back is what broke `GET /admin/audit` once already (M4duovicies).
+        let back = audit(&store)
+            .query(&AuditQuery {
+                actor: Some(notify_ports::AuditActor::configuration()),
+                channel: Some(channel),
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(back.items.len(), 1);
+        assert_eq!(
+            back.items[0].actor,
+            notify_ports::AuditActor::configuration()
+        );
+        assert_eq!(back.items[0].action.as_str(), "trust_policy.added");
+    }
+
     // --- Receipts and interactions -----------------------------------------
 
     #[tokio::test]
@@ -1624,7 +1734,12 @@ mod e2e {
                 now(),
             )
             .unwrap();
-        assert!(store.apply(&first).await.unwrap().is_some());
+        assert!(
+            InteractionRepository::apply(&store, &first)
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         let again = log
             .record(
@@ -1636,7 +1751,10 @@ mod e2e {
             )
             .unwrap();
         assert!(
-            store.apply(&again).await.unwrap().is_none(),
+            InteractionRepository::apply(&store, &again)
+                .await
+                .unwrap()
+                .is_none(),
             "`Unchanged` writes nothing and broadcasts nothing"
         );
 
@@ -2199,7 +2317,7 @@ mod e2e {
         for action in notify_ports::AUDIT_ACTIONS {
             audit(&store)
                 .record(&AuditEntry {
-                    actor: alice.clone(),
+                    actor: alice.clone().into(),
                     action: *action,
                     target: Some("t".to_owned()),
                     channel: Some(channel.clone()),
@@ -2244,7 +2362,7 @@ mod e2e {
         ] {
             audit(&store)
                 .record(&AuditEntry {
-                    actor: actor.clone(),
+                    actor: actor.clone().into(),
                     action,
                     target: Some("something".to_owned()),
                     channel: Some(channel.clone()),
@@ -2257,7 +2375,7 @@ mod e2e {
 
         let by_actor = audit(&store)
             .query(&AuditQuery {
-                actor: Some(alice.clone()),
+                actor: Some(alice.clone().into()),
                 ..AuditQuery::default()
             })
             .await
@@ -2274,14 +2392,14 @@ mod e2e {
         // query would also see the ones an earlier run wrote.
         let by_action = audit(&store)
             .query(&AuditQuery {
-                actor: Some(bob.clone()),
+                actor: Some(bob.clone().into()),
                 action: Some("device.enrolled".to_owned()),
                 ..AuditQuery::default()
             })
             .await
             .unwrap();
         assert_eq!(by_action.items.len(), 1);
-        assert_eq!(by_action.items[0].actor, bob);
+        assert_eq!(by_action.items[0].actor, bob.clone().into());
         assert_eq!(
             by_action.items[0].detail,
             Some(serde_json::json!({ "scopes": ["publish"] }))
@@ -2314,7 +2432,7 @@ mod e2e {
         for _ in 0..4 {
             audit(&store)
                 .record(&AuditEntry {
-                    actor: alice.clone(),
+                    actor: alice.clone().into(),
                     action: notify_ports::actions::CHANNEL_MEMBER_ADDED,
                     target: None,
                     channel: None,
@@ -2327,7 +2445,7 @@ mod e2e {
 
         let first = audit(&store)
             .query(&AuditQuery {
-                actor: Some(alice.clone()),
+                actor: Some(alice.clone().into()),
                 page: PageRequest::of_size(2),
                 ..AuditQuery::default()
             })
@@ -2338,7 +2456,7 @@ mod e2e {
 
         let second = audit(&store)
             .query(&AuditQuery {
-                actor: Some(alice),
+                actor: Some(alice.into()),
                 page: PageRequest::of_size(2).after(next),
                 ..AuditQuery::default()
             })

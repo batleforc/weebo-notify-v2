@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="96 108 320 320" role="img" aria-label="weebo-notify">
+  <title>weebo-notify — au repos</title>
+  <!--
+    A tray mark, not the app icon: no plate, transparent background, one colour.
+
+    macOS wants a *template* image here (§10bis.3ter) — it reads only the alpha and
+    tints the result itself, so the fill below is irrelevant on that platform and
+    load-bearing on the others. It is the dark theme's `foreground` token, which
+    suits the dark panels macOS, Windows and most Linux desktops default to; a
+    light panel would need the inverse, and nobody has looked at one yet. That is
+    written down rather than assumed (see the design, M4tricies).
+
+    The bell is the same path as web/public/icon.svg, so the mark stays one shape.
+  -->
+  <g fill="#fafafa">
+    <path d="M256 116a26 26 0 0 1 26 26v10a90 90 0 0 1 64 86v54l30 46a12 12 0 0 1-10 19H146a12 12 0 0 1-10-19l30-46v-54a90 90 0 0 1 64-86v-10a26 26 0 0 1 26-26z" />
+    <path d="M212 382h88a44 44 0 0 1-88 0z" />
+  </g>
+</svg>

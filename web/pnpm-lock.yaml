@@ -60,6 +60,9 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.3.3
         version: 4.3.3(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
+      '@tauri-apps/api':
+        specifier: ^2.11.1
+        version: 2.11.1
       '@types/markdown-it':
         specifier: ^14.1.2
         version: 14.1.2
@@ -562,6 +565,9 @@ packages:
     resolution: {integrity: sha512-lOfSPvgPdlaH6Qy+CyIc3XpycitaSQ9GECndGpTuDiu+uDA1am+90yWXwzDSd/20ZM196ggWJLS+Qb6WjVd/OA==}
     peerDependencies:
       vue: ^2.7.0 || ^3.0.0
+
+  '@tauri-apps/api@2.11.1':
+    resolution: {integrity: sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==}
 
   '@tybys/wasm-util@0.10.3':
     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
@@ -2292,6 +2298,8 @@ snapshots:
     dependencies:
       '@tanstack/virtual-core': 3.17.7
       vue: 3.5.40(typescript@6.0.3)
+
+  '@tauri-apps/api@2.11.1': {}
 
   '@tybys/wasm-util@0.10.3':
     dependencies:

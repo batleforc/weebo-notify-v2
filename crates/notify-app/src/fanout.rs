@@ -16,12 +16,18 @@
 //!    publisher's answer would make a CI pipeline wait on a consumer it does not
 //!    know exists. The leader drains the queue ([`crate::sinks`]).
 //!
-//! All three are best-effort by design. A failed poke costs latency and the cursor
+//! And a fourth, last and optional: **derive an attachment's thumbnail** (design
+//! D30), if the revision shows one and `[attachments]` is configured. Last on
+//! purpose — a bucket fetch and a decode must never sit in front of real-time
+//! delivery for a thumbnail nobody has asked to see yet.
+//!
+//! All four are best-effort by design. A failed poke costs latency and the cursor
 //! catches up; a failed push is recorded and retried by the transport; a sink that
 //! cannot even be *queued* is logged and lost, which is the one honest option left
-//! when the alternative is failing a publish that already succeeded. None of them
-//! may fail the publish that caused it: a CI job must not see a 500 because
-//! somebody's phone is unreachable.
+//! when the alternative is failing a publish that already succeeded; a thumbnail
+//! that cannot be derived just never exists. None of them may fail the publish
+//! that caused it: a CI job must not see a 500 because somebody's phone is
+//! unreachable.
 //!
 //! Sinks are a channel-level route, so **no per-user filtering applies to them** —
 //! neither silence nor do-not-disturb, both of which belong to a person and their
@@ -30,11 +36,13 @@
 
 use std::sync::Arc;
 
-use notify_domain::{Cursor, DeliveryId, Device, Notification, Principal, PushTransport, Revision};
+use notify_domain::{
+    Cursor, DeliveryId, Device, Image, Notification, Principal, PushTransport, Revision,
+};
 use notify_ports::{
-    Audience, Clock, DeviceRepository, Event, EventBus, EventPayload, InteractionRepository, Poke,
-    PreferenceRepository, PushBody, PushDispatcher, PushMessage, PushOutcome, RevisionEvent,
-    SinkDelivery, SinkQueue, SinkRegistry,
+    AttachmentStore, AttachmentThumbnailer, Audience, Clock, DeviceRepository, Event, EventBus,
+    EventPayload, InteractionRepository, Poke, PreferenceRepository, PushBody, PushDispatcher,
+    PushMessage, PushOutcome, RevisionEvent, SinkDelivery, SinkQueue, SinkRegistry,
 };
 
 /// Broadcasts a write to the rest of the instance and to devices.
@@ -63,6 +71,10 @@ pub struct Fanout {
     /// every caller would pass empty. An instance with nothing to route does not
     /// serialise an event to hand it to a queue nobody drains.
     sinks: Option<Sinks>,
+    /// Where an attachment's bytes live and what derives a thumbnail from them
+    /// (design D30) — `None` on a deployment with no object store, for the same
+    /// reason `sinks` is optional rather than two more required arguments.
+    thumbnails: Option<Thumbnails>,
 }
 
 /// The two halves of the sink route, held together so they are wired or not wired
@@ -71,6 +83,14 @@ pub struct Fanout {
 struct Sinks {
     registry: Arc<dyn SinkRegistry>,
     queue: Arc<dyn SinkQueue>,
+}
+
+/// What deriving a thumbnail needs (design D30), held together for the same
+/// reason [`Sinks`] is: wired or not wired as one.
+#[derive(Clone)]
+struct Thumbnails {
+    store: Arc<dyn AttachmentStore>,
+    thumbnailer: Arc<dyn AttachmentThumbnailer>,
 }
 
 impl core::fmt::Debug for Fanout {
@@ -100,6 +120,7 @@ impl Fanout {
             clock,
             payload_budget,
             sinks: None,
+            thumbnails: None,
         }
     }
 
@@ -115,6 +136,23 @@ impl Fanout {
         queue: Arc<dyn SinkQueue>,
     ) -> Self {
         self.sinks = Some(Sinks { registry, queue });
+        self
+    }
+
+    /// Derive an attachment's thumbnail after a write as well (design D30).
+    ///
+    /// Called by the composition root whenever `[attachments]` is configured, the
+    /// same shape as [`Fanout::with_sinks`]: an instance with no object store has
+    /// nothing to fetch a source from, and [`Fanout::derive_thumbnail`] answers
+    /// that by doing nothing rather than by every caller passing two `Arc`s to a
+    /// pair of doubles that refuse.
+    #[must_use]
+    pub fn with_thumbnails(
+        mut self,
+        store: Arc<dyn AttachmentStore>,
+        thumbnailer: Arc<dyn AttachmentThumbnailer>,
+    ) -> Self {
+        self.thumbnails = Some(Thumbnails { store, thumbnailer });
         self
     }
 
@@ -202,6 +240,45 @@ impl Fanout {
                     "could not queue a sink delivery; it is lost"
                 );
             }
+        }
+    }
+
+    /// Derive this revision's attachment thumbnail, if it shows one (design D30).
+    ///
+    /// Best-effort in every direction, deliberately: nothing here ever fails the
+    /// write that triggered it. No `[attachments]` configured, an attachment
+    /// whose upload has not landed yet (`get` answers `None`), or one this build
+    /// cannot decode (`thumbnail` answers `Err(ImageRejection)`) — every one of
+    /// those means the row simply shows no image, never that the write that was
+    /// just accepted somehow failed on its way out.
+    pub async fn derive_thumbnail(&self, revision: &Revision) {
+        let Some(thumbnails) = &self.thumbnails else {
+            return;
+        };
+        let Some(Image::Attachment { reference }) = &revision.content.image else {
+            return;
+        };
+        let reference = *reference;
+
+        let object = match thumbnails.store.get(reference).await {
+            Ok(Some(object)) => object,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::debug!(%error, attachment = %reference, "thumbnail source unavailable");
+                return;
+            }
+        };
+
+        let Ok(Ok(processed)) = thumbnails.thumbnailer.thumbnail(&object.bytes).await else {
+            return;
+        };
+
+        if let Err(error) = thumbnails
+            .store
+            .put_thumbnail(reference, &processed.content_type, processed.bytes)
+            .await
+        {
+            tracing::warn!(%error, attachment = %reference, "thumbnail derived but not stored");
         }
     }
 
@@ -326,8 +403,10 @@ impl Fanout {
             .filter(|bytes| bytes.len() <= max_payload)
             .map_or(PushBody::Poke, |bytes| PushBody::Payload {
                 bytes,
-                // Sealing to the device key lands with M6 (design §6.2); until
-                // then no transport that needs it is wired.
+                // Always false: sealing is the relayed transport's own job, done
+                // against `device.public_key` once it holds the plaintext (design
+                // §6.2, M6) — this flag is the wire shape's placeholder, not a
+                // switch the fan-out ever has a reason to flip.
                 sealed: false,
             });
 

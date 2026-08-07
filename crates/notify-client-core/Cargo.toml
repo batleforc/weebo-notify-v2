@@ -16,6 +16,9 @@ workspace = true
 notify-client-api = { workspace = true }
 
 chrono = { workspace = true }
+# The IANA database, for the "until the morning" preset (§10bis.3ter): §7.4 puts the
+# timezone on the preference, so resolving one is a client concern too.
+chrono-tz = { workspace = true }
 figment = { workspace = true }
 progenitor-client = { workspace = true }
 # SQLite in WAL mode, because §9.3bis needs several processes reading while one

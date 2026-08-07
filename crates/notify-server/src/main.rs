@@ -140,7 +140,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let report = application.reconciler.execute(&config).await?;
     application
         .reconciliation_log
-        .record(report.as_pass(OffsetDateTime::now_utc()));
+        .record(report.as_pass(OffsetDateTime::now_utc(), notify_app::Trigger::Boot));
     tracing::info!(
         channels = report.channels,
         accounts = report.accounts,
@@ -221,9 +221,13 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         application.digests,
         application.drain,
         application.metrics.clone(),
-        application.reconciler,
-        application.reconciliation_log,
-        config,
+        Reconciling {
+            reconciler: application.reconciler,
+            log: application.reconciliation_log,
+            config,
+            path: config_path.to_path_buf(),
+            policies: application.policies,
+        },
     ));
 
     tracing::info!(%bind, "weebo-notify is listening");
@@ -255,14 +259,95 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
 
 /// The background loops: TTL purge, do-not-disturb digests and reconciliation, all
 /// leader-tolerant.
+/// Everything the reconciliation half of [`background`] needs (design §11).
+///
+/// One struct rather than four parameters, and it earns its place: these four move
+/// together — the file is re-read on `SIGHUP`, applied by the reconciler, and left
+/// on the log for the console. Passing them separately made the signature longer
+/// than the loop it configures.
+struct Reconciling {
+    reconciler: reconcile::Reconciler,
+    log: notify_app::ReconciliationLog,
+    config: config::Config,
+    /// The path and not the contents, because the point of the signal is that the
+    /// file has changed since it was last read.
+    path: std::path::PathBuf,
+    /// The set the token exchange consults, swapped on reload (§5.3, D31).
+    policies: notify_app::LivePolicies,
+}
+
+impl Reconciling {
+    /// Re-read the file and apply it, as §11 asks of `SIGHUP`.
+    async fn on_hangup(&mut self) {
+        match config::Config::load(&self.path) {
+            Ok(file) => {
+                // Named before anything is applied: an operator who edited
+                // `[database]` and sent a signal has to learn that here, and not
+                // from the absence of an effect.
+                for pending in self.config.unreloadable(&file) {
+                    tracing::warn!(%pending, "changed in the file, not adopted by a reload");
+                }
+                self.config = self.config.reloaded_from(file);
+
+                // Swapped before the pass, not after: the pass journals what the
+                // trust policies became (§13, D28), and an entry written before the
+                // process adopted them would date the change to the wrong hour.
+                match wiring::trust_policies(&self.config) {
+                    Ok(policies) => self.policies.adopt(policies),
+                    // The rest of the reload still stands. A malformed pattern is
+                    // one section being wrong, and refusing the channels because of
+                    // it would make one typo undo an unrelated edit.
+                    Err(error) => tracing::warn!(
+                        ?error,
+                        "SIGHUP: the trust policies did not build; keeping the running set"
+                    ),
+                }
+
+                tracing::info!("configuration re-read on SIGHUP");
+            }
+            // The last good configuration keeps running. A reload is not a restart,
+            // and a typo must not take a serving replica down — least of all at the
+            // moment somebody is editing the file.
+            Err(error) => tracing::warn!(
+                ?error,
+                "SIGHUP: the configuration did not load; keeping the running one"
+            ),
+        }
+
+        self.pass(notify_app::Trigger::Sighup).await;
+    }
+
+    /// One reconciliation pass, recorded for the console (§10.4bis).
+    async fn pass(&self, trigger: notify_app::Trigger) {
+        match self.reconciler.execute(&self.config).await {
+            Ok(report) => {
+                // Recorded only on success: a failed pass must leave the last good
+                // one on the console, not replace it with nothing.
+                self.log
+                    .record(report.as_pass(OffsetDateTime::now_utc(), trigger));
+                tracing::info!(
+                    channels = report.channels,
+                    accounts = report.accounts,
+                    removed = report.removed,
+                    journalled = report.journalled,
+                    ?trigger,
+                    "reconcile pass complete"
+                );
+                for pending in &report.pending {
+                    tracing::warn!(%pending, "access binding is waiting on a first login");
+                }
+            }
+            Err(error) => tracing::warn!(?error, ?trigger, "reconcile pass failed"),
+        }
+    }
+}
+
 async fn background(
     purge: notify_app::PurgeExpired,
     digests: notify_app::SendDndDigests,
     drain: notify_app::DrainSinks,
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
-    reconciler: reconcile::Reconciler,
-    reconciliation_log: notify_app::ReconciliationLog,
-    config: config::Config,
+    mut reconciling: Reconciling,
 ) {
     let mut purge_tick = actix_web::rt::time::interval(JOB_INTERVAL);
     let mut digest_tick = actix_web::rt::time::interval(JOB_INTERVAL);
@@ -274,8 +359,29 @@ async fn background(
     sink_tick.tick().await;
     reconcile_tick.tick().await;
 
+    // A process that cannot listen for the signal keeps running: reconciliation
+    // still happens at boot and on the timer, so the failure is "no SIGHUP" and
+    // not "no server". It is reported rather than swallowed, because an operator
+    // sending a signal into a process that never registered for it would get
+    // silence and no way to tell why.
+    let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(stream) => Some(stream),
+        Err(error) => {
+            tracing::warn!(?error, "cannot listen for SIGHUP; reload will not work");
+            None
+        }
+    };
+
     loop {
         tokio::select! {
+            // `Option::None` would make this branch fire in a loop, so it is
+            // disabled outright when the handler could not be installed.
+            Some(()) = async {
+                match hangups.as_mut() {
+                    Some(stream) => stream.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => reconciling.on_hangup().await,
             _ = purge_tick.tick() => match purge.execute().await {
                 Ok(report) if report.led => tracing::info!(
                     expired = report.expired,
@@ -328,18 +434,7 @@ async fn background(
                 }
                 Err(error) => tracing::warn!(?error, "sink drain failed; retrying next tick"),
             },
-            _ = reconcile_tick.tick() => match reconciler.execute(&config).await {
-                Ok(report) => {
-                    // Recorded only on success, which is why the run loop writes it
-                    // rather than the reconciler: a failed pass must leave the last
-                    // good one on the console, not replace it with nothing.
-                    reconciliation_log.record(report.as_pass(OffsetDateTime::now_utc()));
-                    for pending in &report.pending {
-                        tracing::warn!(%pending, "access binding is waiting on a first login");
-                    }
-                }
-                Err(error) => tracing::warn!(?error, "reconcile pass failed; retrying next tick"),
-            },
+            _ = reconcile_tick.tick() => reconciling.pass(notify_app::Trigger::Timer).await,
         }
     }
 }

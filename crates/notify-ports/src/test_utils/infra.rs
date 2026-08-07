@@ -377,6 +377,11 @@ pub struct InMemoryAttachments {
     uploaded: Arc<Mutex<Vec<AttachmentId>>>,
     /// Bytes the server wrote itself — the avatar path (design §2.4).
     objects: Arc<Mutex<std::collections::HashMap<AttachmentId, StoredObject>>>,
+    /// Thumbnails the server derived itself (design §2.3, D30) — a separate map
+    /// and not a second entry in `objects`, because deleting an attachment must
+    /// drop both without a derived thumbnail being mistaken for the object it
+    /// was derived from.
+    thumbnails: Arc<Mutex<std::collections::HashMap<AttachmentId, StoredObject>>>,
 }
 
 impl InMemoryAttachments {
@@ -436,6 +441,7 @@ impl AttachmentStore for InMemoryAttachments {
     async fn delete(&self, id: AttachmentId) -> PortResult<()> {
         lock(&self.uploaded).retain(|candidate| *candidate != id);
         lock(&self.objects).remove(&id);
+        lock(&self.thumbnails).remove(&id);
         Ok(())
     }
 
@@ -452,6 +458,26 @@ impl AttachmentStore for InMemoryAttachments {
 
     async fn get(&self, id: AttachmentId) -> PortResult<Option<StoredObject>> {
         Ok(lock(&self.objects).get(&id).cloned())
+    }
+
+    async fn put_thumbnail(
+        &self,
+        id: AttachmentId,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> PortResult<()> {
+        lock(&self.thumbnails).insert(
+            id,
+            StoredObject {
+                content_type: content_type.to_owned(),
+                bytes,
+            },
+        );
+        Ok(())
+    }
+
+    async fn get_thumbnail(&self, id: AttachmentId) -> PortResult<Option<StoredObject>> {
+        Ok(lock(&self.thumbnails).get(&id).cloned())
     }
 
     async fn health(&self) -> PortResult<()> {

@@ -66,7 +66,7 @@ impl EnrolDevice {
         self.devices.upsert(&device).await?;
         self.audit
             .record(&AuditEntry {
-                actor: caller.principal.clone(),
+                actor: caller.principal.clone().into(),
                 action: actions::DEVICE_ENROLLED,
                 target: Some(device.id.to_string()),
                 channel: None,
@@ -150,7 +150,7 @@ impl RevokeDevice {
         if revoked {
             self.audit
                 .record(&AuditEntry {
-                    actor: caller.principal.clone(),
+                    actor: caller.principal.clone().into(),
                     action: actions::DEVICE_REVOKED,
                     target: Some(id.to_string()),
                     channel: None,

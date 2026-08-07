@@ -8,7 +8,7 @@
 //! behind it rather than anywhere downstream — after the signature the client is
 //! talking to the bucket, not to us.
 
-use actix_web::{get, post, web};
+use actix_web::{HttpResponse, get, post, web};
 use notify_domain::{AttachmentId, ChannelId};
 use notify_ports::{PresignedDownload, PresignedUpload};
 use serde::Deserialize;
@@ -91,4 +91,43 @@ pub(crate) async fn download(
     let id: AttachmentId = id.into_inner().parse()?;
 
     Ok(web::Json(state.attachment.execute(&caller.0, id).await?))
+}
+
+/// Fetch the small square derived from an attachment (design §2.3, §10.3, D30).
+///
+/// Bytes and not a signed URL, unlike its sibling above — the reason is the same
+/// one the avatar route documents: a thumbnail renders next to every visible row
+/// of a possibly virtualised list, and a presign per render would mean a signing
+/// round trip per row.
+#[utoipa::path(
+    get,
+    path = "/attachments/{id}/thumbnail",
+    tag = "notifications",
+    params(("id" = String, Path, description = "The attachment id a payload references")),
+    responses(
+        (status = 200, description = "The thumbnail", content_type = "image/png"),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 404, description = "No such attachment, none the caller may see, or \
+                                      nothing was ever derived from it — deliberately \
+                                      the same answer", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/attachments/{id}/thumbnail")]
+pub(crate) async fn thumbnail(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    id: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let id: AttachmentId = id.into_inner().parse()?;
+    let object = state.attachment_thumbnail.execute(&caller.0, id).await?;
+
+    Ok(HttpResponse::Ok()
+        .content_type(object.content_type)
+        // Immutable for the same reason the avatar's is: an attachment is never
+        // replaced in place, so a revision showing a different image references a
+        // different id (§2.3) — this id's thumbnail cannot become a different
+        // image later.
+        .insert_header(("cache-control", "private, max-age=86400, immutable"))
+        .body(object.bytes))
 }

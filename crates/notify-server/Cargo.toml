@@ -17,6 +17,7 @@ notify-attachments-s3.workspace = true
 notify-avatars.workspace = true
 notify-http-actix.workspace = true
 notify-metrics-prometheus.workspace = true
+notify-push-unifiedpush.workspace = true
 notify-push-webpush.workspace = true
 notify-sinks-email.workspace = true
 notify-sinks-webhook.workspace = true

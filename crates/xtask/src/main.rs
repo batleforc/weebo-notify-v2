@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 mod coverage;
 mod downgrade;
 mod federation;
+mod icons;
 mod notifyd;
 mod password;
 mod vapid;
@@ -75,6 +76,13 @@ enum Command {
         force: bool,
     },
 
+    /// Rasterise the desktop icons from their SVG sources (§10bis.3ter, M5).
+    Icons {
+        /// The icon directory: sources in `src/`, rasters written beside them.
+        #[arg(long, default_value = "web/src-tauri/icons")]
+        root: PathBuf,
+    },
+
     /// Answer `org.freedesktop.Notifications`, so `--notify-send` can be seen (D19).
     ///
     /// Needs a session bus: `task desktop:notifyd` starts one in the browser sidecar and
@@ -105,6 +113,7 @@ fn main() -> anyhow::Result<()> {
         Command::CoverageGate { lcov, base } => coverage::gate(&lcov, base.as_deref()),
         Command::VapidKey { output, force } => vapid::generate(&output, force),
         Command::FederationKey { output, force } => federation::generate(&output, force),
+        Command::Icons { root } => icons::generate(&root),
         Command::Notifyd { expect, timeout } => {
             notifyd::run(expect, timeout.map(std::time::Duration::from_secs))
         }
