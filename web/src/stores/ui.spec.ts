@@ -78,3 +78,37 @@ describe("theme cycling", () => {
     expect(localStorage.getItem("weebo-notify:theme")).toBe("system");
   });
 });
+
+describe("detail panel position", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    stubMatchMedia(true);
+    setActivePinia(createPinia());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("goes right, then left, then under, then back to right", () => {
+    const ui = useUi();
+    ui.detailPosition = "right";
+
+    ui.cycleDetailPosition();
+    expect(ui.detailPosition).toBe("left");
+
+    ui.cycleDetailPosition();
+    expect(ui.detailPosition).toBe("under");
+
+    ui.cycleDetailPosition();
+    expect(ui.detailPosition).toBe("right");
+  });
+
+  it("persists the choice across a reload", async () => {
+    const ui = useUi();
+    ui.detailPosition = "under";
+    await nextTick();
+
+    expect(localStorage.getItem("weebo-notify:detail-position")).toBe("under");
+  });
+});

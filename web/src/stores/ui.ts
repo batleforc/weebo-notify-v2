@@ -12,9 +12,15 @@ import { ref, watch } from "vue";
 
 export type Theme = "dark" | "light" | "system";
 export type Density = "compact" | "comfortable";
+/** Where the detail panel sits relative to the inbox list (§10.4), above `xl` —
+ * below it the panel is always a full-screen layer, so the preference has
+ * nothing to say. `right` is the default: reading left to right, the list comes
+ * first and the detail is what opening a row reveals next. */
+export type DetailPosition = "right" | "left" | "under";
 
 const THEME_KEY = "weebo-notify:theme";
 const DENSITY_KEY = "weebo-notify:density";
+const DETAIL_POSITION_KEY = "weebo-notify:detail-position";
 
 function systemPrefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -26,6 +32,10 @@ export const useUi = defineStore("ui", () => {
   );
   const density = ref<Density>(
     (localStorage.getItem(DENSITY_KEY) as Density | null) ?? "compact",
+  );
+  const detailPosition = ref<DetailPosition>(
+    (localStorage.getItem(DETAIL_POSITION_KEY) as DetailPosition | null) ??
+      "right",
   );
   function applyTheme(): void {
     // Dark is the default (§10.2): `system` resolves to dark unless the system
@@ -51,6 +61,13 @@ export const useUi = defineStore("ui", () => {
   watch(density, (value) => {
     localStorage.setItem(DENSITY_KEY, value);
     applyDensity();
+  });
+
+  // No DOM class to toggle here, unlike theme/density: `AppLayout.vue` reads
+  // this ref directly to compute its grid classes, so persisting it is all this
+  // store owns.
+  watch(detailPosition, (value) => {
+    localStorage.setItem(DETAIL_POSITION_KEY, value);
   });
 
   // Somebody switching their desktop to light at sunset expects the app to
@@ -79,8 +96,21 @@ export const useUi = defineStore("ui", () => {
           : "dark";
   }
 
+  /**
+   * `right` → `left` → `under` → `right`. `right` first, because that is the
+   * default a reset leaves nobody surprised by (§10.4's own three-zone shell).
+   */
+  function cycleDetailPosition(): void {
+    detailPosition.value =
+      detailPosition.value === "right"
+        ? "left"
+        : detailPosition.value === "left"
+          ? "under"
+          : "right";
+  }
+
   applyTheme();
   applyDensity();
 
-  return { cycleTheme, density, theme };
+  return { cycleDetailPosition, cycleTheme, density, detailPosition, theme };
 });

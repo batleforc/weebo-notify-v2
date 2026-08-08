@@ -8,7 +8,7 @@
  * is open, which is the mobile behaviour §10.4 asks for.
  */
 import { Menu, X } from "lucide-vue-next";
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToaster from "@/components/layout/AppToaster.vue";
@@ -25,6 +25,7 @@ import { useInbox } from "@/stores/inbox";
 import { usePalette } from "@/stores/palette";
 import { usePreferences } from "@/stores/preferences";
 import { useToasts } from "@/stores/toasts";
+import { useUi } from "@/stores/ui";
 import { useUnread } from "@/stores/unread";
 
 const channels = useChannels();
@@ -32,12 +33,68 @@ const detail = useDetail();
 const inbox = useInbox();
 const preferences = usePreferences();
 const toasts = useToasts();
+const ui = useUi();
 const unread = useUnread();
 const route = useRoute();
 const router = useRouter();
 
 const sidebarOpen = ref(false);
 const palette = usePalette();
+
+/**
+ * Whether this route has a detail panel at all. Only the three that render
+ * `InboxView` do (§10.4) — `settings`/`admin`/`console` are full pages of their
+ * own, and reserving 22rem for an always-empty panel on them is not a smaller
+ * version of the three-zone shell, it is 22rem taken from a page that never had
+ * anything to put there. `under` is what makes this worth naming: on those
+ * routes it used to leave `<main>` visibly short of the viewport, by exactly the
+ * height the empty panel still claimed off-screen.
+ */
+const showDetailPane = computed(() =>
+  ["inbox", "notification", "channel"].includes(String(route.name ?? "")),
+);
+
+/**
+ * Where the list and the detail panel sit, above `xl` (§10.4, the preference in
+ * Réglages › Apparence). Below `xl` the panel is always the full-screen layer it
+ * already was — this only reshapes the desktop three-zone arrangement.
+ *
+ * One grid, not three duplicated templates: `content` always holds exactly the
+ * list and the detail panel, in that DOM order, and these classes are the only
+ * thing that decides whether that reads left-to-right, right-to-left, or
+ * top-to-bottom. `order-*` moves them without touching the router or the
+ * detail panel's own mount/unmount timing.
+ */
+const contentGridClass = computed(() => {
+  if (!showDetailPane.value) {
+    return "";
+  }
+  switch (ui.detailPosition) {
+    case "left":
+      return "xl:grid-cols-[26rem_minmax(0,1fr)]";
+    case "under":
+      return "xl:grid-rows-[minmax(0,1fr)_22rem]";
+    default:
+      return "xl:grid-cols-[minmax(0,1fr)_26rem]";
+  }
+});
+
+const mainOrderClass = computed(() =>
+  showDetailPane.value && ui.detailPosition === "left" ? "xl:order-2" : "",
+);
+
+/** The one border between the two panes — its edge follows whichever side the
+ * detail panel ends up on, so the list is never the one carrying it. */
+const detailPositionClass = computed(() => {
+  switch (ui.detailPosition) {
+    case "left":
+      return "xl:order-1 xl:border-l-0 xl:border-r";
+    case "under":
+      return "xl:border-l-0 xl:border-t";
+    default:
+      return "";
+  }
+});
 
 /**
  * The one shortcut the shell owns (§10.4).
@@ -165,9 +222,7 @@ function closeDetail(): void {
       <span class="text-sm font-semibold">weebo-notify</span>
     </header>
 
-    <div
-      class="grid min-h-0 lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
-    >
+    <div class="grid min-h-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
       <div
         :class="[
           'min-h-0 border-r border-border bg-card/40',
@@ -179,31 +234,54 @@ function closeDetail(): void {
         <AppSidebar @click="sidebarOpen = false" />
       </div>
 
-      <main class="min-h-0 overflow-hidden">
-        <RouterView />
-      </main>
+      <!-- The list and the detail panel, always in this order in the DOM —
+           `contentGridClass` and the two order classes below are what decide
+           whether that reads left-to-right, right-to-left, or top-to-bottom
+           (Réglages › Apparence). -->
+      <div class="grid min-h-0" :class="contentGridClass">
+        <main class="min-h-0 overflow-hidden" :class="mainOrderClass">
+          <RouterView />
+        </main>
 
-      <!-- Under xl the panel is a full-screen layer, which is the mobile shape
-           §10.4 describes; above it, it is the third column. -->
-      <div
-        v-if="detail.id"
-        class="fixed inset-0 z-30 min-h-0 border-l border-border bg-background xl:static xl:z-auto"
-      >
-        <Button
-          variant="ghost"
-          size="icon"
-          class="absolute right-2 top-2 z-10 xl:hidden"
-          @click="closeDetail"
-        >
-          <X />
-          <span class="sr-only">Fermer le détail</span>
-        </Button>
-        <NotificationDetail />
-      </div>
-      <div v-else class="hidden min-h-0 border-l border-border xl:block">
-        <NotificationDetail />
+        <!-- Only the three routes that render InboxView have a detail panel at
+             all (see `showDetailPane`) — `settings`/`admin`/`console` render
+             nothing here rather than an always-empty pane with nothing to show. -->
+        <template v-if="showDetailPane">
+          <!-- Under xl the panel is a full-screen layer, which is the mobile
+               shape §10.4 describes; above it, it is the second pane, wherever
+               the preference puts it. -->
+          <div
+            v-if="detail.id"
+            class="fixed inset-0 z-30 min-h-0 border-l border-border bg-background xl:static xl:z-auto"
+            :class="detailPositionClass"
+          >
+            <Button
+              variant="ghost"
+              size="icon"
+              class="absolute right-2 top-2 z-10 xl:hidden"
+              @click="closeDetail"
+            >
+              <X />
+              <span class="sr-only">Fermer le détail</span>
+            </Button>
+            <NotificationDetail />
+          </div>
+          <div
+            v-else
+            class="hidden min-h-0 border-l border-border xl:block"
+            :class="detailPositionClass"
+          >
+            <NotificationDetail />
+          </div>
+        </template>
       </div>
     </div>
-    <AppToaster />
   </div>
+
+  <!-- Outside the grid above, deliberately: it is `position: fixed` and reads
+       from the viewport, not a cell — a grid child that Firefox and Chrome
+       still hand an implicit row to on `lg+` (header goes `display: none`
+       there, but this one stays a grid item), which is the black band this
+       moved to stop being. -->
+  <AppToaster />
 </template>

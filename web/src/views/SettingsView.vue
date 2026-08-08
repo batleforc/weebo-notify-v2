@@ -40,6 +40,15 @@ const claimed = computed(
   () => new Set<ProfileField>(profile.value?.overridden ?? []),
 );
 
+const DETAIL_POSITION_LABELS: Record<string, string> = {
+  right: "à droite",
+  left: "à gauche",
+  under: "en dessous",
+};
+const detailPositionLabel = computed(
+  () => DETAIL_POSITION_LABELS[ui.detailPosition],
+);
+
 /**
  * The avatar, as an object URL.
  *
@@ -171,7 +180,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="mx-auto h-full max-w-2xl space-y-4 overflow-y-auto p-6">
+  <div class="h-full space-y-4 overflow-y-auto p-6">
     <h1 class="text-lg font-semibold">Réglages</h1>
 
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
@@ -294,7 +303,14 @@ onMounted(load);
         >
           Densité : {{ ui.density }}
         </Button>
+        <Button variant="outline" size="sm" @click="ui.cycleDetailPosition()">
+          Détail : {{ detailPositionLabel }}
+        </Button>
       </CardContent>
+      <p class="px-6 pb-4 -mt-2 text-xs text-muted-foreground">
+        Où la timeline d'une notification s'ouvre à côté de la liste — sans effet
+        sur un écran étroit, où elle prend tout l'écran quoi qu'il arrive.
+      </p>
     </Card>
 
     <PushPanel />
