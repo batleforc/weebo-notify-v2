@@ -1,98 +1,97 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
 // From `vitest/config` rather than `vite`: it is the same function with the
 // `test` block typed, which keeps one config file instead of two.
-// `loadEnv` and the plugin type come from vite itself: `vitest/config` re-exports
-// `defineConfig` with the `test` block typed, and nothing else.
-import { loadEnv, type Plugin } from "vite";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 
 // With the extension, which the native config loader Vite is moving to requires.
 import { contentSecurityPolicy, inlineScriptHashes } from "./src/lib/csp.ts";
 
 /**
- * Stamp the Content-Security-Policy into the built `index.html` (§10.3, ADR-0019).
+ * Emit `csp-template.txt` next to `package.json` — not into `dist/`, which ships
+ * inside the image and would otherwise serve this file to anyone who asked
+ * (design §10.3, ADR-0021).
  *
- * Build only. `pnpm dev` runs without it, and that is a choice rather than an
- * oversight: Vite's HMR needs a websocket and inline injection the shipped policy
- * must not allow, so a dev-relaxed policy would be a different policy tested in
- * place of the real one. `pnpm build && pnpm preview` serves the real one, and the
- * hashes are checked by the suite rather than by eye.
+ * Build only, and the reason has not changed since ADR-0019: `pnpm dev` runs
+ * without a policy at all, because Vite's HMR needs a websocket and inline
+ * injection the shipped policy must not allow.
+ *
+ * What HAS changed is where the policy is enforced. `web/nginx/default.conf.
+ * template` renders it as a real header now, at container boot, from
+ * `WNK_API_BASE_URL`/`WNK_OIDC_ISSUER`/`WNK_ATTACHMENT_ORIGIN` — so this plugin
+ * hands `contentSecurityPolicy` those exact shell placeholders in place of real
+ * origins, and only the inline-script hash, which names bytes this build
+ * actually shipped, is real. `web/nginx/docker-entrypoint.d/05-runtime-config.sh`
+ * is what resolves the placeholders, once, against the container's actual
+ * environment.
+ *
+ * Reads `index.html` back off disk after the build rather than out of Rollup's
+ * in-memory bundle — see `closeBundle` below for why.
  */
-function csp(mode: string): Plugin {
-  return {
-    name: "weebo-notify:csp",
-    apply: "build",
-    transformIndexHtml: {
-      // After everything else, so the hashes cover the final document rather
-      // than the template it started as.
-      order: "post",
-      handler(html) {
-        // The same two variables `src/config.ts` reads, and the reason the policy
-        // can be built at all: a deployment here is a build, so the API and the
-        // provider are known now rather than at boot.
-        const env = loadEnv(mode, process.cwd(), "VITE_");
-        for (const name of ["VITE_API_BASE_URL", "VITE_OIDC_ISSUER"] as const) {
-          if (!env[name]) {
-            // Failing the build rather than emitting a policy with `undefined`
-            // in it: the second one produces a bundle that loads and then
-            // cannot reach its own API.
-            throw new Error(`${name} is required to build the CSP (§10.3)`);
-          }
-        }
+function cspTemplate(): Plugin {
+  let outDir = "dist";
 
-        return {
-          html,
-          tags: [
-            {
-              tag: "meta",
-              attrs: {
-                "http-equiv": "Content-Security-Policy",
-                content: contentSecurityPolicy({
-                  apiBaseUrl: env.VITE_API_BASE_URL,
-                  oidcIssuer: env.VITE_OIDC_ISSUER,
-                  // Not in the loop above: a deployment with no object store is
-                  // a deployment that shows no attachments, which is a working
-                  // one. Failing its build would be wrong.
-                  attachmentOrigin: env.VITE_ATTACHMENT_ORIGIN || undefined,
-                  hashes: inlineScriptHashes(html),
-                }),
-              },
-              // Before anything it governs — a meta policy applies to what
-              // follows it, so a script above it would be unpoliced.
-              injectTo: "head-prepend",
-            },
-          ],
-        };
-      },
+  return {
+    name: "weebo-notify:csp-template",
+    apply: "build",
+
+    // `build.outDir` is configurable and this plugin must not assume the
+    // default — `closeBundle` below needs the real path to read what was
+    // actually written.
+    configResolved(config) {
+      outDir = config.build.outDir;
     },
 
     /**
-     * Check the page that is actually written, not the one that was transformed.
+     * Read the page that is actually on disk, then emit the template from it.
      *
-     * The hashes above are computed in a `post` hook, which is the last thing to
-     * touch the HTML today. "Today" is the word doing the work: an HTML minifier
-     * added to this pipeline later would rewrite the inline script after the
-     * policy named it, and the symptom would be a blank page in production and
-     * nothing anywhere else. This turns that into a failed build.
+     * `closeBundle` runs after every file — HTML included — has been written,
+     * which `generateBundle`'s in-memory bundle does not reliably hold `index.
+     * html` in (Rolldown-vite writes it through a separate path). Reading the
+     * real artefact side-steps more than that mismatch: ADR-0019's version of
+     * this hook computed the hash from an intermediate snapshot and then
+     * checked it was still findable, quoted-free, inside a `<meta>` tag it had
+     * just written into the same snapshot — catching a minifier that ran between
+     * the two and rewrote the script out from under an already-decided hash.
+     * There is no `<meta>` tag anymore (ADR-0021) and nothing left to compare
+     * against: this reads the exact bytes that ship, at the last possible
+     * moment, so a hash computed from a stale snapshot is not a failure mode
+     * this hook can have.
      */
-    generateBundle(_options, bundle) {
-      const page = bundle["index.html"];
-      if (page?.type !== "asset") {
-        return;
+    closeBundle() {
+      const html = readFileSync(resolve(outDir, "index.html"), "utf8");
+      const hashes = inlineScriptHashes(html);
+
+      // `csp.spec.ts` pins this at exactly one — the pre-paint theme switch.
+      // Zero means `script-src 'self'` ships with no inline allowance at all,
+      // silently blocking that script in production; the failure a stray build
+      // step deleting or bundling it away deserves is here, not a blank page
+      // discovered later.
+      if (hashes.length === 0) {
+        this.error(
+          "index.html has no inline script for the policy to name — " +
+            "something removed the pre-paint theme switch, or bundled it away",
+        );
       }
 
-      const html = String(page.source);
-      for (const hash of inlineScriptHashes(html)) {
-        if (!html.includes(hash.replaceAll("'", ""))) {
-          this.error(
-            `an inline script in index.html is not covered by the policy (${hash}) — ` +
-              "something rewrote the page after the CSP was computed",
-          );
-        }
-      }
+      // Shell placeholders, deliberately not JS template strings — this text is
+      // never interpolated here, only written out for `envsubst` to resolve
+      // later (see this function's own doc comment).
+      const template = contentSecurityPolicy({
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, resolved by envsubst at container boot, not by JS
+        apiOrigin: "${WNK_API_BASE_URL}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, resolved by envsubst at container boot, not by JS
+        oidcOrigin: "${WNK_OIDC_ISSUER}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, resolved by envsubst at container boot, not by JS
+        attachmentOrigin: "${WNK_ATTACHMENT_ORIGIN}",
+        hashes,
+      });
+      writeFileSync(resolve(process.cwd(), "csp-template.txt"), template);
     },
   };
 }
@@ -101,8 +100,10 @@ function csp(mode: string): Plugin {
 // :8080 directly, which is why `config/dev.toml` lists :5173 in `cors_origins`
 // (design §5.1): a proxy would make CORS pass in development and fail in
 // production, hiding exactly the class of mistake this configuration prevents.
-export default defineConfig(({ mode }) => ({
-  plugins: [vue(), tailwindcss(), csp(mode)],
+// A plain object, not a function: nothing here depends on the mode or env
+// anymore now that `cspTemplate` needs neither (ADR-0021).
+export default defineConfig({
+  plugins: [vue(), tailwindcss(), cspTemplate()],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
@@ -123,15 +124,9 @@ export default defineConfig(({ mode }) => ({
     // suite runs on the DOM DOMPurify is tested against.
     environment: "jsdom",
     include: ["src/**/*.spec.ts"],
-    // Fixed, obviously fake, and not loaded from any `.env` file: a test suite
-    // that picks up whatever `.env.local` happens to say is a test suite that
-    // passes on one machine. Nothing here is ever contacted — the tests that
-    // touch the network mock it.
-    env: {
-      VITE_API_BASE_URL: "https://notify.test",
-      VITE_OIDC_ISSUER: "https://idp.test",
-      VITE_OIDC_CLIENT_ID: "weebo-notify",
-    },
+    // `src/config.ts` reads `window.__ENV__`, not `import.meta.env`, so this
+    // replaces the fixed `VITE_*` values the old `env:` block set here.
+    setupFiles: ["./src/test-setup.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text-summary", "lcov"],
@@ -139,7 +134,12 @@ export default defineConfig(({ mode }) => ({
       // Same honesty rule as the Rust side (design §3.2): generated code is not
       // ours to test, and counting it would inflate the number in the direction
       // that hides gaps in the code we do write.
-      exclude: ["src/api/generated/**", "src/main.ts", "**/*.spec.ts"],
+      exclude: [
+        "src/api/generated/**",
+        "src/main.ts",
+        "src/test-setup.ts",
+        "**/*.spec.ts",
+      ],
     },
   },
-}));
+});

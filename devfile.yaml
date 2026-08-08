@@ -23,21 +23,26 @@ metadata:
 #     with it.
 parent:
   uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-mise-webkit/devfile.yaml
-components:
   # `tools` is inherited wholly from the parent (`che-mise-webkit`) — nothing here
-  # redeclares its image or mounts, only endpoints, which devfile merges into the
-  # parent's same-named component (a strategic-merge-patch override, not a
-  # replacement). Che already auto-discovers any port a process binds to inside
-  # `tools` — the `run-oidc` command below says so itself, for these same two
-  # ports — so `server`/`web` are reachable either way; declaring them here gives
-  # each a fixed name in the endpoint list *before* the process starts, rather
-  # than one that only appears once `task dev:run`/`task dev:web` are already up,
-  # and pins `exposure: public` instead of trusting auto-detection's default.
-  - name: tools
-    container:
-      endpoints:
-        - {name: server, targetPort: 8080, exposure: public, protocol: http}
-        - {name: web, targetPort: 5173, exposure: public, protocol: http}
+  # redeclares its image or mounts, only endpoints. This has to live under
+  # `parent.components`, not the top-level `components:` list below: that list
+  # declares NEW components, and a `tools` entry there collides with the parent's
+  # `tools` rather than patching it. `parent.components` is what devfile actually
+  # reads for a strategic-merge-patch override onto an inherited component (see
+  # batlehub's devfile.yaml for the same shape). Che already auto-discovers any
+  # port a process binds to inside `tools` — the `run-oidc` command below says so
+  # itself, for these same two ports — so `server`/`web` are reachable either way;
+  # declaring them here gives each a fixed name in the endpoint list *before* the
+  # process starts, rather than one that only appears once `task dev:run`/
+  # `task dev:web` are already up, and pins `exposure: public` instead of trusting
+  # auto-detection's default.
+  components:
+    - name: tools
+      container:
+        endpoints:
+          - {name: server, targetPort: 8080, exposure: public, protocol: http}
+          - {name: web, targetPort: 5173, exposure: public, protocol: http}
+components:
   - name: postgres
     container:
       image: postgres:17-alpine

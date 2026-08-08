@@ -16,76 +16,28 @@ vars:
 
 tasks:
   web:
-    desc: "Build the deployable web bundle — needs VITE_API_BASE_URL, VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID"
-    # A deployment is a build (`web/src/config.ts`): the API origin, the issuer and
-    # the client id are inlined now, and so is the Content-Security-Policy that
-    # names the first two (ADR-0019). There is deliberately no default — a bundle
-    # built against the wrong origin loads and then cannot reach its own API, which
-    # is a worse failure than not building at all.
+    desc: "Build the deployable web bundle — the same bundle serves every deployment now (ADR-0021)"
+    # `vite build` still checks the inline-script hash against the page it actually
+    # wrote and emits `csp-template.txt` from it (`web/vite.config.ts`) — that is
+    # the gate CI holds, and it needs nothing exported to run: the API origin, the
+    # issuer and the client id moved to runtime (`web/nginx/docker-entrypoint.d/`),
+    # so this build no longer differs from one deployment to the next.
     cmds:
-      - cmd: |
-          missing=""
-          for name in VITE_API_BASE_URL VITE_OIDC_ISSUER VITE_OIDC_CLIENT_ID; do
-            eval "value=\${$name:-}"
-            [ -n "$value" ] || missing="$missing $name"
-          done
-          if [ -n "$missing" ]; then
-            echo "missing:$missing" >&2
-            echo "" >&2
-            echo "A web bundle is built for one deployment (ADR-0019). Export the three" >&2
-            echo "variables, or run 'task build:web:smoke' to check the build itself." >&2
-            exit 1
-          fi
-          pnpm -C web build
-
-  web:smoke:
-    desc: "Build the web bundle with the committed example values — proves the build works, produces nothing deployable"
-    # What CI runs. Its purpose is the pipeline, not the artefact: the production
-    # build is where the CSP is stamped and where its hashes are checked against
-    # the page actually written, so a build that only ever happens on somebody's
-    # laptop is a gate nobody holds.
-    #
-    # The values come from the committed `web/.env.example` rather than from
-    # invented ones, so this exercises a file that has to stay correct anyway.
-    cmds:
-      - cmd: |
-          set -a
-          . web/.env.example
-          set +a
-          pnpm -C web build
-          echo ""
-          echo "Smoke build only — this bundle points at ${VITE_API_BASE_URL} and is not deployable."
+      - pnpm -C web build
 
   image:
     desc: "Build the server image — override IMAGE_REPO/IMAGE_TAG/ENGINE (needs a container engine)"
-    # No `--build-arg` here, unlike the web image below: the server reads its
-    # configuration at runtime from a mounted file (§11), so nothing about a
-    # deployment is baked in. That asymmetry is the point of ADR-0019 and worth
-    # noticing rather than smoothing over.
+    # No `--build-arg`: the server reads its configuration at runtime from a
+    # mounted file (§11), so nothing about a deployment is baked in here either —
+    # the web image below stopped being the exception once ADR-0021 superseded
+    # ADR-0019's build-time form.
     cmds:
       - "{{.ENGINE}} build -f Containerfile -t {{.IMAGE_REPO}}:{{.IMAGE_TAG}} ."
 
   web:image:
-    desc: "Build the web bundle image — needs VITE_API_BASE_URL, VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID"
-    # The same three variables `build:web` refuses to go without, passed as build
-    # arguments because a deployment is a build (ADR-0019). The Containerfile
-    # checks them too — the same refusal in both places, because whoever runs
-    # `podman build` by hand never sees this task.
+    desc: "Build the web bundle image — override IMAGE_REPO/IMAGE_TAG/ENGINE (needs a container engine)"
+    # No `--build-arg` either, since ADR-0021: the API origin, the issuer and the
+    # client id are read at container boot now
+    # (`web/nginx/docker-entrypoint.d/`), same as the server image above.
     cmds:
-      - cmd: |
-          missing=""
-          for name in VITE_API_BASE_URL VITE_OIDC_ISSUER VITE_OIDC_CLIENT_ID; do
-            eval "value=\${$name:-}"
-            [ -n "$value" ] || missing="$missing $name"
-          done
-          if [ -n "$missing" ]; then
-            echo "missing:$missing" >&2
-            echo "" >&2
-            echo "A web bundle is built for one deployment (ADR-0019)." >&2
-            exit 1
-          fi
-          {{.ENGINE}} build -f web/Containerfile \
-            --build-arg "VITE_API_BASE_URL=$VITE_API_BASE_URL" \
-            --build-arg "VITE_OIDC_ISSUER=$VITE_OIDC_ISSUER" \
-            --build-arg "VITE_OIDC_CLIENT_ID=$VITE_OIDC_CLIENT_ID" \
-            -t "{{.IMAGE_REPO}}-web:{{.IMAGE_TAG}}" web
+      - "{{.ENGINE}} build -f web/Containerfile -t {{.IMAGE_REPO}}-web:{{.IMAGE_TAG}} web"

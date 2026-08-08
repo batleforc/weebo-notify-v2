@@ -58,6 +58,10 @@ pub struct InboxQuery {
     pub min_priority: Option<Priority>,
     /// Keep only notifications sharing this grouping key.
     pub group_key: Option<String>,
+    /// Keep only notifications whose head revision carries at least one action
+    /// button (design §2.3). `Some(false)` narrows the other way, to notifications
+    /// with none.
+    pub has_actions: Option<bool>,
     /// Where and how much.
     pub page: PageRequest,
 }

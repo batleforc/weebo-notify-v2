@@ -61,6 +61,9 @@ export interface Filters {
   status: Status[];
   tag: string | null;
   minPriority: Priority | null;
+  /** `true` keeps only notifications with action buttons, `false` only those
+   * without, `null` does not filter on it (§2.3). */
+  hasActions: boolean | null;
 }
 
 export const emptyFilters = (): Filters => ({
@@ -69,6 +72,7 @@ export const emptyFilters = (): Filters => ({
   status: [],
   tag: null,
   minPriority: null,
+  hasActions: null,
 });
 
 const PAGE_SIZE = 50;
@@ -166,6 +170,7 @@ export const useInbox = defineStore("inbox", () => {
       status: statuses,
       tag,
       minPriority,
+      hasActions,
     } = filters.value;
     return {
       channels: channels.length ? channels.join(",") : undefined,
@@ -173,6 +178,7 @@ export const useInbox = defineStore("inbox", () => {
       status: statuses.length ? statuses.join(",") : undefined,
       tag: tag ?? undefined,
       min_priority: minPriority ?? undefined,
+      has_actions: hasActions ?? undefined,
       cursor: after,
       limit: PAGE_SIZE,
     };
@@ -238,6 +244,7 @@ export const useInbox = defineStore("inbox", () => {
       status: statuses,
       tag,
       minPriority,
+      hasActions,
     } = filters.value;
     if (channels.length && !channels.includes(channel)) {
       return false;
@@ -254,6 +261,12 @@ export const useInbox = defineStore("inbox", () => {
     if (
       minPriority &&
       PRIORITIES.indexOf(revision.priority) < PRIORITIES.indexOf(minPriority)
+    ) {
+      return false;
+    }
+    if (
+      hasActions !== null &&
+      (revision.payload.actions ?? []).length > 0 !== hasActions
     ) {
       return false;
     }

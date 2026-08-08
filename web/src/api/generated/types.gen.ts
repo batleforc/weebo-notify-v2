@@ -3132,6 +3132,11 @@ export type ChannelInboxData = {
          */
         group_key?: string;
         /**
+         * Keep only notifications carrying at least one action button (`true`) or
+         * none (`false`). Absent means "do not filter on this".
+         */
+        has_actions?: boolean;
+        /**
          * Opaque page cursor, from the previous page's `next`.
          */
         cursor?: string;
@@ -3325,6 +3330,11 @@ export type InboxData = {
          * Restrict to one client-side group.
          */
         group_key?: string;
+        /**
+         * Keep only notifications carrying at least one action button (`true`) or
+         * none (`false`). Absent means "do not filter on this".
+         */
+        has_actions?: boolean;
         /**
          * Opaque page cursor, from the previous page's `next`.
          */

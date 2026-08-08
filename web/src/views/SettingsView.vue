@@ -171,7 +171,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="mx-auto max-w-2xl space-y-4 overflow-y-auto p-6">
+  <div class="mx-auto h-full max-w-2xl space-y-4 overflow-y-auto p-6">
     <h1 class="text-lg font-semibold">Réglages</h1>
 
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>

@@ -7,7 +7,15 @@
  * through everything that matches, not through the first fifty rows that happened
  * to be loaded.
  */
-import { Hash, Monitor, Moon, Radio, Sun, WifiOff } from "lucide-vue-next";
+import {
+  Hash,
+  Monitor,
+  Moon,
+  MousePointerClick,
+  Radio,
+  Sun,
+  WifiOff,
+} from "lucide-vue-next";
 import { computed, onMounted } from "vue";
 
 import type { Priority, State, Status } from "@/api/generated/types.gen";
@@ -59,7 +67,8 @@ const filtered = computed(
     filters.value.state.length > 0 ||
     filters.value.status.length > 0 ||
     filters.value.minPriority !== null ||
-    filters.value.tag !== null,
+    filters.value.tag !== null ||
+    filters.value.hasActions !== null,
 );
 
 function toggle<T>(list: T[], value: T): T[] {
@@ -96,6 +105,14 @@ function setPriority(priority: Priority | null): void {
   });
 }
 
+/** Toggle the "carries action buttons" filter (§2.3): off, then on, then off. */
+function toggleHasActions(): void {
+  void inbox.apply({
+    ...filters.value,
+    hasActions: filters.value.hasActions === true ? null : true,
+  });
+}
+
 function clear(): void {
   void inbox.apply(emptyFilters());
 }
@@ -127,9 +144,12 @@ const connection = computed(() => {
     aria-label="Canaux et filtres"
   >
     <div class="cyber-grid -m-3 mb-0 flex items-center justify-between gap-2 border-b p-3">
-      <span class="font-mono text-sm font-semibold tracking-tight">
+      <RouterLink
+        to="/"
+        class="font-mono text-sm font-semibold tracking-tight hover:opacity-80"
+      >
         weebo<span class="cyber-text-glow text-primary">-notify</span>
-      </span>
+      </RouterLink>
       <Tooltip side="right">
         <span :class="['flex items-center gap-1 text-xs', connection.class]">
           <component :is="connection.icon" class="size-3.5" />
@@ -257,6 +277,19 @@ const connection = computed(() => {
           @click="setPriority(priority)"
         >
           ≥ {{ priorityLabel(priority) }}
+        </Button>
+      </div>
+
+      <div class="flex flex-wrap gap-1 px-1">
+        <Button
+          :variant="filters.hasActions === true ? 'secondary' : 'outline'"
+          size="sm"
+          class="h-6 gap-1 px-2 text-xs font-normal"
+          :aria-pressed="filters.hasActions === true"
+          @click="toggleHasActions"
+        >
+          <MousePointerClick class="size-3" />
+          avec action
         </Button>
       </div>
     </section>

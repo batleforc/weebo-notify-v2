@@ -1,22 +1,31 @@
 /**
- * The Content-Security-Policy this bundle ships with (design §10.3, ADR-0019).
+ * The Content-Security-Policy this deployment ships with (design §10.3, ADR-0021).
  *
  * Build-time code that lives under `src/` so it shares the test suite — nothing in
  * the application imports it, so none of it reaches the bundle. `vite.config.ts`
- * calls it from a `transformIndexHtml` hook.
+ * calls it once, at build time, to emit `csp-template.txt` (below).
  *
- * # Why the policy travels with the bundle
+ * # Why the policy is assembled here and rendered by nginx
  *
  * §10.3 asks for a strict CSP and `lib/markdown.ts` calls it the fourth gate after
- * `html: false`, DOMPurify and the scheme check. Until now it was owed by "whatever
- * serves the bundle", which in this repository is nothing at all — so the gate was
- * a sentence in three documents and a header in zero deployments. A `<meta>` tag is
- * enforced by the browser exactly like the header, and it cannot be forgotten by
- * whoever writes the ingress.
+ * `html: false`, DOMPurify and the scheme check. ADR-0019 first closed that gap
+ * with a `<meta>` tag stamped at build time — but a `<meta>` policy is fixed when
+ * the page is built, and §11 says a deployment is "start this image with these
+ * env vars", not "build this image again" (ADR-0021 supersedes ADR-0019 on that
+ * point). So this function is now called twice, in two different shapes:
  *
- * Two directives cannot travel this way — a meta policy ignores `frame-ancestors`
- * and `report-to` — and those stay owed by the server. Named in ADR-0019 rather
- * than left to be discovered.
+ *   * by `vite.config.ts`, at build time, with **shell placeholders** in place of
+ *     `apiOrigin`/`oidcIssuer`/`attachmentOrigin` (`${WNK_API_BASE_URL}` and so
+ *     on) and the **real** inline-script hash, because the hash names bytes this
+ *     build shipped and the origins do not exist yet. The result is written to
+ *     `csp-template.txt`, which ships inside the image;
+ *   * by `csp.spec.ts`, with real example origins, to pin the policy's shape.
+ *
+ * `web/nginx/docker-entrypoint.d/05-runtime-config.sh` resolves the placeholders
+ * against the container's actual environment at boot and hands the result to
+ * nginx as one `Content-Security-Policy` header — which is also why
+ * `frame-ancestors` and `report-to` are ordinary entries in the list below now:
+ * a header can carry everything a `<meta>` tag could not.
  *
  * # The hashes are computed, never written down
  *
@@ -54,14 +63,23 @@ export function originOf(url: string): string {
   return new URL(url).origin;
 }
 
-/** What the policy has to be told about the deployment it is built for. */
+/** What the policy has to be told about the deployment it names. */
 export interface PolicyInputs {
-  /** `VITE_API_BASE_URL` — the API this bundle talks to. */
-  apiBaseUrl: string;
-  /** `VITE_OIDC_ISSUER` — discovery, JWKS and the token endpoint. */
-  oidcIssuer: string;
   /**
-   * `VITE_ATTACHMENT_ORIGIN` — where presigned attachment URLs point (§6.1).
+   * The origin the API is reachable at — already an origin, not a URL to derive
+   * one from.
+   *
+   * That split matters here specifically: the build-time caller passes
+   * `${WNK_API_BASE_URL}`, a shell placeholder that is not a parseable URL yet
+   * and must not be run through {@link originOf}. Extracting the origin is now
+   * the caller's job — `csp.spec.ts` does it with real URLs, `vite.config.ts`
+   * does not do it at all.
+   */
+  apiOrigin: string;
+  /** The identity provider's origin — discovery, JWKS and the token endpoint. */
+  oidcOrigin: string;
+  /**
+   * Where presigned attachment URLs point (§6.1), already an origin.
    *
    * Optional, and the only input here that is. The other two are what the
    * application *is*; this one is what its object store happens to be, and a
@@ -70,10 +88,8 @@ export interface PolicyInputs {
    * `NotificationImage.vue` shows — which is a visible failure, not a silent one.
    *
    * It cannot be derived: `GET /attachments/{id}` answers with a URL minted by
-   * whatever `[storage] endpoint` the server was configured with, and this bundle
-   * has never seen the server's configuration. It cannot be read at runtime
-   * either — a policy is fixed when the document is parsed, and by the time a
-   * presign comes back the browser has long stopped listening.
+   * whatever `[storage] endpoint` the server was configured with, and this
+   * bundle never sees the server's configuration.
    */
   attachmentOrigin?: string;
   /** Source expressions from {@link inlineScriptHashes}. */
@@ -88,17 +104,15 @@ export interface PolicyInputs {
  * a policy ends up allowing something nobody can explain.
  */
 export function contentSecurityPolicy({
-  apiBaseUrl,
-  oidcIssuer,
+  apiOrigin: api,
+  oidcOrigin: issuer,
   attachmentOrigin,
   hashes,
 }: PolicyInputs): string {
-  const api = originOf(apiBaseUrl);
-  const issuer = originOf(oidcIssuer);
-  // Not `originOf` on a possibly-absent value: an empty string would throw, and a
-  // build must not fail over an optional input. An origin that is already an
-  // origin passes through unchanged.
-  const bucket = attachmentOrigin ? originOf(attachmentOrigin) : null;
+  // Not run through `originOf`: the optional bucket origin arrives already an
+  // origin (or already a shell placeholder, at build time) — same reasoning as
+  // `apiOrigin`/`oidcOrigin` above.
+  const bucket = attachmentOrigin || null;
 
   return [
     "default-src 'none'",
@@ -134,5 +148,13 @@ export function contentSecurityPolicy({
     // An injected `<base>` would repoint every relative URL in the page,
     // including the ones this policy allows.
     "base-uri 'none'",
+    // The two directives ADR-0019 said a `<meta>` tag ignores — `'none'` and not
+    // `'self'` because nothing in this application frames itself, and the
+    // clickjacking this prevents is aimed at the action buttons of §2.3, a
+    // transparent frame over "Approve" being the whole attack. `Reporting-Endpoints`
+    // (a separate header, `web/nginx/default.conf.template`) defines what `csp`
+    // names here.
+    "frame-ancestors 'none'",
+    "report-to csp",
   ].join("; ");
 }

@@ -1504,6 +1504,15 @@
             }
           },
           {
+            "name": "has_actions",
+            "in": "query",
+            "description": "Keep only notifications carrying at least one action button (`true`) or\nnone (`false`). Absent means \"do not filter on this\".",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "cursor",
             "in": "query",
             "description": "Opaque page cursor, from the previous page's `next`.",
@@ -1852,6 +1861,15 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "has_actions",
+            "in": "query",
+            "description": "Keep only notifications carrying at least one action button (`true`) or\nnone (`false`). Absent means \"do not filter on this\".",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {

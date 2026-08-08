@@ -417,6 +417,9 @@ impl NotificationRepository for InMemory {
                         .tags
                         .iter()
                         .all(|tag| notification.head.content.tags.contains(tag))
+                    && query
+                        .has_actions
+                        .is_none_or(|want| notification.head.content.actions.is_empty() != want)
             })
             .collect();
 

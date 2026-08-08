@@ -1,17 +1,20 @@
-# What serves the bundle, and the three headers a `<meta>` tag cannot carry
-# (design §10.3, ADR-0019, §14.4/D17).
+# What serves the bundle, and every header it is responsible for
+# (design §10.3, ADR-0021, §14.4/D17).
 #
-# ADR-0019 put the Content-Security-Policy in the page itself so it could not be
-# forgotten by whoever writes the ingress. Two directives are ignored there by
-# specification — `frame-ancestors` and `report-to` — and `Strict-Transport-Security`
-# was never a CSP directive at all. Until this file existed they had no emitter
-# anywhere, which is the half of D17 that is a security gap rather than a missing
-# artefact.
-#
-# The policy below is a SECOND policy, not a replacement. A browser enforces every
-# policy it is given, so the meta one keeps governing scripts and connections and
-# this one adds what it could not say. Repeating the whole policy here would create
-# two copies to keep in step — the exact shape D22 spent two increments removing.
+# ADR-0019 first put the whole Content-Security-Policy in the page itself, in a
+# `<meta>` tag, so it could not be forgotten by whoever writes the ingress — with
+# `frame-ancestors` and `report-to` carried here instead, because a meta policy
+# ignores both by specification. ADR-0021 moved the rest of the policy here too,
+# once the origins it names stopped being known at build time: `${WNK_CSP_HEADER}`
+# below is `web/src/lib/csp.ts`'s `contentSecurityPolicy()`, exactly as
+# `csp.spec.ts` pins its shape, resolved against this container's actual
+# environment by `docker-entrypoint.d/05-runtime-config.sh` before nginx starts.
+# One policy, one emitter, which is the shape D22 spent two increments getting the
+# do-not-disturb rule to — a second copy here to keep in step with the first is
+# exactly what that pattern was for.
+# `Strict-Transport-Security` was never a CSP directive at all, and had no emitter
+# anywhere until this file existed — the half of D17 that is a security gap rather
+# than a missing artefact.
 
 # Cache-Control by path, through a map rather than per-location `add_header`, and
 # the reason is a genuine nginx trap: `add_header` in a location block DISCARDS
@@ -59,11 +62,12 @@ server {
 
         add_header Cache-Control $wnk_cache_control always;
 
-        # ── What the meta policy cannot say ──────────────────────────────────
-        # `'none'` and not `'self'`: nothing in this application frames itself, and
-        # the clickjacking this prevents is aimed at the action buttons of §2.3 —
-        # a transparent frame over "Approve" is the whole attack.
-        add_header Content-Security-Policy "frame-ancestors 'none'; report-to csp" always;
+        # ── The whole policy, assembled at boot ──────────────────────────────
+        # See this file's header comment — `${WNK_CSP_HEADER}` is set by
+        # `docker-entrypoint.d/05-runtime-config.sh`, not by the `WNK_`-filtered
+        # envsubst pass that renders the rest of this file, because it needs a
+        # second substitution pass of its own first.
+        add_header Content-Security-Policy "${WNK_CSP_HEADER}" always;
         # Where violations go. It defaults to the 204 below rather than to nothing,
         # so the endpoint named by `report-to` always exists: a `report-to` pointing
         # at a missing endpoint is a policy that logs its own failures nowhere,

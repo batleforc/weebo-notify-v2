@@ -13,8 +13,8 @@ import { describe, expect, it } from "vitest";
 import { contentSecurityPolicy, inlineScriptHashes, originOf } from "./csp";
 
 const INPUTS = {
-  apiBaseUrl: "https://notify.test",
-  oidcIssuer: "https://idp.test",
+  apiOrigin: "https://notify.test",
+  oidcOrigin: "https://idp.test",
   hashes: ["'sha256-abc'"],
 };
 
@@ -63,23 +63,22 @@ describe("the shipped policy", () => {
   });
 
   it("names the object store when there is one, so attachments can render", () => {
-    // D26's second half, and the one nothing else can catch: the dev server does
-    // not stamp this policy at all (`vite.config.ts`), so an attachment renders
-    // perfectly under `pnpm dev` and is blocked in every built bundle. Only a test
-    // sees that difference before a deployment does.
+    // D26's second half. `contentSecurityPolicy` no longer strips a path off this
+    // value itself (ADR-0021) — that was only ever safe when the caller held a
+    // real URL to call `originOf` on, and the build-time caller now hands over a
+    // shell placeholder it cannot parse. Passing something with a path in it is
+    // the deployer's mistake to make and the deployment's own docs to prevent —
+    // this test pins that `contentSecurityPolicy` uses the value verbatim rather
+    // than silently swallowing the difference.
     const images = directive(
       contentSecurityPolicy({
         ...INPUTS,
-        attachmentOrigin: "https://s3.weebo.test/weebo-notify-attachments",
+        attachmentOrigin: "https://s3.weebo.test",
       }),
       "img-src",
     );
 
-    // The path is gone: a source expression carrying one matches nothing, quietly.
     expect(images).toContain("https://s3.weebo.test");
-    expect(images).not.toContain(
-      "https://s3.weebo.test/weebo-notify-attachments",
-    );
   });
 
   it("stays valid for a deployment that has no object store", () => {
@@ -99,6 +98,13 @@ describe("the shipped policy", () => {
     expect(directive(contentSecurityPolicy(INPUTS), "base-uri")).toEqual([
       "'none'",
     ]);
+  });
+
+  it("carries the two directives a <meta> tag could never enforce (ADR-0021)", () => {
+    const policy = contentSecurityPolicy(INPUTS);
+
+    expect(directive(policy, "frame-ancestors")).toEqual(["'none'"]);
+    expect(directive(policy, "report-to")).toEqual(["csp"]);
   });
 
   it("carries the port when the deployment has one, and drops the path", () => {

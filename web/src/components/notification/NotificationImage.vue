@@ -18,8 +18,9 @@
  * on screen: the signature could not be obtained (server, bucket, expiry), or the
  * bytes were refused by the page's own Content-Security-Policy. The second is
  * silent in a way the first is not — `img-src` has to name the origin the
- * presigns point at (`VITE_ATTACHMENT_ORIGIN`, `lib/csp.ts`), and a deployment
- * that forgets it gets a page that loads, works, and shows no attachment.
+ * presigns point at (`WNK_ATTACHMENT_ORIGIN`, `lib/csp.ts`, ADR-0021), and a
+ * deployment that forgets it gets a page that loads, works, and shows no
+ * attachment.
  */
 import { computed, ref, watch } from "vue";
 

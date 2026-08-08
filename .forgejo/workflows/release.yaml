@@ -147,10 +147,9 @@ jobs:
             ${{ steps.kind.outputs.prerelease == 'false' && format('{0}:latest', env.IMAGE_NAME) || '' }}
 
       - name: Build and push the web image
-        # The three build arguments are the deployment (ADR-0019): a bundle is built
-        # for one origin, so the release publishes the image for THIS instance's
-        # origins and a different deployment rebuilds it with its own. They are
-        # variables and not secrets — they end up readable inside the bundle.
+        # No build args since ADR-0021 superseded ADR-0019: one image now serves
+        # every deployment, and the API origin, the issuer and the client id are
+        # read at container boot instead (`web/nginx/docker-entrypoint.d/`).
         uses: docker/build-push-action@v6
         with:
           context: ./web
@@ -159,10 +158,6 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          build-args: |
-            VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}
-            VITE_OIDC_ISSUER=${{ vars.VITE_OIDC_ISSUER }}
-            VITE_OIDC_CLIENT_ID=${{ vars.VITE_OIDC_CLIENT_ID }}
           tags: |
             ${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}
             ${{ steps.kind.outputs.prerelease == 'false' && format('{0}-web:latest', env.IMAGE_NAME) || '' }}

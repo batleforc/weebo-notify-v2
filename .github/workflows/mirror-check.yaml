@@ -4,8 +4,10 @@ name: mirror-check
 # check, contract, e2e, oidc-compat, release (see .forgejo/workflows/).
 #
 # This workflow exists so the mirror is not a repository of unknown quality: it
-# replays the two cheap, decisive gates. Anything needing a container engine or a
-# provider matrix stays on Forgejo, where the self-hosted runners live.
+# replays the two cheap, decisive gates. Most things needing a container engine or
+# a provider matrix stay on Forgejo, where the self-hosted runners live — the one
+# exception is `publish-main.yaml`, a deliberately GitHub-hosted `:main` image
+# build, kept separate from this file because it publishes rather than checks.
 
 on:
   push:

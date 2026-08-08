@@ -1,9 +1,14 @@
-# The deployable web bundle (design §10, ADR-0019, §14.4/D17).
+# The deployable web bundle (design §10, ADR-0021, §14.4/D17).
 #
-# A separate image from the server's, because they are separate origins: the bundle
-# is built against `VITE_API_BASE_URL` and the CSP names that origin explicitly
-# (`web/src/lib/csp.ts`). Serving both from one process would make the policy's
-# `connect-src` describe something that is not true.
+# A separate image from the server's, because they are separate origins: the CSP
+# this image serves names the API's origin explicitly (`web/src/lib/csp.ts`).
+# Serving both from one process would make the policy's `connect-src` describe
+# something that is not true.
+#
+# One image now serves every deployment (ADR-0021, superseding ADR-0019's
+# build-time form): the API origin, the issuer and the client id are runtime
+# environment on the container, not a build argument, and so is what the
+# Content-Security-Policy names — see `nginx/docker-entrypoint.d/`.
 #
 # NOT VERIFIED HERE — same as the server's Containerfile: no container engine in
 # this workspace (§12.4), so the first build happens on the Forgejo runner.
@@ -12,20 +17,6 @@
 # Build
 # ─────────────────────────────────────────────────────────────────────────────
 FROM docker.io/library/node:24-slim AS builder
-
-# The three variables are BUILD arguments and not runtime environment, and that is
-# the whole of ADR-0019: a deployment is a build. The API origin, the issuer and the
-# client id are inlined into the bundle, and so is the Content-Security-Policy that
-# names the first two. There is deliberately no default — `task build:web` refuses
-# for the same reason, because a bundle built against the wrong origin loads and
-# then cannot reach its own API, which is worse than not building at all.
-ARG VITE_API_BASE_URL
-ARG VITE_OIDC_ISSUER
-ARG VITE_OIDC_CLIENT_ID
-
-RUN test -n "$VITE_API_BASE_URL"  || (echo "VITE_API_BASE_URL is required (ADR-0019)"  >&2; exit 1) && \
-    test -n "$VITE_OIDC_ISSUER"   || (echo "VITE_OIDC_ISSUER is required (ADR-0019)"   >&2; exit 1) && \
-    test -n "$VITE_OIDC_CLIENT_ID" || (echo "VITE_OIDC_CLIENT_ID is required (ADR-0019)" >&2; exit 1)
 
 WORKDIR /build
 
@@ -43,9 +34,10 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-# `vite build` is what stamps the policy and then checks its hashes against the page
-# actually written (`vite.config.ts`), so this step is the gate as much as it is the
-# artefact.
+# `vite build` checks the inline-script hash against the page actually written and
+# emits `csp-template.txt` next to this Containerfile from it (`vite.config.ts`),
+# so this step is the gate as much as it is the artefact — the runtime stage below
+# carries that file, not a policy this stage assembled itself.
 RUN pnpm build
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,6 +62,20 @@ ENV WNK_CSP_REPORT_URL="/csp-report"
 
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=builder /build/dist /usr/share/nginx/html
+
+# The two templates `docker-entrypoint.d/05-runtime-config.sh` renders — kept
+# outside `/usr/share/nginx/html` deliberately, unlike `default.conf.template`
+# above, so neither the CSP shape nor the env.js template itself is ever a
+# fetchable asset (ADR-0021). `csp-template.txt` is the one build artefact this
+# stage carries: `web/vite.config.ts` wrote it from the page actually shipped.
+COPY --from=builder /build/csp-template.txt /etc/nginx/wnk-templates/csp-template.txt
+COPY nginx/env.js.template /etc/nginx/wnk-templates/env.js.template
+
+# Sourced, not executed (see the file's own header comment) — `docker-entrypoint.sh`
+# decides which by the executable bit, and COPY does not reliably preserve one from
+# the build context, so this is asserted rather than assumed.
+COPY nginx/docker-entrypoint.d/05-runtime-config.sh /docker-entrypoint.d/05-runtime-config.sh
+RUN chmod 644 /docker-entrypoint.d/05-runtime-config.sh
 
 EXPOSE 8080
 

@@ -35,6 +35,13 @@
   </head>
   <body>
     <div id="app"></div>
+    <!--
+      Runtime config (design §11, ADR-0021): a plain script, not a module, so it
+      runs and sets `window.__ENV__` before the module below — which `src/
+      config.ts` reads at import time — ever starts. `web/public/env.js` for
+      `pnpm dev`; a real deployment's image renders its own at container boot.
+    -->
+    <script src="/env.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

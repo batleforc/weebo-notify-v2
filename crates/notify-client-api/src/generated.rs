@@ -9396,6 +9396,8 @@ Arguments:
 can never widen it.
 - `cursor`: Opaque page cursor, from the previous page's `next`.
 - `group_key`: Restrict to one client-side group.
+- `has_actions`: Keep only notifications carrying at least one action button (`true`) or
+none (`false`). Absent means "do not filter on this".
 - `limit`: Page size. Clamped server-side.
 - `min_priority`: Floor on priority: `min`, `low`, `default`, `high`, `urgent`.
 - `state`: Comma-separated lifecycle states: `open`, `working`, `closed`.
@@ -9409,6 +9411,7 @@ can never widen it.
         channels: Option<&'a str>,
         cursor: Option<&'a str>,
         group_key: Option<&'a str>,
+        has_actions: Option<bool>,
         limit: Option<i32>,
         min_priority: Option<&'a str>,
         state: Option<&'a str>,
@@ -9436,6 +9439,7 @@ can never widen it.
             .query(&progenitor_client::QueryParam::new("channels", &channels))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new("group_key", &group_key))
+            .query(&progenitor_client::QueryParam::new("has_actions", &has_actions))
             .query(&progenitor_client::QueryParam::new("limit", &limit))
             .query(&progenitor_client::QueryParam::new("min_priority", &min_priority))
             .query(&progenitor_client::QueryParam::new("state", &state))
@@ -9660,6 +9664,8 @@ Arguments:
 can never widen it.
 - `cursor`: Opaque page cursor, from the previous page's `next`.
 - `group_key`: Restrict to one client-side group.
+- `has_actions`: Keep only notifications carrying at least one action button (`true`) or
+none (`false`). Absent means "do not filter on this".
 - `limit`: Page size. Clamped server-side.
 - `min_priority`: Floor on priority: `min`, `low`, `default`, `high`, `urgent`.
 - `state`: Comma-separated lifecycle states: `open`, `working`, `closed`.
@@ -9672,6 +9678,7 @@ can never widen it.
         channels: Option<&'a str>,
         cursor: Option<&'a str>,
         group_key: Option<&'a str>,
+        has_actions: Option<bool>,
         limit: Option<i32>,
         min_priority: Option<&'a str>,
         state: Option<&'a str>,
@@ -9696,6 +9703,7 @@ can never widen it.
             .query(&progenitor_client::QueryParam::new("channels", &channels))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new("group_key", &group_key))
+            .query(&progenitor_client::QueryParam::new("has_actions", &has_actions))
             .query(&progenitor_client::QueryParam::new("limit", &limit))
             .query(&progenitor_client::QueryParam::new("min_priority", &min_priority))
             .query(&progenitor_client::QueryParam::new("state", &state))

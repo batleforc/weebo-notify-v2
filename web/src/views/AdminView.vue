@@ -202,7 +202,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="mx-auto max-w-3xl space-y-4 overflow-y-auto p-6">
+  <div class="h-full space-y-4 overflow-y-auto p-6">
     <h1 class="text-lg font-semibold">Administration</h1>
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
 

@@ -47,6 +47,9 @@ pub struct InboxParams {
     pub min_priority: Option<String>,
     /// Restrict to one client-side group.
     pub group_key: Option<String>,
+    /// Keep only notifications carrying at least one action button (`true`) or
+    /// none (`false`). Absent means "do not filter on this".
+    pub has_actions: Option<bool>,
     /// Opaque page cursor, from the previous page's `next`.
     pub cursor: Option<String>,
     /// Page size. Clamped server-side.
@@ -83,6 +86,7 @@ impl InboxParams {
                 .map(|raw| parse_enum::<Priority>(raw, "min_priority"))
                 .transpose()?,
             group_key: self.group_key,
+            has_actions: self.has_actions,
             page: page(self.cursor.as_deref(), self.limit)?,
         })
     }

@@ -5,10 +5,9 @@
 /dist
 /coverage
 *.tsbuildinfo
-
-# local overrides of .env.development (endpoints, never secrets — see .env.example)
-.env.local
-.env.*.local
+# Written by vite.config.ts's cspTemplate plugin, outside /dist on purpose
+# (ADR-0021) — it must not ship as a served asset in the web image.
+/csp-template.txt
 
 # misc
 .DS_Store

@@ -121,9 +121,9 @@ impl NotificationRepository for PgStore {
             "INSERT INTO notifications
                  (id, channel_id, external_id, kind, last_seq, revision_count, created_at,
                   closed_at, deleted_at, cursor_seq, ttl, expires_at, head_seq, state, status,
-                  priority, priority_rank, title, body, tags, group_key, search)
+                  priority, priority_rank, title, body, tags, group_key, has_actions, search)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, $10, $11, $12, $13, $14, $15,
-                     $16, $17, $18, $19, $20, to_tsvector('simple', $21))",
+                     $16, $17, $18, $19, $20, $21, to_tsvector('simple', $22))",
         )
         .bind(notification.id.to_string())
         .bind(notification.channel.as_str())
@@ -145,6 +145,7 @@ impl NotificationRepository for PgStore {
         .bind(revision.content.body.as_deref())
         .bind(&revision.content.tags)
         .bind(revision.content.group_key.as_deref())
+        .bind(!revision.content.actions.is_empty())
         .bind(searchable(&revision.content))
         .execute(&mut *transaction)
         .await
@@ -190,7 +191,7 @@ impl NotificationRepository for PgStore {
                 SET last_seq = $2, revision_count = $3, closed_at = $4, ttl = $5,
                     expires_at = $6, cursor_seq = $7, head_seq = $8, state = $9, status = $10,
                     priority = $11, priority_rank = $12, title = $13, body = $14, tags = $15,
-                    group_key = $16, search = to_tsvector('simple', $17)
+                    group_key = $16, has_actions = $17, search = to_tsvector('simple', $18)
               WHERE id = $1",
         )
         .bind(notification.id.to_string())
@@ -209,6 +210,7 @@ impl NotificationRepository for PgStore {
         .bind(notification.head.content.body.as_deref())
         .bind(&notification.head.content.tags)
         .bind(notification.head.content.group_key.as_deref())
+        .bind(!notification.head.content.actions.is_empty())
         .bind(searchable(&notification.head.content))
         .execute(&mut *transaction)
         .await
@@ -242,9 +244,10 @@ impl NotificationRepository for PgStore {
                AND ($5::smallint IS NULL OR n.priority_rank >= $5)
                AND ($6::text IS NULL OR n.group_key = $6)
                AND n.tags @> $7
-               AND ($8::bigint IS NULL OR n.cursor_seq < $8)
+               AND ($8::bool IS NULL OR n.has_actions = $8)
+               AND ($9::bigint IS NULL OR n.cursor_seq < $9)
              ORDER BY n.cursor_seq DESC
-             LIMIT $9"
+             LIMIT $10"
         ))
         .bind(&channels)
         .bind(OffsetDateTime::now_utc())
@@ -253,6 +256,7 @@ impl NotificationRepository for PgStore {
         .bind(query.min_priority.map(priority_rank))
         .bind(query.group_key.as_deref())
         .bind(&query.tags)
+        .bind(query.has_actions)
         .bind(query.page.after.map(sequence))
         .bind(i64::from(limit) + 1)
         .fetch_all(self.pool())

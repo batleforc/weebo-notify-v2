@@ -1,43 +1,64 @@
 /**
  * Everything the frontend needs to know about the deployment it is talking to.
  *
- * Read from Vite's `import.meta.env`, which inlines the values at build time — so
- * a deployment is a build, not a runtime file. That is deliberate for M1: the
- * alternative (a `/config.json` fetched at boot) is only worth its extra round
- * trip once the same bundle has to serve several installations, which is a
- * question for whoever packages the container image (§11), not for the SPA.
+ * Read from `window.__ENV__`, set by a tiny `<script src="/env.js">` `index.html`
+ * loads before the app bundle (design §11, ADR-0021). One image now serves every
+ * deployment: `web/nginx/docker-entrypoint.d/05-runtime-config.sh` renders
+ * `env.js` from `WNK_API_BASE_URL`/`WNK_OIDC_ISSUER`/`WNK_OIDC_CLIENT_ID` at
+ * container boot, so starting the image with different env vars is what a
+ * different deployment means now — not rebuilding it. `web/public/env.js` is the
+ * same file, committed with the local dev stack's values (§12.1), for `pnpm dev`
+ * — edit it directly for a different local backend, the same way `config/dev.toml`
+ * is edited rather than copied from an example.
+ *
+ * ADR-0019 chose the build-time form for M1 on the grounds that a runtime
+ * `/config.json` was "only worth its extra round trip once the same bundle has to
+ * serve several installations" — ADR-0021 is that installation.
  *
  * There is no secret here and there cannot be one: the OIDC client is public
  * (Authorization Code + PKCE, design §5.1), which is precisely why it has no
- * client secret to leak into a bundle.
+ * client secret to leak into a bundle or a running container's environment.
  */
 
-function required(name: string, value: string | undefined): string {
+/** What `env.js` sets on `window` before this module ever runs. */
+export interface RuntimeEnv {
+  apiBaseUrl: string;
+  oidcIssuer: string;
+  oidcClientId: string;
+}
+
+declare global {
+  interface Window {
+    __ENV__?: RuntimeEnv;
+  }
+}
+
+function required(name: keyof RuntimeEnv, value: string | undefined): string {
   if (!value) {
     throw new Error(
-      `Missing ${name}. Copy web/.env.example to web/.env.local and fill it in.`,
+      `Missing window.__ENV__.${name}. Check web/public/env.js for local dev, ` +
+        "or the deployment's WNK_* environment variables.",
     );
   }
   return value;
 }
 
+const env = window.__ENV__ ?? ({} as Partial<RuntimeEnv>);
+
 /** Base URL of the weebo-notify API, without a trailing slash. */
-export const apiBaseUrl = required(
-  "VITE_API_BASE_URL",
-  import.meta.env.VITE_API_BASE_URL,
-).replace(/\/+$/, "");
+export const apiBaseUrl = required("apiBaseUrl", env.apiBaseUrl).replace(
+  /\/+$/,
+  "",
+);
 
 /** Issuer of the identity provider — its discovery document hangs off it. */
-export const oidcIssuer = required(
-  "VITE_OIDC_ISSUER",
-  import.meta.env.VITE_OIDC_ISSUER,
-).replace(/\/+$/, "");
+export const oidcIssuer = required("oidcIssuer", env.oidcIssuer).replace(
+  /\/+$/,
+  "",
+);
 
 /** The public client id registered for this SPA. */
-export const oidcClientId = required(
-  "VITE_OIDC_CLIENT_ID",
-  import.meta.env.VITE_OIDC_CLIENT_ID,
-);
+export const oidcClientId = required("oidcClientId", env.oidcClientId);
 
 /**
  * Scopes asked for at login.

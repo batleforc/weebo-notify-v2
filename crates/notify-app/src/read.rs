@@ -98,6 +98,8 @@ pub struct InboxFilters {
     pub min_priority: Option<Priority>,
     /// Restrict to one client-side group.
     pub group_key: Option<String>,
+    /// Keep only notifications carrying at least one action button.
+    pub has_actions: Option<bool>,
     /// Where and how much.
     pub page: PageRequest,
 }
@@ -152,6 +154,7 @@ impl ListInbox {
                 tags: filters.tags,
                 min_priority: filters.min_priority,
                 group_key: filters.group_key,
+                has_actions: filters.has_actions,
                 page: filters.page,
             })
             .await?)
