@@ -10,11 +10,18 @@ export { default as Button } from "./Button.vue";
  * `monofolio` swap a token file rather than a fork.
  */
 export const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,box-shadow,transform] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        // The one variant the design singles out for the brand's glow (§10.6): a
+        // primary action is the thing on a screen most worth drawing the eye to,
+        // and `shadow-md` now resolves to `--elevation-md` (theme.css) rather than
+        // Tailwind's stock grey — a real glow in dark, a firm shadow in light. The
+        // 1px hover lift + baseline-on-press pairing mirrors the source system's
+        // own primary-button spec.
+        default:
+          "bg-primary text-primary-foreground shadow-md hover:bg-primary/90 hover:-translate-y-px active:translate-y-0",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:

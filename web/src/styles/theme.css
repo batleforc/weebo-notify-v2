@@ -15,8 +15,21 @@
  *
  * Everything is OKLCH: it interpolates perceptually, so a theme can be re-toned by
  * moving lightness and chroma without the hue drifting.
+ *
+ * `monofolio` landed here rather than beside it: near-black crimson-tinted dark
+ * (the app's own default, unchanged in spirit), copper as the second accent, sharp
+ * 2px radius, glow standing in for soft shadows on elevated/urgent elements. Light
+ * stays what the comment below already promised before this pass — complete, not
+ * an afterthought — glow is dropped there on purpose: it reads as noise on a light
+ * ground, so light elevation is a firm, faintly warm shadow instead.
+ *
+ * One deliberate token identity, not an oversight: `--status-failure` equals
+ * `--primary`. Everywhere else semantic colour and brand accent are kept apart so
+ * neither hides the other, but this is an alerting tool — the loudest colour in the
+ * palette should be the one that means "look now", not merely "on-brand".
  */
 
+@import "./fonts.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -25,50 +38,58 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --radius: 0.5rem;
+  --radius: 0.125rem; /* 2px — sharp geometry is load-bearing to the brand, not a preference */
 
-  /* Light theme — complete, not an afterthought (§10.2). */
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.21 0.006 285.9);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.006 285.9);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.006 285.9);
-  --primary: oklch(0.21 0.006 285.9);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.967 0.001 286.4);
-  --secondary-foreground: oklch(0.21 0.006 285.9);
-  --muted: oklch(0.967 0.001 286.4);
-  --muted-foreground: oklch(0.552 0.016 285.9);
-  --accent: oklch(0.967 0.001 286.4);
-  --accent-foreground: oklch(0.21 0.006 285.9);
-  --destructive: oklch(0.577 0.245 27.3);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.92 0.004 286.3);
-  --input: oklch(0.92 0.004 286.3);
-  --ring: oklch(0.705 0.015 286.1);
+  /* Light theme — complete, not an afterthought (§10.2). Brushed steel, not pure
+   * white: a neutral this palette's warm undertone still picked, not inherited. */
+  --background: oklch(0.965 0.004 90);
+  --foreground: oklch(0.22 0.012 30);
+  --card: oklch(0.99 0.002 90);
+  --card-foreground: oklch(0.22 0.012 30);
+  --popover: oklch(0.99 0.002 90);
+  --popover-foreground: oklch(0.22 0.012 30);
+  --primary: oklch(0.52 0.22 25);
+  --primary-foreground: oklch(0.99 0.005 0);
+  --secondary: oklch(0.94 0.008 40);
+  --secondary-foreground: oklch(0.52 0.22 25);
+  --muted: oklch(0.93 0.006 90);
+  --muted-foreground: oklch(0.44 0.02 30);
+  --accent: oklch(0.5 0.13 52);
+  --accent-foreground: oklch(0.99 0.005 90);
+  --destructive: oklch(0.5 0.24 25);
+  --destructive-foreground: oklch(0.99 0.005 0);
+  --border: oklch(0.55 0.03 30 / 0.22);
+  --input: oklch(0.55 0.03 30 / 0.22);
+  --ring: oklch(0.52 0.22 25 / 0.45);
+
+  /* Glow-free elevation on a light ground — a firm, faintly warm shadow instead. */
+  --elevation-sm: 0 1px 2px oklch(0.3 0.02 30 / 0.07);
+  --elevation-md: 0 2px 6px oklch(0.3 0.02 30 / 0.09);
+  --elevation-lg: 0 4px 14px oklch(0.3 0.02 30 / 0.12);
 
   /* Status: what the notification is saying (§2.2). Never used alone — every
    * component pairs it with an icon, because colour alone excludes a portion of
    * the people reading an incident feed (§10.3). */
-  --status-success: oklch(0.63 0.17 149);
-  --status-failure: oklch(0.58 0.22 27);
-  --status-warning: oklch(0.72 0.17 70);
-  --status-info: oklch(0.62 0.16 250);
-  --status-cancelled: oklch(0.6 0.02 286);
+  --status-success: oklch(0.5 0.15 150);
+  --status-failure: oklch(
+    0.52 0.22 25
+  ); /* == primary, deliberately — see file header */
+  --status-warning: oklch(0.55 0.15 70);
+  --status-info: oklch(0.5 0.13 220);
+  --status-cancelled: oklch(0.55 0.02 30);
 
   /* Priority: a discrete scale, not a gradient (§10.2). `min` and `low` are
    * deliberately quiet enough to read as "not for you right now". */
-  --priority-min: oklch(0.72 0.01 286);
-  --priority-low: oklch(0.66 0.03 250);
-  --priority-default: oklch(0.62 0.16 250);
-  --priority-high: oklch(0.72 0.17 70);
-  --priority-urgent: oklch(0.58 0.22 27);
+  --priority-min: oklch(0.6 0.02 30);
+  --priority-low: oklch(0.55 0.04 40);
+  --priority-default: oklch(0.5 0.13 220);
+  --priority-high: oklch(0.55 0.15 70);
+  --priority-urgent: oklch(0.52 0.22 25);
 
   /* State: where it is in its lifecycle (§2.2). */
-  --state-open: oklch(0.62 0.16 250);
-  --state-working: oklch(0.72 0.17 70);
-  --state-closed: oklch(0.6 0.02 286);
+  --state-open: oklch(0.5 0.13 220);
+  --state-working: oklch(0.55 0.15 70);
+  --state-closed: oklch(0.55 0.02 30);
 
   /* Density (§10.2): compact is the desktop default because the inbox is a tool,
    * comfortable is what a touch target needs. Set on <html> by the UI store. */
@@ -77,42 +98,52 @@
 }
 
 .dark {
-  --background: oklch(0.16 0.005 285.9);
-  --foreground: oklch(0.96 0.001 286.4);
-  --card: oklch(0.196 0.006 285.9);
-  --card-foreground: oklch(0.96 0.001 286.4);
-  --popover: oklch(0.196 0.006 285.9);
-  --popover-foreground: oklch(0.96 0.001 286.4);
-  --primary: oklch(0.92 0.004 286.3);
-  --primary-foreground: oklch(0.21 0.006 285.9);
-  --secondary: oklch(0.26 0.006 286);
-  --secondary-foreground: oklch(0.96 0.001 286.4);
-  --muted: oklch(0.26 0.006 286);
-  --muted-foreground: oklch(0.68 0.015 286.1);
-  --accent: oklch(0.28 0.007 286);
-  --accent-foreground: oklch(0.96 0.001 286.4);
-  --destructive: oklch(0.65 0.2 25);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(0.29 0.007 286);
-  --input: oklch(0.31 0.008 286);
-  --ring: oklch(0.55 0.013 286.1);
+  --background: oklch(0.07 0.018 18);
+  --foreground: oklch(0.93 0.018 25);
+  --card: oklch(0.1 0.018 18);
+  --card-foreground: oklch(0.93 0.018 25);
+  --popover: oklch(0.1 0.018 18);
+  --popover-foreground: oklch(0.93 0.018 25);
+  --primary: oklch(0.65 0.26 25);
+  --primary-foreground: oklch(0.97 0.01 0);
+  --secondary: oklch(0.14 0.022 18);
+  --secondary-foreground: oklch(0.65 0.26 25);
+  --muted: oklch(0.13 0.016 18);
+  --muted-foreground: oklch(0.58 0.04 30);
+  --accent: oklch(0.72 0.14 52);
+  --accent-foreground: oklch(0.07 0.018 18);
+  --destructive: oklch(0.55 0.28 25);
+  --destructive-foreground: oklch(0.97 0.01 0);
+  --border: oklch(0.65 0.26 25 / 0.2);
+  --input: oklch(0.65 0.26 25 / 0.12);
+  --ring: oklch(0.65 0.26 25 / 0.45);
+
+  /* Glow is the elevation system here — reserved for what needs attention (this
+   * token, urgent/failure accents, focus), never applied to plain surfaces. */
+  --elevation-sm: 0 0 4px oklch(0.65 0.26 25 / 0.35);
+  --elevation-md:
+    0 0 6px oklch(0.65 0.26 25 / 0.5), 0 0 18px oklch(0.65 0.26 25 / 0.22);
+  --elevation-lg:
+    0 0 8px oklch(0.65 0.26 25 / 0.55), 0 0 28px oklch(0.65 0.26 25 / 0.28);
 
   /* Lifted for contrast against a dark surface — same hues, more lightness. */
   --status-success: oklch(0.72 0.17 150);
-  --status-failure: oklch(0.68 0.2 25);
-  --status-warning: oklch(0.79 0.16 72);
-  --status-info: oklch(0.7 0.14 250);
-  --status-cancelled: oklch(0.62 0.02 286);
+  --status-failure: oklch(
+    0.65 0.26 25
+  ); /* == primary, deliberately — see file header */
+  --status-warning: oklch(0.75 0.15 70);
+  --status-info: oklch(0.78 0.13 220);
+  --status-cancelled: oklch(0.48 0.025 30);
 
-  --priority-min: oklch(0.55 0.01 286);
-  --priority-low: oklch(0.62 0.03 250);
-  --priority-default: oklch(0.7 0.14 250);
-  --priority-high: oklch(0.79 0.16 72);
-  --priority-urgent: oklch(0.68 0.2 25);
+  --priority-min: oklch(0.4 0.02 30);
+  --priority-low: oklch(0.5 0.05 40);
+  --priority-default: oklch(0.78 0.13 220);
+  --priority-high: oklch(0.75 0.15 70);
+  --priority-urgent: oklch(0.65 0.26 25);
 
-  --state-open: oklch(0.7 0.14 250);
-  --state-working: oklch(0.79 0.16 72);
-  --state-closed: oklch(0.62 0.02 286);
+  --state-open: oklch(0.78 0.13 220);
+  --state-working: oklch(0.75 0.15 70);
+  --state-closed: oklch(0.48 0.025 30);
 }
 
 /* `comfortable` is the mobile and Tauri default; the same components read it. */
@@ -165,6 +196,24 @@
 
   --spacing-row: var(--density-row-y);
   --spacing-dense: var(--density-gap);
+
+  /* `shadow-sm/md/lg` had no token layer before this pass — every call site used
+   * Tailwind's own untinted grey scale. Indirection through `--elevation-*` (raw
+   * values re-toned per theme above) rather than naming these `--shadow-*`
+   * directly in `:root`/`.dark`, for the same reason `--color-*` does: the plain
+   * name would collide with the one `@theme` generates the utility from. */
+  --shadow-sm: var(--elevation-sm);
+  --shadow-md: var(--elevation-md);
+  --shadow-lg: var(--elevation-lg);
+
+  /* JetBrains Mono for structure (labels, timestamps, section titles, buttons),
+   * IBM Plex Sans for prose — self-hosted, see `fonts.css`. Falls through to the
+   * system stack Tailwind ships by default if a face ever fails to load. */
+  --font-sans:
+    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 }
 
 @layer base {
@@ -177,6 +226,25 @@
     color: var(--foreground);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
+  }
+
+  /* The circuit-grid wash (source system: `.cyber-grid-bg`) — kept to the one
+   * place the approved concept put it, a header a person watches all day, not
+   * spread across every surface. 28px rather than the source's 48px: this app's
+   * headers are shorter than a portfolio hero, and the coarser grid read as too
+   * sparse at that height. */
+  .cyber-grid {
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  /* The glow reserved for the one piece of text that earns it: the wordmark.
+   * `--elevation-md` is a valid `text-shadow` value as-is (offset-x/y 0, blur,
+   * colour) — no separate token needed for the one non-box use. */
+  .cyber-text-glow {
+    text-shadow: var(--elevation-md);
   }
 
   /* --- Desktop hygiene (§10bis.3bis) ------------------------------------

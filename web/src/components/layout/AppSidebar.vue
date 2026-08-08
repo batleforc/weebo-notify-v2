@@ -7,7 +7,7 @@
  * through everything that matches, not through the first fifty rows that happened
  * to be loaded.
  */
-import { Hash, Moon, Radio, Sun, WifiOff } from "lucide-vue-next";
+import { Hash, Monitor, Moon, Radio, Sun, WifiOff } from "lucide-vue-next";
 import { computed, onMounted } from "vue";
 
 import type { Priority, State, Status } from "@/api/generated/types.gen";
@@ -126,8 +126,10 @@ const connection = computed(() => {
     class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-3 text-sm"
     aria-label="Canaux et filtres"
   >
-    <div class="flex items-center justify-between gap-2">
-      <span class="font-semibold tracking-tight">weebo-notify</span>
+    <div class="cyber-grid -m-3 mb-0 flex items-center justify-between gap-2 border-b p-3">
+      <span class="font-mono text-sm font-semibold tracking-tight">
+        weebo<span class="cyber-text-glow text-primary">-notify</span>
+      </span>
       <Tooltip side="right">
         <span :class="['flex items-center gap-1 text-xs', connection.class]">
           <component :is="connection.icon" class="size-3.5" />
@@ -301,11 +303,14 @@ const connection = computed(() => {
         <div class="flex items-center gap-1">
           <Tooltip>
             <Button variant="ghost" size="icon" class="size-7" @click="ui.cycleTheme()">
+              <!-- Each icon is the theme a click switches *to*, matching the
+                   dark → light → system → dark order `cycleTheme` follows. -->
               <Sun v-if="ui.theme === 'dark'" class="size-3.5" />
+              <Monitor v-else-if="ui.theme === 'light'" class="size-3.5" />
               <Moon v-else class="size-3.5" />
               <span class="sr-only">Changer de thème</span>
             </Button>
-            <template #content>Thème clair / sombre</template>
+            <template #content>Thème : {{ ui.theme }}</template>
           </Tooltip>
           <Button
             variant="ghost"

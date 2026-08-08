@@ -15,6 +15,16 @@
 //! ephemeral key travels in the clear — worthless without the recipient's private
 //! half, which never leaves hardware (design §6.2) — and it is what lets the device,
 //! holding only its own keypair, redo the same ECDH without a second round trip.
+//!
+//! # Its own crate, and why
+//!
+//! Landed with M6 inside `notify-push-unifiedpush`, `pub(crate)`, because there was
+//! exactly one consumer when it was written — `notify-ports/src/push.rs`'s own
+//! module doc named the second one in advance ("APNs (M7) will need the same
+//! construction"). `notify-push-apns` is that second consumer; extracted here rather
+//! than duplicated, so the crypto — and the T18 guarantee it exists to prove — has
+//! one owner instead of two copies that could drift (the same lesson D22 already
+//! drew once for the DND rule).
 
 use chacha20poly1305::aead::{Aead as _, Generate as _, KeyInit as _};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
@@ -41,7 +51,7 @@ const NONCE_LEN: usize = 24;
 /// produce ciphertext anyone who has ever seen this scheme run could open; refusing
 /// costs nothing a legitimate device would ever trigger.
 #[must_use]
-pub(crate) fn seal(recipient: &DevicePublicKey, plaintext: &[u8]) -> Option<Vec<u8>> {
+pub fn seal(recipient: &DevicePublicKey, plaintext: &[u8]) -> Option<Vec<u8>> {
     let their_public = PublicKey::from(*recipient.as_bytes());
     let our_secret = EphemeralSecret::random();
     let our_public = PublicKey::from(&our_secret);
@@ -95,6 +105,10 @@ fn derive_key(shared_secret: &[u8; 32]) -> Key {
 /// Swift, outside this repository — but the round trip is exactly what proves
 /// [`seal`] produced something *that* code can open, and "indecipherable without the
 /// private key" (design's T18) is not a property a test can see without opening one.
+/// Kept private to this crate's own test module rather than exposed: every other
+/// crate's tests need only prove *that* [`seal`] ran (an envelope carries a
+/// `ciphertext_device`, a weak key propagates to `None`), not re-derive the
+/// plaintext — the crypto itself has exactly one place that proves it round-trips.
 #[cfg(test)]
 fn open(secret: &x25519_dalek::StaticSecret, sealed: &[u8]) -> Option<Vec<u8>> {
     let ephemeral_public: [u8; EPHEMERAL_KEY_LEN] =

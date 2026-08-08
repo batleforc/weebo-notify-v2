@@ -63,8 +63,20 @@ export const useUi = defineStore("ui", () => {
       }
     });
 
+  /**
+   * `dark` → `light` → `system` → `dark`. `system` last, not first: someone
+   * reaching for this toggle is making an explicit choice, and cycling past the
+   * one option that is not a fixed choice — it re-delegates to the OS — before
+   * looping back reads as "give up and follow the system" rather than "here is
+   * a third color".
+   */
   function cycleTheme(): void {
-    theme.value = theme.value === "dark" ? "light" : "dark";
+    theme.value =
+      theme.value === "dark"
+        ? "light"
+        : theme.value === "light"
+          ? "system"
+          : "dark";
   }
 
   applyTheme();

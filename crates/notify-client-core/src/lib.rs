@@ -32,7 +32,7 @@ mod tray;
 
 pub use config::{ConfigError, DEFAULT_PROFILE, Profile};
 pub use deeplink::{DeepLink, SCHEME, parse_deep_link};
-pub use dnd::DndPreset;
+pub use dnd::{DndPreset, now_utc, quiet_now};
 pub use election::{StreamLease, lock_path, try_hold_stream};
 pub use error::ClientError;
 pub use session::{Revision, Session};

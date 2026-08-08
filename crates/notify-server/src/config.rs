@@ -512,7 +512,7 @@ pub(crate) struct Federation {
 #[serde(default)]
 pub(crate) struct Push {
     pub webpush: Option<WebPush>,
-    pub apns: Option<serde_json::Value>,
+    pub apns: Option<Apns>,
     pub unifiedpush: Option<UnifiedPush>,
 }
 
@@ -533,6 +533,31 @@ pub(crate) struct WebPush {
     /// without one. Added rather than defaulted, because a wrong contact is worse
     /// than a missing one.
     pub contact: String,
+}
+
+/// `[push.apns]` — token-based `.p8` authentication for iOS (design §11, §6.2,
+/// §10bis.5, M7).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Apns {
+    /// Where the `.p8` provider authentication key lives.
+    ///
+    /// A path, not the key itself, same reason as `[push.webpush]`'s
+    /// `vapid_key_file` (§11): mounted from whatever the cluster keeps secrets in,
+    /// never a config file that gets committed by accident.
+    pub key_file: PathBuf,
+    /// The 10-character Key ID Apple assigned this `.p8` key.
+    pub key_id: String,
+    /// The 10-character Apple Developer Team ID.
+    pub team_id: String,
+    /// The app's bundle identifier, sent as `apns-topic` on every request.
+    pub topic: String,
+    /// Push against `api.sandbox.push.apple.com` instead of production — what a
+    /// debug-signed build's device tokens are valid against. `false` by default:
+    /// production is the common case, and a deployment that only ever ships
+    /// debug builds is asking for something unusual enough to opt into.
+    #[serde(default)]
+    pub sandbox: bool,
 }
 
 /// `[push.unifiedpush]` — enables the self-hosted UnifiedPush transport (design
@@ -727,14 +752,10 @@ impl Config {
         // function exists to prevent: the one key that was silently dropped was the
         // one the drop-detector did not know about.
 
-        // `[push.webpush]` is honoured since M3.5 and `[push.unifiedpush]` since M6,
-        // both absent from this list on purpose: the composition root reads them,
-        // and a transport it cannot build stops the process rather than warning here.
-        if self.push.apns.is_some() {
-            pending.push(
-                "[push.apns] credentials — the relayed transport lands with M7 (§6.2)".to_owned(),
-            );
-        }
+        // `[push.webpush]` is honoured since M3.5, `[push.unifiedpush]` since M6,
+        // and `[push.apns]` since M7 — all three absent from this list on purpose:
+        // the composition root reads them, and a transport it cannot build stops
+        // the process rather than warning here.
 
         pending
     }
@@ -1157,7 +1178,10 @@ mod tests {
              contact = \"mailto:ops@weebo.poc\"\n\
              \n\
              [push.apns]\n\
-             key_file = \"/secrets/apns.p8\"\n",
+             key_file = \"/secrets/apns.p8\"\n\
+             key_id = \"ABCDE12345\"\n\
+             team_id = \"TEAM123456\"\n\
+             topic = \"poc.weebo.notify\"\n",
         );
 
         let pending = Config::load(&path).unwrap().unhonoured();
@@ -1168,7 +1192,10 @@ mod tests {
             !pending.iter().any(|line| line.contains("push.webpush")),
             "Web Push is wired: {pending:?}"
         );
-        assert!(pending.iter().any(|line| line.contains("push.apns")));
+        assert!(
+            !pending.iter().any(|line| line.contains("push.apns")),
+            "APNs is wired since M7: {pending:?}"
+        );
     }
 
     #[test]
@@ -1178,7 +1205,10 @@ mod tests {
             "[push.unifiedpush]\n\
              \n\
              [push.apns]\n\
-             key_file = \"/secrets/apns.p8\"\n",
+             key_file = \"/secrets/apns.p8\"\n\
+             key_id = \"ABCDE12345\"\n\
+             team_id = \"TEAM123456\"\n\
+             topic = \"poc.weebo.notify\"\n",
         );
 
         let pending = Config::load(&path).unwrap().unhonoured();
@@ -1187,7 +1217,10 @@ mod tests {
             !pending.iter().any(|line| line.contains("push.unifiedpush")),
             "UnifiedPush is wired: {pending:?}"
         );
-        assert!(pending.iter().any(|line| line.contains("push.apns")));
+        assert!(
+            !pending.iter().any(|line| line.contains("push.apns")),
+            "APNs is wired since M7: {pending:?}"
+        );
     }
 
     // --- What a SIGHUP adopts, and what it cannot (design §11, T21) ----------

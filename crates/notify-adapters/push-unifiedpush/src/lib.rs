@@ -9,7 +9,8 @@
 //! a flag the fan-out flips, it is this transport's own job, done against
 //! `device.public_key` once it has the plaintext. The shape existed since the
 //! device model was written (§6.2's invariant: no relayed transport enrols without
-//! a key); the crypto behind it is [`sealed_box`].
+//! a key); the crypto behind it is `notify_sealed_box`, its own crate since M7 once
+//! `notify-push-apns` became the sealed box's second consumer.
 //!
 //! # What "self-hosted" means for the wire format
 //!
@@ -41,8 +42,6 @@ use notify_ports::{
     PortError, PortResult, PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport,
 };
 use serde::Serialize;
-
-mod sealed_box;
 
 /// The most plaintext one push may carry.
 ///
@@ -100,7 +99,7 @@ impl Envelope {
     /// there is to `key`.
     ///
     /// `None` propagates a weak recipient key (design's threat model trusts an
-    /// enrolled device, but not blindly — see [`sealed_box::seal`]) rather than
+    /// enrolled device, but not blindly — see [`notify_sealed_box::seal`]) rather than
     /// silently sending an envelope with no ciphertext, which would read to a
     /// distributor exactly like a poke and be wrong in a way nothing downstream
     /// could tell apart from the real thing.
@@ -136,7 +135,7 @@ impl Envelope {
 }
 
 fn seal_base64(key: &DevicePublicKey, plaintext: &[u8]) -> Option<String> {
-    sealed_box::seal(key, plaintext).map(|sealed| URL_SAFE_NO_PAD.encode(sealed))
+    notify_sealed_box::seal(key, plaintext).map(|sealed| URL_SAFE_NO_PAD.encode(sealed))
 }
 
 /// UnifiedPush, over the wire.

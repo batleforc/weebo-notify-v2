@@ -15,6 +15,10 @@ workspace = true
 [dependencies]
 notify-domain = { workspace = true }
 notify-ports = { workspace = true }
+# The sealed box (design §6.2): ephemeral X25519 ECDH, HKDF-SHA256, then
+# XChaCha20-Poly1305. Its own crate since M7, shared with `notify-push-apns` — see
+# `notify-sealed-box`'s module doc for why.
+notify-sealed-box = { workspace = true }
 
 async-trait = { workspace = true }
 base64 = { workspace = true }
@@ -23,18 +27,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-# The sealed box (design §6.2): ephemeral X25519 ECDH, HKDF-SHA256, then
-# XChaCha20-Poly1305 — see `sealed_box.rs` for why each one.
-x25519-dalek = { workspace = true }
-hkdf = { workspace = true }
-sha2 = { workspace = true }
-chacha20poly1305 = { workspace = true }
-
 [dev-dependencies]
 time = { workspace = true }
 tokio = { workspace = true }
-# `static_secrets` only to stand in for the *device's* long-term keypair in tests
-# proving a sealed box opens — production never holds one, only the public half
-# (design §6.2). Added here rather than in `[dependencies]` so a plain build links
-# what it actually uses: an `EphemeralSecret` per seal, never reused, never stored.
+# Only to build a device key for this crate's own envelope tests — the crypto
+# itself (and the T18 guarantee) is proven once, in `notify-sealed-box`'s own test
+# suite, not re-proven here.
 x25519-dalek = { version = "3", features = ["static_secrets"] }

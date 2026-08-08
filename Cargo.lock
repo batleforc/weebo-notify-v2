@@ -3171,6 +3171,23 @@ dependencies = [
 [[package]]
 name = "notify-push-apns"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "jsonwebtoken",
+ "notify-domain",
+ "notify-ports",
+ "notify-sealed-box",
+ "p256 0.13.2",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "url",
+ "x25519-dalek",
+]
 
 [[package]]
 name = "notify-push-unifiedpush"
@@ -3178,14 +3195,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
- "chacha20poly1305",
- "hkdf 0.12.4",
  "notify-domain",
  "notify-ports",
+ "notify-sealed-box",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.19",
  "time",
  "tokio",
@@ -3226,6 +3241,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "notify-sealed-box"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "hkdf 0.12.4",
+ "notify-domain",
+ "sha2 0.10.9",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "notify-server"
 version = "0.1.0"
 dependencies = [
@@ -3246,6 +3272,7 @@ dependencies = [
  "notify-oidc",
  "notify-persistence-pg",
  "notify-ports",
+ "notify-push-apns",
  "notify-push-unifiedpush",
  "notify-push-webpush",
  "notify-sinks-email",

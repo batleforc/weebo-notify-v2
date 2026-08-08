@@ -22,6 +22,48 @@ use chrono_tz::Tz;
 
 use crate::ClientError;
 
+/// This machine's clock, as chrono sees it.
+///
+/// Through `time` rather than `chrono::Utc::now`: the workspace takes chrono without
+/// its `clock` feature — it is here for the shapes progenitor emits, not as a second
+/// source of the current time. Promoted from a private copy in `notify-cli::manage`,
+/// which needed exactly this the day the tray needed it too (this module's own note
+/// on why it lives here rather than in each client).
+///
+/// # Errors
+///
+/// [`ClientError::Invalid`] if this machine's clock reads before 1970 or out of
+/// `i64` range — not a case any caller can act on, but one worth naming rather than
+/// panicking over.
+pub fn now_utc() -> Result<DateTime<Utc>, ClientError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ClientError::Invalid {
+            detail: "this machine's clock is before 1970".to_owned(),
+        })?;
+    let now = i64::try_from(now.as_secs()).map_err(|_| ClientError::Invalid {
+        detail: "this machine's clock is out of range".to_owned(),
+    })?;
+
+    DateTime::from_timestamp(now, 0).ok_or_else(|| ClientError::Invalid {
+        detail: "this machine's clock is out of range".to_owned(),
+    })
+}
+
+/// Whether the quick do-not-disturb toggle (§7.4's `until`) is in force right now.
+///
+/// Only the toggle — never a recurring `quiet_hours` schedule. That is a real,
+/// permanent limit and not an oversight: evaluating a schedule needs
+/// `notify-domain`'s `QuietHours::covers`, which this crate deliberately does not
+/// depend on (the server is the only thing that ever validates and evaluates a
+/// schedule); re-deriving that logic here would repeat exactly what D22 already
+/// named once — the same rule computed twice, and to a certainty computed
+/// differently the day one of the two copies is edited.
+#[must_use]
+pub fn quiet_now(until: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    until.is_some_and(|until| now < until)
+}
+
 /// The hour "until the morning" resolves to, on the preference's clock.
 const MORNING_HOUR: u32 = 8;
 
@@ -203,5 +245,29 @@ mod tests {
                 .until(at("2026-08-07T12:00:00Z"), "Middle-earth/Shire")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn now_utc_reads_a_plausible_instant() {
+        // Not pinned to a literal: the point is that it runs and lands somewhere
+        // sane, not that it equals a timestamp this test would need updating past.
+        let now = now_utc().unwrap();
+        assert!(now.timestamp() > 1_700_000_000, "clearly not 1970");
+    }
+
+    #[test]
+    fn quiet_now_is_true_strictly_before_the_deadline() {
+        let now = at("2026-08-07T12:00:00Z");
+        assert!(quiet_now(Some(at("2026-08-07T12:00:01Z")), now));
+        assert!(
+            !quiet_now(Some(at("2026-08-07T12:00:00Z")), now),
+            "the boundary itself has passed"
+        );
+        assert!(!quiet_now(Some(at("2026-08-07T11:00:00Z")), now));
+    }
+
+    #[test]
+    fn no_deadline_is_never_quiet() {
+        assert!(!quiet_now(None, at("2026-08-07T12:00:00Z")));
     }
 }

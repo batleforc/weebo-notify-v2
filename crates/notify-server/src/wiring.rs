@@ -35,6 +35,7 @@ use notify_persistence_pg::{PgLeaderElection, PgStore};
 use notify_ports::{
     AttachmentStore, AttachmentThumbnailer, EventBus, SinkRegistry as _, SystemClock,
 };
+use notify_push_apns::{Apns, ApnsConfig};
 use notify_push_unifiedpush::UnifiedPush;
 use notify_push_webpush::{WebPush, WebPushConfig};
 use notify_sinks_email::{EmailSink, SmtpSettings};
@@ -552,9 +553,10 @@ fn sink_fleet(config: &Config, routes: &SinkRoutes) -> anyhow::Result<SinkFleet>
 ///
 /// Every failure here is an operator's, and every one of them is answered at startup
 /// rather than at the first push: a key file that cannot be read, a key that is not
-/// P-256, a contact no relay would accept — UnifiedPush has nothing in this category
-/// to fail on, since `[push.unifiedpush]` holds no credential (design §6.2). Finding
-/// out because somebody's phone stayed silent is the failure this refuses.
+/// P-256, a contact no relay would accept, a Team ID or Key ID the wrong shape for
+/// APNs — UnifiedPush has nothing in this category to fail on, since
+/// `[push.unifiedpush]` holds no credential (design §6.2). Finding out because
+/// somebody's phone stayed silent is the failure this refuses.
 fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option<String>)> {
     let mut registry = TransportRegistry::empty();
     let mut key = None;
@@ -585,6 +587,26 @@ fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option
         // fails is the HTTP client itself, the same class of startup failure as
         // everything else in this function.
         registry = registry.with(Arc::new(UnifiedPush::new()?));
+    }
+
+    if let Some(settings) = &config.push.apns {
+        // Same path-not-key-itself reasoning as `[push.webpush]`'s `vapid_key_file`.
+        let pem = std::fs::read_to_string(&settings.key_file).map_err(|error| {
+            anyhow::anyhow!(
+                "[push.apns] key_file `{}` cannot be read: {error}",
+                settings.key_file.display()
+            )
+        })?;
+
+        let apns = Apns::new(&ApnsConfig {
+            key_pem: pem,
+            key_id: settings.key_id.clone(),
+            team_id: settings.team_id.clone(),
+            topic: settings.topic.clone(),
+            sandbox: settings.sandbox,
+        })?;
+
+        registry = registry.with(Arc::new(apns));
     }
 
     Ok((registry, key))
@@ -869,5 +891,54 @@ mod tests {
         let config = configured(key_file("garbage", "not a key at all\n"));
 
         assert!(push_transports(&config).is_err());
+    }
+
+    #[test]
+    fn a_configured_apns_key_registers_the_transport() {
+        let config = Config {
+            push: crate::config::Push {
+                apns: Some(crate::config::Apns {
+                    key_file: key_file("apns-ok", &notify_push_apns::test_apns_key()),
+                    key_id: "ABCDE12345".to_owned(),
+                    team_id: "TEAM123456".to_owned(),
+                    topic: "poc.weebo.notify".to_owned(),
+                    sandbox: false,
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (registry, key) = push_transports(&config).unwrap();
+
+        assert_eq!(registry.names(), vec!["apns"]);
+        assert!(
+            key.is_none(),
+            "the VAPID-style key a browser subscribes with is a Web Push concept only"
+        );
+    }
+
+    #[test]
+    fn an_apns_key_file_that_is_not_there_stops_the_process_instead_of_starting_mute() {
+        let config = Config {
+            push: crate::config::Push {
+                apns: Some(crate::config::Apns {
+                    key_file: "/nowhere/apns.p8".into(),
+                    key_id: "ABCDE12345".to_owned(),
+                    team_id: "TEAM123456".to_owned(),
+                    topic: "poc.weebo.notify".to_owned(),
+                    sandbox: false,
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = push_transports(&config).unwrap_err().to_string();
+
+        assert!(
+            error.contains("key_file"),
+            "an operator has to be told which key, not that push failed: {error}"
+        );
     }
 }

@@ -20,6 +20,16 @@ edition = "2024"
 publish = false
 description = "weebo-notify desktop shell"
 
+# Required by Tauri's own tooling before `cargo tauri android/ios init` will do
+# anything at all — mobile links this crate as a `staticlib`/`cdylib` and calls
+# into `lib.rs::run` via `tauri::mobile_entry_point`, not `fn main` (M6, §10bis.4).
+# `rlib` keeps the desktop binary (`main.rs`) linking against it exactly as before.
+# Naming it explicitly rather than trusting the package-name default: the day a
+# mobile build reads this manifest, the name should say it wasn't a guess.
+[lib]
+name = "weebo_notify_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -33,7 +43,16 @@ notify-client-core = { path = "../../crates/notify-client-core" }
 # The deep-link payload the front end listens for — one small object, and the shell
 # has no other reason to serialise anything.
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+# "image-png" decodes the four committed tray PNGs (icons/tray-*.png) into the
+# `tauri::image::Image` the tray icon wants — not implied by "tray-icon" or the
+# default feature set.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
+# Direct rather than only transitive: Tauri already runs its own tokio runtime
+# (`tauri::async_runtime`), but naming `tokio::time::interval` needs a manifest
+# entry of our own. "rt" is for the *second*, private current-thread runtime
+# `run_daemon` builds for itself — `Store` (rusqlite) is `Send` but not `Sync`, so
+# its polling loop cannot share Tauri's multi-thread one (see `run_daemon`'s doc).
+tokio = { version = "1", default-features = false, features = ["time", "rt"] }

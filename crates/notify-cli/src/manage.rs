@@ -442,7 +442,7 @@ pub(crate) async fn dnd(
                         .map_or("UTC", |window| window.timezone.as_str());
 
                     notify_client_core::DndPreset::UntilMorning
-                        .until(now_utc()?, timezone)?
+                        .until(notify_client_core::now_utc()?, timezone)?
                         .ok_or_else(|| {
                             CliError::Usage("`--until-morning` produced no deadline".to_owned())
                         })?
@@ -594,23 +594,10 @@ fn parse_day(raw: &str) -> Result<Day, CliError> {
 ///
 /// The client's clock and not the server's, which is a real difference and a small
 /// one: the two disagree by seconds, and the alternative is an endpoint that takes a
-/// duration purely so the arithmetic happens on the other side.
-/// This machine.s clock, as chrono sees it.
-///
-/// Through `time` rather than `chrono::Utc::now`: the workspace takes chrono without
-/// its `clock` feature — it is here for the shapes progenitor emits, not as a second
-/// source of the current time.
-fn now_utc() -> Result<chrono::DateTime<chrono::Utc>, CliError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| CliError::Usage("this machine's clock is before 1970".to_owned()))?;
-    let now = i64::try_from(now.as_secs())
-        .map_err(|_| CliError::Usage("this machine's clock is out of range".to_owned()))?;
-
-    chrono::DateTime::from_timestamp(now, 0)
-        .ok_or_else(|| CliError::Usage("this machine's clock is out of range".to_owned()))
-}
-
+/// duration purely so the arithmetic happens on the other side. The clock read
+/// itself is `notify_client_core::now_utc` — the desktop shell needs exactly the
+/// same value, so it lives in the one crate both depend on rather than as a private
+/// copy here.
 fn now_plus(duration: &str) -> Result<chrono::DateTime<chrono::Utc>, CliError> {
     let (value, unit) = duration.split_at(
         duration
@@ -635,7 +622,7 @@ fn now_plus(duration: &str) -> Result<chrono::DateTime<chrono::Utc>, CliError> {
         }
     };
 
-    now_utc()?
+    notify_client_core::now_utc()?
         .checked_add_signed(chrono::TimeDelta::seconds(seconds))
         .ok_or_else(|| CliError::Usage(format!("`{duration}` is further away than time goes")))
 }

@@ -17,6 +17,7 @@ notify-attachments-s3.workspace = true
 notify-avatars.workspace = true
 notify-http-actix.workspace = true
 notify-metrics-prometheus.workspace = true
+notify-push-apns.workspace = true
 notify-push-unifiedpush.workspace = true
 notify-push-webpush.workspace = true
 notify-sinks-email.workspace = true
@@ -57,5 +58,6 @@ url.workspace = true
 # has been unsafe since the 2024 edition.
 figment = { workspace = true, features = ["test"] }
 notify-ports = { workspace = true, features = ["test-utils"] }
+notify-push-apns = { workspace = true, features = ["test-utils"] }
 notify-push-webpush = { workspace = true, features = ["test-utils"] }
 sqlx = { workspace = true }

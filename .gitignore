@@ -39,5 +39,9 @@ junit*.xml
 # means nothing anywhere else.
 dev/.dbus/
 
-# The desktop shell builds outside the cargo workspace (M5, D13).
+# The desktop shell builds outside the cargo workspace (M5, D13). `gen/` is
+# tauri-build's own output (the ACL schemas `capabilities/*.json` reference),
+# regenerated on every build like `target/` — not `Cargo.lock`, which stays
+# committed for a binary crate, same as the workspace root's.
 web/src-tauri/target/
+web/src-tauri/gen/
