@@ -1,5 +1,7 @@
 import { AxiosError, AxiosHeaders } from "axios";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { i18n } from "@/i18n";
 import type { Problem } from "./generated/types.gen";
 import { failureOf } from "./problem";
 
@@ -14,6 +16,10 @@ function refusal(status: number, problem?: Partial<Problem>): AxiosError {
   };
   return error;
 }
+
+beforeEach(() => {
+  i18n.global.locale.value = "fr";
+});
 
 describe("failureOf", () => {
   it("words a refusal from its code, which is the field §8 promises", () => {
@@ -70,5 +76,29 @@ describe("failureOf", () => {
     expect(failureOf(new Error("boom")).message).toBe("boom");
     expect(failureOf("a string").message).toBeTruthy();
     expect(failureOf(undefined).message).toBeTruthy();
+  });
+});
+
+describe("in English", () => {
+  beforeEach(() => {
+    i18n.global.locale.value = "en";
+  });
+
+  it("words a refusal from its code in English", () => {
+    const failure = failureOf(
+      refusal(403, {
+        code: "scope.missing",
+        title: "the caller lacks a scope",
+        status: 403,
+        type: "about:blank",
+      }),
+    );
+
+    expect(failure.message).toContain("rights");
+  });
+
+  it("says the server is unreachable, in English", () => {
+    const error = new AxiosError("Network Error");
+    expect(failureOf(error).message).toContain("unreachable");
   });
 });

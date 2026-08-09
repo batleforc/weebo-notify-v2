@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
+import vueI18n from "@intlify/unplugin-vue-i18n/vite";
 import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
 // From `vitest/config` rather than `vite`: it is the same function with the
@@ -103,7 +104,18 @@ function cspTemplate(): Plugin {
 // A plain object, not a function: nothing here depends on the mode or env
 // anymore now that `cspTemplate` needs neither (ADR-0021).
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), cspTemplate()],
+  plugins: [
+    vue(),
+    tailwindcss(),
+    cspTemplate(),
+    vueI18n({
+      // `.json` only: `src/locales/**` also holds `keys.spec.ts`, which this
+      // plugin would otherwise try (and fail) to parse as a locale resource.
+      include: [
+        fileURLToPath(new URL("./src/locales/**/*.json", import.meta.url)),
+      ],
+    }),
+  ],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

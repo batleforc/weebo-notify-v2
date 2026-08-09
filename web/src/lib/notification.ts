@@ -6,6 +6,9 @@
  * token **and** a rank. §10.3 is explicit that colour is never the only carrier —
  * a failure that reads as "grey circle" to one reader in twelve is a failure that
  * did not get reported.
+ *
+ * Labels are looked up through the global i18n composer rather than `useI18n()`:
+ * this module has no component instance, and is called from many that do.
  */
 
 import {
@@ -18,6 +21,7 @@ import {
 } from "lucide-vue-next";
 
 import type { Priority, State, Status } from "@/api/generated/types.gen";
+import { i18n } from "@/i18n";
 
 interface StatusLook {
   icon: LucideIcon;
@@ -26,30 +30,21 @@ interface StatusLook {
   label: string;
 }
 
-const STATUS: Record<Status, StatusLook> = {
-  success: { icon: CircleCheck, color: "text-status-success", label: "Succès" },
-  failure: { icon: CircleX, color: "text-status-failure", label: "Échec" },
-  warning: {
-    icon: CircleAlert,
-    color: "text-status-warning",
-    label: "Avertissement",
-  },
-  info: { icon: Info, color: "text-status-info", label: "Info" },
-  cancelled: { icon: Ban, color: "text-status-cancelled", label: "Annulé" },
+const STATUS_ICON: Record<Status, { icon: LucideIcon; color: string }> = {
+  success: { icon: CircleCheck, color: "text-status-success" },
+  failure: { icon: CircleX, color: "text-status-failure" },
+  warning: { icon: CircleAlert, color: "text-status-warning" },
+  info: { icon: Info, color: "text-status-info" },
+  cancelled: { icon: Ban, color: "text-status-cancelled" },
 };
 
 export function lookOf(status: Status): StatusLook {
-  return STATUS[status] ?? STATUS.info;
+  const known = STATUS_ICON[status] ?? STATUS_ICON.info;
+  return { ...known, label: i18n.global.t(`status.${status}`) };
 }
 
-const STATE_LABEL: Record<State, string> = {
-  open: "ouverte",
-  working: "en cours",
-  closed: "fermée",
-};
-
 export function stateLabel(state: State): string {
-  return STATE_LABEL[state] ?? state;
+  return i18n.global.t(`state.${state}`);
 }
 
 /** The border accent on the left of a row — priority, discretely (§10.3). */
@@ -65,27 +60,19 @@ export function accentOf(priority: Priority): string {
   return PRIORITY_ACCENT[priority] ?? PRIORITY_ACCENT.default;
 }
 
-const PRIORITY_LABEL: Record<Priority, string> = {
-  min: "minimale",
-  low: "basse",
-  default: "normale",
-  high: "haute",
-  urgent: "urgente",
-};
-
 export function priorityLabel(priority: Priority): string {
-  return PRIORITY_LABEL[priority] ?? priority;
+  return i18n.global.t(`priority.${priority}`);
 }
 
 /**
  * What a screen reader says for the sidebar's unread badge (§7.3, §10.4).
  *
- * Here rather than inline in the template because French agrees the participle with
- * the count: the badge said "1 non lues" until somebody opened the page, which is
+ * Here rather than inline in the template because the wording agrees with the
+ * count: the badge said "1 non lues" until somebody opened the page, which is
  * the one reader who would have been told so is the one who cannot see the digit.
  */
 export function unreadLabel(count: number): string {
-  return count === 1 ? "1 non lue" : `${count} non lues`;
+  return i18n.global.t("sidebar.unreadLabel", { count }, count);
 }
 
 /** Whether a priority earns a badge of its own — only the loud end does. */
@@ -109,10 +96,13 @@ export function authorLabel(author: {
     case "channel_key":
       // §5.2: an anonymous channel key is attributed to the key itself, and the
       // wording says so rather than pretending somebody published it.
-      return `clé ${author.key ?? "?"} du canal ${author.channel ?? "?"}`;
+      return i18n.global.t("notification.author.channelKey", {
+        key: author.key ?? "?",
+        channel: author.channel ?? "?",
+      });
     case "ci_job":
-      return author.subject ?? "job CI";
+      return author.subject ?? i18n.global.t("notification.author.ciJob");
     default:
-      return author.id ?? "inconnu";
+      return author.id ?? i18n.global.t("notification.author.unknown");
   }
 }

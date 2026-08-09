@@ -9,9 +9,12 @@
 
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
+import { i18n } from "@/i18n";
+import { detectLocale, LOCALE_KEY, type Locale } from "@/lib/locale";
 
 export type Theme = "dark" | "light" | "system";
 export type Density = "compact" | "comfortable";
+export type { Locale };
 /** Where the detail panel sits relative to the inbox list (§10.4), above `xl` —
  * below it the panel is always a full-screen layer, so the preference has
  * nothing to say. `right` is the default: reading left to right, the list comes
@@ -21,6 +24,7 @@ export type DetailPosition = "right" | "left" | "under";
 const THEME_KEY = "weebo-notify:theme";
 const DENSITY_KEY = "weebo-notify:density";
 const DETAIL_POSITION_KEY = "weebo-notify:detail-position";
+const FILTERS_COLLAPSED_KEY = "weebo-notify:filters-collapsed";
 
 function systemPrefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -37,6 +41,15 @@ export const useUi = defineStore("ui", () => {
     (localStorage.getItem(DETAIL_POSITION_KEY) as DetailPosition | null) ??
       "right",
   );
+  // Collapsed on first visit: a fresh `localStorage` reads back `null`, and
+  // `null !== "false"` is `true` — the sidebar's filters section starts closed
+  // until somebody opens it once, which is the only choice that persists from
+  // then on.
+  const filtersCollapsed = ref<boolean>(
+    localStorage.getItem(FILTERS_COLLAPSED_KEY) !== "false",
+  );
+  const locale = ref<Locale>(detectLocale());
+
   function applyTheme(): void {
     // Dark is the default (§10.2): `system` resolves to dark unless the system
     // says otherwise, which is also what the pre-paint script assumes.
@@ -69,6 +82,25 @@ export const useUi = defineStore("ui", () => {
   watch(detailPosition, (value) => {
     localStorage.setItem(DETAIL_POSITION_KEY, value);
   });
+
+  watch(filtersCollapsed, (value) => {
+    localStorage.setItem(FILTERS_COLLAPSED_KEY, String(value));
+  });
+
+  // `immediate: true`, unlike theme/density above: those rely on the explicit
+  // `applyTheme()`/`applyDensity()` calls below to set the initial DOM state,
+  // but there is no such call for locale — this watch is the only place
+  // `<html lang>`/the i18n composer's locale ever get set, so it has to run
+  // once for the initial value too, not just on change.
+  watch(
+    locale,
+    (value) => {
+      localStorage.setItem(LOCALE_KEY, value);
+      i18n.global.locale.value = value;
+      document.documentElement.lang = value;
+    },
+    { immediate: true },
+  );
 
   // Somebody switching their desktop to light at sunset expects the app to
   // follow, but only while they have not made a choice of their own.
@@ -112,5 +144,13 @@ export const useUi = defineStore("ui", () => {
   applyTheme();
   applyDensity();
 
-  return { cycleDetailPosition, cycleTheme, density, detailPosition, theme };
+  return {
+    cycleDetailPosition,
+    cycleTheme,
+    density,
+    detailPosition,
+    filtersCollapsed,
+    locale,
+    theme,
+  };
 });

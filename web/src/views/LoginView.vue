@@ -8,6 +8,7 @@
  */
 import { LogIn } from "lucide-vue-next";
 import { ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 
 import { useSession } from "@/auth/session";
@@ -22,6 +23,7 @@ import {
 
 const session = useSession();
 const route = useRoute();
+const { t } = useI18n();
 
 const failure = ref<string | null>(null);
 const going = ref(false);
@@ -47,15 +49,15 @@ async function signIn(): Promise<void> {
   <main class="flex min-h-dvh items-center justify-center p-6">
     <Card class="w-full max-w-sm">
       <CardHeader>
-        <CardTitle>weebo-notify</CardTitle>
+        <CardTitle>{{ t("app.name") }}</CardTitle>
         <p class="text-sm text-muted-foreground">
-          Notifications d'infrastructure, en temps réel.
+          {{ t("login.tagline") }}
         </p>
       </CardHeader>
 
       <CardContent class="space-y-3">
         <p v-if="session.expired" class="text-sm text-muted-foreground">
-          Ta session a expiré. Reconnecte-toi pour reprendre.
+          {{ t("login.expired") }}
         </p>
         <p v-if="failure" class="text-sm text-destructive">{{ failure }}</p>
       </CardContent>
@@ -63,7 +65,7 @@ async function signIn(): Promise<void> {
       <CardFooter>
         <Button class="w-full" :disabled="going" @click="signIn">
           <LogIn />
-          {{ going ? "Redirection…" : "Se connecter" }}
+          {{ going ? t("login.redirecting") : t("login.signIn") }}
         </Button>
       </CardFooter>
     </Card>

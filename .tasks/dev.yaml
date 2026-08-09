@@ -181,6 +181,54 @@ tasks:
     cmds:
       - dev/seed/seed.sh
 
+  argocd-key:
+    desc: "Mint the bot-argocd API key once, into dev/secrets/ (gitignored) — needs `task dev:oidc` and `task dev:run` already running"
+    # Same idempotency shape as `vapid`/`federation-key` above, but this one cannot
+    # be a dependency of `setup`/`seed`: minting a key means calling the running
+    # server, which those two do not assume. Run by hand once `dev:oidc`/`dev:run`
+    # are both up.
+    #
+    # Without this, `config/dev.toml`'s `[[service_accounts]]` reconciliation
+    # (§5.2bis) keeps the *account* stable across restarts, but its API key is a
+    # secret shown exactly once (§5.2) with nowhere durable to land — so every
+    # restart where nobody has last time's secret handy mints a fresh one via the
+    # API/UI, and the old key is left behind. From outside that reads as "the
+    # account gets recreated". It never did; only the key kept multiplying.
+    status:
+      - test -f dev/secrets/bot-argocd.key
+    cmds:
+      - cmd: |
+          set -eu
+          user="${WNK_TUI_USER:-alice}"
+          verifier=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 64)
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=')
+
+          request=$(curl -sS "http://localhost:9110/authorize?response_type=code&client_id=weebo-notify&redirect_uri=http://localhost:5173/auth/callback&scope=openid&code_challenge=$challenge&code_challenge_method=S256" \
+            | grep -oP 'name="request" value="\K[^"]+') || {
+            echo "Could not reach the oidc mock on :9110 — is \`task dev:oidc\` running?" >&2
+            exit 1
+          }
+          code=$(curl -sS -i -d "request=$request&username=$user&password=weebo-dev" http://localhost:9110/authorize \
+            | grep -ioP 'location:.*code=\K[^&"'"'"'\r\n ]+')
+          token=$(curl -sS -d "grant_type=authorization_code&code=$code&code_verifier=$verifier&redirect_uri=http://localhost:5173/auth/callback&client_id=weebo-notify" \
+            http://localhost:9110/token | grep -oP '"access_token":\s*"\K[^"]+')
+
+          # $user must hold `manage` on ci-infra to mint a service-account key there
+          # (design §5.2) — alice (infra-admins) does, per config/dev.toml.
+          secret=$(curl -sS -X POST http://localhost:8080/api/v1/apikeys \
+            -H "authorization: Bearer $token" \
+            -H "content-type: application/json" \
+            -d '{"owner":{"owner":"service_account","id":"bot-argocd"},"channels":["ci-infra"],"scopes":["publish","subscribe"]}') || {
+            echo "Could not reach the server on :8080 — is \`task dev:run\` running?" >&2
+            exit 1
+          }
+          printf '%s' "$secret" | grep -oP '"secret":\s*"\K[^"]+' > dev/secrets/bot-argocd.key || {
+            echo "Unexpected response from POST /apikeys:" >&2
+            echo "$secret" >&2
+            exit 1
+          }
+          echo "dev/secrets/bot-argocd.key created — this is the only time that secret is shown."
+
   run:
     desc: "Run the weebo-notify server against config/dev.toml (outside any container)"
     # The one task that genuinely cannot start without the key: `config/dev.toml`

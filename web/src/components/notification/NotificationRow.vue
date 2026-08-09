@@ -7,6 +7,7 @@
  * drivable without a mouse to match the TUI (§10.1).
  */
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ago, delay, exact } from "@/lib/format";
@@ -35,6 +36,7 @@ const props = defineProps<{
 
 defineEmits<{ open: [] }>();
 
+const { t } = useI18n();
 const head = computed(() => props.row.head);
 const tags = computed(() => head.value.content.tags ?? []);
 const progress = computed(() => head.value.content.progress ?? null);
@@ -77,7 +79,7 @@ const progress = computed(() => head.value.content.progress ?? null);
           <template #content>{{ exact(head.received_at) }}</template>
         </Tooltip>
         <span v-if="row.last_seq > 1" class="tabular-nums">
-          · {{ row.last_seq }} révisions
+          · {{ t("notification.row.revisionCount", { count: row.last_seq }) }}
         </span>
         <Badge
           v-for="tag in tags.slice(0, 3)"
@@ -91,11 +93,10 @@ const progress = computed(() => head.value.content.progress ?? null);
         <!-- §7.2: the two timestamps come from the server, the wording is ours. -->
         <Tooltip v-if="lateBy">
           <Badge variant="outline" class="border-status-warning text-status-warning">
-            reçue en retard ({{ delay(lateBy) }})
+            {{ t("notification.row.lateBadge", { delay: delay(lateBy) }) }}
           </Badge>
           <template #content>
-            Publiée le {{ exact(head.received_at) }}, reçue par ce client à
-            l'instant.
+            {{ t("notification.row.lateTooltip", { at: exact(head.received_at) }) }}
           </template>
         </Tooltip>
       </span>

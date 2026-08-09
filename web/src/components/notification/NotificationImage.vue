@@ -23,12 +23,14 @@
  * attachment.
  */
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type { Image } from "@/api/generated/types.gen";
 import { imageSrc } from "@/lib/attachment";
 
 const props = defineProps<{ image: Image }>();
 
+const { t } = useI18n();
 const src = ref<string | null>(null);
 const failed = ref(false);
 const resolving = ref(false);
@@ -74,6 +76,6 @@ watch(
   />
 
   <p v-else class="text-xs italic text-muted-foreground">
-    L'image jointe n'a pas pu être affichée.
+    {{ t("notification.image.failed") }}
   </p>
 </template>

@@ -17,6 +17,7 @@ task dev:up      # Postgres + RustFS, ~20 s
 task dev:seed    # migrations, attachment bucket, test identities
 task dev:oidc    # the development identity provider, on :9110
 task dev:run     # the server, on :8080
+task dev:argocd-key  # once dev:oidc and dev:run are up — mints the bot-argocd key
 ```
 
 Log in as `alice`, `bob` or `carol`, password `weebo-dev`.

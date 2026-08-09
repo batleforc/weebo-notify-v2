@@ -13,12 +13,14 @@
  */
 import { BellRing, X } from "lucide-vue-next";
 import { onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
 import { Button } from "@/components/ui/button";
 import { enable, PushRefused, state } from "@/lib/push";
 
 const PROMPTED_KEY = "weebo-notify:push-prompted";
 
+const { t } = useI18n();
 const visible = ref(false);
 const busy = ref(false);
 const error = ref<string | null>(null);
@@ -49,7 +51,7 @@ async function accept(): Promise<void> {
     error.value =
       failure instanceof PushRefused
         ? failure.message
-        : "L'abonnement a échoué. Réessayez, ou depuis Réglages plus tard.";
+        : t("push.prompt.fallbackError");
   } finally {
     busy.value = false;
   }
@@ -61,7 +63,7 @@ async function accept(): Promise<void> {
     v-if="visible"
     class="pointer-events-none fixed inset-x-3 top-3 z-50 flex justify-center sm:inset-x-auto sm:top-auto sm:bottom-4 sm:left-4 sm:justify-start"
     role="region"
-    aria-label="Activer les notifications"
+    :aria-label="t('push.prompt.ariaLabel')"
   >
     <div
       class="pointer-events-auto w-full max-w-sm rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
@@ -69,25 +71,24 @@ async function accept(): Promise<void> {
       <div class="flex items-start gap-2">
         <BellRing class="mt-0.5 size-4 shrink-0 text-primary" />
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-medium">Activer les notifications ?</p>
+          <p class="text-sm font-medium">{{ t("push.prompt.title") }}</p>
           <p class="mt-0.5 text-xs text-muted-foreground">
-            Recevez les notifications même quand l'onglet est fermé. Réglable à
-            tout moment dans Réglages.
+            {{ t("push.prompt.body") }}
           </p>
           <p v-if="error" class="mt-1 text-xs text-destructive">{{ error }}</p>
           <div class="mt-2 flex items-center gap-2">
             <Button size="sm" :disabled="busy" @click="accept">
-              {{ busy ? "…" : "Activer" }}
+              {{ busy ? "…" : t("push.prompt.activate") }}
             </Button>
             <Button size="sm" variant="ghost" :disabled="busy" @click="dismiss">
-              Plus tard
+              {{ t("push.prompt.later") }}
             </Button>
           </div>
         </div>
         <button
           type="button"
           class="shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground"
-          aria-label="Fermer"
+          :aria-label="t('push.prompt.close')"
           @click="dismiss"
         >
           <X class="size-3.5" />

@@ -23,6 +23,7 @@
  */
 import { Plus, Trash2 } from "lucide-vue-next";
 import { computed, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type { DndDraft, QuietHours } from "@/api/generated";
 import { failureOf } from "@/api/problem";
@@ -35,21 +36,20 @@ import { draftOf, usePreferences } from "@/stores/preferences";
 
 const preferences = usePreferences();
 const channels = useChannels();
+const { t } = useI18n();
 
 const draft = ref<DndDraft>(draftOf(null));
 const saving = ref(false);
 const error = ref<string | null>(null);
 
 /** The days, in the order a week is read rather than the order the enum lists. */
-const DAYS = [
-  { key: "mon", label: "L" },
-  { key: "tue", label: "M" },
-  { key: "wed", label: "M" },
-  { key: "thu", label: "J" },
-  { key: "fri", label: "V" },
-  { key: "sat", label: "S" },
-  { key: "sun", label: "D" },
-] as const;
+const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+const DAYS = computed(() =>
+  DAY_KEYS.map((key) => ({
+    key,
+    label: t(`settings.dnd.days.${key}`),
+  })),
+);
 
 const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -92,7 +92,7 @@ function removeWindow(index: number): void {
   draft.value = { ...draft.value, quiet_hours: windows };
 }
 
-function toggleDay(index: number, day: (typeof DAYS)[number]["key"]): void {
+function toggleDay(index: number, day: (typeof DAY_KEYS)[number]): void {
   const windows = [...(draft.value.quiet_hours ?? [])];
   const window = windows[index];
   const days = new Set(window.days ?? []);
@@ -129,7 +129,7 @@ async function quietFor(minutes: number): Promise<void> {
   try {
     await preferences.quietFor(minutes);
   } catch {
-    error.value = "Enregistrement impossible.";
+    error.value = t("settings.dnd.saveFailed");
   } finally {
     saving.value = false;
   }
@@ -149,15 +149,13 @@ async function resume(): Promise<void> {
   <Card>
     <CardHeader>
       <CardTitle class="flex items-center gap-2">
-        Ne pas déranger
-        <Badge v-if="quiet" variant="secondary">actif</Badge>
+        {{ t("settings.dnd.title") }}
+        <Badge v-if="quiet" variant="secondary">{{ t("settings.dnd.active") }}</Badge>
       </CardTitle>
     </CardHeader>
     <CardContent class="space-y-5 text-sm">
       <p class="text-muted-foreground">
-        Les push OS sont supprimés pendant une période de calme ; le flux continue
-        de couler et l'inbox se remplit normalement. À la sortie, un seul résumé
-        plutôt qu'une rafale.
+        {{ t("settings.dnd.description") }}
       </p>
 
       <!-- The quick toggle of §7.4: a duration, not a schedule. -->
@@ -174,7 +172,7 @@ async function resume(): Promise<void> {
           :disabled="saving"
           @click="quietFor(option.minutes)"
         >
-          Silence {{ option.label }}
+          {{ t("settings.dnd.quickSilence", { label: option.label }) }}
         </Button>
         <Button
           v-if="draft.until"
@@ -183,19 +181,19 @@ async function resume(): Promise<void> {
           :disabled="saving"
           @click="resume"
         >
-          Reprendre maintenant
+          {{ t("settings.dnd.resume") }}
         </Button>
       </div>
       <p v-if="draft.until" class="text-xs text-muted-foreground">
-        Silence jusqu'à {{ new Date(draft.until).toLocaleString() }}.
+        {{ t("settings.dnd.silentUntil", { at: new Date(draft.until).toLocaleString() }) }}
       </p>
 
       <!-- Recurring windows. -->
       <div class="space-y-3">
         <div class="flex items-center justify-between">
-          <span class="font-medium">Plages récurrentes</span>
+          <span class="font-medium">{{ t("settings.dnd.recurringWindows") }}</span>
           <Button variant="outline" size="sm" @click="addWindow">
-            <Plus class="size-4" /> Ajouter
+            <Plus class="size-4" /> {{ t("settings.dnd.addWindow") }}
           </Button>
         </div>
 
@@ -203,7 +201,7 @@ async function resume(): Promise<void> {
           v-if="!draft.quiet_hours?.length"
           class="text-xs text-muted-foreground"
         >
-          Aucune plage. Le silence ponctuel ci-dessus reste disponible.
+          {{ t("settings.dnd.noWindows") }}
         </p>
 
         <div
@@ -224,7 +222,7 @@ async function resume(): Promise<void> {
               variant="ghost"
               size="sm"
               class="ml-auto"
-              aria-label="Supprimer la plage"
+              :aria-label="t('settings.dnd.removeWindow')"
               @click="removeWindow(index)"
             >
               <Trash2 class="size-4" />
@@ -245,26 +243,34 @@ async function resume(): Promise<void> {
               v-if="!window.days?.length"
               class="ml-2 text-xs text-muted-foreground"
             >
-              tous les jours
+              {{ t("settings.dnd.everyDay") }}
             </span>
           </div>
+          <!-- Static, locale-file text only — never anything a caller supplies. -->
           <p
             v-if="window.end <= window.start"
             class="text-xs text-muted-foreground"
-          >
-            Traverse minuit : la plage appartient au jour où elle
-            <strong>commence</strong> — un vendredi 22:00–08:00 est la nuit du
-            vendredi au samedi.
-          </p>
+            v-html="
+              t('settings.dnd.midnightHint', {
+                emphasis: `<strong>${t('settings.dnd.midnightHintEmphasis')}</strong>`,
+              })
+            "
+          />
         </div>
       </div>
 
       <!-- Scope and exceptions: the on-call case. -->
       <div class="space-y-2">
-        <span class="font-medium">Canaux qui sonnent quand même</span>
-        <p class="text-xs text-muted-foreground">
-          Tout couper <em>sauf</em> celui qui compte — le cas astreinte.
-        </p>
+        <span class="font-medium">{{ t("settings.dnd.exceptionsTitle") }}</span>
+        <!-- Static, locale-file text only — never anything a caller supplies. -->
+        <p
+          class="text-xs text-muted-foreground"
+          v-html="
+            t('settings.dnd.exceptionsHint', {
+              emphasis: `<em>${t('settings.dnd.exceptionsHintEmphasis')}</em>`,
+            })
+          "
+        />
         <div class="flex flex-wrap gap-1">
           <Button
             v-for="channel in channels.all"
@@ -279,8 +285,7 @@ async function resume(): Promise<void> {
           </Button>
         </div>
         <p v-if="!scopeIsEverything" class="text-xs text-muted-foreground">
-          La portée est restreinte à certains canaux ; elle se modifie depuis la
-          CLI (<code>notify dnd</code>) pour l'instant.
+          {{ t("settings.dnd.scopeRestricted") }}
         </p>
       </div>
 
@@ -292,19 +297,20 @@ async function resume(): Promise<void> {
           class="mt-1 size-4"
         />
         <span>
-          Laisser passer les notifications <strong>urgent</strong>
+          <!-- Static, locale-file text only — never anything a caller supplies. -->
+          <span v-html="t('settings.dnd.urgentBypass', { emphasis: '<strong>urgent</strong>' })" />
           <span class="block text-xs text-muted-foreground">
-            C'est vous qui décidez ce qui peut vous réveiller, jamais l'émetteur.
+            {{ t("settings.dnd.urgentBypassHint") }}
           </span>
         </span>
       </label>
 
       <div class="flex items-center gap-2">
         <Button :disabled="saving" @click="save">
-          {{ saving ? "Enregistrement…" : "Enregistrer" }}
+          {{ saving ? t("settings.profile.saving") : t("settings.profile.save") }}
         </Button>
         <Button variant="ghost" :disabled="saving" @click="redraft">
-          Annuler
+          {{ t("settings.dnd.cancel") }}
         </Button>
       </div>
 

@@ -13,6 +13,7 @@
  */
 import { BellOff, BellRing } from "lucide-vue-next";
 import { onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +25,7 @@ import {
   state,
 } from "@/lib/push";
 
+const { t } = useI18n();
 const status = ref<PushState | null>(null);
 const busy = ref(false);
 const error = ref<string | null>(null);
@@ -47,7 +49,7 @@ async function toggle(): Promise<void> {
     error.value =
       failure instanceof PushRefused
         ? failure.message
-        : "L'abonnement a échoué. Réessayez.";
+        : t("settings.push.fallbackError");
   } finally {
     busy.value = false;
     await refresh();
@@ -58,39 +60,38 @@ async function toggle(): Promise<void> {
 <template>
   <Card>
     <CardHeader>
-      <CardTitle>Notifications push</CardTitle>
+      <CardTitle>{{ t("settings.push.title") }}</CardTitle>
     </CardHeader>
     <CardContent class="space-y-3 text-sm">
-      <p class="text-muted-foreground">
-        Recevoir les notifications même quand l'onglet est fermé. Ce navigateur
-        devient un <strong>device</strong> : il apparaît dans Admin → Devices, et
-        le révoquer coupe ses push et son curseur de sync.
+      <!-- Static, locale-file text only — never anything a caller supplies. -->
+      <p
+        class="text-muted-foreground"
+        v-html="t('settings.push.description', { device: '<strong>device</strong>' })"
+      />
+
+      <p v-if="!status" class="text-muted-foreground">
+        {{ t("settings.push.checking") }}
       </p>
 
-      <p v-if="!status" class="text-muted-foreground">Vérification…</p>
-
       <p v-else-if="!status.supported" class="text-muted-foreground">
-        Ce navigateur ne sait pas recevoir de push — une fenêtre privée ou une
-        origine non sécurisée, le plus souvent.
+        {{ t("settings.push.unsupported") }}
       </p>
 
       <p v-else-if="!status.available" class="text-muted-foreground">
-        Ce déploiement ne fait pas de Web Push : aucune clé VAPID n'y est
-        configurée. Le flux temps réel continue de fonctionner.
+        {{ t("settings.push.unavailable") }}
       </p>
 
       <p
         v-else-if="status.permission === 'denied'"
         class="text-muted-foreground"
       >
-        Les notifications sont bloquées pour ce site. Le navigateur ne
-        redemandera pas : il faut les réautoriser dans ses réglages de site.
+        {{ t("settings.push.denied") }}
       </p>
 
       <div v-else class="flex items-center gap-2">
         <Button size="sm" :disabled="busy" @click="toggle">
           <component :is="status.enabled ? BellOff : BellRing" class="size-4" />
-          {{ status.enabled ? "Désactiver sur ce navigateur" : "Activer sur ce navigateur" }}
+          {{ status.enabled ? t("settings.push.disable") : t("settings.push.enable") }}
         </Button>
         <span v-if="busy" class="text-xs text-muted-foreground">…</span>
       </div>

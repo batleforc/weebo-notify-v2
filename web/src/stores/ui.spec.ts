@@ -112,3 +112,33 @@ describe("detail panel position", () => {
     expect(localStorage.getItem("weebo-notify:detail-position")).toBe("under");
   });
 });
+
+describe("filtersCollapsed", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    stubMatchMedia(true);
+    setActivePinia(createPinia());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("starts collapsed on a fresh localStorage", () => {
+    const ui = useUi();
+    expect(ui.filtersCollapsed).toBe(true);
+  });
+
+  it("stays expanded across a reload once opened", async () => {
+    const ui = useUi();
+    ui.filtersCollapsed = false;
+    await nextTick();
+
+    expect(localStorage.getItem("weebo-notify:filters-collapsed")).toBe(
+      "false",
+    );
+
+    setActivePinia(createPinia());
+    expect(useUi().filtersCollapsed).toBe(false);
+  });
+});

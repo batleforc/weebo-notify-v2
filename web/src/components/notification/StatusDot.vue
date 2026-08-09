@@ -6,12 +6,14 @@
  * incident reads as live, and `closed` is still. No blinking, even for `urgent`.
  */
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type { State, Status } from "@/api/generated/types.gen";
 import { lookOf, stateLabel } from "@/lib/notification";
 
 const props = defineProps<{ status: Status; state: State; class?: string }>();
 
+const { t } = useI18n();
 const look = computed(() => lookOf(props.status));
 const live = computed(() => props.state !== "closed");
 </script>
@@ -19,7 +21,7 @@ const live = computed(() => props.state !== "closed");
 <template>
   <span
     :class="['relative inline-flex items-center justify-center', look.color, props.class]"
-    :aria-label="`${look.label}, ${stateLabel(state)}`"
+    :aria-label="t('status.ariaLabel', { status: look.label, state: stateLabel(state) })"
     role="img"
   >
     <component :is="look.icon" class="size-4" />

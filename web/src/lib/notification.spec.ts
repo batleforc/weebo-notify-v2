@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
+import { i18n } from "@/i18n";
 import {
   accentOf,
   authorLabel,
   isLoud,
   lookOf,
+  stateLabel,
   unreadLabel,
 } from "./notification";
+
+beforeEach(() => {
+  i18n.global.locale.value = "fr";
+});
 
 describe("unreadLabel", () => {
   it("agrees with the count, which the digit alone never had to", () => {
@@ -75,5 +81,31 @@ describe("authorLabel", () => {
     expect(authorLabel({ kind: "service_account", id: "bot-argocd" })).toBe(
       "bot-argocd",
     );
+  });
+});
+
+describe("in English", () => {
+  beforeEach(() => {
+    i18n.global.locale.value = "en";
+  });
+
+  it("unreadLabel uses the English singular/plural split", () => {
+    expect(unreadLabel(1)).toBe("1 unread");
+    expect(unreadLabel(2)).toBe("2 unread");
+  });
+
+  it("lookOf and stateLabel answer in English", () => {
+    expect(lookOf("failure").label).toBe("Failure");
+    expect(stateLabel("open")).toBe("open");
+  });
+
+  it("says a channel key published, in English", () => {
+    expect(
+      authorLabel({
+        kind: "channel_key",
+        key: "wnk_ci4x",
+        channel: "ci-infra",
+      }),
+    ).toBe("key wnk_ci4x on channel ci-infra");
   });
 });

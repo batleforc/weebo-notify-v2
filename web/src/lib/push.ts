@@ -33,6 +33,7 @@
  */
 
 import { enrolDevice, revokeDevice, webpushKey } from "@/api/generated";
+import { i18n } from "@/i18n";
 import { ready } from "@/lib/service-worker";
 
 /** Where the enrolled device id is remembered, per browser profile. */
@@ -141,7 +142,7 @@ export async function enable(label?: string): Promise<void> {
   if (!supported()) {
     throw new PushRefused(
       "unsupported",
-      "Ce navigateur ne sait pas recevoir de push.",
+      i18n.global.t("push.refused.unsupported"),
     );
   }
 
@@ -149,7 +150,7 @@ export async function enable(label?: string): Promise<void> {
   if (!key) {
     throw new PushRefused(
       "unavailable",
-      "Ce déploiement ne fait pas de Web Push.",
+      i18n.global.t("push.refused.unavailable"),
     );
   }
 
@@ -157,15 +158,12 @@ export async function enable(label?: string): Promise<void> {
   // could not be used, and before subscribing, which needs it granted.
   const permission = await Notification.requestPermission();
   if (permission !== "granted") {
-    throw new PushRefused(
-      "denied",
-      "Les notifications sont refusées pour ce site.",
-    );
+    throw new PushRefused("denied", i18n.global.t("push.refused.denied"));
   }
 
   const registration = await ready();
   if (!registration) {
-    throw new PushRefused("failed", "Le service worker n'est pas disponible.");
+    throw new PushRefused("failed", i18n.global.t("push.refused.failed"));
   }
 
   const existing = await registration.pushManager.getSubscription();

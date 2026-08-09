@@ -9,6 +9,7 @@
  */
 import { Menu, X } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToaster from "@/components/layout/AppToaster.vue";
@@ -38,6 +39,7 @@ const ui = useUi();
 const unread = useUnread();
 const route = useRoute();
 const router = useRouter();
+const { t } = useI18n();
 
 const sidebarOpen = ref(false);
 const palette = usePalette();
@@ -218,9 +220,9 @@ function closeDetail(): void {
     >
       <Button variant="ghost" size="icon" @click="sidebarOpen = !sidebarOpen">
         <Menu />
-        <span class="sr-only">Canaux et filtres</span>
+        <span class="sr-only">{{ t("sidebar.aria") }}</span>
       </Button>
-      <span class="text-sm font-semibold">weebo-notify</span>
+      <span class="text-sm font-semibold">{{ t("app.name") }}</span>
     </header>
 
     <div class="grid min-h-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
@@ -263,7 +265,7 @@ function closeDetail(): void {
               @click="closeDetail"
             >
               <X />
-              <span class="sr-only">Fermer le détail</span>
+              <span class="sr-only">{{ t("layout.closeDetail") }}</span>
             </Button>
             <NotificationDetail />
           </div>

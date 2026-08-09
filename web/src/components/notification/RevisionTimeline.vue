@@ -9,11 +9,17 @@
  * it failed" is the same question.
  */
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type { InteractionRecord } from "@/api/generated/types.gen";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ago, exact } from "@/lib/format";
-import { authorLabel, lookOf, stateLabel } from "@/lib/notification";
+import {
+  authorLabel,
+  lookOf,
+  priorityLabel,
+  stateLabel,
+} from "@/lib/notification";
 import type { TimelineRevision } from "@/stores/detail";
 import StatusDot from "./StatusDot.vue";
 
@@ -21,6 +27,8 @@ const props = defineProps<{
   revisions: TimelineRevision[];
   answers: InteractionRecord[];
 }>();
+
+const { t } = useI18n();
 
 interface Entry {
   at: string;
@@ -39,18 +47,31 @@ const entries = computed<Entry[]>(() => {
     const changes: string[] = [];
     if (previous) {
       if (previous.status !== revision.status) {
-        changes.push(`status: ${previous.status} → ${revision.status}`);
+        changes.push(
+          t("notification.revisionTimeline.statusChanged", {
+            from: lookOf(previous.status).label,
+            to: lookOf(revision.status).label,
+          }),
+        );
       }
       if (previous.state !== revision.state) {
         changes.push(
-          `état: ${stateLabel(previous.state)} → ${stateLabel(revision.state)}`,
+          t("notification.revisionTimeline.stateChanged", {
+            from: stateLabel(previous.state),
+            to: stateLabel(revision.state),
+          }),
         );
       }
       if (previous.priority !== revision.priority) {
-        changes.push(`priorité: ${previous.priority} → ${revision.priority}`);
+        changes.push(
+          t("notification.revisionTimeline.priorityChanged", {
+            from: priorityLabel(previous.priority),
+            to: priorityLabel(revision.priority),
+          }),
+        );
       }
       if (previous.content.title !== revision.content.title) {
-        changes.push("titre modifié");
+        changes.push(t("notification.revisionTimeline.titleChanged"));
       }
     }
     timeline.push({
@@ -76,13 +97,20 @@ const entries = computed<Entry[]>(() => {
 function describe(answer: InteractionRecord): string {
   switch (answer.interaction.type) {
     case "ack":
-      return `a acquitté (${answer.interaction.key})`;
+      return t("notification.revisionTimeline.acked", {
+        key: answer.interaction.key,
+      });
     case "reply":
-      return `a répondu : « ${answer.interaction.text} »`;
+      return t("notification.revisionTimeline.replied", {
+        text: answer.interaction.text,
+      });
     case "choice":
-      return `a choisi « ${answer.interaction.option} » pour ${answer.interaction.key}`;
+      return t("notification.revisionTimeline.chose", {
+        option: answer.interaction.option,
+        key: answer.interaction.key,
+      });
     default:
-      return "a répondu";
+      return t("notification.revisionTimeline.respondedGeneric");
   }
 }
 </script>
@@ -108,7 +136,7 @@ function describe(answer: InteractionRecord): string {
       <div class="flex flex-wrap items-baseline gap-x-2 text-sm">
         <template v-if="entry.revision">
           <span class="font-medium">
-            Révision {{ entry.revision.seq }}
+            {{ t("notification.revisionTimeline.revisionHeading", { seq: entry.revision.seq }) }}
           </span>
           <span :class="['text-xs', lookOf(entry.revision.status).color]">
             {{ lookOf(entry.revision.status).label }} ·
@@ -132,7 +160,7 @@ function describe(answer: InteractionRecord): string {
         v-if="entry.revision"
         class="text-xs text-muted-foreground"
       >
-        par {{ authorLabel(entry.revision.author) }}
+        {{ t("notification.revisionTimeline.authoredBy", { author: authorLabel(entry.revision.author) }) }}
         <template v-if="entry.changes.length">
           — <span class="text-foreground">{{ entry.changes.join(", ") }}</span>
         </template>

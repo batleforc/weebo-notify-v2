@@ -8,6 +8,8 @@
  * to be loaded.
  */
 import {
+  ChevronDown,
+  ChevronRight,
   Hash,
   Monitor,
   Moon,
@@ -15,13 +17,17 @@ import {
   Radio,
   Sun,
   WifiOff,
+  X,
 } from "lucide-vue-next";
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type { Priority, State, Status } from "@/api/generated/types.gen";
 import { useSession } from "@/auth/session";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -43,6 +49,7 @@ const session = useSession();
 const platform = useConsole();
 const ui = useUi();
 const unread = useUnread();
+const { t } = useI18n();
 
 // One probe per session, at the first render that needs the answer (§10.4bis).
 onMounted(() => {
@@ -67,9 +74,19 @@ const filtered = computed(
     filters.value.state.length > 0 ||
     filters.value.status.length > 0 ||
     filters.value.minPriority !== null ||
-    filters.value.tag !== null ||
+    filters.value.tags.length > 0 ||
     filters.value.hasActions !== null,
 );
+
+// `Collapsible`'s model is "is the content shown"; `ui.filtersCollapsed` is the
+// inverse (and the one that persists), so this bridges the two without either
+// side having to know about the other's sign.
+const filtersOpen = computed({
+  get: () => !ui.filtersCollapsed,
+  set: (value) => {
+    ui.filtersCollapsed = !value;
+  },
+});
 
 function toggle<T>(list: T[], value: T): T[] {
   return list.includes(value)
@@ -117,21 +134,75 @@ function clear(): void {
   void inbox.apply(emptyFilters());
 }
 
+/**
+ * Freeform tag filter (§8 AND semantics). No enumeration endpoint exists, so
+ * suggestions are drawn from tags already carried by loaded rows — a hint, not
+ * an authoritative list.
+ */
+const tagInput = ref("");
+
+const knownTags = computed(() => {
+  const all = new Set<string>();
+  for (const row of inbox.rows) {
+    for (const tag of row.head.content.tags ?? []) {
+      all.add(tag);
+    }
+  }
+  return [...all].sort();
+});
+
+const tagSuggestions = computed(() => {
+  const query = tagInput.value.trim().toLowerCase();
+  if (!query) {
+    return [];
+  }
+  return knownTags.value
+    .filter((tag) => tag.includes(query) && !filters.value.tags.includes(tag))
+    .slice(0, 8);
+});
+
+function addTag(raw: string): void {
+  const value = raw.trim().toLowerCase();
+  tagInput.value = "";
+  if (!value || filters.value.tags.includes(value)) {
+    return;
+  }
+  void inbox.apply({ ...filters.value, tags: [...filters.value.tags, value] });
+}
+
+function removeTag(tag: string): void {
+  void inbox.apply({
+    ...filters.value,
+    tags: filters.value.tags.filter((entry) => entry !== tag),
+  });
+}
+
+function onTagKeydown(event: KeyboardEvent): void {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    addTag(tagInput.value);
+  }
+}
+
 const connection = computed(() => {
   switch (inbox.status) {
     case "live":
-      return { icon: Radio, label: "temps réel", class: "text-status-success" };
+      return {
+        icon: Radio,
+        label: t("sidebar.connection.live"),
+        class: "text-status-success",
+      };
     case "connecting":
     case "reconnecting":
       return {
         icon: Radio,
-        label: "reconnexion…",
+        label: t("sidebar.connection.reconnecting"),
         class: "text-status-warning animate-pulse",
       };
     default:
       return {
         icon: WifiOff,
-        label: "hors ligne",
+        label: t("sidebar.connection.offline"),
         class: "text-muted-foreground",
       };
   }
@@ -140,8 +211,8 @@ const connection = computed(() => {
 
 <template>
   <nav
-    class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-3 text-sm"
-    aria-label="Canaux et filtres"
+    class="flex h-full min-h-0 flex-col gap-3 p-3 text-sm"
+    :aria-label="t('sidebar.aria')"
   >
     <div class="cyber-grid -m-3 mb-0 flex items-center justify-between gap-2 border-b p-3">
       <RouterLink
@@ -156,16 +227,16 @@ const connection = computed(() => {
           <span class="sr-only sm:not-sr-only">{{ connection.label }}</span>
         </span>
         <template #content>
-          Flux SSE — reprise par curseur à la reconnexion (§8.1).
+          {{ t("sidebar.connection.tooltip") }}
         </template>
       </Tooltip>
     </div>
 
     <Separator />
 
-    <section class="space-y-1">
+    <section class="min-h-0 flex-1 space-y-1 overflow-y-auto">
       <h2 class="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        Canaux
+        {{ t("sidebar.channels.title") }}
       </h2>
 
       <div v-if="channels.loading" class="space-y-1 p-1">
@@ -180,8 +251,7 @@ const connection = computed(() => {
         v-else-if="!channels.all.length"
         class="px-1 text-xs text-muted-foreground"
       >
-        Aucun canal. L'accès vient d'un groupe de ton fournisseur d'identité ou
-        d'une invitation (§5.1).
+        {{ t("sidebar.channels.empty") }}
       </p>
 
       <Button
@@ -218,96 +288,152 @@ const connection = computed(() => {
 
     <Separator />
 
-    <section class="space-y-2">
-      <div class="flex items-center justify-between px-1">
-        <h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Filtres
-        </h2>
-        <Button
-          v-if="filtered"
-          variant="link"
-          size="sm"
-          class="h-auto p-0 text-xs"
-          @click="clear"
-        >
-          tout effacer
-        </Button>
-      </div>
+    <section class="shrink-0 space-y-2">
+      <Collapsible v-model:open="filtersOpen">
+        <div class="flex w-full items-center justify-between gap-2 px-1">
+          <button
+            type="button"
+            class="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+          >
+            <ChevronDown v-if="filtersOpen" class="size-3.5" />
+            <ChevronRight v-else class="size-3.5" />
+            {{ t("sidebar.filters.title") }}
+          </button>
+          <Button
+            v-if="filtered"
+            variant="link"
+            size="sm"
+            class="h-auto p-0 text-xs"
+            @click.stop="clear"
+          >
+            {{ t("sidebar.filters.clearAll") }}
+          </Button>
+        </div>
 
-      <div class="flex flex-wrap gap-1 px-1">
-        <Button
-          v-for="state in STATES"
-          :key="state"
-          :variant="filters.state.includes(state) ? 'secondary' : 'outline'"
-          size="sm"
-          class="h-6 px-2 text-xs font-normal"
-          :aria-pressed="filters.state.includes(state)"
-          @click="toggleState(state)"
-        >
-          {{ stateLabel(state) }}
-        </Button>
-      </div>
+        <template #content>
+          <div class="space-y-2 pt-2">
+            <div class="flex flex-wrap gap-1 px-1">
+              <Button
+                v-for="state in STATES"
+                :key="state"
+                :variant="filters.state.includes(state) ? 'secondary' : 'outline'"
+                size="sm"
+                class="h-6 px-2 text-xs font-normal"
+                :aria-pressed="filters.state.includes(state)"
+                @click="toggleState(state)"
+              >
+                {{ stateLabel(state) }}
+              </Button>
+            </div>
 
-      <div class="flex flex-wrap gap-1 px-1">
-        <Button
-          v-for="status in STATUSES"
-          :key="status"
-          :variant="filters.status.includes(status) ? 'secondary' : 'outline'"
-          size="sm"
-          :class="[
-            'h-6 gap-1 px-2 text-xs font-normal',
-            filters.status.includes(status) ? lookOf(status).color : '',
-          ]"
-          :aria-pressed="filters.status.includes(status)"
-          @click="toggleStatus(status)"
-        >
-          <component :is="lookOf(status).icon" class="size-3" />
-          {{ lookOf(status).label }}
-        </Button>
-      </div>
+            <div class="flex flex-wrap gap-1 px-1">
+              <Button
+                v-for="status in STATUSES"
+                :key="status"
+                :variant="filters.status.includes(status) ? 'secondary' : 'outline'"
+                size="sm"
+                :class="[
+                  'h-6 gap-1 px-2 text-xs font-normal',
+                  filters.status.includes(status) ? lookOf(status).color : '',
+                ]"
+                :aria-pressed="filters.status.includes(status)"
+                @click="toggleStatus(status)"
+              >
+                <component :is="lookOf(status).icon" class="size-3" />
+                {{ lookOf(status).label }}
+              </Button>
+            </div>
 
-      <div class="flex flex-wrap gap-1 px-1">
-        <Button
-          v-for="priority in PRIORITIES"
-          :key="priority"
-          :variant="filters.minPriority === priority ? 'secondary' : 'outline'"
-          size="sm"
-          class="h-6 px-2 text-xs font-normal"
-          :aria-pressed="filters.minPriority === priority"
-          @click="setPriority(priority)"
-        >
-          ≥ {{ priorityLabel(priority) }}
-        </Button>
-      </div>
+            <div class="flex flex-wrap gap-1 px-1">
+              <Button
+                v-for="priority in PRIORITIES"
+                :key="priority"
+                :variant="filters.minPriority === priority ? 'secondary' : 'outline'"
+                size="sm"
+                class="h-6 px-2 text-xs font-normal"
+                :aria-pressed="filters.minPriority === priority"
+                @click="setPriority(priority)"
+              >
+                ≥ {{ priorityLabel(priority) }}
+              </Button>
+            </div>
 
-      <div class="flex flex-wrap gap-1 px-1">
-        <Button
-          :variant="filters.hasActions === true ? 'secondary' : 'outline'"
-          size="sm"
-          class="h-6 gap-1 px-2 text-xs font-normal"
-          :aria-pressed="filters.hasActions === true"
-          @click="toggleHasActions"
-        >
-          <MousePointerClick class="size-3" />
-          avec action
-        </Button>
-      </div>
+            <div class="flex flex-wrap gap-1 px-1">
+              <Button
+                :variant="filters.hasActions === true ? 'secondary' : 'outline'"
+                size="sm"
+                class="h-6 gap-1 px-2 text-xs font-normal"
+                :aria-pressed="filters.hasActions === true"
+                @click="toggleHasActions"
+              >
+                <MousePointerClick class="size-3" />
+                {{ t("sidebar.filters.hasActions") }}
+              </Button>
+            </div>
+
+            <div class="space-y-1 px-1">
+              <div v-if="filters.tags.length" class="flex flex-wrap gap-1">
+                <Badge
+                  v-for="tag in filters.tags"
+                  :key="tag"
+                  variant="muted"
+                  class="gap-1 font-normal"
+                >
+                  {{ tag }}
+                  <button
+                    type="button"
+                    class="rounded-sm hover:text-foreground"
+                    :aria-label="t('sidebar.filters.removeTag', { tag })"
+                    @click="removeTag(tag)"
+                  >
+                    <X class="size-3" />
+                  </button>
+                </Badge>
+              </div>
+
+              <div class="relative">
+                <Input
+                  v-model="tagInput"
+                  :placeholder="t('sidebar.filters.tagPlaceholder')"
+                  class="h-7 text-xs"
+                  :aria-label="t('sidebar.filters.tagAriaLabel')"
+                  @keydown="onTagKeydown"
+                />
+                <div
+                  v-if="tagSuggestions.length"
+                  class="absolute z-10 mt-1 w-full rounded-md border border-border bg-popover p-1 text-xs shadow-md"
+                >
+                  <button
+                    v-for="suggestion in tagSuggestions"
+                    :key="suggestion"
+                    type="button"
+                    class="block w-full rounded-sm px-2 py-1 text-left hover:bg-accent"
+                    @click="addTag(suggestion)"
+                  >
+                    {{ suggestion }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+      </Collapsible>
     </section>
 
-    <div class="mt-auto space-y-2">
+    <div class="shrink-0 space-y-2">
       <Separator />
       <div class="flex flex-wrap items-center gap-1 px-1">
         <RouterLink
           to="/settings"
           class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
         >
-          Réglages
+          {{ t("sidebar.nav.settings") }}
         </RouterLink>
         <RouterLink
           to="/admin"
           class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
         >
-          Administration
+          {{ t("sidebar.nav.admin") }}
         </RouterLink>
         <!--
           Shown only where the server says so (§10.4bis). The answer comes from one
@@ -320,13 +446,13 @@ const connection = computed(() => {
           to="/console"
           class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
         >
-          Plateforme
+          {{ t("sidebar.nav.platform") }}
         </RouterLink>
         <RouterLink
           to="/"
           class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
         >
-          Inbox
+          {{ t("sidebar.nav.inbox") }}
         </RouterLink>
       </div>
       <div class="flex items-center justify-between gap-2 px-1">
@@ -341,9 +467,11 @@ const connection = computed(() => {
               <Sun v-if="ui.theme === 'dark'" class="size-3.5" />
               <Monitor v-else-if="ui.theme === 'light'" class="size-3.5" />
               <Moon v-else class="size-3.5" />
-              <span class="sr-only">Changer de thème</span>
+              <span class="sr-only">{{ t("sidebar.session.toggleTheme") }}</span>
             </Button>
-            <template #content>Thème : {{ ui.theme }}</template>
+            <template #content>
+              {{ t("sidebar.session.themeTooltip", { theme: ui.theme }) }}
+            </template>
           </Tooltip>
           <Button
             variant="ghost"
@@ -351,7 +479,7 @@ const connection = computed(() => {
             class="h-7 px-2 text-xs"
             @click="session.logout()"
           >
-            Se déconnecter
+            {{ t("sidebar.session.logout") }}
           </Button>
         </div>
       </div>

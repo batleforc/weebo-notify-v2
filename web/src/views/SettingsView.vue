@@ -10,6 +10,7 @@
  */
 import { KeyRound, RotateCcw, Trash2, Upload } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
 import {
   createKey,
@@ -37,12 +38,14 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { avatarObjectUrl } from "@/lib/avatar";
 import { exact } from "@/lib/format";
+import { LOCALE_KEY, type Locale } from "@/lib/locale";
 import { useChannels } from "@/stores/channels";
 import { useUi } from "@/stores/ui";
 
 const session = useSession();
 const ui = useUi();
 const channels = useChannels();
+const { t } = useI18n();
 
 const profile = ref<Profile | null>(null);
 const loading = ref(true);
@@ -50,19 +53,14 @@ const saving = ref(false);
 const error = ref<string | null>(null);
 const file = ref<HTMLInputElement | null>(null);
 
-const draft = ref({ display_name: "", timezone: "", locale: "" });
+const draft = ref({ display_name: "", timezone: "" });
 
 const claimed = computed(
   () => new Set<ProfileField>(profile.value?.overridden ?? []),
 );
 
-const DETAIL_POSITION_LABELS: Record<string, string> = {
-  right: "à droite",
-  left: "à gauche",
-  under: "en dessous",
-};
-const detailPositionLabel = computed(
-  () => DETAIL_POSITION_LABELS[ui.detailPosition],
+const detailPositionLabel = computed(() =>
+  t(`settings.appearance.detailPosition.${ui.detailPosition}`),
 );
 
 /**
@@ -95,8 +93,17 @@ function hydrate(next: Profile): void {
   draft.value = {
     display_name: next.display_name ?? "",
     timezone: next.timezone ?? "",
-    locale: next.locale ?? "",
   };
+
+  // Inherit the account's chosen UI language the first time the app opens on
+  // this browser — but never fight a choice already made here (§ C5).
+  const prefix = next.locale?.slice(0, 2).toLowerCase();
+  if (
+    !localStorage.getItem(LOCALE_KEY) &&
+    (prefix === "en" || prefix === "fr")
+  ) {
+    ui.locale = prefix;
+  }
 }
 
 async function load(): Promise<void> {
@@ -133,12 +140,31 @@ async function save(): Promise<void> {
   if (draft.value.timezone !== (current.timezone ?? "")) {
     body.timezone = draft.value.timezone || null;
   }
-  if (draft.value.locale !== (current.locale ?? "")) {
-    body.locale = draft.value.locale || null;
-  }
 
   try {
     const answer = await updateProfile({ body, throwOnError: true });
+    hydrate(answer.data);
+  } catch (caught) {
+    error.value = failureOf(caught).message;
+  } finally {
+    saving.value = false;
+  }
+}
+
+/**
+ * Set the UI language — immediately (localStorage, live retranslation via
+ * `ui.locale`'s own watcher) and, same as any other claimed profile field,
+ * persisted server-side so a next device inherits it (§ C5).
+ */
+async function setLocale(value: Locale): Promise<void> {
+  ui.locale = value;
+  saving.value = true;
+  error.value = null;
+  try {
+    const answer = await updateProfile({
+      body: { locale: value },
+      throwOnError: true,
+    });
     hydrate(answer.data);
   } catch (caught) {
     error.value = failureOf(caught).message;
@@ -290,16 +316,15 @@ onMounted(() => {
 
 <template>
   <div class="h-full space-y-4 overflow-y-auto p-6">
-    <h1 class="text-lg font-semibold">Réglages</h1>
+    <h1 class="text-lg font-semibold">{{ t("settings.title") }}</h1>
 
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
 
     <Card>
       <CardHeader>
-        <CardTitle>Profil</CardTitle>
+        <CardTitle>{{ t("settings.profile.title") }}</CardTitle>
         <p class="text-sm text-muted-foreground">
-          Un champ que tu modifies devient le tien : ton fournisseur d'identité
-          cesse de l'écraser à chaque connexion.
+          {{ t("settings.profile.description") }}
         </p>
       </CardHeader>
 
@@ -315,17 +340,16 @@ onMounted(() => {
             v-else
             class="flex size-16 items-center justify-center rounded-full border border-dashed border-border text-xs text-muted-foreground"
           >
-            aucun
+            {{ t("settings.profile.noAvatar") }}
           </div>
 
           <div class="space-y-1">
             <Button variant="outline" size="sm" :disabled="saving" @click="file?.click()">
               <Upload />
-              Changer d'avatar
+              {{ t("settings.profile.changeAvatar") }}
             </Button>
             <p class="text-xs text-muted-foreground">
-              PNG, JPEG ou WebP, 512 KiB au plus. Redimensionné en 256×256 et
-              débarrassé de ses métadonnées côté serveur.
+              {{ t("settings.profile.avatarHint") }}
             </p>
           </div>
           <input
@@ -341,9 +365,11 @@ onMounted(() => {
 
         <label class="block space-y-1">
           <span class="flex items-center gap-2 text-sm font-medium">
-            Nom affiché
-            <Badge v-if="claimed.has('display_name')" variant="secondary">à toi</Badge>
-            <Badge v-else variant="muted">suit ton IdP</Badge>
+            {{ t("settings.profile.displayName") }}
+            <Badge v-if="claimed.has('display_name')" variant="secondary">
+              {{ t("settings.profile.claimed") }}
+            </Badge>
+            <Badge v-else variant="muted">{{ t("settings.profile.followsIdp") }}</Badge>
             <Button
               v-if="claimed.has('display_name')"
               variant="ghost"
@@ -352,7 +378,7 @@ onMounted(() => {
               @click="release('display_name')"
             >
               <RotateCcw class="size-3" />
-              rendre à l'IdP
+              {{ t("settings.profile.releaseToIdp") }}
             </Button>
           </span>
           <Input v-model="draft.display_name" :disabled="loading || saving" />
@@ -360,8 +386,10 @@ onMounted(() => {
 
         <label class="block space-y-1">
           <span class="flex items-center gap-2 text-sm font-medium">
-            Fuseau
-            <Badge v-if="claimed.has('timezone')" variant="secondary">à toi</Badge>
+            {{ t("settings.profile.timezone") }}
+            <Badge v-if="claimed.has('timezone')" variant="secondary">
+              {{ t("settings.profile.claimed") }}
+            </Badge>
             <Button
               v-if="claimed.has('timezone')"
               variant="ghost"
@@ -370,7 +398,7 @@ onMounted(() => {
               @click="release('timezone')"
             >
               <RotateCcw class="size-3" />
-              rendre à l'IdP
+              {{ t("settings.profile.releaseToIdp") }}
             </Button>
           </span>
           <Input
@@ -379,46 +407,75 @@ onMounted(() => {
             :disabled="loading || saving"
           />
           <span class="text-xs text-muted-foreground">
-            Sert de défaut aux heures calmes. Vérifié contre la base IANA.
+            {{ t("settings.profile.timezoneHint") }}
           </span>
         </label>
 
-        <label class="block space-y-1">
+        <div class="space-y-1">
           <span class="flex items-center gap-2 text-sm font-medium">
-            Langue
-            <Badge v-if="claimed.has('locale')" variant="secondary">à toi</Badge>
+            {{ t("settings.locale.title") }}
+            <Badge v-if="claimed.has('locale')" variant="secondary">
+              {{ t("settings.profile.claimed") }}
+            </Badge>
+            <Badge v-else variant="muted">{{ t("settings.profile.followsIdp") }}</Badge>
+            <Button
+              v-if="claimed.has('locale')"
+              variant="ghost"
+              size="sm"
+              class="h-6 px-2 text-xs"
+              @click="release('locale')"
+            >
+              <RotateCcw class="size-3" />
+              {{ t("settings.profile.releaseToIdp") }}
+            </Button>
           </span>
-          <Input v-model="draft.locale" placeholder="fr-FR" :disabled="loading || saving" />
-        </label>
+          <div class="flex gap-1">
+            <Button
+              :variant="ui.locale === 'fr' ? 'secondary' : 'outline'"
+              size="sm"
+              :disabled="loading || saving"
+              @click="setLocale('fr')"
+            >
+              {{ t("settings.locale.fr") }}
+            </Button>
+            <Button
+              :variant="ui.locale === 'en' ? 'secondary' : 'outline'"
+              size="sm"
+              :disabled="loading || saving"
+              @click="setLocale('en')"
+            >
+              {{ t("settings.locale.en") }}
+            </Button>
+          </div>
+        </div>
 
         <Button :disabled="loading || saving" @click="save">
-          {{ saving ? "Enregistrement…" : "Enregistrer" }}
+          {{ saving ? t("settings.profile.saving") : t("settings.profile.save") }}
         </Button>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Apparence</CardTitle>
+        <CardTitle>{{ t("settings.appearance.title") }}</CardTitle>
       </CardHeader>
       <CardContent class="flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" @click="ui.cycleTheme()">
-          Thème : {{ ui.theme }}
+          {{ t("settings.appearance.theme", { theme: ui.theme }) }}
         </Button>
         <Button
           variant="outline"
           size="sm"
           @click="ui.density = ui.density === 'compact' ? 'comfortable' : 'compact'"
         >
-          Densité : {{ ui.density }}
+          {{ t("settings.appearance.density", { density: ui.density }) }}
         </Button>
         <Button variant="outline" size="sm" @click="ui.cycleDetailPosition()">
-          Détail : {{ detailPositionLabel }}
+          {{ t("settings.appearance.detail", { position: detailPositionLabel }) }}
         </Button>
       </CardContent>
       <p class="px-6 pb-4 -mt-2 text-xs text-muted-foreground">
-        Où la timeline d'une notification s'ouvre à côté de la liste — sans effet
-        sur un écran étroit, où elle prend tout l'écran quoi qu'il arrive.
+        {{ t("settings.appearance.detailHint") }}
       </p>
     </Card>
 
@@ -428,10 +485,9 @@ onMounted(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>Jeton CLI</CardTitle>
+        <CardTitle>{{ t("settings.keys.title") }}</CardTitle>
         <p class="text-sm text-muted-foreground">
-          Pour <code>notify login</code> (terminal, TUI) : choisis les canaux et ce
-          que le jeton peut y faire, puis colle le secret dans l'invite.
+          {{ t("settings.keys.description") }}
         </p>
       </CardHeader>
       <CardContent class="space-y-3">
@@ -442,23 +498,24 @@ onMounted(() => {
         <Card v-if="cliKeyMinted" class="border-status-warning">
           <CardContent class="space-y-2 pt-4">
             <p class="text-sm text-muted-foreground">
-              Copie ce jeton maintenant — colle-le à l'invite <code>notify login</code>.
-              Il ne sera plus jamais affiché.
+              {{ t("settings.keys.mintedHint") }}
             </p>
             <code class="block break-all rounded-md bg-muted p-3 text-xs">{{
               cliKeyMinted
             }}</code>
             <Button variant="outline" size="sm" @click="cliKeyMinted = null">
-              J'ai copié
+              {{ t("settings.keys.copied") }}
             </Button>
           </CardContent>
         </Card>
 
         <template v-else>
-          <Input v-model="cliKeyLabel" placeholder="à quoi il sert" />
+          <Input v-model="cliKeyLabel" :placeholder="t('settings.keys.labelPlaceholder')" />
 
           <div class="space-y-1">
-            <p class="text-xs font-medium text-muted-foreground">Canaux</p>
+            <p class="text-xs font-medium text-muted-foreground">
+              {{ t("settings.keys.channels") }}
+            </p>
             <label
               v-for="channel in channels.all"
               :key="channel.id"
@@ -472,12 +529,14 @@ onMounted(() => {
               {{ channel.display_name || channel.id }}
             </label>
             <p v-if="!channels.all.length" class="text-xs text-muted-foreground">
-              Aucun canal visible.
+              {{ t("settings.keys.noChannels") }}
             </p>
           </div>
 
           <div class="space-y-1">
-            <p class="text-xs font-medium text-muted-foreground">Portée</p>
+            <p class="text-xs font-medium text-muted-foreground">
+              {{ t("settings.keys.scope") }}
+            </p>
             <label
               v-for="scope in (['subscribe', 'publish', 'manage'] as Scope[])"
               :key="scope"
@@ -497,7 +556,7 @@ onMounted(() => {
             @click="mintCliKey"
           >
             <KeyRound />
-            Créer — le secret n'apparaît qu'une seule fois
+            {{ t("settings.keys.create") }}
           </Button>
         </template>
 
@@ -508,12 +567,18 @@ onMounted(() => {
         >
           <span class="min-w-0">
             <code class="text-xs">{{ key.prefix }}…</code>
-            <span class="ml-2">{{ key.label ?? "sans nom" }}</span>
+            <span class="ml-2">{{ key.label ?? t("settings.keys.unnamed") }}</span>
             <span class="ml-2 text-xs text-muted-foreground">
-              {{ key.last_used_at ? `utilisé ${exact(key.last_used_at)}` : "jamais utilisé" }}
+              {{
+                key.last_used_at
+                  ? t("settings.keys.lastUsed", { at: exact(key.last_used_at) })
+                  : t("settings.keys.neverUsed")
+              }}
             </span>
           </span>
-          <Badge v-if="key.revoked_at" variant="muted">révoqué</Badge>
+          <Badge v-if="key.revoked_at" variant="muted">
+            {{ t("settings.keys.revoked") }}
+          </Badge>
           <Button
             v-else
             variant="ghost"
@@ -522,7 +587,7 @@ onMounted(() => {
             @click="revokeCliKey(key.id)"
           >
             <Trash2 />
-            Révoquer
+            {{ t("settings.keys.revoke") }}
           </Button>
         </div>
       </CardContent>
@@ -530,18 +595,17 @@ onMounted(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>Session</CardTitle>
+        <CardTitle>{{ t("settings.session.title") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-2 text-sm">
         <p class="text-muted-foreground">
-          Connecté en tant que {{ session.displayName }}.
+          {{ t("settings.session.connectedAs", { name: session.displayName }) }}
         </p>
         <p v-if="session.groups.length" class="text-xs text-muted-foreground">
-          Groupes portés par ton jeton : {{ session.groups.join(", ") }} — l'accès
-          aux canaux en découle à chaque requête.
+          {{ t("settings.session.groups", { groups: session.groups.join(", ") }) }}
         </p>
         <Button variant="outline" size="sm" @click="session.logout()">
-          Se déconnecter
+          {{ t("settings.session.logout") }}
         </Button>
       </CardContent>
     </Card>

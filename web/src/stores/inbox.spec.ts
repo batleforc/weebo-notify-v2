@@ -56,6 +56,7 @@ function revision(
     title: string;
     groupKey: string;
     revisedAt: string;
+    tags: string[];
   }> = {},
 ): StreamEvent {
   return {
@@ -75,6 +76,7 @@ function revision(
     payload: {
       title: overrides.title ?? `notification ${id}`,
       group_key: overrides.groupKey,
+      tags: overrides.tags,
     },
   };
 }
@@ -187,6 +189,53 @@ describe("folding stream events into the inbox", () => {
     inbox.ingest(revision("ntf_x", { channel: "cluster-ovh-1" }));
 
     expect(inbox.pendingCount).toBe(0);
+  });
+
+  it("requires every requested tag to be present (§8 AND semantics)", async () => {
+    const inbox = await loadedWith([]);
+    await inbox.apply({ ...emptyFilters(), tags: ["prod", "urgent"] });
+
+    inbox.ingest(revision("ntf_a", { tags: ["prod"] }));
+    inbox.ingest(revision("ntf_b", { tags: ["prod", "urgent"] }));
+
+    expect(inbox.pending.map((row) => row.id)).toEqual(["ntf_b"]);
+  });
+
+  it("lowercases the tag filter before comparing — stored tags are always lowercase", async () => {
+    const inbox = await loadedWith([]);
+    await inbox.apply({ ...emptyFilters(), tags: ["Prod"] });
+
+    inbox.ingest(revision("ntf_a", { tags: ["prod"] }));
+
+    expect(inbox.pending.map((row) => row.id)).toEqual(["ntf_a"]);
+  });
+});
+
+describe("the request the filters build", () => {
+  it("sends tags lowercased and comma-joined", async () => {
+    const inbox = useInbox();
+    inboxMock.mockResolvedValue({ data: { items: [], next: null } });
+
+    await inbox.apply({ ...emptyFilters(), tags: ["Prod", "urgent"] });
+
+    expect(inboxMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({ tag: "prod,urgent" }),
+      }),
+    );
+  });
+
+  it("omits the tag param entirely when no tag is set", async () => {
+    const inbox = useInbox();
+    inboxMock.mockResolvedValue({ data: { items: [], next: null } });
+
+    await inbox.apply(emptyFilters());
+
+    expect(inboxMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({ tag: undefined }),
+      }),
+    );
   });
 });
 

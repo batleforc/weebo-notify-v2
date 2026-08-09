@@ -31,6 +31,7 @@ import {
   DialogRoot,
 } from "reka-ui";
 import { computed, nextTick, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
 import type { PaletteItem } from "@/lib/palette";
@@ -40,6 +41,7 @@ import { usePreferences } from "@/stores/preferences";
 const palette = usePalette();
 const preferences = usePreferences();
 const router = useRouter();
+const { t } = useI18n();
 
 const input = ref<HTMLInputElement | null>(null);
 const active = ref(0);
@@ -47,10 +49,10 @@ const active = ref(0);
 /** The rows, in the groups §10.4 names, empty groups dropped. */
 const groups = computed(() => {
   const titles: Record<PaletteItem["group"], string> = {
-    channels: "Canaux",
-    notifications: "Notifications",
-    screens: "Écrans",
-    actions: "Actions",
+    channels: t("commandPalette.groups.channels"),
+    notifications: t("commandPalette.groups.notifications"),
+    screens: t("commandPalette.groups.screens"),
+    actions: t("commandPalette.groups.actions"),
   };
   const order: Array<PaletteItem["group"]> = [
     "channels",
@@ -158,7 +160,7 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
       <DialogOverlay class="fixed inset-0 z-50 bg-black/50" />
       <DialogContent
         class="fixed left-1/2 top-[15vh] z-50 w-[min(40rem,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
-        aria-label="Rechercher et naviguer"
+        :aria-label="t('commandPalette.ariaLabel')"
         @keydown.down.prevent="move(1)"
         @keydown.up.prevent="move(-1)"
         @keydown.enter.prevent="choose(walk[active])"
@@ -168,7 +170,7 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
           :value="palette.query"
           type="text"
           class="w-full border-b border-border bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
-          placeholder="Chercher une notification, un canal, un écran…"
+          :placeholder="t('commandPalette.searchPlaceholder')"
           role="combobox"
           aria-controls="palette-results"
           aria-expanded="true"
@@ -180,7 +182,7 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
         <div
           id="palette-results"
           role="listbox"
-          aria-label="Résultats"
+          :aria-label="t('commandPalette.resultsAriaLabel')"
           class="max-h-[50vh] overflow-y-auto p-1"
         >
           <p
@@ -224,13 +226,13 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
             v-if="walk.length === 0 && !palette.searching"
             class="px-3 py-6 text-center text-sm text-muted-foreground"
           >
-            Rien ne correspond.
+            {{ t("commandPalette.empty") }}
           </p>
           <p
             v-else-if="palette.searching"
             class="px-3 py-2 text-xs text-muted-foreground"
           >
-            Recherche…
+            {{ t("commandPalette.searching") }}
           </p>
         </div>
       </DialogContent>

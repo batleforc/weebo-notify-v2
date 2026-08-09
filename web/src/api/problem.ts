@@ -14,6 +14,7 @@
 
 import axios from "axios";
 
+import { i18n } from "@/i18n";
 import type { Problem } from "./generated/types.gen";
 
 /** A refusal, in the shape the UI wants. */
@@ -22,26 +23,35 @@ export interface Failure {
   code?: string;
   /** HTTP status, `0` when the request never reached anybody. */
   status: number;
-  /** What to show. Already in French, already a sentence. */
+  /** What to show. Already translated, already a sentence. */
   message: string;
   /** Seconds to wait, on a `429`. */
   retryAfter?: number;
 }
 
-/** French sentences for the codes the web client can actually provoke. */
-const MESSAGES: Record<string, string> = {
-  "auth.missing": "Session expirée — reconnecte-toi.",
-  "auth.invalid": "Session expirée — reconnecte-toi.",
-  "auth.expired": "Session expirée — reconnecte-toi.",
-  "scope.missing": "Tu n'as pas les droits pour cette action sur ce canal.",
-  "channel.unknown": "Ce canal n'existe pas, ou tu n'y as pas accès.",
-  "notification.unknown": "Cette notification n'existe plus.",
-  "notification.deleted": "Cette notification a été supprimée.",
-  "field.missing": "Il manque une information dans le formulaire.",
-  "field.empty": "Un champ obligatoire est vide.",
-  "field.invalid": "Une valeur du formulaire n'est pas valide.",
-  "rate.limited": "Trop de requêtes — réessaie dans un instant.",
-  "action.unknown": "Cette action n'existe plus sur cette révision.",
+/**
+ * `problem.*` keys the web client can actually provoke, keyed by the server's
+ * stable `code` (§8) with dots turned into camelCase segments.
+ *
+ * Any `code` the server sends that is NOT in this map falls back to the raw,
+ * unlocalized server `title` a few lines down — the backend has no
+ * `Accept-Language` handling anywhere, so that fallback stays whatever
+ * language the server wrote it in. Out of scope here; growing this map is the
+ * only lever the frontend has.
+ */
+const MESSAGE_KEYS: Record<string, string> = {
+  "auth.missing": "problem.authMissing",
+  "auth.invalid": "problem.authInvalid",
+  "auth.expired": "problem.authExpired",
+  "scope.missing": "problem.scopeMissing",
+  "channel.unknown": "problem.channelUnknown",
+  "notification.unknown": "problem.notificationUnknown",
+  "notification.deleted": "problem.notificationDeleted",
+  "field.missing": "problem.fieldMissing",
+  "field.empty": "problem.fieldEmpty",
+  "field.invalid": "problem.fieldInvalid",
+  "rate.limited": "problem.rateLimited",
+  "action.unknown": "problem.actionUnknown",
 };
 
 /**
@@ -57,22 +67,19 @@ export function failureOf(error: unknown): Failure {
     const problem = error.response?.data as Problem | undefined;
 
     if (status === 0) {
-      return {
-        status,
-        message:
-          "Le serveur est injoignable. Vérifie ta connexion, ou qu'il tourne bien.",
-      };
+      return { status, message: i18n.global.t("problem.networkDown") };
     }
 
     const code = problem?.code ?? undefined;
+    const key = code ? MESSAGE_KEYS[code] : undefined;
     return {
       code,
       status,
       retryAfter: problem?.retry_after_seconds ?? undefined,
       message:
-        (code ? MESSAGES[code] : undefined) ??
+        (key ? i18n.global.t(key) : undefined) ??
         problem?.title ??
-        `Le serveur a répondu ${status}.`,
+        i18n.global.t("problem.serverResponded", { status }),
     };
   }
 
@@ -80,5 +87,5 @@ export function failureOf(error: unknown): Failure {
     return { status: 0, message: error.message };
   }
 
-  return { status: 0, message: "Une erreur inattendue s'est produite." };
+  return { status: 0, message: i18n.global.t("problem.unexpected") };
 }

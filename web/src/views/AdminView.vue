@@ -22,6 +22,7 @@
  */
 import { KeyRound, Plus, Trash2 } from "lucide-vue-next";
 import { onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
 import {
   createAccount,
@@ -55,6 +56,7 @@ const error = ref<string | null>(null);
 const busy = ref(false);
 
 const channels = useChannels();
+const { t } = useI18n();
 
 /**
  * The TTL fields, per channel, while they are being edited.
@@ -203,39 +205,36 @@ onMounted(load);
 
 <template>
   <div class="h-full space-y-4 overflow-y-auto p-6">
-    <h1 class="text-lg font-semibold">Administration</h1>
+    <h1 class="text-lg font-semibold">{{ t("admin.title") }}</h1>
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
 
     <!-- Shown once, and only here. Closing this card loses it for good, which is
          what "only the hash is stored" means in practice (§5.2). -->
     <Card v-if="minted" class="border-status-warning">
       <CardHeader>
-        <CardTitle>Copie cette clé maintenant</CardTitle>
+        <CardTitle>{{ t("admin.mintedKey.title") }}</CardTitle>
         <p class="text-sm text-muted-foreground">
-          Elle ne sera plus jamais affichée : seul son hachage est conservé. La
-          perdre veut dire la révoquer et en créer une autre.
+          {{ t("admin.mintedKey.description") }}
         </p>
       </CardHeader>
       <CardContent class="space-y-2">
         <code class="block break-all rounded-md bg-muted p-3 text-xs">{{ minted }}</code>
         <Button variant="outline" size="sm" @click="minted = null">
-          J'ai copié
+          {{ t("admin.mintedKey.copied") }}
         </Button>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Canaux</CardTitle>
+        <CardTitle>{{ t("admin.channels.title") }}</CardTitle>
         <p class="text-sm text-muted-foreground">
-          Rétention et receipts, par canal. Un canal <code>managed</code> vient de
-          la config : l'API le refuse, et la prochaine réconciliation annulerait la
-          modification de toute façon.
+          {{ t("admin.channels.description") }}
         </p>
       </CardHeader>
       <CardContent class="space-y-3">
         <p v-if="!channels.all.length" class="text-sm text-muted-foreground">
-          Aucun canal visible.
+          {{ t("admin.channels.empty") }}
         </p>
         <div
           v-for="channel in channels.all"
@@ -257,9 +256,11 @@ onMounted(load);
               :disabled="busy"
               @click="toggleReceipts(channel)"
             >
-              {{ channel.policy.receipts_enabled ? "Receipts activés" : "Receipts désactivés" }}
+              {{ channel.policy.receipts_enabled ? t("admin.channels.receiptsOn") : t("admin.channels.receiptsOff") }}
             </Button>
-            <span v-else class="text-xs text-muted-foreground">géré par la config</span>
+            <span v-else class="text-xs text-muted-foreground">
+              {{ t("admin.managedByConfig") }}
+            </span>
           </div>
 
           <div
@@ -268,16 +269,16 @@ onMounted(load);
           >
             <Input
               v-model="draft[channel.id].default_ttl"
-              placeholder="TTL par défaut (7d)"
+              :placeholder="t('admin.channels.defaultTtlPlaceholder')"
             />
             <!-- Vide = pas de plafond. On envoie `0`, qui est la façon dont
                  §7.2bis écrit « illimité » partout ailleurs. -->
             <Input
               v-model="draft[channel.id].max_ttl"
-              placeholder="plafond (48h) — vide = aucun"
+              :placeholder="t('admin.channels.maxTtlPlaceholder')"
             />
             <Button :disabled="busy" @click="savePolicy(channel)">
-              Enregistrer
+              {{ t("settings.profile.save") }}
             </Button>
           </div>
         </div>
@@ -286,14 +287,14 @@ onMounted(load);
 
     <Card>
       <CardHeader>
-        <CardTitle>Devices</CardTitle>
+        <CardTitle>{{ t("admin.devices.title") }}</CardTitle>
         <p class="text-sm text-muted-foreground">
-          Révoquer un device coupe ses push et son curseur de sync.
+          {{ t("admin.devices.description") }}
         </p>
       </CardHeader>
       <CardContent class="space-y-2">
         <p v-if="!devices.length" class="text-sm text-muted-foreground">
-          Aucun device. La CLI en enrôle un avec <code>notify device enrol</code>.
+          {{ t("admin.devices.empty") }}
         </p>
         <div
           v-for="device in devices"
@@ -304,7 +305,9 @@ onMounted(load);
             <span class="font-medium">{{ device.label }}</span>
             <span class="ml-2 text-xs text-muted-foreground">{{ device.transport }}</span>
           </span>
-          <Badge v-if="device.revoked_at" variant="muted">révoqué</Badge>
+          <Badge v-if="device.revoked_at" variant="muted">
+            {{ t("admin.devices.revoked") }}
+          </Badge>
           <Button
             v-else
             variant="ghost"
@@ -313,7 +316,7 @@ onMounted(load);
             @click="act(() => revokeDevice({ path: { id: device.id }, throwOnError: true }))"
           >
             <Trash2 />
-            Révoquer
+            {{ t("admin.devices.revoke") }}
           </Button>
         </div>
       </CardContent>
@@ -321,7 +324,7 @@ onMounted(load);
 
     <Card>
       <CardHeader>
-        <CardTitle>Clés d'API</CardTitle>
+        <CardTitle>{{ t("admin.keys.title") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-3">
         <!-- Owner first, and only service accounts: §5.2 says a durable bot never
@@ -331,20 +334,20 @@ onMounted(load);
             v-model="newKeyAccount"
             class="h-9 rounded-md border border-input bg-background px-3 text-sm"
           >
-            <option value="">Pour quel bot ?</option>
+            <option value="">{{ t("admin.keys.accountPlaceholder") }}</option>
             <option v-for="account in accounts" :key="account.id" :value="account.id">
               {{ account.display_name || account.id }}
             </option>
           </select>
-          <Input v-model="newKeyChannel" placeholder="canal (ci-infra)" />
-          <Input v-model="newKeyLabel" placeholder="à quoi elle sert" />
+          <Input v-model="newKeyChannel" :placeholder="t('admin.keys.channelPlaceholder')" />
+          <Input v-model="newKeyLabel" :placeholder="t('admin.keys.labelPlaceholder')" />
         </div>
         <Button
           :disabled="busy || !newKeyAccount || !newKeyChannel.trim()"
           @click="mintKey"
         >
           <KeyRound />
-          Créer — le secret n'apparaît qu'une seule fois
+          {{ t("admin.keys.create") }}
         </Button>
 
         <div
@@ -354,12 +357,18 @@ onMounted(load);
         >
           <span class="min-w-0">
             <code class="text-xs">{{ key.prefix }}…</code>
-            <span class="ml-2">{{ key.label ?? "sans nom" }}</span>
+            <span class="ml-2">{{ key.label ?? t("admin.keys.unnamed") }}</span>
             <span class="ml-2 text-xs text-muted-foreground">
-              {{ key.last_used_at ? `utilisée ${exact(key.last_used_at)}` : "jamais utilisée" }}
+              {{
+                key.last_used_at
+                  ? t("admin.keys.lastUsed", { at: exact(key.last_used_at) })
+                  : t("admin.keys.neverUsed")
+              }}
             </span>
           </span>
-          <Badge v-if="key.revoked_at" variant="muted">révoquée</Badge>
+          <Badge v-if="key.revoked_at" variant="muted">
+            {{ t("admin.keys.revoked") }}
+          </Badge>
           <Button
             v-else
             variant="ghost"
@@ -368,7 +377,7 @@ onMounted(load);
             @click="act(() => revokeKey({ path: { id: key.id }, throwOnError: true }))"
           >
             <Trash2 />
-            Révoquer
+            {{ t("admin.devices.revoke") }}
           </Button>
         </div>
       </CardContent>
@@ -376,10 +385,9 @@ onMounted(load);
 
     <Card>
       <CardHeader>
-        <CardTitle>Service accounts</CardTitle>
+        <CardTitle>{{ t("admin.accounts.title") }}</CardTitle>
         <p class="text-sm text-muted-foreground">
-          Un bot d'équipe ne tourne jamais sur la clé d'un humain : partir de la
-          société ne doit pas éteindre le déploiement.
+          {{ t("admin.accounts.description") }}
         </p>
       </CardHeader>
       <CardContent class="space-y-3">
@@ -387,7 +395,7 @@ onMounted(load);
           <Input v-model="newAccountId" placeholder="bot-argocd" class="flex-1" />
           <Button :disabled="busy || !newAccountId.trim()" @click="addAccount">
             <Plus />
-            Créer
+            {{ t("admin.accounts.create") }}
           </Button>
         </div>
 
@@ -402,7 +410,9 @@ onMounted(load);
               managed
             </Badge>
           </span>
-          <Badge v-if="account.disabled_at" variant="muted">désactivé</Badge>
+          <Badge v-if="account.disabled_at" variant="muted">
+            {{ t("admin.accounts.disabled") }}
+          </Badge>
           <!-- A managed account has no button at all: the configuration is its
                source of truth, and an API call would be undone by the next
                reconciliation (§11). -->
@@ -416,9 +426,11 @@ onMounted(load);
             "
           >
             <Trash2 />
-            Désactiver
+            {{ t("admin.accounts.deactivate") }}
           </Button>
-          <span v-else class="text-xs text-muted-foreground">géré par la config</span>
+          <span v-else class="text-xs text-muted-foreground">
+            {{ t("admin.managedByConfig") }}
+          </span>
         </div>
       </CardContent>
     </Card>

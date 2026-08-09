@@ -22,6 +22,8 @@
  * thousands — and costs a behaviour nobody can predict from the keystrokes.
  */
 
+import { i18n } from "@/i18n";
+
 /** What a row on the palette does when it is chosen. */
 export type PaletteAction =
   | { kind: "navigate"; to: string }
@@ -120,44 +122,45 @@ export function rank(items: PaletteItem[], query: string): PaletteItem[] {
  * caller's business; the palette only names them.
  */
 export function staticItems(): PaletteItem[] {
+  const t = i18n.global.t;
   return [
     {
       id: "screen:inbox",
-      label: "Inbox",
+      label: t("sidebar.nav.inbox"),
       group: "screens",
       action: { kind: "navigate", to: "/" },
     },
     {
       id: "screen:settings",
-      label: "Settings",
+      label: t("sidebar.nav.settings"),
       group: "screens",
-      hint: "profil thème densité dnd",
+      hint: t("palette.hints.settings"),
       action: { kind: "navigate", to: "/settings" },
     },
     {
       id: "screen:admin",
-      label: "Admin",
+      label: t("sidebar.nav.admin"),
       group: "screens",
-      hint: "canaux devices clés service accounts",
+      hint: t("palette.hints.admin"),
       action: { kind: "navigate", to: "/admin" },
     },
     {
       id: "screen:console",
-      label: "Console plateforme",
+      label: t("console.title"),
       group: "screens",
-      hint: "dlq audit réconciliation inventaire",
+      hint: t("palette.hints.console"),
       action: { kind: "navigate", to: "/console" },
     },
     {
       id: "action:dnd-1h",
-      label: "Ne pas déranger pendant 1 h",
+      label: t("palette.actions.dnd1h"),
       group: "actions",
       hint: "dnd silence",
       action: { kind: "command", verb: "dnd:1h" },
     },
     {
       id: "action:mark-seen",
-      label: "Marquer la sélection comme vue",
+      label: t("palette.actions.markSeen"),
       group: "actions",
       hint: "seen receipt",
       action: { kind: "command", verb: "seen" },

@@ -12,6 +12,7 @@
  */
 import { BellOff, Check, ExternalLink, Send } from "lucide-vue-next";
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type {
   Action,
@@ -36,6 +37,7 @@ const emit = defineEmits<{
   silence: [body: SilenceBody];
 }>();
 
+const { t } = useI18n();
 const reply = ref("");
 
 /** Whether this user has already acknowledged under a key (§2.3, T4). */
@@ -61,12 +63,12 @@ const picked = computed(() => {
 });
 
 /** Durations offered by the silence menu — the ones people actually pick. */
-const DURATIONS: { label: string; value: string }[] = [
-  { label: "1 heure", value: "1h" },
-  { label: "4 heures", value: "4h" },
-  { label: "24 heures", value: "24h" },
-  { label: "7 jours", value: "7d" },
-];
+const DURATIONS = computed<{ label: string; value: string }[]>(() => [
+  { label: t("notification.actionBar.silenceDurations.1h"), value: "1h" },
+  { label: t("notification.actionBar.silenceDurations.4h"), value: "4h" },
+  { label: t("notification.actionBar.silenceDurations.24h"), value: "24h" },
+  { label: t("notification.actionBar.silenceDurations.7d"), value: "7d" },
+]);
 
 function send(): void {
   const text = reply.value.trim();
@@ -164,7 +166,7 @@ function send(): void {
           v-if="action.scope === 'notification'"
           @select="emit('silence', { scope: 'notification' })"
         >
-          Jusqu'à la fermeture
+          {{ t("notification.actionBar.silenceUntilClose") }}
         </DropdownMenuItem>
         <DropdownMenuItem
           v-for="duration in DURATIONS"

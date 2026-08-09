@@ -8,6 +8,7 @@
  * authorization code.
  */
 import { onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
 import { useSession } from "@/auth/session";
@@ -15,6 +16,7 @@ import { Button } from "@/components/ui/button";
 
 const router = useRouter();
 const session = useSession();
+const { t } = useI18n();
 
 const failure = ref<string | null>(null);
 
@@ -33,12 +35,12 @@ onMounted(async () => {
 <template>
   <main class="flex min-h-dvh items-center justify-center p-6 text-sm">
     <div v-if="failure" class="max-w-md space-y-3 text-center">
-      <p class="font-medium text-destructive">La connexion a échoué.</p>
+      <p class="font-medium text-destructive">{{ t("callback.failed") }}</p>
       <p class="text-muted-foreground">{{ failure }}</p>
       <Button variant="outline" size="sm" @click="router.replace('/login')">
-        Réessayer
+        {{ t("callback.retry") }}
       </Button>
     </div>
-    <p v-else class="text-muted-foreground">Connexion en cours…</p>
+    <p v-else class="text-muted-foreground">{{ t("callback.inProgress") }}</p>
   </main>
 </template>

@@ -18,6 +18,7 @@
  */
 import { Inbox as InboxIcon, RefreshCw } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
 import NotificationRow from "@/components/notification/NotificationRow.vue";
@@ -31,6 +32,19 @@ const channels = useChannels();
 const detail = useDetail();
 const inbox = useInbox();
 const router = useRouter();
+const { t } = useI18n();
+
+/** Whether any filter narrows the inbox — the empty state reads differently
+ * when it does (§10.4). */
+const isFiltered = computed(
+  () =>
+    inbox.filters.channels.length > 0 ||
+    inbox.filters.state.length > 0 ||
+    inbox.filters.status.length > 0 ||
+    inbox.filters.tags.length > 0 ||
+    inbox.filters.minPriority !== null ||
+    inbox.filters.hasActions !== null,
+);
 
 const list = ref<HTMLElement | null>(null);
 const cursor = ref(0);
@@ -113,8 +127,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       @click="inbox.revealPending()"
     >
       <RefreshCw class="size-3.5" />
-      {{ inbox.pendingCount }} nouvelle{{ inbox.pendingCount > 1 ? "s" : "" }}
-      notification{{ inbox.pendingCount > 1 ? "s" : "" }}
+      {{ t("inbox.newNotifications", { count: inbox.pendingCount }, inbox.pendingCount) }}
     </button>
 
     <div ref="list" class="min-h-0 flex-1 overflow-y-auto">
@@ -127,7 +140,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         class="flex flex-col items-center gap-3 p-10 text-center text-sm"
       >
         <p class="text-destructive">{{ inbox.error }}</p>
-        <Button variant="outline" size="sm" @click="inbox.load()">Réessayer</Button>
+        <Button variant="outline" size="sm" @click="inbox.load()">
+          {{ t("inbox.retry") }}
+        </Button>
       </div>
 
       <!-- An empty inbox is not an error, and neither is a filter that matches
@@ -137,14 +152,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         class="flex flex-col items-center gap-2 p-10 text-center text-sm text-muted-foreground"
       >
         <InboxIcon class="size-6" />
-        <template v-if="inbox.filters.channels.length || inbox.filters.state.length || inbox.filters.status.length || inbox.filters.minPriority">
-          <p>Aucune notification ne correspond à ces filtres.</p>
-          <p class="text-xs">Les filtres sont dans la colonne de gauche.</p>
+        <template v-if="isFiltered">
+          <p>{{ t("inbox.emptyFiltered.title") }}</p>
+          <p class="text-xs">{{ t("inbox.emptyFiltered.hint") }}</p>
         </template>
         <template v-else>
-          <p>Rien à lire. C'est plutôt bon signe.</p>
+          <p>{{ t("inbox.emptyDefault.title") }}</p>
           <p class="text-xs">
-            Les nouvelles notifications arrivent ici en temps réel.
+            {{ t("inbox.emptyDefault.hint") }}
           </p>
         </template>
       </div>
@@ -170,7 +185,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           :disabled="inbox.loadingMore"
           @click="inbox.loadMore()"
         >
-          {{ inbox.loadingMore ? "Chargement…" : "Charger la suite" }}
+          {{ inbox.loadingMore ? t("inbox.loading") : t("inbox.loadMore") }}
         </Button>
       </div>
     </div>

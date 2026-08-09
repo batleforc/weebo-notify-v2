@@ -17,6 +17,7 @@
  * webhook, which is the door §5.4 closes.
  */
 import { onMounted } from "vue";
+import { useI18n } from "vue-i18n";
 import type { Trigger } from "@/api/generated/types.gen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,10 +27,11 @@ import { exact } from "@/lib/format";
 import { useConsole } from "@/stores/console";
 
 const platform = useConsole();
+const { t } = useI18n();
 
 /** What made the last pass happen (§11, §10.4bis). */
 function triggerLabel(trigger: Trigger): string {
-  return { boot: "démarrage", timer: "minuterie", sighup: "SIGHUP" }[trigger];
+  return t(`console.reconciliation.trigger.${trigger}`);
 }
 
 onMounted(() => {
@@ -40,10 +42,9 @@ onMounted(() => {
 <template>
   <div class="mx-auto h-full max-w-4xl space-y-6 overflow-y-auto p-6">
     <header class="space-y-1">
-      <h1 class="text-lg font-semibold">Console plateforme</h1>
+      <h1 class="text-lg font-semibold">{{ t("console.title") }}</h1>
       <p class="text-sm text-muted-foreground">
-        Métadonnées et opérations. Le contenu des canaux n'est pas lisible d'ici :
-        rejoindre un canal est le chemin explicite, et il est tracé (§5.4).
+        {{ t("console.description") }}
       </p>
     </header>
 
@@ -57,11 +58,9 @@ onMounted(() => {
       v-else-if="platform.allowed === false"
       class="space-y-2 rounded-md border border-border p-6 text-sm"
     >
-      <p class="font-medium">Cette console est réservée au rôle plateforme.</p>
+      <p class="font-medium">{{ t("console.forbidden.title") }}</p>
       <p class="text-muted-foreground">
-        Il se déclare en GitOps (<code>[admin] oidc_groups</code>, §11) et aucune
-        API ne permet de se l'accorder — il n'y a donc personne à qui le demander
-        ici : c'est une modification de configuration.
+        {{ t("console.forbidden.description") }}
       </p>
     </div>
 
@@ -72,10 +71,9 @@ onMounted(() => {
 
       <!-- GitOps: what the last pass did, on the replica that answered. -->
       <section class="space-y-2">
-        <h2 class="text-sm font-semibold">Réconciliation</h2>
+        <h2 class="text-sm font-semibold">{{ t("console.reconciliation.title") }}</h2>
         <p v-if="!platform.gitops" class="text-xs text-muted-foreground">
-          Aucune passe terminée sur ce replica. La passe de démarrage tourne avant
-          que le socket soit ouvert, donc voir ceci veut dire qu'elle a échoué.
+          {{ t("console.reconciliation.none") }}
         </p>
         <div v-else class="space-y-1 rounded-md border border-border p-3 text-xs">
           <!--
@@ -85,13 +83,15 @@ onMounted(() => {
             signal cannot tell whether it landed.
           -->
           <p>
-            Dernière passe {{ exact(platform.gitops.at) }}
-            <span class="text-muted-foreground"
-              >({{ triggerLabel(platform.gitops.trigger) }})</span
-            >
-            · {{ platform.gitops.channels }} canaux ·
-            {{ platform.gitops.accounts }} service accounts ·
-            {{ platform.gitops.removed }} retirés
+            {{
+              t("console.reconciliation.lastPass", {
+                at: exact(platform.gitops.at),
+                trigger: triggerLabel(platform.gitops.trigger),
+                channels: platform.gitops.channels,
+                accounts: platform.gitops.accounts,
+                removed: platform.gitops.removed,
+              })
+            }}
           </p>
           <!--
             The one actionable line: a binding by `email` or `oidc_sub` grants
@@ -103,15 +103,17 @@ onMounted(() => {
             v-if="platform.gitops.pending.length"
             class="text-status-warning"
           >
-            {{ platform.gitops.pending.length }} liaison(s) en attente d'une
-            première connexion :
+            {{
+              t("console.reconciliation.pending", {
+                count: platform.gitops.pending.length,
+              })
+            }}
             <span class="font-mono">{{
               platform.gitops.pending.join(", ")
             }}</span>
           </p>
           <p class="text-muted-foreground">
-            Chiffres de ce replica : contrairement à la purge, tous réconcilient
-            (§11), donc deux lectures peuvent différer d'un tick.
+            {{ t("console.reconciliation.perReplica") }}
           </p>
         </div>
       </section>
@@ -122,21 +124,21 @@ onMounted(() => {
       <section class="space-y-2">
         <div class="flex items-baseline justify-between">
           <h2 class="text-sm font-semibold">
-            Canaux · {{ platform.channels.length }}
+            {{ t("console.channels.title", { count: platform.channels.length }) }}
           </h2>
           <span class="text-xs text-muted-foreground">
-            dont {{ platform.managed }} managés par la config
+            {{ t("console.channels.managedCount", { count: platform.managed }) }}
           </span>
         </div>
         <div class="overflow-x-auto rounded-md border border-border">
           <table class="w-full text-xs">
             <thead class="bg-muted/50 text-left">
               <tr>
-                <th class="p-2 font-medium">Canal</th>
-                <th class="p-2 font-medium">Origine</th>
-                <th class="p-2 font-medium">Membres</th>
-                <th class="p-2 font-medium">Groupes</th>
-                <th class="p-2 font-medium">Accusés</th>
+                <th class="p-2 font-medium">{{ t("console.channels.headers.channel") }}</th>
+                <th class="p-2 font-medium">{{ t("console.channels.headers.origin") }}</th>
+                <th class="p-2 font-medium">{{ t("console.channels.headers.members") }}</th>
+                <th class="p-2 font-medium">{{ t("console.channels.headers.groups") }}</th>
+                <th class="p-2 font-medium">{{ t("console.channels.headers.receipts") }}</th>
                 <th class="p-2" />
               </tr>
             </thead>
@@ -154,14 +156,16 @@ onMounted(() => {
                 </td>
                 <td class="p-2">{{ card.members }}</td>
                 <td class="p-2">{{ card.group_bindings }}</td>
-                <td class="p-2">{{ card.receipts_enabled ? "oui" : "non" }}</td>
+                <td class="p-2">
+                  {{ card.receipts_enabled ? t("console.yes") : t("console.no") }}
+                </td>
                 <td class="p-2 text-right">
                   <Button
                     variant="outline"
                     size="sm"
                     @click="platform.join(card.id)"
                   >
-                    Rejoindre
+                    {{ t("console.channels.join") }}
                   </Button>
                 </td>
               </tr>
@@ -169,9 +173,7 @@ onMounted(() => {
           </table>
         </div>
         <p class="text-xs text-muted-foreground">
-          « Rejoindre » ajoute le lecteur au canal en <code>subscribe</code> seul
-          et écrit une entrée d'audit. Sur un canal managé, la réconciliation
-          reprendra le membership : un accès durable s'écrit dans la config (§11).
+          {{ t("console.channels.joinHint") }}
         </p>
       </section>
 
@@ -180,10 +182,10 @@ onMounted(() => {
       <!-- Trust policies: read-only, because GitOps owns them. -->
       <section class="space-y-2">
         <h2 class="text-sm font-semibold">
-          Trust policies · {{ platform.policies.length }}
+          {{ t("console.policies.title", { count: platform.policies.length }) }}
         </h2>
         <p v-if="!platform.policies.length" class="text-xs text-muted-foreground">
-          Aucune. Aucun job CI ne peut échanger de jeton sur cette instance (§5.3).
+          {{ t("console.policies.none") }}
         </p>
         <div
           v-else
@@ -194,9 +196,9 @@ onMounted(() => {
               <tr>
                 <th class="p-2 font-medium">Issuer</th>
                 <th class="p-2 font-medium">Subject</th>
-                <th class="p-2 font-medium">Canaux</th>
+                <th class="p-2 font-medium">{{ t("console.policies.headers.channels") }}</th>
                 <th class="p-2 font-medium">Scopes</th>
-                <th class="p-2 font-medium">Portée</th>
+                <th class="p-2 font-medium">{{ t("console.policies.headers.scope") }}</th>
               </tr>
             </thead>
             <tbody>
@@ -213,7 +215,7 @@ onMounted(() => {
                   <!-- §11: a channel-scoped policy wins, and that is the first
                        thing to look at when one "should" match and does not. -->
                   <Badge :variant="policy.channel_scoped ? 'secondary' : 'muted'">
-                    {{ policy.channel_scoped ? "canal" : "globale" }}
+                    {{ policy.channel_scoped ? t("console.policies.scoped") : t("console.policies.global") }}
                   </Badge>
                 </td>
               </tr>
@@ -221,8 +223,7 @@ onMounted(() => {
           </table>
         </div>
         <p class="text-xs text-muted-foreground">
-          En lecture seule : la config les possède (§11), donc un bouton d'édition
-          proposerait ce que la prochaine réconciliation reprendrait.
+          {{ t("console.policies.readOnlyHint") }}
         </p>
       </section>
 
@@ -231,22 +232,20 @@ onMounted(() => {
       <!-- DLQ: deliveries given up on, and the one button that can act on them. -->
       <section class="space-y-2">
         <h2 class="text-sm font-semibold">
-          Livraisons en souffrance · {{ platform.stuck.length }}
+          {{ t("console.dlq.title", { count: platform.stuck.length }) }}
         </h2>
         <p v-if="!platform.stuck.length" class="text-xs text-muted-foreground">
-          Rien en souffrance. Une livraison arrive ici après 24 h d'échecs, ou
-          immédiatement si le consommateur a répondu quelque chose qui ne changera
-          pas — un <code>410</code>, par exemple (§7.1bis).
+          {{ t("console.dlq.none") }}
         </p>
         <div v-else class="overflow-x-auto rounded-md border border-border">
           <table class="w-full text-xs">
             <thead class="bg-muted/50 text-left">
               <tr>
-                <th class="p-2 font-medium">Canal</th>
+                <th class="p-2 font-medium">{{ t("console.dlq.headers.channel") }}</th>
                 <th class="p-2 font-medium">Sink</th>
-                <th class="p-2 font-medium">Tentatives</th>
-                <th class="p-2 font-medium">Dernière erreur</th>
-                <th class="p-2 font-medium">Abandon</th>
+                <th class="p-2 font-medium">{{ t("console.dlq.headers.attempts") }}</th>
+                <th class="p-2 font-medium">{{ t("console.dlq.headers.lastError") }}</th>
+                <th class="p-2 font-medium">{{ t("console.dlq.headers.deadAt") }}</th>
                 <th class="p-2" />
               </tr>
             </thead>
@@ -272,7 +271,7 @@ onMounted(() => {
                     size="sm"
                     @click="platform.requeue(letter.id)"
                   >
-                    Réessayer
+                    {{ t("console.dlq.retry") }}
                   </Button>
                 </td>
               </tr>
@@ -280,9 +279,7 @@ onMounted(() => {
           </table>
         </div>
         <p v-if="platform.stuck.length" class="text-xs text-muted-foreground">
-          « Réessayer » remet la livraison en file avec un compteur d'échecs remis
-          à zéro, et écrit une entrée d'audit. Le contenu de l'événement n'est pas
-          affiché ici : le lire supposerait d'être membre du canal (§5.4).
+          {{ t("console.dlq.retryHint") }}
         </p>
       </section>
 
@@ -291,10 +288,10 @@ onMounted(() => {
       <!-- Audit: the after-incident tool. -->
       <section class="space-y-2">
         <h2 class="text-sm font-semibold">
-          Audit · {{ platform.entries.length }} dernière(s) entrée(s)
+          {{ t("console.audit.title", { count: platform.entries.length }) }}
         </h2>
         <p v-if="!platform.entries.length" class="text-xs text-muted-foreground">
-          Rien d'enregistré pour l'instant.
+          {{ t("console.audit.none") }}
         </p>
         <ul v-else class="space-y-1">
           <li
@@ -305,7 +302,7 @@ onMounted(() => {
             <Badge variant="muted">{{ entry.action }}</Badge>
             <span class="font-mono">{{ entry.actor.kind }}</span>
             <span v-if="entry.channel" class="text-muted-foreground">
-              sur {{ entry.channel }}
+              {{ t("console.audit.on", { channel: entry.channel }) }}
             </span>
             <time :datetime="entry.at" class="ml-auto text-muted-foreground">
               {{ exact(entry.at) }}

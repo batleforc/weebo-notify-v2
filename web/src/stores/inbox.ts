@@ -59,7 +59,8 @@ export interface Filters {
   channels: string[];
   state: State[];
   status: Status[];
-  tag: string | null;
+  /** AND semantics: a match must carry all of these (§8, `tag` query param). */
+  tags: string[];
   minPriority: Priority | null;
   /** `true` keeps only notifications with action buttons, `false` only those
    * without, `null` does not filter on it (§2.3). */
@@ -70,7 +71,7 @@ export const emptyFilters = (): Filters => ({
   channels: [],
   state: [],
   status: [],
-  tag: null,
+  tags: [],
   minPriority: null,
   hasActions: null,
 });
@@ -168,7 +169,7 @@ export const useInbox = defineStore("inbox", () => {
       channels,
       state,
       status: statuses,
-      tag,
+      tags,
       minPriority,
       hasActions,
     } = filters.value;
@@ -176,7 +177,9 @@ export const useInbox = defineStore("inbox", () => {
       channels: channels.length ? channels.join(",") : undefined,
       state: state.length ? state.join(",") : undefined,
       status: statuses.length ? statuses.join(",") : undefined,
-      tag: tag ?? undefined,
+      // Stored tags are always lowercase (`content::validate_tags`) — a filter
+      // sent as typed would never match.
+      tag: tags.length ? tags.map((t) => t.toLowerCase()).join(",") : undefined,
       min_priority: minPriority ?? undefined,
       has_actions: hasActions ?? undefined,
       cursor: after,
@@ -242,7 +245,7 @@ export const useInbox = defineStore("inbox", () => {
       channels,
       state,
       status: statuses,
-      tag,
+      tags,
       minPriority,
       hasActions,
     } = filters.value;
@@ -255,8 +258,11 @@ export const useInbox = defineStore("inbox", () => {
     if (statuses.length && !statuses.includes(revision.status)) {
       return false;
     }
-    if (tag && !(revision.payload.tags ?? []).includes(tag)) {
-      return false;
+    if (tags.length) {
+      const carried = revision.payload.tags ?? [];
+      if (!tags.every((t) => carried.includes(t.toLowerCase()))) {
+        return false;
+      }
     }
     if (
       minPriority &&

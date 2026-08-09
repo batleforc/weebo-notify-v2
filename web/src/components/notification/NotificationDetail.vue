@@ -11,6 +11,7 @@
  */
 import { Check, Copy, Eye, Link2 } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,7 @@ import StatusDot from "./StatusDot.vue";
 
 const detail = useDetail();
 const channels = useChannels();
+const { t } = useI18n();
 
 const copied = ref(false);
 
@@ -108,7 +110,7 @@ watch(
 <template>
   <aside
     class="flex h-full min-h-0 flex-col overflow-y-auto"
-    aria-label="Détail de la notification"
+    :aria-label="t('notification.detail.ariaLabel')"
   >
     <!-- Nothing selected. -->
     <div
@@ -116,8 +118,8 @@ watch(
       class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center text-sm text-muted-foreground"
     >
       <Link2 class="size-5" />
-      <p>Sélectionne une notification pour voir sa timeline.</p>
-      <p class="text-xs">↑ ↓ pour naviguer, Entrée pour ouvrir.</p>
+      <p>{{ t("notification.detail.emptyTitle") }}</p>
+      <p class="text-xs">{{ t("notification.detail.emptyHint") }}</p>
     </div>
 
     <div v-else-if="detail.loading" class="space-y-3 p-4">
@@ -131,18 +133,20 @@ watch(
       <p class="font-medium">
         {{
           detail.gone === "expired"
-            ? "Cette notification a expiré."
-            : "Cette notification a été supprimée."
+            ? t("notification.detail.expiredTitle")
+            : t("notification.detail.deletedTitle")
         }}
       </p>
       <p class="text-muted-foreground">
         {{
           detail.gone === "expired"
-            ? "Sa durée de rétention est écoulée ; le contenu n'est plus conservé (§7.2bis)."
-            : "Son auteur l'a retirée. Les clients l'ont retirée de leur inbox."
+            ? t("notification.detail.expiredBody")
+            : t("notification.detail.deletedBody")
         }}
       </p>
-      <Button variant="outline" size="sm" @click="detail.close()">Fermer</Button>
+      <Button variant="outline" size="sm" @click="detail.close()">
+        {{ t("notification.detail.close") }}
+      </Button>
     </div>
 
     <div v-else-if="detail.error" class="space-y-2 p-6 text-sm">
@@ -152,7 +156,7 @@ watch(
         size="sm"
         @click="detail.id && detail.open(detail.id)"
       >
-        Réessayer
+        {{ t("notification.detail.retry") }}
       </Button>
     </div>
 
@@ -170,10 +174,14 @@ watch(
             <Button variant="ghost" size="icon" @click="copyPermalink">
               <Check v-if="copied" />
               <Copy v-else />
-              <span class="sr-only">Copier le permalien</span>
+              <span class="sr-only">{{ t("notification.detail.copyPermalink") }}</span>
             </Button>
             <template #content>
-              {{ copied ? "Copié" : "Copier le permalien /n/…" }}
+              {{
+                copied
+                  ? t("notification.detail.copied")
+                  : t("notification.detail.copyPermalinkTooltip")
+              }}
             </template>
           </Tooltip>
         </div>
@@ -186,24 +194,26 @@ watch(
             {{ lookOf(head.status).label }}
           </Badge>
           <Badge variant="muted">{{ stateLabel(head.state) }}</Badge>
-          <Badge variant="muted">priorité {{ priorityLabel(head.priority) }}</Badge>
+          <Badge variant="muted">
+            {{ t("notification.detail.priorityBadge", { priority: priorityLabel(head.priority) }) }}
+          </Badge>
           <Badge v-if="detail.notification.external_id" variant="muted">
             {{ detail.notification.external_id }}
           </Badge>
           <HoverCard v-if="showsReceipts">
             <Badge variant="muted" class="cursor-default">
               <Eye class="size-3" />
-              vu par {{ detail.seenBy
-              }}<template v-if="detail.audience !== null"
+              {{ t("notification.detail.seenByCount", { count: detail.seenBy }) }}<template
+                v-if="detail.audience !== null"
                 >/{{ detail.audience }}</template
               >
             </Badge>
             <template #content>
               <div class="space-y-2 text-xs">
                 <p class="font-medium">
-                  Vu par {{ detail.seenBy }} personne(s)
+                  {{ t("notification.detail.seenByHeading", { count: detail.seenBy }) }}
                   <template v-if="detail.audience !== null">
-                    sur {{ detail.audience }}
+                    {{ t("notification.detail.outOfAudience", { audience: detail.audience }) }}
                   </template>
                 </p>
                 <!--
@@ -213,8 +223,7 @@ watch(
                   monde l'a vue » sur un canal que toute une équipe peut lire.
                 -->
                 <p v-if="detail.audience === null" class="text-muted-foreground">
-                  L'accès à ce canal vient d'un groupe : le total n'est pas
-                  connu du serveur (§14.2).
+                  {{ t("notification.detail.noGroupTotal") }}
                 </p>
 
                 <ul v-if="readers.length" class="space-y-1">
@@ -234,14 +243,16 @@ watch(
                   </li>
                 </ul>
                 <p v-else class="text-muted-foreground">
-                  Personne ne l'a encore ouverte.
+                  {{ t("notification.detail.notOpenedYet") }}
                 </p>
 
                 <!-- Delivery stays folded: it counts screens, not readers (§10.3). -->
                 <p class="border-t border-border pt-2 text-muted-foreground">
-                  Le compte est en personnes, jamais en devices (§7.3) ·
-                  {{ detail.readership?.delivered_devices ?? 0 }} device(s)
-                  l'ont reçue.
+                  {{
+                    t("notification.detail.deviceCount", {
+                      count: detail.readership?.delivered_devices ?? 0,
+                    })
+                  }}
                 </p>
               </div>
             </template>
@@ -249,12 +260,12 @@ watch(
         </div>
 
         <p class="text-xs text-muted-foreground">
-          Créée le {{ exact(detail.notification.created_at) }}
+          {{ t("notification.detail.createdAt", { at: exact(detail.notification.created_at) }) }}
           <template v-if="detail.notification.closed_at">
-            · fermée le {{ exact(detail.notification.closed_at) }}
+            {{ t("notification.detail.closedAt", { at: exact(detail.notification.closed_at) }) }}
           </template>
           <template v-if="detail.notification.ttl">
-            · rétention {{ detail.notification.ttl }}
+            {{ t("notification.detail.ttl", { ttl: detail.notification.ttl }) }}
           </template>
         </p>
       </header>
@@ -264,7 +275,7 @@ watch(
       <section class="space-y-3 p-4">
         <Markdown v-if="head.content.body" :source="head.content.body" />
         <p v-else class="text-sm italic text-muted-foreground">
-          Pas de corps — le titre dit tout.
+          {{ t("notification.detail.noBody") }}
         </p>
 
         <!--
@@ -288,7 +299,7 @@ watch(
 
       <section class="space-y-3 p-4">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Timeline · {{ detail.revisions.length }} révision(s)
+          {{ t("notification.detail.timelineHeading", { count: detail.revisions.length }) }}
         </h3>
         <RevisionTimeline
           :revisions="detail.revisions"

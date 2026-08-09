@@ -40,6 +40,7 @@ import type {
   Event as StreamEvent,
 } from "@/api/generated";
 import { readDnd, setDnd } from "@/api/generated";
+import { i18n } from "@/i18n";
 
 /** Minutes since local midnight, from the `HH:MM` the wire uses. */
 function minutes(wallClock: string): number {
@@ -147,7 +148,7 @@ export const usePreferences = defineStore("preferences", () => {
       const answer = await readDnd({ throwOnError: true });
       dnd.value = answer.data;
     } catch {
-      error.value = "Impossible de lire les préférences.";
+      error.value = i18n.global.t("settings.dnd.loadFailed");
     } finally {
       loading.value = false;
     }
