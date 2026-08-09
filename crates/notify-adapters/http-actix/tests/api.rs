@@ -307,6 +307,11 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
+
+            // No `[cli]` in the harness: `GET /cli` answers 501, which is what a
+            // deployment that does not serve the binary is supposed to do. The
+            // test for the other case sets its own.
+            cli_binary: None,
         };
 
         let harness = Self {
@@ -414,6 +419,7 @@ async fn nothing_is_reachable_without_a_credential() {
         ("GET", "/api/v1/sync"),
         ("GET", "/api/v1/devices"),
         ("GET", "/api/v1/apikeys"),
+        ("GET", "/api/v1/cli"),
     ] {
         let request = test::TestRequest::with_uri(path)
             .method(method.parse().unwrap())
@@ -1931,4 +1937,46 @@ async fn a_deployment_without_web_push_says_so_instead_of_inventing_a_key() {
     // The same answer every unconfigured capability gives (§14.3), so a PWA can
     // skip the subscription rather than retry a key that will never come.
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[actix_web::test]
+async fn a_deployment_without_the_cli_section_says_so_instead_of_downloading_nothing() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/cli")
+        .insert_header(AUTH)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    // The same answer every unconfigured capability gives (§14.3) — no `[cli]`
+    // section means this deployment does not serve the binary.
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[actix_web::test]
+async fn an_authenticated_caller_downloads_the_configured_cli_binary() {
+    let (harness, mut state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    state.cli_binary = Some(web::Bytes::from_static(b"not really a binary, but bytes"));
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/cli")
+        .insert_header(AUTH)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-disposition")
+            .expect("a download should not be left for the browser to name"),
+        "attachment; filename=\"notify\""
+    );
+    let body = test::read_body(response).await;
+    assert_eq!(body, "not really a binary, but bytes");
 }

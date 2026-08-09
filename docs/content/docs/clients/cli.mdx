@@ -11,6 +11,21 @@ notify publish -c cluster-ovh-1 -t "etcd degraded" --status failure
 notify ls --output json | jq '.[] | select(.status == "failure")'
 ```
 
+## Getting the binary
+
+Build it from source (`cargo build --release -p notify-cli`), or — on a
+deployment whose operator opted in with a `[cli]` section — download the exact
+binary that server is running:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://weebo.example/api/v1/cli -o notify
+chmod +x notify
+```
+
+Any authenticated caller can fetch it, a person or a service account, no extra
+scope. Linux only for now — see [configuration](/docs/ops/configuration#cli-download)
+for the operator side of this, and what an unconfigured deployment answers instead.
+
 ## The commands
 
 | Command | What it does |

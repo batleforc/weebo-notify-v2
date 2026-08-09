@@ -15,15 +15,50 @@ pipe, cron, CI — it prints help and exits `2` rather than trying to draw.
 
 ## Keys
 
+The footer is contextual, lazygit-style: it always shows the keys that do
+something in whatever you're looking at right now, not a fixed list — `a`
+for actions only appears once the selected notification has some, and it
+says how many.
+
 | Key | What it does |
 | --- | --- |
 | `j` / `k` | Move within the focused pane |
-| `tab` | Move focus between panes |
-| `enter` | Open the detail panel |
+| `tab` / `shift-tab` | Move focus between panes, forward / backward |
+| `enter` | Filter on the highlighted channel (Channels pane), or open the detail panel (Inbox) |
+| `a` | Open the current notification's actions, when it has any |
+| `p` | Publish a notification, guided |
+| `m` | Channel / do-not-disturb / device menu, guided |
 | `r` | Ask the server again |
 | `:` | Open the command line |
 | `?` | Help |
-| `q` | Quit |
+| `q` | Quit — from anywhere except the `:` line or a compose field mid-edit, where it types the letter instead |
+
+## Which channel is active
+
+The Channels pane's first row is always **Tous** — the sidebar's synthetic
+"no filter" entry. Moving the cursor with `j`/`k` never changes what the
+Inbox shows by itself; pressing `enter` on a row is what applies it. The
+channel actually filtering the Inbox carries a persistent `▸` marker, and the
+Inbox's own title repeats it (`Inbox (12) · ci-infra`) — the active filter is
+never a guess from where the cursor happens to be sitting.
+
+## Guided menu and guided publish
+
+Two keys open small guided front ends over the `:` grammar below, for the
+part of it worth a menu instead of a memorised flag:
+
+- **`m`** opens **Canaux / Ne pas déranger / Appareils** — `j`/`k` to move,
+  `enter` to open a group or run an item, `esc` to go back one level. Running
+  something that needs an argument (`channel create`, `dnd on`, `device
+  enrol`) seeds the `:` line instead of asking blind, so tab completion and
+  history still apply to what you type next.
+- **`p`** opens a form for `notify publish`: a channel picker, a title and a
+  one-line body, tags and action buttons (typed as the same `type:label:arg`
+  the CLI takes, validated as you go), and pickers for état/statut/priorité.
+  `j`/`k` move between fields, `h`/`l` step a picker's value, `enter` edits a
+  text field or sends the form from its last row. A multi-line body or an
+  attached image still need `:publish -b -` or the raw `:` line — the form
+  covers the common case, not the whole grammar.
 
 ## The `:` line
 
@@ -40,6 +75,10 @@ drift.
 
 Inside the line:
 
+- **Suggestions show live**, above the line, as you type — the same command
+  tree `tab` completes from, just visible without pressing anything. Past
+  `channel `, only `channel`'s own subcommands are offered; type a `-` and it
+  switches to that subcommand's flags.
 - **`tab` completes** from the command tree — subcommands where a subcommand can
   go, long flags once you type a `-`. Several candidates complete as far as they
   agree, exactly like a shell.

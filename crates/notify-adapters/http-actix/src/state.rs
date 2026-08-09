@@ -166,6 +166,15 @@ pub struct ApiState {
     pub create_account: CreateServiceAccount,
     /// `DELETE /serviceaccounts/{id}`.
     pub deactivate_account: DeactivateServiceAccount,
+
+    /// `GET /cli` — the `notify` binary this replica was built with, when
+    /// `[cli]` configures one. `None` is what makes the route answer `501`.
+    ///
+    /// `Bytes` and not a use case, on the same terms as `application_server_key`
+    /// above: read once at boot, a constant of the deployment, and there is
+    /// nothing to decide — cloning it into a response is a refcount bump, not a
+    /// copy of a multi-megabyte binary per download.
+    pub cli_binary: Option<actix_web::web::Bytes>,
 }
 
 impl core::fmt::Debug for ApiState {

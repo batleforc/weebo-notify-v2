@@ -75,3 +75,34 @@ rather than dropping them silently.
   server starts, relays accept the new assertion, and pushes stop arriving on devices
   that subscribed under the old one. Plan a rotation as a re-subscription.
 </Callout>
+
+## CLI download
+
+```toml
+[cli]
+binary_path = "/usr/local/bin/notify"  # where the Containerfile puts it
+```
+
+The shipped image already contains the `notify` binary, built from the same
+commit as `notify-server` in the same build — so the two can never disagree on
+version. Nothing serves it until this section names where it is: opt in, the
+same "no default configuration is baked in" rule every other section here
+follows.
+
+Once configured, any authenticated caller (a user or a service account — no
+extra scope) can fetch it:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://weebo.example/api/v1/cli -o notify
+```
+
+Omitting the section is a supported deployment: `GET /api/v1/cli` answers
+`501`, same as any other unconfigured capability (`[push.webpush]` above,
+`[federation]`). A path that is present but cannot be read stops the process at
+startup rather than answering `501` for a reason nobody configured.
+
+<Callout type="warn">
+  Linux only, for now — the cross-platform artefact matrix (macOS, Windows,
+  other architectures) is a later milestone. This route hands out whatever this
+  server's own container platform is.
+</Callout>

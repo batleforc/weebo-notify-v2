@@ -74,7 +74,7 @@ pub(crate) struct Content {
 /// the case this cannot express, and it is the right one to give up: a button
 /// caption is short and a publisher can rename it, whereas a URL cannot be rewritten
 /// to avoid its scheme.
-fn parse_action(raw: &str) -> Result<Action, CliError> {
+pub(crate) fn parse_action(raw: &str) -> Result<Action, CliError> {
     let mut parts = raw.splitn(3, ':');
     let kind = parts.next().unwrap_or_default();
     let label = parts.next().unwrap_or_default().to_owned();

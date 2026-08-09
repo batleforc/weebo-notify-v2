@@ -33,6 +33,7 @@ use utoipa_actix_web::AppExt as _;
         (name = "devices", description = "Device enrolment and revocation"),
         (name = "auth", description = "API keys, service accounts, CI federation"),
         (name = "admin", description = "Platform console — metadata and operations only"),
+        (name = "cli", description = "Downloading the `notify` CLI binary"),
     )
 )]
 struct ApiDoc;

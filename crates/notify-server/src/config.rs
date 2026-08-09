@@ -77,6 +77,25 @@ pub(crate) struct Config {
     /// pointing at `localhost:4318` would make every instance without a collector
     /// retry an export it was never asked for.
     pub telemetry: Option<Telemetry>,
+
+    /// `[cli]` — serving the `notify` CLI binary for download (design §9).
+    ///
+    /// Absent means this deployment does not serve it: `GET /api/v1/cli` answers
+    /// `501` rather than guessing where a binary might live on this filesystem.
+    /// Present with an unreadable path is a startup failure, the same rule
+    /// `[federation]`/`[push.webpush]` already set — an operator who asked for
+    /// this and got a silent 501 would lose an afternoon to it.
+    pub cli: Option<Cli>,
+}
+
+/// `[cli]` — where the built `notify` binary lives (design §9).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Cli {
+    /// A path on this filesystem, not the bytes themselves — the Containerfile
+    /// copies the binary here, alongside `notify-server`, built from the same
+    /// commit so the two can never disagree on version.
+    pub binary_path: PathBuf,
 }
 
 /// Where the OTLP exporter sends, and what it calls this process (design §13).
@@ -1220,6 +1239,32 @@ mod tests {
         assert!(
             !pending.iter().any(|line| line.contains("push.apns")),
             "APNs is wired since M7: {pending:?}"
+        );
+    }
+
+    #[test]
+    fn a_cli_section_names_where_the_binary_lives() {
+        let path = with_config(
+            "cli-binary-path",
+            "[cli]\n\
+             binary_path = \"/usr/local/bin/notify\"\n",
+        );
+
+        let config = Config::load(&path).unwrap();
+
+        assert_eq!(
+            config.cli.unwrap().binary_path,
+            std::path::PathBuf::from("/usr/local/bin/notify")
+        );
+    }
+
+    #[test]
+    fn no_cli_section_means_the_download_route_has_nothing_to_serve() {
+        let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
+
+        assert!(
+            config.cli.is_none(),
+            "absent by default, like [federation] and [push.webpush]"
         );
     }
 

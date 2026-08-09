@@ -34,7 +34,12 @@ COPY . .
 # `--locked` so the image is built from the committed lockfile and a release cannot
 # silently pick up a version that was never tested. The release job is exactly where
 # a surprise resolution is least welcome.
-RUN cargo build --release --locked -p notify-server
+#
+# `notify-cli` is built in the same invocation, from the same commit, as
+# `notify-server` — the whole reason `GET /api/v1/cli` (design §9) can hand out
+# this build's binary and never disagree with the server serving it. Linux only
+# for now: the cross-platform artefact matrix is M5's job.
+RUN cargo build --release --locked -p notify-server -p notify-cli
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime
@@ -50,6 +55,12 @@ RUN cargo build --release --locked -p notify-server
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 COPY --from=builder /build/target/release/notify-server /usr/local/bin/notify-server
+
+# The CLI binary `GET /api/v1/cli` (design §9) hands out. Present in every image,
+# same as `notify-server` above — but nothing serves it until an operator opts in
+# with a `[cli]` section pointing at this path, on the same "no default
+# configuration is baked in" terms the volume below states.
+COPY --from=builder /build/target/release/notify /usr/local/bin/notify
 
 # Where an operator mounts `config.toml` and the secrets it points at (§11). No
 # default configuration is baked in: a server that starts on a config nobody wrote

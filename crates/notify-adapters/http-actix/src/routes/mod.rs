@@ -4,6 +4,7 @@ pub(crate) mod accounts;
 pub(crate) mod admin;
 pub(crate) mod attachments;
 pub(crate) mod channels;
+pub(crate) mod cli;
 pub(crate) mod federation;
 pub(crate) mod identity;
 pub(crate) mod interactions;
@@ -77,7 +78,8 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(admin::trust_policies)
             .service(admin::reconciliation)
             .service(admin::dlq)
-            .service(admin::requeue_dead_letter),
+            .service(admin::requeue_dead_letter)
+            .service(cli::download),
     );
 }
 

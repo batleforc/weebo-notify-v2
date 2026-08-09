@@ -32,7 +32,13 @@ base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
-ratatui.workspace = true
+# `unstable-rendered-line-info` for `Paragraph::line_count`: the Détail pane's
+# scroll bound needs the *wrapped* row count, not the logical line count, or
+# scrolling stops well short of the end on a heavily-wrapped body. Marked
+# unstable upstream (API shape, not correctness) — pinned via Cargo.lock like
+# every other dependency here, so a shape change surfaces at the next
+# deliberate `cargo update`, not silently.
+ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

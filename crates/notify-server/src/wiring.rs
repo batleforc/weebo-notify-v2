@@ -204,6 +204,9 @@ impl Application {
         // Federation (§5.3). `None` here is what makes the exchange answer 501 and
         // every CI token fail to authenticate — one absent block, one behaviour.
         let federation = federation_tokens(config, clock.clone())?;
+        // The CLI download (design §9, new). `None` here is what makes `GET /cli`
+        // answer 501 — same absent-block-one-behaviour rule as federation above.
+        let cli_binary = cli_binary(config)?;
         // One set, shared, and swappable on SIGHUP (D31). It used to be built twice
         // — once for the exchange, once for the console — on the reasoning that a
         // read-only screen should not be tied to an authentication path. The reason
@@ -433,6 +436,8 @@ impl Application {
                 repository.clone(),
                 clock.clone(),
             ),
+
+            cli_binary,
         };
 
         let purge = PurgeExpired::new(
@@ -662,6 +667,32 @@ fn federation_tokens(
             .unwrap_or_else(|| "weebo-notify".to_owned()),
         clock,
     )?)))
+}
+
+/// The CLI binary this replica serves, when `[cli]` says there is one (design §9).
+///
+/// `None` for a deployment that does not, which is what makes `GET /cli` answer
+/// `501`. `Bytes` and not `Vec<u8>`: read once here, at boot, and cloned into
+/// every request afterwards — a refcount bump, not a copy of a multi-megabyte
+/// binary per download.
+///
+/// Returns an **error** when the section is present and the path is not
+/// readable, the same rule `federation_tokens` above and `[push.webpush]` set:
+/// starting up silently unable to serve what an operator explicitly configured
+/// is a worse failure than refusing to start at all.
+fn cli_binary(config: &Config) -> anyhow::Result<Option<actix_web::web::Bytes>> {
+    let Some(settings) = &config.cli else {
+        return Ok(None);
+    };
+
+    let bytes = std::fs::read(&settings.binary_path).map_err(|error| {
+        anyhow::anyhow!(
+            "[cli] binary_path `{}` cannot be read: {error}",
+            settings.binary_path.display()
+        )
+    })?;
+
+    Ok(Some(actix_web::web::Bytes::from(bytes)))
 }
 
 /// The trust policies, global and channel-scoped, as the domain wants them.
@@ -939,6 +970,48 @@ mod tests {
         assert!(
             error.contains("key_file"),
             "an operator has to be told which key, not that push failed: {error}"
+        );
+    }
+
+    #[test]
+    fn a_deployment_with_no_cli_section_serves_nothing() {
+        let served = cli_binary(&Config::default()).unwrap();
+
+        assert!(
+            served.is_none(),
+            "`GET /cli` answers 501 rather than guessing where a binary might be"
+        );
+    }
+
+    #[test]
+    fn a_configured_binary_path_is_read_once_at_boot() {
+        let path = std::env::temp_dir().join(format!("wnk-cli-{}.bin", std::process::id()));
+        std::fs::write(&path, b"not really a binary, but bytes").unwrap();
+        let config = Config {
+            cli: Some(crate::config::Cli { binary_path: path }),
+            ..Default::default()
+        };
+
+        let served = cli_binary(&config).unwrap();
+
+        assert_eq!(served.unwrap().as_ref(), b"not really a binary, but bytes");
+    }
+
+    #[test]
+    fn a_cli_binary_path_that_is_not_there_stops_the_process_instead_of_starting_with_nothing_to_serve()
+     {
+        let config = Config {
+            cli: Some(crate::config::Cli {
+                binary_path: "/nowhere/notify".into(),
+            }),
+            ..Default::default()
+        };
+
+        let error = cli_binary(&config).unwrap_err().to_string();
+
+        assert!(
+            error.contains("binary_path"),
+            "an operator has to be told which path, not merely that the download failed: {error}"
         );
     }
 }

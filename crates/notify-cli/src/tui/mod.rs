@@ -34,8 +34,10 @@
 
 mod app;
 mod completion;
+mod compose;
 mod desktop;
 mod history;
+mod menu;
 mod render;
 
 use std::io::IsTerminal as _;
@@ -261,18 +263,6 @@ pub(crate) fn sanitise(text: &str) -> String {
 
     out
 }
-
-/// Keys the help bar advertises, in the order it shows them.
-pub(crate) const BINDINGS: &[(&str, &str)] = &[
-    ("j/k", "naviguer / défiler"),
-    ("tab", "panneau"),
-    ("enter", "détail"),
-    ("a", "actions"),
-    ("r", "rafraîchir"),
-    (":", "commande"),
-    ("?", "aide"),
-    ("q", "quitter"),
-];
 
 #[cfg(test)]
 mod tests {
