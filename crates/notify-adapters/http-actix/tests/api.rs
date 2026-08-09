@@ -1130,6 +1130,29 @@ async fn a_stream_needs_a_credential_like_everything_else() {
 }
 
 #[actix_web::test]
+async fn whoami_answers_with_the_callers_own_id() {
+    // What a client needs to name itself as the `owner` of something it is about
+    // to create — a personal API key, in particular — without the browser ever
+    // learning it any other way (the OIDC `sub` claim is a different identifier).
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/me")
+        .insert_header(AUTH)
+        .to_request();
+    let answer: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert!(
+        answer["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("usr_")),
+        "{answer}"
+    );
+}
+
+#[actix_web::test]
 async fn a_profile_edit_claims_the_field_and_a_null_hands_it_back() {
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;

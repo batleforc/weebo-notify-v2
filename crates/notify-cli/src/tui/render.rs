@@ -8,14 +8,14 @@
 //! order so muscle memory carries between the two clients.
 
 use chrono::TimeDelta;
-use notify_client_core::types::{State, Status};
+use notify_client_core::types::{Action, State, Status};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use super::{App, BINDINGS, Pane, sanitise};
+use super::{ActionItem, App, BINDINGS, Pane, sanitise};
 
 pub(crate) fn draw(frame: &mut Frame, app: &App) {
     let rows = Layout::default()
@@ -44,7 +44,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         popup(frame, frame.area(), "sortie", output);
     }
     if let Some(command) = &app.command {
-        command_line(frame, rows[1], command);
+        command_line(frame, rows[1], command, app.reply_for.is_some());
     }
 }
 
@@ -153,10 +153,38 @@ fn detail(frame: &mut Frame, app: &App, area: Rect) {
         lines.extend(body.lines().map(|line| Line::from(line.to_owned())));
     }
 
+    let items = app.action_items();
+    if !items.is_empty() {
+        lines.push(Line::from(""));
+        for (index, item) in items.iter().enumerate() {
+            // Highlighted only once `a` opened the list (`selected_action`
+            // `Some`) — a plain, unselected list otherwise, so the buttons are
+            // visible before anybody has pressed anything, same as the web
+            // client's `ActionBar` (§10.3).
+            let highlighted = app.selected_action == Some(index);
+            let marker = if highlighted { "▸ " } else { "  " };
+            lines.push(Line::from(Span::styled(
+                format!("{marker}[{}] {}", glyph(item), item.label()),
+                selection(highlighted),
+            )));
+        }
+    }
+
+    // The border takes one row top and bottom, so that much less is actually
+    // visible than `area.height` says. Approximate against logical lines rather
+    // than wrapped ones — precise wrap-aware measurement needs ratatui's own line
+    // counter, and a scroll that stops a line or two early on a heavily-wrapped
+    // body is a much smaller sin than one that scrolls past the end.
+    let visible = area.height.saturating_sub(2);
+    let max_scroll = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_sub(visible);
+
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((app.detail_scroll.min(max_scroll), 0)),
         area,
     );
 }
@@ -189,19 +217,26 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn command_line(frame: &mut Frame, area: Rect, command: &str) {
+fn command_line(frame: &mut Frame, area: Rect, command: &str, replying: bool) {
+    // The same line does two different jobs (`App::reply_for`), and looking
+    // identical for both would mean typing a reply that reads back as a shell
+    // command, or the other way round — a `:` prompt is not what a `reply` action
+    // asked for.
+    let (glyph, hint) = if replying {
+        ("↩ ", "enter envoyer · esc annuler")
+    } else {
+        (":", "tab compléter · ↑↓ historique · esc annuler")
+    };
+
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(":", Style::default().fg(Color::Yellow)),
+            Span::styled(glyph, Style::default().fg(Color::Yellow)),
             Span::raw(command.to_owned()),
             Span::styled("█", Style::default().fg(Color::Yellow)),
             // The bindings this line has and the rest of the interface does not.
             // §9.2 wants the active bindings visible at all times, and completion
             // nobody knows about is completion nobody uses.
-            Span::styled(
-                "   tab compléter · ↑↓ historique · esc annuler",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(format!("   {hint}"), Style::default().fg(Color::DarkGray)),
         ])),
         area,
     );
@@ -257,6 +292,19 @@ const fn selection(selected: bool) -> Style {
         Style::new().add_modifier(Modifier::REVERSED)
     } else {
         Style::new()
+    }
+}
+
+/// A glyph per action kind, so the list reads at a glance without the label
+/// alone having to carry it (§10.3, the same "symbol and word" rule as status).
+const fn glyph(item: &ActionItem) -> &'static str {
+    match item {
+        ActionItem::Whole(Action::View { .. }) => "↗",
+        ActionItem::Whole(Action::Ack { .. }) => "✓",
+        ActionItem::Whole(Action::Reply { .. }) => "…",
+        ActionItem::Whole(Action::Choice { .. }) => "▾",
+        ActionItem::Whole(Action::Silence { .. }) => "⏾",
+        ActionItem::ChoiceOption { .. } => "·",
     }
 }
 

@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, TimeDelta, Utc};
 use rusqlite::Connection;
 
-use notify_client_api::types::{Event, State, Status};
+use notify_client_api::types::{Action, Event, State, Status};
 
 use crate::error::ClientError;
 
@@ -86,6 +86,13 @@ pub struct CachedNotification {
     pub delivered_at: Option<DateTime<Utc>>,
     /// Whether the server said this one was held back on purpose (design §7.4).
     pub deferred_by_dnd: bool,
+    /// Buttons, as of the last revision seen (design §2.3).
+    ///
+    /// No column of its own: `payload` already stores the whole event verbatim
+    /// (see the comment on `notifications` in [`Store::migrate`]), and that event's
+    /// `Content` already carries `actions` — this is read back out of it, not
+    /// stored a second time.
+    pub actions: Vec<Action>,
 }
 
 impl CachedNotification {
@@ -461,6 +468,7 @@ impl Store {
                 created_at: timestamp(&created_at),
                 delivered_at: timestamp(&delivered_at),
                 deferred_by_dnd,
+                actions: content.actions.map(|actions| actions.0).unwrap_or_default(),
             });
         }
 
@@ -788,6 +796,70 @@ mod tests {
     }
 
     #[test]
+    fn a_cached_rows_actions_come_back_from_the_stored_payload() {
+        // No column of their own (see the doc comment on `CachedNotification::actions`)
+        // — read back out of the same `payload` every other field already comes from.
+        let (store, _) = temp_store("actions");
+        let payload = serde_json::json!({
+            "cursor": "evt_1",
+            "audience": "channel",
+            "channel_id": "ci-infra",
+            "logged_at": "2026-08-01T08:00:00Z",
+            "event": "revision",
+            "notification_id": "ntf_1",
+            "created_at": "2026-08-01T08:00:00Z",
+            "revised_at": "2026-08-01T08:00:00Z",
+            "seq": 1,
+            "state": "open",
+            "status": "warning",
+            "priority": "default",
+            "author": { "kind": "user", "id": "usr_1" },
+            "payload": {
+                "title": "etcd degraded",
+                "actions": [
+                    { "type": "ack", "label": "Je m'en occupe", "key": "ack-etcd" },
+                ],
+            },
+        })
+        .to_string();
+
+        store
+            .upsert(CacheEntry {
+                id: "ntf_1",
+                channel: "ci-infra",
+                revised_at: "2026-08-01T10:00:00Z",
+                created_at: "2026-08-01T08:00:00Z",
+                payload: &payload,
+                deferred_by_dnd: false,
+            })
+            .unwrap();
+
+        let rows = store.cached_inbox(10).unwrap();
+
+        assert_eq!(rows[0].actions.len(), 1);
+        assert!(
+            matches!(&rows[0].actions[0], Action::Ack { key, .. } if key.as_str() == "ack-etcd")
+        );
+    }
+
+    #[test]
+    fn a_cached_row_with_no_actions_comes_back_empty_rather_than_missing() {
+        let (store, _) = temp_store("no_actions");
+        store
+            .upsert(CacheEntry {
+                id: "ntf_1",
+                channel: "ci-infra",
+                revised_at: "2026-08-01T10:00:00Z",
+                created_at: "2026-08-01T08:00:00Z",
+                payload: &revision("ntf_1", "2026-08-01T08:00:00Z", 1, "no buttons here"),
+                deferred_by_dnd: false,
+            })
+            .unwrap();
+
+        assert!(store.cached_inbox(10).unwrap()[0].actions.is_empty());
+    }
+
+    #[test]
     fn an_unreadable_cached_row_is_skipped_rather_than_blanking_the_inbox() {
         let (store, _) = temp_store("unreadable");
         store
@@ -871,6 +943,7 @@ mod tests {
             created_at: None,
             delivered_at: None,
             deferred_by_dnd: false,
+            actions: Vec::new(),
         };
 
         assert_eq!(cached.late_by(), None);

@@ -8193,6 +8193,31 @@ form every comparison here wants, and rendered `HH:MM` because that is the form
 `applicationServerKey` (RFC 8292).*/
         pub application_server_key: ::std::string::String,
     }
+    /**The caller's own id — everything a client needs to name itself as the
+`owner` of something it is about to create, e.g. a personal API key
+(design §5.2).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The caller's own id — everything a client needs to name itself as the\n`owner` of something it is about to create, e.g. a personal API key\n(design §5.2).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "$ref": "#/components/schemas/UserId"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Whoami {
+        pub id: UserId,
+    }
 }
 #[derive(Clone, Debug)]
 /**Client for weebo-notify
@@ -9646,6 +9671,54 @@ Arguments:
         let response = result?;
         match response.status().as_u16() {
             204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Who the caller is
+
+A user only: an API key or a channel key acts *for* someone or something
+else, and has no identity of its own to hand back (design §5.2bis) — the
+same restriction `GET /users/me/profile` already applies, for the same
+reason.
+
+Sends a `GET` request to `/api/v1/me`
+
+*/
+    pub async fn whoami<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<types::Whoami>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/me", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "whoami",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
             401u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }

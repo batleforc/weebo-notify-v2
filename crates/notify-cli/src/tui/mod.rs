@@ -48,7 +48,7 @@ use crossterm::terminal::{
 use notify_client_core::{Profile, Session, Store, StreamSignal, StreamWatch};
 
 use crate::CliError;
-pub(crate) use app::{App, Message, Pane};
+pub(crate) use app::{ActionItem, App, Message, Pane};
 
 /// How long the loop waits for a key before ticking.
 ///
@@ -264,9 +264,10 @@ pub(crate) fn sanitise(text: &str) -> String {
 
 /// Keys the help bar advertises, in the order it shows them.
 pub(crate) const BINDINGS: &[(&str, &str)] = &[
-    ("j/k", "naviguer"),
+    ("j/k", "naviguer / défiler"),
     ("tab", "panneau"),
     ("enter", "détail"),
+    ("a", "actions"),
     ("r", "rafraîchir"),
     (":", "commande"),
     ("?", "aide"),

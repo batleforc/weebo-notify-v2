@@ -104,6 +104,9 @@ struct State {
     dead_letters: Vec<DeadLetter>,
     /// The bodies behind the dead letters, so a requeue puts back something sendable.
     buried: Vec<SinkDelivery>,
+    /// The groups a principal's token last carried — `(principal_ref, groups)`, one
+    /// row per principal. See [`DeviceRepository::remember_groups`].
+    group_snapshots: Vec<(String, Vec<String>)>,
 }
 
 impl State {
@@ -930,12 +933,44 @@ impl DeviceRepository for InMemory {
             .map(|member| &member.principal)
             .collect();
 
+        // The second door, mirroring the SQL adapter: a device whose owner's last
+        // remembered groups grant `subscribe` through the channel's group access.
+        let reached_by_group = |owner: &Principal| {
+            state
+                .group_snapshots
+                .iter()
+                .find(|(principal_ref, _)| *principal_ref == owner.reference())
+                .is_some_and(|(_, groups)| row.value.grants_group(groups, Scope::Subscribe))
+        };
+
         Ok(state
             .devices
             .iter()
-            .filter(|device| device.is_active() && members.contains(&&device.owner))
+            .filter(|device| {
+                device.is_active()
+                    && (members.contains(&&device.owner) || reached_by_group(&device.owner))
+            })
             .cloned()
             .collect())
+    }
+
+    async fn remember_groups(
+        &self,
+        principal: &Principal,
+        groups: &[String],
+        _at: OffsetDateTime,
+    ) -> PortResult<()> {
+        let mut state = self.state();
+        let reference = principal.reference();
+        match state
+            .group_snapshots
+            .iter_mut()
+            .find(|(principal_ref, _)| *principal_ref == reference)
+        {
+            Some((_, stored)) => *stored = groups.to_vec(),
+            None => state.group_snapshots.push((reference, groups.to_vec())),
+        }
+        Ok(())
     }
 }
 

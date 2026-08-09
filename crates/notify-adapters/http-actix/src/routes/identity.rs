@@ -2,8 +2,8 @@
 
 use actix_web::{HttpResponse, delete, get, patch, post, web};
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyOwner, ChannelId, Device, DeviceId, DevicePublicKey, PushTransport,
-    Scope,
+    ApiKey, ApiKeyId, ApiKeyOwner, ChannelId, Device, DeviceId, DevicePublicKey, DomainError,
+    Principal, PushTransport, Scope, UserId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -12,6 +12,41 @@ use utoipa::ToSchema;
 use crate::extract::Authenticated;
 use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
+
+/// The caller's own id — everything a client needs to name itself as the
+/// `owner` of something it is about to create, e.g. a personal API key
+/// (design §5.2).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Whoami {
+    /// The caller's own id.
+    pub id: UserId,
+}
+
+/// Who the caller is.
+///
+/// A user only: an API key or a channel key acts *for* someone or something
+/// else, and has no identity of its own to hand back (design §5.2bis) — the
+/// same restriction `GET /users/me/profile` already applies, for the same
+/// reason.
+#[utoipa::path(
+    get,
+    path = "/me",
+    tag = "identity",
+    responses(
+        (status = 200, description = "The caller's own id", body = Whoami),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "This principal has no identity of its own (design §5.2bis)", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/me")]
+pub(crate) async fn whoami(caller: Authenticated) -> Result<web::Json<Whoami>, ApiError> {
+    let Principal::User { id } = caller.0.principal else {
+        return Err(DomainError::NotAPerson.into());
+    };
+
+    Ok(web::Json(Whoami { id }))
+}
 
 /// Enrol a device.
 #[derive(Debug, Deserialize, ToSchema)]

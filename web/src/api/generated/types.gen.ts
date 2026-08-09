@@ -2294,6 +2294,18 @@ export type WebPushKey = {
     application_server_key: string;
 };
 
+/**
+ * The caller's own id — everything a client needs to name itself as the
+ * `owner` of something it is about to create, e.g. a personal API key
+ * (design §5.2).
+ */
+export type Whoami = {
+    /**
+     * The caller's own id.
+     */
+    id: UserId;
+};
+
 export type AuditData = {
     body?: never;
     path?: never;
@@ -3299,6 +3311,35 @@ export type RevokeDeviceResponses = {
 };
 
 export type RevokeDeviceResponse = RevokeDeviceResponses[keyof RevokeDeviceResponses];
+
+export type WhoamiData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/me';
+};
+
+export type WhoamiErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This principal has no identity of its own (design §5.2bis)
+     */
+    403: Problem;
+};
+
+export type WhoamiError = WhoamiErrors[keyof WhoamiErrors];
+
+export type WhoamiResponses = {
+    /**
+     * The caller's own id
+     */
+    200: Whoami;
+};
+
+export type WhoamiResponse = WhoamiResponses[keyof WhoamiResponses];
 
 export type InboxData = {
     body?: never;

@@ -1572,6 +1572,55 @@ mod e2e {
         assert_eq!(targets[0].label, "alice's");
     }
 
+    #[tokio::test]
+    async fn delivery_targets_reach_a_group_bound_subscriber_once_their_groups_are_remembered() {
+        let store = store!();
+        let (_, alice) = user();
+        let group = fresh_group();
+
+        // Alice is not a named member anywhere — her only access is the group.
+        let id = fresh_channel();
+        let mut channel = Channel::dynamic(id.clone(), None).unwrap();
+        channel.upsert_group(GroupBinding::new(group.clone(), vec![Scope::Subscribe]).unwrap());
+        channels(&store).upsert(&channel).await.unwrap();
+
+        let device = Device {
+            id: DeviceId::generate(),
+            owner: alice.clone(),
+            label: "alice's".to_owned(),
+            transport: PushTransport::Stream,
+            public_key: None,
+            cursor: None,
+            enrolled_at: now(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        devices(&store).upsert(&device).await.unwrap();
+
+        assert!(
+            store.delivery_targets(&id).await.unwrap().is_empty(),
+            "no snapshot yet: nothing this port persists ties alice to the group"
+        );
+
+        devices(&store)
+            .remember_groups(&alice, &[group], now())
+            .await
+            .unwrap();
+
+        let targets = store.delivery_targets(&id).await.unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].label, "alice's");
+
+        // A later snapshot with no matching group reads as the group being gone —
+        // exactly the "loses access on their next token" promise (§11), applied to
+        // whatever the last remembered token said instead of a live one.
+        devices(&store)
+            .remember_groups(&alice, &[fresh_group()], now())
+            .await
+            .unwrap();
+        assert!(store.delivery_targets(&id).await.unwrap().is_empty());
+    }
+
     // --- What GitOps last applied (design §11, §13, D28) ---------------------
 
     #[tokio::test]

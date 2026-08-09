@@ -18,6 +18,16 @@ vars:
       echo "Eclipse Che workspace detected — the sidecars come from devfile.yaml, nothing to do."
       exit 0
     fi
+  # The inverse of CHE_GUARD: the `:public` tasks below wire a process to the
+  # workspace's public route with the `url` CLI the base image ships (design
+  # §12.1), which reads DEVWORKSPACE_NAMESPACE/DEVWORKSPACE_NAME and fails on an
+  # unbound variable outside Che. Checked up front for a message that says why,
+  # rather than that shell error.
+  REQUIRE_CHE: |
+    if [ -z "${DEVWORKSPACE_ID:-}" ]; then
+      echo "Not an Eclipse Che workspace — \`url\` has nothing to resolve. Use the non-\`:public\` task instead." >&2
+      exit 1
+    fi
 
 tasks:
   setup:
@@ -102,6 +112,20 @@ tasks:
     cmds:
       - cargo run -p notify-oidc-mock -- --identities dev/oidc-mock/identities.toml
 
+  oidc:public:
+    desc: "Run the identity provider issuing tokens as this Che workspace's public route, instead of localhost (§12.1)"
+    cmds:
+      - cmd: |
+          {{.REQUIRE_CHE}}
+          issuer=$(url oidc); issuer=${issuer%/}
+          web=$(url web); web=${web%/}
+          echo "issuer: $issuer"
+          echo "extra redirect_uri: $web/auth/callback"
+          WNK_OIDC_MOCK_ISSUER="$issuer" \
+          WNK_OIDC_MOCK_EXTRA_REDIRECT_URI="$web/auth/callback" \
+          WNK_OIDC_MOCK_EXTRA_POST_LOGOUT_REDIRECT_URI="$web/" \
+          cargo run -p notify-oidc-mock -- --identities dev/oidc-mock/identities.toml
+
   auth:
     desc: "Add real Authentik on top (profile `authentik`) — for work touching the OIDC flow itself"
     deps: [setup]
@@ -166,10 +190,114 @@ tasks:
     cmds:
       - cargo run -p notify-server -- --config config/dev.toml
 
+  run:public:
+    desc: "Run the server wired to this Che workspace's public routes: OIDC issuer + the public web origin in CORS (§12.1)"
+    deps: [setup]
+    cmds:
+      - cmd: |
+          {{.REQUIRE_CHE}}
+          issuer=$(url oidc); issuer=${issuer%/}
+          web=$(url web); web=${web%/}
+          echo "oidc issuer : $issuer"
+          echo "cors origin : $web"
+          WNK_OIDC__ISSUER="$issuer" \
+          WNK_SERVER__CORS_ORIGINS="[\"http://localhost:5173\",\"http://localhost:8080\",\"$web\"]" \
+          cargo run -p notify-server -- --config config/dev.toml
+
   web:
     desc: "Run the Vite dev server for the web frontend (http://localhost:5173)"
     cmds:
       - pnpm -C web dev
+
+  cli:
+    desc: "Open the terminal UI (`notify watch`) against the local dev server — mints a throwaway token from the oidc mock unless WNK_TOKEN is already set (needs `task dev:oidc` and `task dev:run` running)"
+    # `notify-client-core::Profile` already defaults to http://localhost:8080 (§9.1),
+    # so the one thing missing for a second terminal to `notify watch` alongside a
+    # browser tab is a credential. WNK_TUI_USER picks which of the throwaway
+    # identities (dev/oidc-mock/identities.toml) to mint one for; a real deployment
+    # has no such flow; the PKCE dance below is the same one a browser runs.
+    cmds:
+      - cmd: |
+          set -eu
+          if [ -n "${WNK_TOKEN:-}" ]; then
+            cargo run -p notify-cli -- watch
+            exit 0
+          fi
+
+          user="${WNK_TUI_USER:-alice}"
+          verifier=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 64)
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=')
+
+          request=$(curl -sS "http://localhost:9110/authorize?response_type=code&client_id=weebo-notify&redirect_uri=http://localhost:5173/auth/callback&scope=openid&code_challenge=$challenge&code_challenge_method=S256" \
+            | grep -oP 'name="request" value="\K[^"]+') || {
+            echo "Could not reach the oidc mock on :9110 — is \`task dev:oidc\` running?" >&2
+            exit 1
+          }
+          code=$(curl -sS -i -d "request=$request&username=$user&password=weebo-dev" http://localhost:9110/authorize \
+            | grep -ioP 'location:.*code=\K[^&"'"'"'\r\n ]+')
+          token=$(curl -sS -d "grant_type=authorization_code&code=$code&code_verifier=$verifier&redirect_uri=http://localhost:5173/auth/callback&client_id=weebo-notify" \
+            http://localhost:9110/token | grep -oP '"access_token":\s*"\K[^"]+')
+
+          echo "watching as $user"
+          WNK_TOKEN="$token" cargo run -p notify-cli -- watch
+
+  # `web/public/env.js` is committed with the compose/localhost values (§12.5) and
+  # is meant to be edited directly for a different backend — these two tasks do
+  # that edit instead of by hand, so a Che session and a plain `pnpm dev` don't
+  # fight over it. Either leaves the file modified against git; `git checkout --
+  # web/public/env.js` (or `task dev:web:env:local`) puts it back.
+  web:env:local:
+    desc: "Point web/public/env.js at localhost:8080/localhost:9110 — the compose defaults"
+    cmds:
+      - cmd: |
+          cat > web/public/env.js <<'JS'
+          // Read by `src/config.ts` at startup, before the app bundle runs (design §11,
+          // ADR-0021). Committed with the values the local dev stack serves — `task dev:run`
+          // and `task dev:oidc` need no change to work with them — the same way
+          // `config/dev.toml` is committed rather than copied from an example.
+          //
+          // A real deployment does not edit this file: its image renders one just like it,
+          // at container boot, from WNK_API_BASE_URL/WNK_OIDC_ISSUER/WNK_OIDC_CLIENT_ID/
+          // WNK_ATTACHMENT_ORIGIN (`web/nginx/docker-entrypoint.d/05-runtime-config.sh`).
+          // This one only ever ships inside a `pnpm dev`/`pnpm build && pnpm preview` run.
+          //
+          // There is no secret in this file, by construction: the OIDC client is public and
+          // uses Authorization Code + PKCE (§5.1).
+          window.__ENV__ = {
+            apiBaseUrl: "http://localhost:8080",
+            oidcIssuer: "http://localhost:9110",
+            oidcClientId: "weebo-notify",
+          };
+          JS
+          echo "web/public/env.js -> localhost:8080 / localhost:9110"
+
+  web:env:public:
+    desc: "Point web/public/env.js at this Che workspace's public server/oidc routes, computed with `url` (§12.1)"
+    cmds:
+      - cmd: |
+          {{.REQUIRE_CHE}}
+          api=$(url server); api=${api%/}
+          issuer=$(url oidc); issuer=${issuer%/}
+          cat > web/public/env.js <<JS
+          // Read by \`src/config.ts\` at startup, before the app bundle runs (design §11,
+          // ADR-0021). Committed with the values the local dev stack serves — \`task dev:run\`
+          // and \`task dev:oidc\` need no change to work with them — the same way
+          // \`config/dev.toml\` is committed rather than copied from an example.
+          //
+          // A real deployment does not edit this file: its image renders one just like it,
+          // at container boot, from WNK_API_BASE_URL/WNK_OIDC_ISSUER/WNK_OIDC_CLIENT_ID/
+          // WNK_ATTACHMENT_ORIGIN (\`web/nginx/docker-entrypoint.d/05-runtime-config.sh\`).
+          // This one only ever ships inside a \`pnpm dev\`/\`pnpm build && pnpm preview\` run.
+          //
+          // There is no secret in this file, by construction: the OIDC client is public and
+          // uses Authorization Code + PKCE (§5.1).
+          window.__ENV__ = {
+            apiBaseUrl: "$api",
+            oidcIssuer: "$issuer",
+            oidcClientId: "weebo-notify",
+          };
+          JS
+          echo "web/public/env.js -> $api / $issuer"
 
   docs:
     desc: "Run the Fumadocs documentation site in dev mode (http://localhost:3000)"

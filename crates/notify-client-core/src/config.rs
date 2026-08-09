@@ -68,6 +68,16 @@ pub enum ConfigError {
         /// Where it was looked for.
         path: PathBuf,
     },
+
+    /// The file (or the directory it lives in) could not be written.
+    #[error("{path} could not be written: {source}")]
+    Unwritable {
+        /// Which file.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl Profile {
@@ -119,13 +129,84 @@ impl Profile {
                 source: Box::new(error),
             })
     }
+
+    /// Persist a credential for a profile — `notify login`'s save half (design
+    /// §9.1).
+    ///
+    /// Read-modify-write, not a blind overwrite: two profiles share this one
+    /// file, and a login to `work` must not erase whatever `personal` already
+    /// has. Only the named profile's `token` is touched; its `url`, and every
+    /// other profile, are carried over exactly as they were.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the existing file is not valid configuration, or if the file
+    /// (or its directory, created if missing) cannot be written.
+    pub fn save_token(name: &str, token: &str) -> Result<(), ConfigError> {
+        Self::save_token_to(name, token, &config_path())
+    }
+
+    /// The same, against an explicit path — what the tests use.
+    pub fn save_token_to(
+        name: &str,
+        token: &str,
+        path: &std::path::Path,
+    ) -> Result<(), ConfigError> {
+        let mut file: File = if path.exists() {
+            Figment::from(Toml::file(path))
+                .extract()
+                .map_err(|error| ConfigError::Unreadable {
+                    path: path.to_path_buf(),
+                    source: Box::new(error),
+                })?
+        } else {
+            File::default()
+        };
+
+        file.profiles.entry(name.to_owned()).or_default().token = Some(token.to_owned());
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| ConfigError::Unwritable {
+                path: path.to_path_buf(),
+                source: error,
+            })?;
+        }
+
+        let rendered = toml::to_string_pretty(&file).map_err(|error| ConfigError::Unwritable {
+            path: path.to_path_buf(),
+            source: std::io::Error::other(error),
+        })?;
+
+        std::fs::write(path, rendered).map_err(|error| ConfigError::Unwritable {
+            path: path.to_path_buf(),
+            source: error,
+        })?;
+
+        // A credential, not a config file to leave world-readable — the same
+        // "mode-0600 file" this struct's own `token` doc comment already assumes.
+        // Unix only: there is no equivalent bit to set on the platforms this
+        // crate also ships to, and leaving the platform default there is the
+        // honest thing rather than a false sense of parity.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |error| ConfigError::Unwritable {
+                    path: path.to_path_buf(),
+                    source: error,
+                },
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
 /// The profile everything falls back to.
 pub const DEFAULT_PROFILE: &str = "default";
 
 /// The config file, which is nothing but a table of profiles.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
     #[serde(default)]
     profiles: std::collections::BTreeMap<String, Section>,
@@ -211,6 +292,82 @@ mod tests {
         assert!(
             matches!(error, ConfigError::UnknownProfile { .. }),
             "publishing to the wrong server over a typo is the failure this prevents"
+        );
+    }
+
+    /// A path in a directory only this test will touch, with nothing written to
+    /// it yet — for the "first `notify login` on this machine" case.
+    fn fresh_path(test: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!("wnk-cfg-save-{}-{test}", std::process::id()))
+            .join("config.toml")
+    }
+
+    #[test]
+    fn saving_a_token_creates_the_file_and_its_directory_from_nothing() {
+        let path = fresh_path("fresh");
+        assert!(!path.exists());
+
+        Profile::save_token_to("default", "wnk_abcd1234_secret", &path).unwrap();
+
+        let loaded = Profile::load_from("default", &path).unwrap();
+        assert_eq!(loaded.token.as_deref(), Some("wnk_abcd1234_secret"));
+    }
+
+    #[test]
+    fn saving_a_token_leaves_the_profiles_url_and_every_other_profile_alone() {
+        let path = with_config(
+            "preserve",
+            "[profiles.default]\n\
+             url = \"http://localhost:8080\"\n\
+             \n\
+             [profiles.work]\n\
+             url = \"https://notify.corp.example\"\n\
+             token = \"old-work-token\"\n",
+        );
+
+        Profile::save_token_to("default", "new-default-token", &path).unwrap();
+
+        let default = Profile::load_from("default", &path).unwrap();
+        assert_eq!(default.url.as_str(), "http://localhost:8080/");
+        assert_eq!(default.token.as_deref(), Some("new-default-token"));
+
+        let work = Profile::load_from("work", &path).unwrap();
+        assert_eq!(
+            work.token.as_deref(),
+            Some("old-work-token"),
+            "a login to `default` must not touch `work`'s own token"
+        );
+    }
+
+    #[test]
+    fn saving_a_token_twice_replaces_it_rather_than_duplicating_the_profile() {
+        let path = fresh_path("twice");
+
+        Profile::save_token_to("default", "first", &path).unwrap();
+        Profile::save_token_to("default", "second", &path).unwrap();
+
+        assert_eq!(
+            Profile::load_from("default", &path)
+                .unwrap()
+                .token
+                .as_deref(),
+            Some("second")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_a_token_locks_the_file_down_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = fresh_path("perms");
+        Profile::save_token_to("default", "wnk_abcd1234_secret", &path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a credential is not a config file to leave world-readable"
         );
     }
 }

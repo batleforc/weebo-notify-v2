@@ -13,6 +13,7 @@ import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToaster from "@/components/layout/AppToaster.vue";
 import CommandPalette from "@/components/layout/CommandPalette.vue";
+import PushPrompt from "@/components/layout/PushPrompt.vue";
 import NotificationDetail from "@/components/notification/NotificationDetail.vue";
 import { Button } from "@/components/ui/button";
 import { onDeepLink } from "@/lib/deeplink";
@@ -284,4 +285,5 @@ function closeDetail(): void {
        there, but this one stays a grid item), which is the black band this
        moved to stop being. -->
   <AppToaster />
+  <PushPrompt />
 </template>

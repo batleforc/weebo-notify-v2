@@ -83,6 +83,11 @@ notify-client-core = { path = "crates/notify-client-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# The client profile's own serialisation, alongside figment's read path
+# (`notify-client-core::config` — `notify login`'s save half, §9.1). Already a
+# transitive dependency of `figment`; declared directly here because a writer
+# needs `toml::to_string`, which the figment `Provider` trait does not expose.
+toml = "0.8"
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 ulid = { version = "1", features = ["serde"] }

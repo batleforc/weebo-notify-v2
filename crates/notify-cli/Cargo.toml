@@ -36,3 +36,4 @@ ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+open = "5.4.1"

@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory as _, Parser, Subcommand};
 use notify_client_core::{ClientError, ConfigError, Profile, Session};
 
+mod login;
 mod manage;
 mod publish;
 mod tui;
@@ -130,6 +131,19 @@ pub(crate) enum Command {
         command: TokenCommand,
     },
 
+    /// Mint a personal API key in the browser and save it here (design §9.1).
+    ///
+    /// Opens (or prints, under `NO_BROWSER`) a link to the web client's own
+    /// login, where a self-service key is a couple of clicks away; pasting it
+    /// back here is what `notify` reads from then on. See `notify_cli::login`
+    /// for why this is not an OAuth client of its own.
+    Login {
+        /// Where the web client lives — a different origin than the API server
+        /// this profile talks to, so it cannot be derived from `--profile`.
+        #[arg(long, env = "WNK_WEB_URL", default_value = "http://localhost:5173")]
+        web_url: String,
+    },
+
     /// Open the terminal UI. Explicit alias of running `notify` with no subcommand.
     Watch {
         /// Also relay arrivals to the desktop (§9.2).
@@ -190,6 +204,10 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Watch { notify_send }) => {
             tui::run(&cli.profile, notify_send).map(|()| String::new())
         }
+        // Interactive (prompts on stdin) and needs no prior credential — the
+        // opposite of what the generic arm below assumes, so it is dispatched
+        // before a `Session` is built rather than through one.
+        Some(Command::Login { web_url }) => on_runtime(|| login::run(&cli.profile, &web_url)),
         None => tui::run(&cli.profile, false).map(|()| String::new()),
         // Only the commands that talk to a server pay for a runtime; `completions`
         // in a shell's startup path should not start tokio to print a script.
@@ -258,6 +276,13 @@ pub(crate) async fn execute(
         Command::Watch { .. } => Err(CliError::Usage(
             "`watch` opens the terminal UI, which is not something a command can do \
              from inside it"
+                .to_owned(),
+        )),
+        // Same reasoning as `watch`, and a second one of its own: `login` reads a
+        // pasted line from stdin, which the TUI's raw mode has already claimed.
+        Command::Login { .. } => Err(CliError::Usage(
+            "`login` ne peut pas s'exécuter depuis le TUI — lance `notify login` dans \
+             un autre terminal"
                 .to_owned(),
         )),
     }

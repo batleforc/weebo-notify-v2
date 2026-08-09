@@ -128,12 +128,25 @@ impl DeviceRepository for PgStore {
     async fn delivery_targets(&self, channel: &ChannelId) -> PortResult<Vec<Device>> {
         // "Who could be reached", not "who should be": silenced and do-not-disturb
         // recipients are the use case's business, not this port's (design §7.4).
+        //
+        // Two doors, same as `scoped_by_access!` in `channels.rs`: an individual
+        // binding in `channel_members`, or a group binding in `channel_group_access`
+        // resolved against the last groups `remember_groups` saw for this owner —
+        // the snapshot `principal_group_snapshots` exists for.
         let sql = [
             SELECT_DEVICE,
             "WHERE revoked_at IS NULL
-               AND owner_ref IN (
-                   SELECT principal_ref FROM channel_members
-                   WHERE channel_id = $1 AND 'subscribe' = ANY (scopes)
+               AND (
+                   owner_ref IN (
+                       SELECT principal_ref FROM channel_members
+                       WHERE channel_id = $1 AND 'subscribe' = ANY (scopes)
+                   )
+                   OR owner_ref IN (
+                       SELECT s.principal_ref
+                       FROM principal_group_snapshots s
+                       JOIN channel_group_access g ON g.channel_id = $1
+                       WHERE g.oidc_group = ANY (s.groups) AND 'subscribe' = ANY (g.scopes)
+                   )
                )
              ORDER BY enrolled_at",
         ]
@@ -146,6 +159,27 @@ impl DeviceRepository for PgStore {
             .map_err(|error| fail("device", error))?;
 
         rows.iter().map(hydrate).collect()
+    }
+
+    async fn remember_groups(
+        &self,
+        principal: &Principal,
+        groups: &[String],
+        at: OffsetDateTime,
+    ) -> PortResult<()> {
+        sqlx::query(
+            "INSERT INTO principal_group_snapshots (principal_ref, groups, observed_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (principal_ref) DO UPDATE
+               SET groups = EXCLUDED.groups, observed_at = EXCLUDED.observed_at",
+        )
+        .bind(principal.reference())
+        .bind(groups)
+        .bind(at)
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("device", error))?;
+        Ok(())
     }
 }
 

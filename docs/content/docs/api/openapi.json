@@ -1801,6 +1801,53 @@
         ]
       }
     },
+    "/api/v1/me": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Who the caller is.",
+        "description": "A user only: an API key or a channel key acts *for* someone or something\nelse, and has no identity of its own to hand back (design §5.2bis) — the\nsame restriction `GET /users/me/profile` already applies, for the same\nreason.",
+        "operationId": "whoami",
+        "responses": {
+          "200": {
+            "description": "The caller's own id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Whoami"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This principal has no identity of its own (design §5.2bis)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/notifications": {
       "get": {
         "tags": [
@@ -6882,6 +6929,19 @@
             "type": "string",
             "description": "The uncompressed P-256 public point, base64url — passed verbatim as\n`applicationServerKey` (RFC 8292).",
             "example": "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkFbx4gpXYm…"
+          }
+        }
+      },
+      "Whoami": {
+        "type": "object",
+        "description": "The caller's own id — everything a client needs to name itself as the\n`owner` of something it is about to create, e.g. a personal API key\n(design §5.2).",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/UserId",
+            "description": "The caller's own id."
           }
         }
       }

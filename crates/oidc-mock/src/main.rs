@@ -36,6 +36,24 @@ struct Cli {
     /// the pod's `localhost` (§12.1).
     #[arg(long, env = "WNK_OIDC_MOCK_ISSUER")]
     issuer: Option<String>,
+
+    /// An extra `redirect_uri` to accept, on top of the identities file. Repeat
+    /// for more than one.
+    ///
+    /// Eclipse Che's web route is a per-workspace hostname, so it cannot be
+    /// committed to `dev/oidc-mock/identities.toml` the way the localhost/Tauri
+    /// URIs are — this registers it at startup instead (§12.1).
+    #[arg(long, env = "WNK_OIDC_MOCK_EXTRA_REDIRECT_URI", value_delimiter = ',')]
+    extra_redirect_uri: Vec<String>,
+
+    /// An extra `post_logout_redirect_uri` to accept, on top of the identities
+    /// file. Repeat for more than one.
+    #[arg(
+        long,
+        env = "WNK_OIDC_MOCK_EXTRA_POST_LOGOUT_REDIRECT_URI",
+        value_delimiter = ','
+    )]
+    extra_post_logout_redirect_uri: Vec<String>,
 }
 
 #[actix_web::main]
@@ -52,6 +70,13 @@ async fn main() -> anyhow::Result<()> {
     let mut identities = Identities::load(&cli.identities)?;
     if let Some(issuer) = cli.issuer {
         identities = identities.with_issuer(issuer);
+    }
+    if !cli.extra_redirect_uri.is_empty() {
+        identities = identities.with_extra_redirect_uris(cli.extra_redirect_uri);
+    }
+    if !cli.extra_post_logout_redirect_uri.is_empty() {
+        identities =
+            identities.with_extra_post_logout_redirect_uris(cli.extra_post_logout_redirect_uri);
     }
 
     let issuer = identities.issuer.clone();

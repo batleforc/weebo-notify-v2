@@ -158,7 +158,10 @@ watch(
 
     <template v-else-if="head && detail.notification">
       <header class="space-y-2 p-4">
-        <div class="flex items-start gap-2">
+        <!-- `pr-10` clears `AppLayout`'s absolutely-positioned mobile close button
+             (`right-2 top-2`, `xl:hidden`): without it, this row's own trailing
+             button sits in the exact same corner under `xl`. -->
+        <div class="flex items-start gap-2 pr-10 xl:pr-0">
           <StatusDot :status="head.status" :state="head.state" class="mt-1" />
           <h2 class="flex-1 text-base font-semibold leading-snug">
             {{ head.content.title }}

@@ -138,6 +138,26 @@ impl Identities {
         self
     }
 
+    /// Register additional `redirect_uri`s the client may be sent back to, on top
+    /// of `dev/oidc-mock/identities.toml`.
+    ///
+    /// This is how Eclipse Che registers the workspace's public callback URL
+    /// without committing a per-workspace hostname to the identities file, the
+    /// same reasoning as [`Identities::with_issuer`] (§12.1).
+    #[must_use]
+    pub fn with_extra_redirect_uris(mut self, uris: Vec<String>) -> Self {
+        self.client.redirect_uris.extend(uris);
+        self
+    }
+
+    /// Register additional `post_logout_redirect_uri`s, on top of
+    /// `dev/oidc-mock/identities.toml`.
+    #[must_use]
+    pub fn with_extra_post_logout_redirect_uris(mut self, uris: Vec<String>) -> Self {
+        self.client.post_logout_redirect_uris.extend(uris);
+        self
+    }
+
     /// Find the account behind a username and password.
     pub(crate) fn authenticate(&self, username: &str, password: &str) -> Option<&User> {
         self.users
@@ -233,6 +253,24 @@ mod tests {
         assert!(identities.authenticate("alice", "weebo-dev").is_some());
         assert!(identities.authenticate("alice", "hunter2").is_none());
         assert!(identities.authenticate("mallory", "weebo-dev").is_none());
+    }
+
+    #[test]
+    fn extra_redirect_uris_are_appended_not_swapped_in() {
+        let identities = committed().with_extra_redirect_uris(vec![
+            "https://max-weebo-notify-v2-web.cde.batleforc.fr/auth/callback".to_owned(),
+        ]);
+
+        assert!(
+            identities
+                .client
+                .redirect_uris
+                .contains(&"http://localhost:5173/auth/callback".to_owned()),
+            "the committed localhost URIs must still work alongside the extra one"
+        );
+        assert!(identities.client.redirect_uris.contains(
+            &"https://max-weebo-notify-v2-web.cde.batleforc.fr/auth/callback".to_owned()
+        ));
     }
 
     #[test]

@@ -114,6 +114,7 @@ export default defineConfig({
     // Eclipse Che routes ports it sees a process listening on, and it only sees
     // the ones bound outside the loopback interface (§12.4).
     host: true,
+    allowedHosts: ["localhost", ".cde.batleforc.fr"],
   },
   test: {
     // jsdom rather than the faster happy-dom, and the reason is worth keeping:

@@ -8,11 +8,24 @@
  * the rule is invisible until it surprises somebody. So every field says whose it
  * is, and offers to hand it back.
  */
-import { RotateCcw, Upload } from "lucide-vue-next";
+import { KeyRound, RotateCcw, Trash2, Upload } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 
-import { readProfile, setAvatar, updateProfile } from "@/api/generated";
-import type { Profile, ProfileField } from "@/api/generated/types.gen";
+import {
+  createKey,
+  listKeys,
+  readProfile,
+  revokeKey,
+  setAvatar,
+  updateProfile,
+  whoami,
+} from "@/api/generated";
+import type {
+  ApiKey,
+  Profile,
+  ProfileField,
+  Scope,
+} from "@/api/generated/types.gen";
 import { failureOf } from "@/api/problem";
 import { useSession } from "@/auth/session";
 import DndPanel from "@/components/settings/DndPanel.vue";
@@ -23,10 +36,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { avatarObjectUrl } from "@/lib/avatar";
+import { exact } from "@/lib/format";
+import { useChannels } from "@/stores/channels";
 import { useUi } from "@/stores/ui";
 
 const session = useSession();
 const ui = useUi();
+const channels = useChannels();
 
 const profile = ref<Profile | null>(null);
 const loading = ref(true);
@@ -176,7 +192,100 @@ async function upload(event: globalThis.Event): Promise<void> {
   }
 }
 
-onMounted(load);
+/**
+ * A personal token for the CLI/TUI (`notify login`, §9.1).
+ *
+ * Owner is always the caller — never offered as a choice, unlike the admin
+ * screen's service-account keys: §5.2 draws that line at "a durable bot never
+ * runs on a human's key", and the reverse (a human's tool running on a key
+ * that is unmistakably theirs) is exactly what this is for.
+ *
+ * The caller's own [`UserId`] has to be asked for explicitly (`whoami`):
+ * nothing else the browser holds carries it — the OIDC `sub` claim is a
+ * different identifier than the server's internal id.
+ */
+const cliKeys = ref<ApiKey[]>([]);
+const cliKeyLabel = ref(
+  `notify-cli · ${new Date().toISOString().slice(0, 10)}`,
+);
+const cliKeyChannels = ref<Set<string>>(new Set());
+const cliKeyScopes = ref<Set<Scope>>(new Set(["subscribe"]));
+const cliKeyMinted = ref<string | null>(null);
+const cliKeyBusy = ref(false);
+const cliKeyError = ref<string | null>(null);
+
+async function loadCliKeys(): Promise<void> {
+  try {
+    const answer = await listKeys({ throwOnError: true });
+    // Scoped by the server to the caller's own keys (`ListApiKeys::execute`) —
+    // nobody else's tokens ever reach this screen.
+    cliKeys.value = answer.data;
+  } catch (caught) {
+    cliKeyError.value = failureOf(caught).message;
+  }
+}
+
+function toggleCliKeyChannel(id: string): void {
+  if (cliKeyChannels.value.has(id)) {
+    cliKeyChannels.value.delete(id);
+  } else {
+    cliKeyChannels.value.add(id);
+  }
+}
+
+function toggleCliKeyScope(scope: Scope): void {
+  if (cliKeyScopes.value.has(scope)) {
+    cliKeyScopes.value.delete(scope);
+  } else {
+    cliKeyScopes.value.add(scope);
+  }
+}
+
+async function mintCliKey(): Promise<void> {
+  if (cliKeyChannels.value.size === 0 || cliKeyScopes.value.size === 0) {
+    return;
+  }
+  cliKeyBusy.value = true;
+  cliKeyError.value = null;
+  try {
+    const me = await whoami({ throwOnError: true });
+    const answer = await createKey({
+      body: {
+        label: cliKeyLabel.value.trim() || null,
+        owner: { owner: "user", id: me.data.id },
+        channels: [...cliKeyChannels.value],
+        scopes: [...cliKeyScopes.value],
+      },
+      throwOnError: true,
+    });
+    // The one moment this value exists outside the caller's hands (§5.2).
+    cliKeyMinted.value = answer.data.secret;
+    await loadCliKeys();
+  } catch (caught) {
+    cliKeyError.value = failureOf(caught).message;
+  } finally {
+    cliKeyBusy.value = false;
+  }
+}
+
+async function revokeCliKey(id: string): Promise<void> {
+  cliKeyBusy.value = true;
+  cliKeyError.value = null;
+  try {
+    await revokeKey({ path: { id }, throwOnError: true });
+    await loadCliKeys();
+  } catch (caught) {
+    cliKeyError.value = failureOf(caught).message;
+  } finally {
+    cliKeyBusy.value = false;
+  }
+}
+
+onMounted(() => {
+  void load();
+  void channels.load();
+  void loadCliKeys();
+});
 </script>
 
 <template>
@@ -316,6 +425,108 @@ onMounted(load);
     <PushPanel />
 
     <DndPanel />
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Jeton CLI</CardTitle>
+        <p class="text-sm text-muted-foreground">
+          Pour <code>notify login</code> (terminal, TUI) : choisis les canaux et ce
+          que le jeton peut y faire, puis colle le secret dans l'invite.
+        </p>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <p v-if="cliKeyError" class="text-sm text-destructive">{{ cliKeyError }}</p>
+
+        <!-- Montré une fois, jamais réaffiché : seul le hachage est conservé
+             (§5.2), exactement la même règle que pour une clé de bot. -->
+        <Card v-if="cliKeyMinted" class="border-status-warning">
+          <CardContent class="space-y-2 pt-4">
+            <p class="text-sm text-muted-foreground">
+              Copie ce jeton maintenant — colle-le à l'invite <code>notify login</code>.
+              Il ne sera plus jamais affiché.
+            </p>
+            <code class="block break-all rounded-md bg-muted p-3 text-xs">{{
+              cliKeyMinted
+            }}</code>
+            <Button variant="outline" size="sm" @click="cliKeyMinted = null">
+              J'ai copié
+            </Button>
+          </CardContent>
+        </Card>
+
+        <template v-else>
+          <Input v-model="cliKeyLabel" placeholder="à quoi il sert" />
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium text-muted-foreground">Canaux</p>
+            <label
+              v-for="channel in channels.all"
+              :key="channel.id"
+              class="flex items-center gap-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                :checked="cliKeyChannels.has(channel.id)"
+                @change="toggleCliKeyChannel(channel.id)"
+              />
+              {{ channel.display_name || channel.id }}
+            </label>
+            <p v-if="!channels.all.length" class="text-xs text-muted-foreground">
+              Aucun canal visible.
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium text-muted-foreground">Portée</p>
+            <label
+              v-for="scope in (['subscribe', 'publish', 'manage'] as Scope[])"
+              :key="scope"
+              class="flex items-center gap-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                :checked="cliKeyScopes.has(scope)"
+                @change="toggleCliKeyScope(scope)"
+              />
+              {{ scope }}
+            </label>
+          </div>
+
+          <Button
+            :disabled="cliKeyBusy || !cliKeyChannels.size || !cliKeyScopes.size"
+            @click="mintCliKey"
+          >
+            <KeyRound />
+            Créer — le secret n'apparaît qu'une seule fois
+          </Button>
+        </template>
+
+        <div
+          v-for="key in cliKeys"
+          :key="key.id"
+          class="flex items-center justify-between gap-2 border-b border-border pb-2 text-sm last:border-0"
+        >
+          <span class="min-w-0">
+            <code class="text-xs">{{ key.prefix }}…</code>
+            <span class="ml-2">{{ key.label ?? "sans nom" }}</span>
+            <span class="ml-2 text-xs text-muted-foreground">
+              {{ key.last_used_at ? `utilisé ${exact(key.last_used_at)}` : "jamais utilisé" }}
+            </span>
+          </span>
+          <Badge v-if="key.revoked_at" variant="muted">révoqué</Badge>
+          <Button
+            v-else
+            variant="ghost"
+            size="sm"
+            :disabled="cliKeyBusy"
+            @click="revokeCliKey(key.id)"
+          >
+            <Trash2 />
+            Révoquer
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
 
     <Card>
       <CardHeader>

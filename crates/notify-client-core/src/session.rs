@@ -4,9 +4,9 @@
 use notify_client_api::Client;
 use notify_client_api::types::{
     Actions, AddMemberBody, AttachmentId, Channel, ChannelId, ChannelPolicyBody, CreateChannelBody,
-    Device, Dnd, DndDraft, EnrolBody, ExchangeBody, ExternalId, Image, MintedToken, Notification,
-    PresignBody, Principal, Priority, Progress, PublishBody, Published, PushTransport,
-    RevisionDraft, Scope, State, Status, Ttl, UnreadCount,
+    Device, Dnd, DndDraft, EnrolBody, ExchangeBody, ExternalId, Image, Interaction, MintedToken,
+    Notification, PresignBody, Principal, Priority, Progress, PublishBody, Published,
+    PushTransport, RevisionDraft, Scope, SilenceBody, State, Status, Ttl, UnreadCount,
 };
 
 use crate::config::Profile;
@@ -92,6 +92,19 @@ impl Session {
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
+            // No pooled keep-alive connections: `notify watch` holds one `Session`
+            // for as long as the TUI is open, and a person acting on a notification
+            // minutes after the last request is the *normal* case for it, not an
+            // edge one. actix-web's default keep-alive is 5 seconds; reqwest's own
+            // idle-pool timeout is 90 — long enough that the server has already
+            // closed its end, and short-lived commands (`notify publish`, one
+            // request and exit) never live long enough to notice. A write to that
+            // stale socket fails client-side (`hyper::Error(IncompleteMessage)`,
+            // mid-`SendRequest`) rather than transparently reconnecting, which is
+            // exactly the failure an idle TUI would hit on its very first click.
+            // A fresh connection per request costs one extra loopback handshake —
+            // immaterial next to a person's typing speed.
+            .pool_max_idle_per_host(0)
             .build()
             .map_err(ClientError::Transport)?;
 
@@ -314,6 +327,31 @@ impl Session {
         let response = self.api.list_devices().await.map_err(ClientError::from)?;
 
         Ok(response.into_inner())
+    }
+
+    /// `POST /notifications/{id}/interactions` — answer an `ack`, `reply` or
+    /// `choice` action (design §2.3).
+    ///
+    /// `view` and `silence` never reach here: the first is client-side only (open
+    /// the link), the second is [`Self::silence`] — a separate endpoint, because it
+    /// changes server-side delivery state rather than recording an answer.
+    pub async fn interact(&self, id: &str, interaction: Interaction) -> Result<(), ClientError> {
+        self.api
+            .record(id, &interaction)
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(())
+    }
+
+    /// `POST /notifications/{id}/silence` — a `silence` action (design §2.3).
+    pub async fn silence(&self, id: &str, body: SilenceBody) -> Result<(), ClientError> {
+        self.api
+            .silence(id, &body)
+            .await
+            .map_err(ClientError::from)?;
+
+        Ok(())
     }
 
     /// `GET /notifications` — one page of the inbox.

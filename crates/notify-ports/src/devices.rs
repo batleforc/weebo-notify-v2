@@ -38,9 +38,26 @@ pub trait DeviceRepository: Send + Sync {
 
     /// The active devices to deliver a channel's notification to.
     ///
-    /// Returns the devices of every member with `subscribe`, which is what the
-    /// fan-out iterates. Silenced and do-not-disturb recipients are filtered by the
-    /// use case, not here: this port answers "who could be reached", the use case
-    /// answers "who should be" (design §7.4).
+    /// Returns the devices of every member with `subscribe`, individually bound or
+    /// reached through a group snapshot (see [`DeviceRepository::remember_groups`]),
+    /// which is what the fan-out iterates. Silenced and do-not-disturb recipients
+    /// are filtered by the use case, not here: this port answers "who could be
+    /// reached", the use case answers "who should be" (design §7.4).
     async fn delivery_targets(&self, channel: &ChannelId) -> PortResult<Vec<Device>>;
+
+    /// Remember the groups a principal's token carried, so `delivery_targets` can
+    /// still reach them through a group-only channel binding once they are offline.
+    ///
+    /// Group membership is otherwise never persisted — it is resolved against the
+    /// live token everywhere else, on purpose (design §11) — so this is the one
+    /// place that promise bends, and only for push. Called wherever a principal is
+    /// next seen with a fresh token: at device enrolment and at the start of a
+    /// sync/stream session (§8), so the snapshot goes no staler than "since this
+    /// principal was last active" rather than "since they last enrolled a device."
+    async fn remember_groups(
+        &self,
+        principal: &Principal,
+        groups: &[String],
+        at: OffsetDateTime,
+    ) -> PortResult<()>;
 }

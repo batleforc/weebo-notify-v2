@@ -11,7 +11,7 @@
 // There is no secret in this file, by construction: the OIDC client is public and
 // uses Authorization Code + PKCE (§5.1).
 window.__ENV__ = {
-  apiBaseUrl: "http://localhost:8080",
-  oidcIssuer: "http://localhost:9110",
+  apiBaseUrl: "https://max-weebo-notify-v2-server.cde.batleforc.fr",
+  oidcIssuer: "https://max-weebo-notify-v2-oidc.cde.batleforc.fr",
   oidcClientId: "weebo-notify",
 };

@@ -79,6 +79,15 @@ impl SyncBacklog {
             return Err(DomainError::ScopeMissing { scope: "subscribe" }.into());
         };
 
+        // Refreshed on every sync/stream session — a stream connection resumes its
+        // backlog through this same call (`http-actix::routes::stream::Connection::
+        // drain`) — not only at enrolment: it bounds how stale a group-derived push
+        // target can get to "since this principal was last active" rather than
+        // "since they last enrolled a device" (§11).
+        self.devices
+            .remember_groups(&caller.principal, &caller.groups, self.clock.now())
+            .await?;
+
         let readable = self.authorizer.readable_channels(caller).await?;
         let channels = if request.channels.is_empty() {
             readable
@@ -510,6 +519,55 @@ mod tests {
             .unwrap();
 
         assert_eq!(resumed.events.len(), 3, "no gap, no repeat");
+    }
+
+    #[tokio::test]
+    async fn syncing_remembers_the_callers_groups_for_group_bound_push_targets() {
+        let fixture = fixture();
+        let mut channel = Channel::dynamic(channel_id("cluster-ovh-1"), None).unwrap();
+        channel.upsert_group(
+            notify_domain::GroupBinding::new("infra-admins", vec![Scope::Subscribe]).unwrap(),
+        );
+        fixture.store.seed_channel(channel);
+
+        let device = Device {
+            id: DeviceId::generate(),
+            owner: fixture.alice.clone(),
+            label: "laptop".to_owned(),
+            transport: PushTransport::Stream,
+            public_key: None,
+            cursor: None,
+            enrolled_at: fixture.clock.now(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        fixture.store.seed_device(device);
+
+        assert!(
+            DeviceRepository::delivery_targets(&fixture.store, &channel_id("cluster-ovh-1"))
+                .await
+                .unwrap()
+                .is_empty(),
+            "the device exists but nothing yet ties alice to the group"
+        );
+
+        fixture
+            .sync
+            .execute(
+                &Caller::member_of(fixture.alice.clone(), vec!["infra-admins".to_owned()]),
+                SyncRequest::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            DeviceRepository::delivery_targets(&fixture.store, &channel_id("cluster-ovh-1"))
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "syncing should have remembered alice's groups, same as enrolling a device does"
+        );
     }
 
     #[tokio::test]

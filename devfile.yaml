@@ -40,8 +40,13 @@ parent:
     - name: tools
       container:
         endpoints:
-          - {name: server, targetPort: 8080, exposure: public, protocol: http}
-          - {name: web, targetPort: 5173, exposure: public, protocol: http}
+          - {name: server, targetPort: 8080, exposure: public, protocol: https, secure: true}
+          - {name: web, targetPort: 5173, exposure: public, protocol: https, secure: true}
+          # Declared statically, unlike the comment on `run-oidc` below assumed:
+          # auto-discovery of a freshly-bound port did not create a route within
+          # several minutes on this cluster, so `oidc-mock` gets the same fixed
+          # pre-provisioned route as `server`/`web` rather than relying on it.
+          - {name: oidc, targetPort: 9110, exposure: public, protocol: https, secure: true}
 components:
   - name: postgres
     container:
@@ -169,25 +174,30 @@ commands:
   - id: run-oidc
     exec:
       component: tools
-      # Che routes ports it sees a process listening on, exactly as it does for the
-      # server (:8080) and Vite (:5173). OIDC redirects travel through the
-      # developer's browser, which cannot reach this pod's localhost — so export
-      # the route Che offers before running the server (§12.1):
-      #   WNK_OIDC_MOCK_ISSUER=https://<route>  (what the provider calls itself)
-      #   WNK_OIDC__ISSUER=https://<route>      (what the server expects; beats dev.toml)
-      commandLine: "task dev:oidc"
+      # The `oidc` endpoint above gives this a fixed route, same as `server`
+      # (:8080) and Vite (:5173). OIDC redirects travel through the developer's
+      # browser, which cannot reach this pod's localhost, so the `:public` task
+      # resolves that route with the `url` CLI and exports WNK_OIDC_MOCK_ISSUER
+      # itself (§12.1) — `task dev:oidc` (no `:public`) is what compose uses.
+      commandLine: "task dev:oidc:public"
       workingDir: "${PROJECT_SOURCE}"
       group: {kind: run}
   - id: run-server
     exec:
       component: tools
-      commandLine: "task dev:run"
+      # Same reasoning as `run-oidc`: `:public` resolves WNK_OIDC__ISSUER and the
+      # public web origin for CORS with `url` instead of localhost (§12.1).
+      commandLine: "task dev:run:public"
       workingDir: "${PROJECT_SOURCE}"
       group: {kind: run, isDefault: true}
   - id: run-web
     exec:
       component: tools
-      commandLine: "task dev:web"
+      # `web/public/env.js` is a static file the Vite dev server just serves, not
+      # something `task dev:web` templates per run — so the route it points at has
+      # to be written first. `web:env:public` does that with `url`, same as the
+      # two commands above (§12.1).
+      commandLine: "task dev:web:env:public && task dev:web"
       workingDir: "${PROJECT_SOURCE}"
       group: {kind: run}
   - id: run-docs

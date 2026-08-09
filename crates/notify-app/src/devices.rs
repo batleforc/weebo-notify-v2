@@ -64,6 +64,12 @@ impl EnrolDevice {
         )?;
 
         self.devices.upsert(&device).await?;
+        // The moment a device is enrolled is the moment a group-only channel
+        // binding needs somewhere offline to reach: without this, `delivery_targets`
+        // never sees an owner whose access is only `channel_group_access` (§11).
+        self.devices
+            .remember_groups(&caller.principal, &caller.groups, now)
+            .await?;
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone().into(),
@@ -227,6 +233,54 @@ mod tests {
 
         assert_eq!(device.owner, fixture.alice);
         assert_eq!(fixture.list.execute(&caller).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn enrolling_remembers_the_callers_groups_so_a_group_bound_channel_can_reach_them() {
+        use notify_domain::{Channel, GroupBinding, Scope};
+
+        let fixture = fixture();
+        let mut channel = Channel::dynamic(
+            notify_domain::ChannelId::parse("cluster-ovh-1").unwrap(),
+            None,
+        )
+        .unwrap();
+        // Alice is not a named member — only the group grants her access, exactly
+        // like `[[channels.managed.access]] oidc_group` in config/dev.toml.
+        channel.upsert_group(GroupBinding::new("infra-admins", vec![Scope::Subscribe]).unwrap());
+        fixture.store.seed_channel(channel);
+
+        let caller = Caller::member_of(fixture.alice.clone(), vec!["infra-admins".to_owned()]);
+
+        assert!(
+            DeviceRepository::delivery_targets(
+                &fixture.store,
+                &notify_domain::ChannelId::parse("cluster-ovh-1").unwrap()
+            )
+            .await
+            .unwrap()
+            .is_empty(),
+            "nobody has enrolled yet"
+        );
+
+        fixture
+            .enrol
+            .execute(&caller, "laptop", webpush(), None)
+            .await
+            .unwrap();
+
+        let targets = DeviceRepository::delivery_targets(
+            &fixture.store,
+            &notify_domain::ChannelId::parse("cluster-ovh-1").unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            targets.len(),
+            1,
+            "enrolling should have remembered alice's groups, reaching her through \
+             the channel's group binding rather than an individual membership"
+        );
     }
 
     #[tokio::test]

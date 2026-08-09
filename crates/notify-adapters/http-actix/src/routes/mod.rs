@@ -49,6 +49,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(channels::delete_channel)
             .service(channels::add_member)
             .service(channels::remove_member)
+            .service(identity::whoami)
             .service(identity::enrol_device)
             .service(identity::list_devices)
             .service(identity::revoke_device)

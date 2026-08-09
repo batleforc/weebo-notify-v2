@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 
 use chrono::TimeDelta;
 use crossterm::event::{KeyCode, KeyModifiers};
-use notify_client_core::types::{Channel, Notification, State, Status};
+use notify_client_core::types::{
+    Action, ActionKey, Channel, ChoiceOptionKey, Interaction, Notification, SilenceBody, State,
+    Status,
+};
 use notify_client_core::{CachedNotification, Session, Store};
 
 use super::history;
@@ -41,6 +44,8 @@ pub(crate) struct Row {
     /// preference does, the server applies it per reader, and every client that
     /// answered the question locally was another copy to keep in step.
     pub muted_by_dnd: bool,
+    /// Buttons, in display order (design §2.3).
+    pub actions: Vec<Action>,
 }
 
 impl Row {
@@ -65,6 +70,12 @@ impl Row {
             // from the server is therefore never *known* to be muted — which is the
             // safe direction, and the reason a popup decision reads the cache path.
             muted_by_dnd: false,
+            actions: head
+                .content
+                .actions
+                .clone()
+                .map(|actions| actions.0)
+                .unwrap_or_default(),
         }
     }
 
@@ -86,6 +97,62 @@ impl Row {
             status: cached.status,
             late_by,
             muted_by_dnd: cached.deferred_by_dnd,
+            actions: cached.actions,
+        }
+    }
+}
+
+/// One selectable line of the actions list (design §2.3, §9.2).
+///
+/// Flattened rather than nested: every action but `choice` is a single trigger,
+/// and `choice` is the one that needs a picker at all — spelling out its options
+/// as their own items keeps the whole list one flat, `j`/`k`-navigable thing
+/// instead of a second modal layer underneath the first.
+#[derive(Debug, Clone)]
+pub(crate) enum ActionItem {
+    /// `view`, `ack`, `reply` or `silence` — triggered as it stands.
+    Whole(Action),
+    /// One option of a `choice` action.
+    ChoiceOption {
+        key: ActionKey,
+        option: ChoiceOptionKey,
+        label: String,
+    },
+}
+
+impl ActionItem {
+    /// Flatten a notification's actions into what the list draws and `j`/`k`
+    /// walks (design §2.3).
+    fn list(actions: &[Action]) -> Vec<Self> {
+        actions
+            .iter()
+            .flat_map(|action| -> Vec<Self> {
+                match action {
+                    Action::Choice { key, options, .. } => options
+                        .iter()
+                        .map(|option| Self::ChoiceOption {
+                            key: key.clone(),
+                            option: option.key.clone(),
+                            label: option.label.clone(),
+                        })
+                        .collect(),
+                    other => vec![Self::Whole(other.clone())],
+                }
+            })
+            .collect()
+    }
+
+    /// What the list shows.
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            Self::Whole(
+                Action::View { label, .. }
+                | Action::Ack { label, .. }
+                | Action::Reply { label, .. }
+                | Action::Choice { label, .. }
+                | Action::Silence { label, .. },
+            )
+            | Self::ChoiceOption { label, .. } => label,
         }
     }
 }
@@ -142,6 +209,13 @@ pub(crate) enum Message {
     Cancel,
     /// Toggle the help popup.
     ToggleHelp,
+    /// Open the current notification's action list (design §2.3).
+    EnterActions,
+    /// Trigger the highlighted action.
+    TriggerAction,
+    /// Submit the `:` line as a `reply`, not as a command — see
+    /// [`App::reply_for`].
+    SubmitReply,
     /// Leave.
     Quit,
     /// A key with nothing bound to it.
@@ -174,6 +248,24 @@ pub(crate) struct App {
     pub focus: Pane,
     pub selected_channel: usize,
     pub selected_row: usize,
+    /// How far the Détail pane's body is scrolled, in lines.
+    ///
+    /// A `Pane` field and not a per-row one: it is where the *view* is, not a fact
+    /// about the notification, and it resets the moment the selection moves to a
+    /// different one (§9.2) — staying scrolled into notification A's body while
+    /// looking at B would read as a rendering bug, not a feature.
+    pub detail_scroll: u16,
+    /// Which action is highlighted, when the Détail pane's action list is open
+    /// (design §2.3, §9.2). `None` is "not open" as well as "no actions to open" —
+    /// [`Self::action_items`] answers which, so nothing else has to.
+    pub selected_action: Option<usize>,
+    /// The notification a `reply` action is answering, while the `:` line below is
+    /// being reused as its text box rather than as a shell command.
+    ///
+    /// A separate field and not a third state on `command` itself: the line editing
+    /// (`CommandChar`, `CommandBackspace`, history) is identical either way, only
+    /// what `Enter` does at the end differs — see [`Message::SubmitReply`].
+    pub reply_for: Option<String>,
     /// The `:` line, when it is open.
     pub command: Option<String>,
     /// What the `:` line remembers between runs (§9.2). Loaded from the profile
@@ -214,6 +306,9 @@ impl App {
             focus: Pane::Inbox,
             selected_channel: 0,
             selected_row: 0,
+            detail_scroll: 0,
+            selected_action: None,
+            reply_for: None,
             command: None,
             history,
             output: None,
@@ -245,6 +340,9 @@ impl App {
         if self.command.is_some() {
             return match code {
                 KeyCode::Esc => Message::Cancel,
+                // The line means two different things depending on why it is open
+                // — see `App::reply_for`.
+                KeyCode::Enter if self.reply_for.is_some() => Message::SubmitReply,
                 KeyCode::Enter => Message::RunCommand,
                 KeyCode::Backspace => Message::CommandBackspace,
                 KeyCode::Tab => Message::CompleteCommand,
@@ -262,6 +360,21 @@ impl App {
             };
         }
 
+        // The action list, open over the Détail pane (§2.3): `j`/`k` walk it
+        // instead of scrolling the body, and only `Enter`/`Esc` mean anything else
+        // while it is up — same "swallow everything else" shape as the two blocks
+        // above, and for the same reason (`q` quitting mid-pick would cost the
+        // pick).
+        if self.selected_action.is_some() {
+            return match code {
+                KeyCode::Char('j') | KeyCode::Down => Message::Move(1),
+                KeyCode::Char('k') | KeyCode::Up => Message::Move(-1),
+                KeyCode::Enter => Message::TriggerAction,
+                KeyCode::Esc => Message::Cancel,
+                _ => Message::Ignored,
+            };
+        }
+
         match code {
             KeyCode::Char('q') => Message::Quit,
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Message::Quit,
@@ -274,6 +387,12 @@ impl App {
             KeyCode::Char('r') => Message::Refresh,
             KeyCode::Char(':') => Message::OpenCommand,
             KeyCode::Char('?') => Message::ToggleHelp,
+            KeyCode::Char('a')
+                if self.focus == Pane::Detail
+                    && self.current().is_some_and(|row| !row.actions.is_empty()) =>
+            {
+                Message::EnterActions
+            }
             _ => Message::Ignored,
         }
     }
@@ -287,8 +406,28 @@ impl App {
             Message::ToggleHelp => self.show_help = !self.show_help,
             Message::Cancel => {
                 self.command = None;
+                self.reply_for = None;
                 self.output = None;
                 self.show_help = false;
+                self.selected_action = None;
+            }
+            Message::EnterActions => {
+                if !self.action_items().is_empty() {
+                    self.selected_action = Some(0);
+                }
+            }
+            Message::TriggerAction => self.trigger_action(session, store).await,
+            Message::SubmitReply => {
+                let text = self.command.take().unwrap_or_default();
+                let Some(id) = self.reply_for.take() else {
+                    return;
+                };
+                self.history.push(&text);
+                match session.interact(&id, Interaction::Reply { text }).await {
+                    Ok(()) => "réponse envoyée".clone_into(&mut self.status),
+                    Err(error) => self.status = format!("réponse: {error}"),
+                }
+                self.refresh(session, store).await;
             }
             Message::OpenCommand => self.command = Some(String::new()),
             Message::CommandChar(character) => {
@@ -331,7 +470,7 @@ impl App {
             // The holder wrote: reload from the store and *not* from the server. A
             // reader that answered a poke with a request would spend the connection
             // budget the election exists to protect (§8.2, §9.3bis).
-            Message::StoreChanged => self.reload_from_store(store),
+            Message::StoreChanged => self.reload_from_store(session, store).await,
             // Nothing to do for either: a tick exists to let the loop repaint, and
             // an unbound key is deliberately silent rather than beeping.
             Message::Tick | Message::Ignored => {}
@@ -339,15 +478,52 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: i32) {
+        // The action list, when it is open, is the innermost thing `j`/`k` can be
+        // about — it takes priority over both the inbox selection and the detail
+        // scroll below it.
+        if let Some(selected) = self.selected_action {
+            let len = self.action_items().len();
+            if len == 0 {
+                return;
+            }
+            self.selected_action = Some(if delta.is_negative() {
+                selected.saturating_sub(delta.unsigned_abs() as usize)
+            } else {
+                (selected + delta.unsigned_abs() as usize).min(len - 1)
+            });
+            return;
+        }
+
+        // Détail focused: scroll its body instead of moving the inbox selection
+        // underneath it. This is the bug §9.2 exists to not have — `j`/`k` used to
+        // always move `selected_row`, so reading a long notification silently
+        // jumped to the next one the moment the body outgrew the pane. The upper
+        // bound is clamped against the actual line count when it is drawn
+        // (`render::detail`), not here — this method has no reach into layout.
+        if self.focus == Pane::Detail {
+            // A page of scroll is bounded well under `u16::MAX` lines by any
+            // terminal anybody runs this in, so a delta that somehow didn't fit is
+            // clamped rather than reasoned about further.
+            let magnitude = u16::try_from(delta.unsigned_abs()).unwrap_or(u16::MAX);
+            self.detail_scroll = if delta.is_negative() {
+                self.detail_scroll.saturating_sub(magnitude)
+            } else {
+                self.detail_scroll.saturating_add(magnitude)
+            };
+            return;
+        }
+
         let (index, len) = match self.focus {
             Pane::Channels => (&mut self.selected_channel, self.channels.len()),
-            Pane::Inbox | Pane::Detail => (&mut self.selected_row, self.inbox.len()),
+            Pane::Inbox => (&mut self.selected_row, self.inbox.len()),
+            Pane::Detail => unreachable!("handled above"),
         };
 
         if len == 0 {
             return;
         }
 
+        let previous = *index;
         // Saturating on both ends rather than casting through a signed type: a
         // selection that wrapped to `usize::MAX` would index nothing and paint an
         // empty detail pane with no explanation.
@@ -356,6 +532,12 @@ impl App {
         } else {
             (*index + delta.unsigned_abs() as usize).min(len - 1)
         };
+
+        // A different notification is now selected: last notification's scroll
+        // position has nothing to do with this one's.
+        if self.focus == Pane::Inbox && *index != previous {
+            self.detail_scroll = 0;
+        }
     }
 
     /// Ask the server for both lists, and feed the store if this front end holds it.
@@ -365,29 +547,7 @@ impl App {
             Err(error) => self.status = format!("canaux: {error}"),
         }
 
-        // A badge that fails to load leaves the sidebar without one rather than
-        // taking the frame down with it: the channel list and the inbox are what
-        // this screen is for, and a stale count is worse than no count.
-        match session.unread().await {
-            Ok(counts) => {
-                // `u64::try_from` and not a cast: the generated client widens the
-                // schema's unsigned count to `i64` (it is a boundary, not an
-                // interface — see `notify_client_core`), and an entry that failed
-                // to be a positive count is dropped rather than rendered as `(0)`.
-                // That keeps this map's invariant — every key is a badge worth
-                // drawing — which is the same one the port states server-side.
-                self.unread = counts
-                    .into_iter()
-                    .filter_map(|count| {
-                        u64::try_from(count.unread)
-                            .ok()
-                            .filter(|unread| *unread > 0)
-                            .map(|unread| (count.channel.to_string(), unread))
-                    })
-                    .collect();
-            }
-            Err(error) => self.status = format!("non-lus: {error}"),
-        }
+        self.refresh_unread(session).await;
 
         // Only the holder writes: two front ends syncing the same cursor would
         // fight over it, and the loser would rewind the winner (§9.3bis). Done
@@ -440,12 +600,131 @@ impl App {
         self.clamp_selection();
     }
 
-    /// Redraw from the local cache, without a request (design §9.3bis).
+    /// Do whatever the highlighted action means (design §2.3).
     ///
-    /// What a front end that lost the election does, and what a poke from the holder
-    /// triggers. The channel list is left alone: it comes from the server and does
-    /// not change because a notification landed.
-    pub(crate) fn reload_from_store(&mut self, store: &Store) {
+    /// `view` never reaches the server — it is client-side only, same as the web
+    /// client's own `<a href>` (§10.3) — and `reply` reaches it only once the text
+    /// typed into the reused `:` line is submitted (`Message::SubmitReply`), not
+    /// here. Everything else is one call, after which the list closes: an action
+    /// just taken is not a thing to take twice by accident.
+    async fn trigger_action(&mut self, session: &Session, store: &Store) {
+        let Some(id) = self.current().map(|row| row.id.clone()) else {
+            return;
+        };
+        let Some(item) = self
+            .selected_action
+            .and_then(|selected| self.action_items().into_iter().nth(selected))
+        else {
+            return;
+        };
+
+        let outcome = match item {
+            ActionItem::Whole(Action::View { url, .. }) => {
+                self.selected_action = None;
+                match open::that(&url) {
+                    Ok(()) => Ok(format!("ouvert : {url}")),
+                    Err(error) => Err(format!("impossible d'ouvrir {url}: {error}")),
+                }
+            }
+            ActionItem::Whole(Action::Reply { .. }) => {
+                // Not a network call: the command line becomes the text box, and
+                // `Message::SubmitReply` is where this actually goes out.
+                self.selected_action = None;
+                self.command = Some(String::new());
+                self.reply_for = Some(id);
+                return;
+            }
+            ActionItem::Whole(Action::Ack { key, .. }) => {
+                self.selected_action = None;
+                session
+                    .interact(&id, Interaction::Ack { key })
+                    .await
+                    .map(|()| "reçu".to_owned())
+                    .map_err(|error| error.to_string())
+            }
+            ActionItem::Whole(Action::Silence {
+                scope, duration, ..
+            }) => {
+                self.selected_action = None;
+                session
+                    .silence(
+                        &id,
+                        SilenceBody {
+                            scope: Some(scope),
+                            duration,
+                        },
+                    )
+                    .await
+                    .map(|()| "mis en silence".to_owned())
+                    .map_err(|error| error.to_string())
+            }
+            ActionItem::Whole(Action::Choice { .. }) => {
+                // Never selected directly — `ActionItem::list` expands a `choice`
+                // into its options, and only those reach here as `ChoiceOption`.
+                self.selected_action = None;
+                return;
+            }
+            ActionItem::ChoiceOption { key, option, .. } => {
+                self.selected_action = None;
+                session
+                    .interact(&id, Interaction::Choice { key, option })
+                    .await
+                    .map(|()| "choix enregistré".to_owned())
+                    .map_err(|error| error.to_string())
+            }
+        };
+
+        // Both halves are a `String` a person reads in the status line — the
+        // difference between them was already spent choosing the wording above.
+        self.status = outcome.unwrap_or_else(|message| message);
+        self.refresh(session, store).await;
+    }
+
+    /// Ask the server how much is unread, per channel — the sidebar badge.
+    ///
+    /// Split out of [`Self::refresh`] because [`Self::reload_from_store`] wants it
+    /// too: unread counts are server-authoritative (design §7.3 — reading in two
+    /// inboxes and marking read in one has to be reflected in the other), so
+    /// nothing short of asking answers correctly, unlike the inbox rows themselves,
+    /// which the local cache already holds.
+    async fn refresh_unread(&mut self, session: &Session) {
+        // A badge that fails to load leaves the sidebar without one rather than
+        // taking the frame down with it: the channel list and the inbox are what
+        // this screen is for, and a stale count is worse than no count.
+        match session.unread().await {
+            Ok(counts) => {
+                // `u64::try_from` and not a cast: the generated client widens the
+                // schema's unsigned count to `i64` (it is a boundary, not an
+                // interface — see `notify_client_core`), and an entry that failed
+                // to be a positive count is dropped rather than rendered as `(0)`.
+                // That keeps this map's invariant — every key is a badge worth
+                // drawing — which is the same one the port states server-side.
+                self.unread = counts
+                    .into_iter()
+                    .filter_map(|count| {
+                        u64::try_from(count.unread)
+                            .ok()
+                            .filter(|unread| *unread > 0)
+                            .map(|unread| (count.channel.to_string(), unread))
+                    })
+                    .collect();
+            }
+            Err(error) => self.status = format!("non-lus: {error}"),
+        }
+    }
+
+    /// Redraw from the local cache — no request for the inbox rows themselves
+    /// (design §9.3bis). What a front end that lost the election does, and what a
+    /// poke from the holder triggers.
+    ///
+    /// The channel *list* is left alone: it comes from the server and does not
+    /// change because a notification landed. Unread *counts* are a different
+    /// matter — they are exactly what changes when one lands — so this does make
+    /// one request for those, mirroring the web client's own `unread.refresh()` on
+    /// every stream event: an arrival "only says *ask again*", and a burst of them
+    /// collapses into the one `StoreChanged` this is called from, not one request
+    /// per notification.
+    pub(crate) async fn reload_from_store(&mut self, session: &Session, store: &Store) {
         match store.cached_inbox(100) {
             Ok(cached) => {
                 let fresh: Vec<Row> = cached.into_iter().map(Row::from_cache).collect();
@@ -455,6 +734,8 @@ impl App {
             }
             Err(error) => self.status = format!("store: {error}"),
         }
+
+        self.refresh_unread(session).await;
 
         self.clamp_selection();
     }
@@ -503,6 +784,17 @@ impl App {
     /// The row the detail pane is showing.
     pub(crate) fn current(&self) -> Option<&Row> {
         self.inbox.get(self.selected_row)
+    }
+
+    /// The current notification's actions, flattened for the list (design §2.3).
+    ///
+    /// Empty either because there is no current notification or because it has
+    /// none — [`Message::EnterActions`] does not need to tell the two apart, and
+    /// neither does the render side.
+    pub(crate) fn action_items(&self) -> Vec<ActionItem> {
+        self.current()
+            .map(|row| ActionItem::list(&row.actions))
+            .unwrap_or_default()
     }
 }
 
@@ -599,6 +891,8 @@ mod tests {
         reason = "a failing assertion is a failing test"
     )]
 
+    use notify_client_core::types::ChoiceOption;
+
     use super::*;
 
     fn app() -> App {
@@ -631,6 +925,161 @@ mod tests {
         assert_eq!(
             app.key(KeyCode::Char('q'), KeyModifiers::NONE),
             Message::Quit
+        );
+    }
+
+    fn ack_action() -> Action {
+        Action::Ack {
+            key: ActionKey::from("ack-etcd".to_owned()),
+            label: "Je m'en occupe".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_pressed_only_opens_the_action_list_when_detail_is_focused_and_there_are_any() {
+        let mut app = app();
+        let mut with_actions = row("ntf_1");
+        with_actions.actions = vec![ack_action()];
+        app.inbox = vec![with_actions, row("ntf_2")];
+
+        // Inbox focused: `a` is not the actions binding here, whatever the row has.
+        app.focus = Pane::Inbox;
+        assert_eq!(
+            app.key(KeyCode::Char('a'), KeyModifiers::NONE),
+            Message::Ignored
+        );
+
+        // Détail focused, but on the row with no actions.
+        app.focus = Pane::Detail;
+        app.selected_row = 1;
+        assert_eq!(
+            app.key(KeyCode::Char('a'), KeyModifiers::NONE),
+            Message::Ignored
+        );
+
+        // Détail focused, on the row that has one.
+        app.selected_row = 0;
+        assert_eq!(
+            app.key(KeyCode::Char('a'), KeyModifiers::NONE),
+            Message::EnterActions
+        );
+    }
+
+    #[test]
+    fn moving_in_the_action_list_does_not_scroll_or_move_the_inbox() {
+        let mut app = app();
+        let mut with_actions = row("ntf_1");
+        with_actions.actions = vec![ack_action(), ack_action()];
+        app.inbox = vec![with_actions];
+        app.focus = Pane::Detail;
+        app.selected_action = Some(0);
+
+        app.move_selection(1);
+
+        assert_eq!(app.selected_action, Some(1));
+        assert_eq!(
+            app.selected_row, 0,
+            "the inbox selection must not have moved"
+        );
+        assert_eq!(app.detail_scroll, 0, "the body must not have scrolled");
+
+        // Stops at the end rather than wrapping, same rule as everywhere else.
+        app.move_selection(5);
+        assert_eq!(app.selected_action, Some(1));
+    }
+
+    #[test]
+    fn escaping_the_action_list_returns_to_ordinary_detail_scrolling() {
+        let mut app = app();
+        let mut with_actions = row("ntf_1");
+        with_actions.actions = vec![ack_action()];
+        app.inbox = vec![with_actions];
+        app.focus = Pane::Detail;
+        app.selected_action = Some(0);
+
+        assert_eq!(app.key(KeyCode::Esc, KeyModifiers::NONE), Message::Cancel);
+
+        app.selected_action = None; // what `update` would have done with `Cancel`
+        app.move_selection(1);
+        assert_eq!(
+            app.detail_scroll, 1,
+            "j/k must scroll the body again once the list is closed"
+        );
+    }
+
+    #[test]
+    fn a_choice_action_flattens_into_one_item_per_option() {
+        let choice = Action::Choice {
+            key: ActionKey::from("escalate".to_owned()),
+            label: "Escalade".to_owned(),
+            options: vec![
+                ChoiceOption {
+                    key: ChoiceOptionKey::from("oncall".to_owned()),
+                    label: "Page on-call".to_owned(),
+                },
+                ChoiceOption {
+                    key: ChoiceOptionKey::from("wait".to_owned()),
+                    label: "Attendre".to_owned(),
+                },
+            ],
+        };
+
+        let items = ActionItem::list(&[ack_action(), choice]);
+
+        assert_eq!(items.len(), 3, "one ack, plus one item per choice option");
+        assert_eq!(items[0].label(), "Je m'en occupe");
+        assert_eq!(items[1].label(), "Page on-call");
+        assert_eq!(items[2].label(), "Attendre");
+        assert!(
+            matches!(&items[1], ActionItem::ChoiceOption { key, .. } if key.as_str() == "escalate"),
+            "every option carries the parent action's key, not one of its own"
+        );
+    }
+
+    #[test]
+    fn moving_with_detail_focused_scrolls_the_body_instead_of_the_selection() {
+        // The bug this pins: `j`/`k` on a long Détail pane used to always move
+        // `selected_row`, silently jumping to the next notification.
+        let mut app = app();
+        app.inbox = vec![row("ntf_1"), row("ntf_2")];
+        app.focus = Pane::Detail;
+        app.selected_row = 0;
+
+        app.move_selection(1);
+        app.move_selection(1);
+
+        assert_eq!(app.selected_row, 0, "the selection must not have moved");
+        assert_eq!(app.detail_scroll, 2);
+
+        app.move_selection(-1);
+        assert_eq!(app.detail_scroll, 1);
+    }
+
+    #[test]
+    fn detail_scroll_does_not_go_negative() {
+        let mut app = app();
+        app.inbox = vec![row("ntf_1")];
+        app.focus = Pane::Detail;
+
+        app.move_selection(-5);
+
+        assert_eq!(app.detail_scroll, 0);
+    }
+
+    #[test]
+    fn selecting_a_different_row_resets_the_detail_scroll() {
+        let mut app = app();
+        app.inbox = vec![row("ntf_1"), row("ntf_2")];
+        app.focus = Pane::Detail;
+        app.detail_scroll = 7;
+
+        app.focus = Pane::Inbox;
+        app.move_selection(1);
+
+        assert_eq!(app.selected_row, 1);
+        assert_eq!(
+            app.detail_scroll, 0,
+            "a different notification is on screen now, not the one that was scrolled into"
         );
     }
 
@@ -730,6 +1179,7 @@ mod tests {
             status: Status::Info,
             late_by: None,
             muted_by_dnd: false,
+            actions: Vec::new(),
         }
     }
 

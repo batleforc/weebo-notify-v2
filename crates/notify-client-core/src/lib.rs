@@ -45,8 +45,9 @@ pub use tray::{Link, Tray, TrayIcon, tray};
 /// depend on the generated crate directly.
 pub mod types {
     pub use notify_client_api::types::{
-        Action, ActionKey, Actions, Channel, ChannelId, ChannelPolicyBody, Day, Device, Dnd,
-        DndDraft, DndScope, Image, Notification, Principal, Priority, Progress, Published,
-        QuietHours, Scope, State, Status, Ttl, UnreadCount, UserId, WallClock,
+        Action, ActionKey, Actions, Channel, ChannelId, ChannelPolicyBody, ChoiceOption,
+        ChoiceOptionKey, Day, Device, Dnd, DndDraft, DndScope, HumanDuration, Image, Interaction,
+        Notification, Principal, Priority, Progress, Published, QuietHours, Scope, SilenceBody,
+        SilenceScope, State, Status, Ttl, UnreadCount, UserId, WallClock,
     };
 }
