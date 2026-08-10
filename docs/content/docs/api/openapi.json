@@ -642,6 +642,106 @@
         ]
       }
     },
+    "/api/v1/attachments/fs/{id}/download": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Hand back the bytes a `presign_download` URL was signed for.",
+        "operationId": "fs_download",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The attachment id `presign_download` minted",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "The bearer token from the presigned URL",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bytes"
+          },
+          "403": {
+            "description": "The token is missing, expired, or for another id/purpose"
+          },
+          "404": {
+            "description": "No such attachment, or not a valid attachment id"
+          },
+          "501": {
+            "description": "This deployment is not running the filesystem backend"
+          }
+        }
+      }
+    },
+    "/api/v1/attachments/fs/{id}/upload": {
+      "put": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Accept the bytes a `presign_upload` URL was signed for.",
+        "operationId": "fs_upload",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The attachment id `presign_upload` minted",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "The bearer token from the presigned URL",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The raw bytes",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/RawBytes"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Stored"
+          },
+          "403": {
+            "description": "The token is missing, expired, or for another id/purpose"
+          },
+          "404": {
+            "description": "Not a valid attachment id"
+          },
+          "413": {
+            "description": "Over the 25 MiB ceiling (§8.2)"
+          },
+          "501": {
+            "description": "This deployment is not running the filesystem backend"
+          }
+        }
+      }
+    },
     "/api/v1/attachments/presign": {
       "post": {
         "tags": [
@@ -734,7 +834,7 @@
           "notifications"
         ],
         "summary": "Sign a download of an attachment a notification shows.",
-        "operationId": "download",
+        "operationId": "presign_download",
         "parameters": [
           {
             "name": "id",
@@ -1642,6 +1742,49 @@
           },
           "429": {
             "description": "Over the publish quota",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/cli": {
+      "get": {
+        "tags": [
+          "cli"
+        ],
+        "summary": "Download the `notify` CLI binary this server was built with.",
+        "description": "No scope beyond \"logged in\" (`Authenticated` alone, the same weakest\nrequirement `GET /whoami` uses) — a person and a CI service account are\nequally allowed to fetch it, which is why the principal is never narrowed.",
+        "operationId": "download",
+        "responses": {
+          "200": {
+            "description": "The `notify` binary (Linux)",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "This deployment does not serve it (no [cli] section)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6113,6 +6256,11 @@
           }
         }
       },
+      "RawBytes": {
+        "type": "string",
+        "format": "binary",
+        "description": "The raw attachment bytes."
+      },
       "Readership": {
         "type": "object",
         "description": "What \"seen by 3/5\" unfolds into (design §7.3, §10.3).\n\nThe number on the badge is the headline; the hover card is the answer to the\nquestion the badge provokes — *who*, and *when*. Delivery stays folded underneath\nas a device count, because \"it reached four screens\" and \"three people read it\"\nare different facts and only the second one is about readership.",
@@ -6978,6 +7126,10 @@
     {
       "name": "admin",
       "description": "Platform console — metadata and operations only"
+    },
+    {
+      "name": "cli",
+      "description": "Downloading the `notify` CLI binary"
     }
   ]
 }

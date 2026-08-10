@@ -18,6 +18,11 @@ workspace = true
 notify-app = { workspace = true, features = ["openapi"] }
 notify-domain = { workspace = true, features = ["openapi"] }
 notify-ports = { workspace = true, features = ["openapi"] }
+# The one adapter this layer depends on directly rather than only through a port
+# (ADR-0022): a filesystem-backed presign points back at this crate's own routes,
+# and those routes need `FsAttachments::verify` — deliberately not on
+# `AttachmentStore`, since no other backend serves its own bytes over HTTP.
+notify-attachments-fs = { workspace = true }
 
 actix-web = { workspace = true }
 actix-web-lab = { workspace = true }
@@ -41,5 +46,6 @@ notify-ports = { workspace = true, features = ["openapi", "test-utils"] }
 # The suite builds its own fixtures — a 900x300 JPEG is the only way to prove the
 # server resized and re-encoded rather than stored what it was given.
 image = { workspace = true, features = ["jpeg"] }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }

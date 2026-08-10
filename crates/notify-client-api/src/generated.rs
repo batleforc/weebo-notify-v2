@@ -6191,6 +6191,58 @@ person means by "Friday night".*/
 device's.*/
         pub timezone: ::std::string::String,
     }
+    ///The raw attachment bytes.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The raw attachment bytes.",
+    ///  "type": "string",
+    ///  "format": "binary"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct RawBytes(pub ::std::string::String);
+    impl ::std::ops::Deref for RawBytes {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<RawBytes> for ::std::string::String {
+        fn from(value: RawBytes) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for RawBytes {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for RawBytes {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for RawBytes {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     /**What "seen by 3/5" unfolds into (design §7.3, §10.3).
 
 The number on the badge is the headline; the hover card is the answer to the
@@ -8808,6 +8860,104 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /**Hand back the bytes a `presign_download` URL was signed for
+
+Sends a `GET` request to `/api/v1/attachments/fs/{id}/download`
+
+Arguments:
+- `id`: The attachment id `presign_download` minted
+- `token`: The bearer token from the presigned URL
+*/
+    pub async fn fs_download<'a>(
+        &'a self,
+        id: &'a str,
+        token: &'a str,
+    ) -> Result<ResponseValue<()>, Error<()>> {
+        let url = format!(
+            "{}/api/v1/attachments/fs/{}/download", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "fs_download",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => Ok(ResponseValue::empty(response)),
+            403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            501u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Accept the bytes a `presign_upload` URL was signed for
+
+Sends a `PUT` request to `/api/v1/attachments/fs/{id}/upload`
+
+Arguments:
+- `id`: The attachment id `presign_upload` minted
+- `token`: The bearer token from the presigned URL
+- `body`: The raw bytes
+*/
+    pub async fn fs_upload<'a, B: Into<reqwest::Body>>(
+        &'a self,
+        id: &'a str,
+        token: &'a str,
+        body: B,
+    ) -> Result<ResponseValue<()>, Error<()>> {
+        let url = format!(
+            "{}/api/v1/attachments/fs/{}/upload", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
+            )
+            .body(body)
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "fs_upload",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            413u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            501u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /**Sign an upload to the object store
 
 Sends a `POST` request to `/api/v1/attachments/presign`
@@ -8869,7 +9019,7 @@ Sends a `GET` request to `/api/v1/attachments/{id}`
 Arguments:
 - `id`: The attachment id a payload references
 */
-    pub async fn download<'a>(
+    pub async fn presign_download<'a>(
         &'a self,
         id: &'a str,
     ) -> Result<ResponseValue<types::PresignedDownload>, Error<types::Problem>> {
@@ -8893,7 +9043,7 @@ Arguments:
             .headers(header_map)
             .build()?;
         let info = OperationInfo {
-            operation_id: "download",
+            operation_id: "presign_download",
         };
         self.pre(&mut request, &info).await?;
         let result = self.exec(request, &info).await;
@@ -9542,6 +9692,45 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Download the `notify` CLI binary this server was built with
+
+No scope beyond "logged in" (`Authenticated` alone, the same weakest
+requirement `GET /whoami` uses) — a person and a CI service account are
+equally allowed to fetch it, which is why the principal is never narrowed.
+
+Sends a `GET` request to `/api/v1/cli`
+
+*/
+    pub async fn download<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<ByteStream>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/cli", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self.client.get(url).headers(header_map).build()?;
+        let info = OperationInfo {
+            operation_id: "download",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => Ok(ResponseValue::stream(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            501u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

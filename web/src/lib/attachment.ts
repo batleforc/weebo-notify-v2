@@ -36,7 +36,7 @@
  * failing.
  */
 
-import { download } from "@/api/generated";
+import { presignDownload } from "@/api/generated";
 import type { Image } from "@/api/generated/types.gen";
 
 /**
@@ -114,7 +114,7 @@ function signedUrl(id: string): Promise<string | null> {
 }
 
 async function sign(id: string): Promise<Signed | null> {
-  const response = await download({ path: { id } });
+  const response = await presignDownload({ path: { id } });
   if (response.error || !response.data) {
     return null;
   }

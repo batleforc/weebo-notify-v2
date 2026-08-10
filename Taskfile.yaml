@@ -13,6 +13,7 @@ includes:
   tauri: ./.tasks/tauri.yaml
   browser: ./.tasks/browser.yaml
   desktop: ./.tasks/desktop.yaml
+  helm: ./.tasks/helm.yaml
 
 tasks:
   init:

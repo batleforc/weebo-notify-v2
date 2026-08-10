@@ -1,0 +1,31 @@
+{{- if .Values.web.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+  {{- with .Values.web.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.web.ingress.className }}
+  ingressClassName: {{ .Values.web.ingress.className }}
+  {{- end }}
+  {{- with .Values.web.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.web.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }}
+                port:
+                  number: {{ .Values.web.service.port }}
+{{- end }}

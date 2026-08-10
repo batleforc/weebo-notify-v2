@@ -25,4 +25,9 @@ overrides:
   # this repository produces — but "only a build tool" is how a supply-chain
   # problem gets waved through, and the fix is one line.
   js-yaml: ^4.3.0
+  # GHSA-2v37-7h3g-55p8 — nanoid's custom alphabet generator can loop forever
+  # when size is 0, fixed in 3.3.17. Reaches us only through postcss, itself
+  # pulled in at build time by @vue/compiler-sfc — same "only a build tool"
+  # reasoning as js-yaml above, and the same one-line fix.
+  nanoid: ^3.3.17
 

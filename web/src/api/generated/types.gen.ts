@@ -1678,6 +1678,11 @@ export type QuietHours = {
 };
 
 /**
+ * The raw attachment bytes.
+ */
+export type RawBytes = Blob | File;
+
+/**
  * What "seen by 3/5" unfolds into (design §7.3, §10.3).
  *
  * The number on the badge is the headline; the hover card is the answer to the
@@ -2671,6 +2676,93 @@ export type SetKeyLimitResponses = {
 
 export type SetKeyLimitResponse = SetKeyLimitResponses[keyof SetKeyLimitResponses];
 
+export type FsDownloadData = {
+    body?: never;
+    path: {
+        /**
+         * The attachment id `presign_download` minted
+         */
+        id: string;
+    };
+    query: {
+        /**
+         * The bearer token from the presigned URL
+         */
+        token: string;
+    };
+    url: '/api/v1/attachments/fs/{id}/download';
+};
+
+export type FsDownloadErrors = {
+    /**
+     * The token is missing, expired, or for another id/purpose
+     */
+    403: unknown;
+    /**
+     * No such attachment, or not a valid attachment id
+     */
+    404: unknown;
+    /**
+     * This deployment is not running the filesystem backend
+     */
+    501: unknown;
+};
+
+export type FsDownloadResponses = {
+    /**
+     * The bytes
+     */
+    200: unknown;
+};
+
+export type FsUploadData = {
+    /**
+     * The raw bytes
+     */
+    body: RawBytes;
+    path: {
+        /**
+         * The attachment id `presign_upload` minted
+         */
+        id: string;
+    };
+    query: {
+        /**
+         * The bearer token from the presigned URL
+         */
+        token: string;
+    };
+    url: '/api/v1/attachments/fs/{id}/upload';
+};
+
+export type FsUploadErrors = {
+    /**
+     * The token is missing, expired, or for another id/purpose
+     */
+    403: unknown;
+    /**
+     * Not a valid attachment id
+     */
+    404: unknown;
+    /**
+     * Over the 25 MiB ceiling (§8.2)
+     */
+    413: unknown;
+    /**
+     * This deployment is not running the filesystem backend
+     */
+    501: unknown;
+};
+
+export type FsUploadResponses = {
+    /**
+     * Stored
+     */
+    204: void;
+};
+
+export type FsUploadResponse = FsUploadResponses[keyof FsUploadResponses];
+
 export type PresignData = {
     body: PresignBody;
     path?: never;
@@ -2712,7 +2804,7 @@ export type PresignResponses = {
 
 export type PresignResponse = PresignResponses[keyof PresignResponses];
 
-export type DownloadData = {
+export type PresignDownloadData = {
     body?: never;
     path: {
         /**
@@ -2724,7 +2816,7 @@ export type DownloadData = {
     url: '/api/v1/attachments/{id}';
 };
 
-export type DownloadErrors = {
+export type PresignDownloadErrors = {
     /**
      * No usable credential
      */
@@ -2739,16 +2831,16 @@ export type DownloadErrors = {
     501: Problem;
 };
 
-export type DownloadError = DownloadErrors[keyof DownloadErrors];
+export type PresignDownloadError = PresignDownloadErrors[keyof PresignDownloadErrors];
 
-export type DownloadResponses = {
+export type PresignDownloadResponses = {
     /**
      * A short-lived signed download
      */
     200: PresignedDownload;
 };
 
-export type DownloadResponse = DownloadResponses[keyof DownloadResponses];
+export type PresignDownloadResponse = PresignDownloadResponses[keyof PresignDownloadResponses];
 
 export type ThumbnailData = {
     body?: never;
@@ -3223,6 +3315,35 @@ export type UpsertResponses = {
 };
 
 export type UpsertResponse = UpsertResponses[keyof UpsertResponses];
+
+export type DownloadData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/cli';
+};
+
+export type DownloadErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * This deployment does not serve it (no [cli] section)
+     */
+    501: Problem;
+};
+
+export type DownloadError = DownloadErrors[keyof DownloadErrors];
+
+export type DownloadResponses = {
+    /**
+     * The `notify` binary (Linux)
+     */
+    200: Blob | File;
+};
+
+export type DownloadResponse = DownloadResponses[keyof DownloadResponses];
 
 export type ListDevicesData = {
     body?: never;

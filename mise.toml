@@ -2,7 +2,13 @@
 # --- Inherited from weebo-base ---
 cocogitto = "latest"
 node = "24"
-rust = "latest"
+# `profile = "default"` is explicit because mise otherwise inherits whatever
+# rustup's own default profile happens to be (`rustup show profile`). A
+# workstation that has ever run plain `rustup default` ends up with `default`
+# (rustfmt + clippy included) and never notices; a bare CI runner has no prior
+# rustup state, mise falls back to `minimal`, and `task lint:check` fails with
+# "cargo-fmt is not installed" (fmt and clippy are both required — .tasks/lint.yaml).
+rust = { version = "latest", profile = "default" }
 task = "latest"
 gitleaks = "latest"
 claude = "latest"
@@ -19,6 +25,7 @@ cargo-binstall = "latest"        # lets the cargo: backend below fetch prebuilt 
 trivy = "latest"                 # Containerfile/image + filesystem CVE scan (task audit)
 awscli = "latest"                # seeds the RustFS bucket in dev/seed/seed.sh
 "cargo:sqlx-cli" = "latest"      # `sqlx migrate` in dev/seed/seed.sh (not in the mise registry)
+helm = "latest"                  # lint/template/package charts/weebo-notify (task helm)
 # `yq` used to live here for `task gen:devfile`, which inlined the identity
 # provider's configuration into devfile.yaml. The provider reads the committed file
 # directly now (ADR-0014), so both the step and the tool are gone.

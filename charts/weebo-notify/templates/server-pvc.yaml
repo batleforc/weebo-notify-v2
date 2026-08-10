@@ -1,0 +1,17 @@
+{{- if and (eq .Values.server.attachments.kind "filesystem") .Values.server.attachments.persistence.enabled (not .Values.server.attachments.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server-attachments") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.server.attachments.persistence.accessMode }}
+  {{- if .Values.server.attachments.persistence.storageClassName }}
+  storageClassName: {{ .Values.server.attachments.persistence.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.server.attachments.persistence.size }}
+{{- end }}

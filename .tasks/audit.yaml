@@ -7,6 +7,7 @@ tasks:
       - task: cargo
       - task: web
       - task: container
+      - task: helm
 
   cargo:
     desc: "Rust dependencies: RustSec advisories (cargo-audit) + licence/ban policy (cargo-deny)"
@@ -39,8 +40,32 @@ tasks:
     # engine and no build. What it CANNOT see is the base images' package lists —
     # that is `audit:image` below, and the two are separate because only one of them
     # can run in an Eclipse Che workspace (§12.4).
+    #
+    # `charts/` is skipped here, not silently: trivy's own Helm rendering hits
+    # `web.env.apiBaseUrl`/`oidcIssuer` `required` guards with no values file to
+    # satisfy them, which fails the whole scan rather than just that chart —
+    # `audit:helm` below scans it instead, with the placeholders it needs.
     cmds:
-      - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity HIGH,CRITICAL .
+      - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity HIGH,CRITICAL --skip-dirs charts .
+
+  helm:
+    desc: "Scan charts/weebo-notify for Kubernetes misconfigurations and secrets (trivy config)"
+    # The two `required` values below exist so a real `helm install` on an
+    # incomplete release fails at render time rather than as a confusing runtime
+    # 400 — trivy renders the same template, so it needs the same two, as
+    # placeholders rather than a real deployment's values.
+    #
+    # `--ignorefile` is explicit rather than relying on trivy's own discovery:
+    # that only finds `charts/weebo-notify/.trivyignore` automatically when the
+    # scan runs *from* that directory, not when it is passed as a path from the
+    # repository root, which is how this task and CI both invoke it.
+    cmds:
+      - >-
+        trivy config --exit-code 1 --severity HIGH,CRITICAL
+        --ignorefile charts/weebo-notify/.trivyignore
+        --helm-set web.env.apiBaseUrl=https://notify.example.invalid
+        --helm-set web.env.oidcIssuer=https://auth.example.invalid
+        charts/weebo-notify
 
   image:
     desc: "Scan the built server and web images for CVEs (trivy) — needs them built and a container engine"

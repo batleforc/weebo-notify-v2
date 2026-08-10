@@ -1,0 +1,62 @@
+---
+title: ADR-0022 — A filesystem attachment store, for deployments with no bucket at all
+description: notify-attachments-fs is a second AttachmentStore, selected by config, that presigns against the server itself rather than a bucket.
+---
+
+Status: accepted (2026-08-10) · Supersedes: — · Superseded by: —
+
+## Context
+
+ADR-0002 commits to the object store being S3-compatible, RustFS by default, so
+that swapping in MinIO, Garage or real S3 is configuration rather than code. That
+still leaves a deployment with no S3-compatible service running at all — a small
+self-host, a dev box, a homelab — with no attachment store to configure, only one
+to go and stand up first.
+
+`AttachmentStore` (§6.1) does not actually require a bucket; it requires
+`presign_upload`/`presign_download` to hand back a URL and `put`/`get` to move
+bytes. What §6.1 does assume is that the URL those two methods hand out points at
+somebody else's HTTP endpoint, reachable without the server on the data path. A
+directory on disk has no such endpoint of its own.
+
+## Decision
+
+A second adapter, `notify-attachments-fs`, implements `AttachmentStore` over a
+local directory, selected by `[attachments] kind = "filesystem"`. It resolves the
+missing endpoint by pointing presigned URLs **back at this server**: two new,
+deliberately unauthenticated routes (`PUT`/`GET /attachments/fs/{id}/upload`|
+`/download`) carry the bytes, gated by a short-lived HMAC-SHA256 token in the query
+string — the same construction as the webhook signer (`notify-sinks-webhook`),
+standing in for the bucket signature S3 would otherwise check.
+
+This is a scoped, named exception to §6.1's "client → bucket, never through the
+server": for this one backend only, an upload's bytes do transit the server
+process. Every other backend, and every other route, keeps the existing contract
+unchanged.
+
+## Consequences
+
+**Positive**
+
+- A deployment needs nothing beyond a writable directory — no bucket, no second
+  container, no credentials to generate — to run attachments at all.
+- `AttachmentStore` gained no new methods and no new callers had to change:
+  `notify-app`'s use cases, the registry, the purge job and the existing
+  `GET /attachments/{id}/thumbnail` route are all backend-agnostic already.
+
+**Negative**
+
+- Attachment bytes transit the server process on a filesystem-backed deployment,
+  unlike every S3-backed one — the property §6.1 chose presigning specifically to
+  avoid.
+- The signed token is this adapter's own invention, not a reviewed third-party
+  signature scheme; its correctness is this adapter's to keep proving; see
+  `notify-attachments-fs::token`'s own test suite.
+
+**Accepted debt**
+
+- Single-node only. A directory on disk has no cross-replica story: a
+  filesystem-backed deployment either runs one replica or mounts a shared volume
+  itself, and neither is this ADR's problem to solve. A deployment that outgrows
+  one node switches `kind` back to `s3` — nothing about the data model or the
+  route contract changes to make that possible.

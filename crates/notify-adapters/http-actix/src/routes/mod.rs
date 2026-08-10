@@ -3,6 +3,7 @@
 pub(crate) mod accounts;
 pub(crate) mod admin;
 pub(crate) mod attachments;
+pub(crate) mod attachments_fs;
 pub(crate) mod channels;
 pub(crate) mod cli;
 pub(crate) mod federation;
@@ -24,6 +25,10 @@ use utoipa_actix_web::service_config::ServiceConfig;
 /// lets `notify-server dump-openapi` build the document without a database, an
 /// object store or an identity provider (design §3.2).
 pub fn configure(config: &mut ServiceConfig<'_>) {
+    // Only `attachments_fs::upload` reads a raw body, and 25 MiB is design §8.2's
+    // ceiling for one — everything else on this scope is JSON, governed by its own
+    // default limit rather than this one.
+    config.app_data(attachments_fs::payload_config());
     config.service(
         utoipa_actix_web::scope("/api/v1")
             .service(notifications::publish)
@@ -61,6 +66,8 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(attachments::presign)
             .service(attachments::download)
             .service(attachments::thumbnail)
+            .service(attachments_fs::fs_upload)
+            .service(attachments_fs::fs_download)
             .service(federation::exchange)
             .service(push::webpush_key)
             .service(preferences::read_dnd)

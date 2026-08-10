@@ -1,0 +1,53 @@
+{{- /* Ingress-direction only: this chart knows the two flows it creates
+   (web -> server, ingress-controller -> both), but not where Postgres, the
+   object store, Redis or the OIDC issuer actually live, so it does not attempt
+   an egress policy — a wrong guess there fails closed against a real
+   dependency, which is worse than no policy at all. */}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 14 }}
+        {{- with .Values.networkPolicy.ingressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- with .Values.networkPolicy.ingressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- else }}
+        - {}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+{{- end }}

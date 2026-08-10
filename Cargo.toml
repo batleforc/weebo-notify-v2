@@ -10,6 +10,7 @@ members = [
     "crates/notify-adapters/eventbus-redis",
     "crates/notify-adapters/oidc",
     "crates/notify-adapters/attachments-s3",
+    "crates/notify-adapters/attachments-fs",
     "crates/notify-adapters/avatars",
     "crates/notify-adapters/push-webpush",
     "crates/notify-adapters/sealed-box",
@@ -68,6 +69,7 @@ notify-eventbus-pg = { path = "crates/notify-adapters/eventbus-pg" }
 notify-eventbus-redis = { path = "crates/notify-adapters/eventbus-redis" }
 notify-oidc = { path = "crates/notify-adapters/oidc" }
 notify-attachments-s3 = { path = "crates/notify-adapters/attachments-s3" }
+notify-attachments-fs = { path = "crates/notify-adapters/attachments-fs" }
 notify-avatars = { path = "crates/notify-adapters/avatars" }
 notify-push-webpush = { path = "crates/notify-adapters/push-webpush" }
 notify-sealed-box = { path = "crates/notify-adapters/sealed-box" }
@@ -213,6 +215,7 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 
 # --- Test-only ---
 testcontainers = "0.27"
+tempfile = "3"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

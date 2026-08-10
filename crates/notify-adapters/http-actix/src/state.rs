@@ -18,6 +18,7 @@ use notify_app::{
     RevokeDevice, SearchNotifications, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd,
     SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
+use notify_attachments_fs::FsAttachments;
 use notify_ports::{EventBus, Metrics};
 
 /// The application, as the HTTP layer sees it.
@@ -101,6 +102,16 @@ pub struct ApiState {
     pub attachment: ReadAttachment,
     /// `GET /attachments/{id}/thumbnail`.
     pub attachment_thumbnail: ReadAttachmentThumbnail,
+
+    /// The filesystem attachment store, when `[attachments] kind = "filesystem"`
+    /// (ADR-0022) — `None` on every other deployment, including one with no
+    /// `[attachments]` at all or one running S3.
+    ///
+    /// A concrete type and not a second `Arc<dyn AttachmentStore>`: the two routes
+    /// this backs (`routes::attachments_fs`) need `FsAttachments::verify`, which is
+    /// deliberately not on the trait — a filesystem is the only backend that has to
+    /// serve its own bytes over HTTP, so only it needs a token to check.
+    pub attachments_fs: Option<Arc<FsAttachments>>,
 
     /// `GET /sync`.
     pub sync: SyncBacklog,

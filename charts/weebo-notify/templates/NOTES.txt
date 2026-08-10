@@ -1,0 +1,46 @@
+weebo-notify is deployed.
+
+{{- if .Values.server.ingress.enabled }}
+API:  https://{{ .Values.server.ingress.host }}/api/v1
+{{- else }}
+API:  not exposed — set server.ingress.enabled=true, or port-forward:
+      kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }} 8080:{{ .Values.server.service.port }}
+{{- end }}
+{{- if .Values.web.ingress.enabled }}
+Web:  https://{{ .Values.web.ingress.host }}
+{{- else }}
+Web:  not exposed — set web.ingress.enabled=true, or port-forward:
+      kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }} 8080:{{ .Values.web.service.port }}
+{{- end }}
+
+{{- if not .Values.server.database.existingSecret }}
+
+WARNING: server.database.existingSecret is unset. notify-server will start with
+no WNK_DATABASE__URL and refuse to connect. Create a Secret carrying the
+Postgres DSN and point server.database.existingSecret at it.
+{{- end }}
+
+{{- if not .Values.web.env.apiBaseUrl }}
+
+WARNING: web.env.apiBaseUrl is unset. The web bundle needs the server's own
+public origin (e.g. https://{{ .Values.server.ingress.host }}) to know where to
+call — set it explicitly, it is never guessed from server.ingress.host.
+{{- end }}
+
+{{- if eq .Values.server.attachments.kind "filesystem" }}
+
+NOTE: attachments are filesystem-backed (ADR-0022) — accepted debt, single-node
+only. This release runs server.replicaCount=1 regardless of the configured
+value, and its PodDisruptionBudget/HorizontalPodAutoscaler are skipped.
+{{- end }}
+
+{{- if and .Values.server.autoscaling.enabled (not .Values.server.autoscaling.customMetrics) }}
+
+NOTE: server.autoscaling is CPU-only. The design's SSE-connection-gauge target
+needs a custom-metrics adapter (Prometheus Adapter, KEDA) reading
+sse_connections off /metrics — not bundled here. Add entries under
+server.autoscaling.customMetrics once one is wired up.
+{{- end }}
+
+See charts/weebo-notify/README.md for the full secret/values checklist before
+a first install.

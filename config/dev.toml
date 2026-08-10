@@ -31,6 +31,10 @@ client_id = "weebo-notify"
 oidc_groups = ["platform-admins"]
 
 [attachments]
+# RustFS in dev (ADR-0002). Switch to `kind = "filesystem"` plus `path`,
+# `public_base_url` and `token_secret` for a deployment with no S3-compatible
+# service at all (ADR-0022) — the s3-only keys below are then ignored.
+kind = "s3"
 endpoint = "http://localhost:9000"
 bucket = "weebo-notify-attachments"
 access_key = "weebo-dev"

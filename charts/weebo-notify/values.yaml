@@ -1,0 +1,376 @@
+## weebo-notify — default values.
+##
+## Two Deployments, because they are two images serving two origins by design
+## (ADR-0021): `server` is the distroless API/SSE/WS process, `web` is the nginx
+## bundle. Nothing this chart creates is a secret's source of truth — see
+## docs/content/docs/ops/hardening.mdx. Every credential below is a reference
+## (`existingSecret` + key) to a Secret this chart expects to already exist,
+## created by whatever your cluster uses for that job (External Secrets,
+## Sealed Secrets, SOPS, ...). Postgres, the S3-compatible attachment store and
+## the OIDC issuer are external dependencies this chart does not bundle, for the
+## same reason: their HA and their encryption-at-rest are an operator's job, not
+## this chart's (docs/content/docs/ops/high-availability.mdx).
+
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+image:
+  server:
+    repository: ghcr.io/batleforc/weebo-notify
+    # Defaults to .Chart.AppVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+  web:
+    repository: ghcr.io/batleforc/weebo-notify-web
+    tag: ""
+    pullPolicy: IfNotPresent
+
+# ─────────────────────────────────────────────────────────────────────────────
+# server — notify-server: the API, SSE/WS, the GitOps reconciler, the leader-only
+# background jobs (design §13, §14.4).
+# ─────────────────────────────────────────────────────────────────────────────
+server:
+  replicaCount: 2
+
+  # `postgres` is the only implemented leader-election backend today (§14.4:
+  # kubernetes/Lease API is a named config option, not shipped code) — so there
+  # is deliberately no Lease RBAC in this chart. Revisit once notify-server
+  # actually reads `[ha] leader_election = "kubernetes"`.
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  # Closed by default (§5.1): an origin not listed here cannot call the API from
+  # a browser. Left empty, it defaults to `https://<web.ingress.host>` when
+  # `web.ingress.enabled` — the one origin this chart already knows should be
+  # allowed to call it.
+  corsOrigins: []
+
+  # The server has no separate metrics listener today: `/metrics` answers on the
+  # same port as the API (the Containerfile's `EXPOSE 8080 9090` names a second
+  # listener notify-server does not yet bind — see this chart's README). Scraped
+  # here, never through the public Ingress (hardening.mdx: publishing /metrics or
+  # /readyz is a deployment mistake, the same class of leak as publishing them).
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    namespace: ""
+    labels: {}
+
+  ingress:
+    enabled: false
+    className: ""
+    # Only `/api/v1` is routed — never `/healthz`, `/readyz` or `/metrics`
+    # (hardening.mdx). A separate host from `web.ingress.host` on purpose: the CSP
+    # the web bundle ships names the API as its own origin (ADR-0021), and a
+    # path-based split behind one host works only until an ingress controller's
+    # SSE/WebSocket buffering defaults get in the way of `/api/v1/stream`.
+    host: api.notify.example.com
+    annotations: {}
+    tls: []
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    # targetMemoryUtilizationPercentage: 80
+    # A connection-count-based target (design §14: "HPA (CPU + jauge de
+    # connexions SSE)") needs a custom-metrics adapter (Prometheus Adapter, KEDA)
+    # reading `sse_connections` off /metrics — infrastructure this chart does not
+    # assume. Add entries under `server.autoscaling.customMetrics` once one exists;
+    # they are appended to the HPA's `metrics` list verbatim.
+    customMetrics: []
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  # Soft anti-affinity by node (design §14: "anti-affinity par nœud") — preferred,
+  # not required, so a single-node cluster (a dev/staging cluster, most of all)
+  # can still schedule `replicaCount: 2`.
+  topologySpreadConstraints: []
+  podAntiAffinity: soft # soft | hard | none
+
+  # A replica in `.shutdown_timeout(15)` (main.rs) drains: stops accepting
+  # connections, lets in-flight requests and SSE streams close on their own. The
+  # grace period has to outlive that, with room for a slow client.
+  terminationGracePeriodSeconds: 30
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  # distroless/cc-debian12:nonroot's own uid:gid — asserted rather than assumed,
+  # same reasoning as the web image's Containerfile `USER 101` (a base image that
+  # one day starts as root cannot silently promote this one).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  extraEnv: []
+  extraEnvFrom: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  # ── Secrets — every field an existingSecret reference, never a value ────────
+  # `database.url` and the attachments credentials travel as environment (the
+  # config schema takes them as plain strings, so the only way to keep them out
+  # of the ConfigMap is WNK_-prefixed env sourced from a Secret — design §11's
+  # own env-override rule, used for exactly this). VAPID/federation/APNs keys are
+  # already *file paths* in the schema (`vapid_key_file`, `signing_key_file`,
+  # `key_file`) — mounted from a Secret volume instead, which is what the schema
+  # was written for.
+  database:
+    # Secret key holding a full `postgres://user:pass@host:5432/db` DSN, exposed
+    # as WNK_DATABASE__URL.
+    existingSecret: ""
+    secretKey: database-url
+
+  attachments:
+    # s3 (ADR-0002 — any S3-compatible bucket; RustFS is a dev default, not a
+    # production bet) or filesystem (ADR-0022 — a local directory, for a
+    # deployment with no bucket at all). ADR-0022's accepted debt is explicit:
+    # filesystem is single-node only, no cross-replica story — this chart forces
+    # `server.replicaCount: 1` and disables the PDB when this is selected
+    # (server-deployment.yaml), rather than let it silently corrupt under two
+    # writers.
+    kind: s3
+
+    # --- kind: s3 ---
+    endpoint: ""
+    bucket: ""
+    region: us-east-1
+    existingSecret: ""
+    accessKeyKey: access-key
+    secretKeyKey: secret-key
+
+    # --- kind: filesystem ---
+    # This server's own externally-reachable origin — the filesystem backend
+    # presigns against itself (ADR-0022), so it has to know its own address.
+    # Defaults to `https://<server.ingress.host>` when that Ingress is enabled.
+    publicBaseUrl: ""
+    # Signs the bearer URLs presign hands out; an empty one is an unsigned, open
+    # directory (the adapter's own startup check). Sourced the same way as the
+    # s3 keys above — WNK_ATTACHMENTS__TOKEN_SECRET from existingSecret.
+    tokenSecretKey: token-secret
+    persistence:
+      # A PVC this chart owns. Bring your own volume via server.extraVolumes
+      # and leave this disabled if you already have one (e.g. NFS, a cloud
+      # filesystem) — the mount path is the same either way: attachments.path.
+      enabled: false
+      path: /var/lib/weebo-notify/attachments
+      storageClassName: ""
+      size: 10Gi
+      accessMode: ReadWriteOnce
+      existingClaim: ""
+
+  eventbus:
+    # postgres (LISTEN/NOTIFY, ADR-0008, zero extra infrastructure) or redis (the
+    # scale-out path, §11). Redis is not bundled here for the same reason
+    # Postgres is not: its HA is an operator's call.
+    backend: postgres
+    redis:
+      existingSecret: ""
+      urlKey: redis-url
+
+  oidc:
+    issuer: ""
+    clientId: weebo-notify
+    audiences: []
+    groupsClaim: groups
+
+  admin:
+    # Platform-admin role — GitOps-only by design (§5.4): no API path can grant
+    # it, so it only ever comes from this list.
+    oidcGroups: []
+
+  retention:
+    defaultTtl: 7d
+    maxTtl: 90d
+    allowForever: false
+
+  push:
+    webpush:
+      enabled: false
+      existingSecret: ""
+      # Key inside existingSecret holding the P-256 VAPID private key (PEM).
+      keyName: vapid.pem
+      contact: ""
+    # Server-side transport exists (M6/M7) but the native apps that would use it
+    # (Android/iOS) are unwritten and environment-blocked upstream (D33, D34) —
+    # off by default, and turning it on here proves nothing without a device.
+    apns:
+      enabled: false
+      existingSecret: ""
+      keyName: apns.p8
+      keyId: ""
+      teamId: ""
+      topic: ""
+      sandbox: false
+    unifiedpush:
+      enabled: false
+
+  federation:
+    # CI token exchange (design §5.3). D12 is open: this path has never been
+    # exercised against a real forge, only the in-repo dev provider.
+    enabled: false
+    existingSecret: ""
+    keyName: federation.pem
+    audience: ""
+
+  sinks:
+    smtp:
+      enabled: false
+      url: ""
+      from: ""
+      username: ""
+      # `env:NAME` per the schema (`Smtp::password_ref`) — the env var named here
+      # is sourced from `existingSecret`/`passwordKey` below and injected under
+      # exactly this name, so the two stay in step.
+      passwordEnvName: WNK_SMTP_PASSWORD
+      existingSecret: ""
+      passwordKey: smtp-password
+      permalinkBase: ""
+
+  cli:
+    # Serves the `notify` binary the image already carries at `GET /api/v1/cli`
+    # (design §9). Off by default — "no default configuration is baked in" is the
+    # schema's own rule, not just this chart's.
+    enabled: false
+
+  telemetry:
+    enabled: false
+    otlpEndpoint: ""
+    serviceName: weebo-notify
+    sampleRatio: 1.0
+
+  # The GitOps-declarative part of config.toml — channels, service accounts,
+  # trust policies — is exactly the part this chart cannot usefully turn into
+  # typed Helm values without re-inventing the schema (design §11 already calls
+  # this file the declarations' source of truth). Extend it here; it is rendered
+  # with `tpl`, so it can reference `.Values`/`.Release` like any other template.
+  extraConfig: |
+    # [[channels.managed]]
+    # id = "cluster-ovh-1"
+    # name = "Cluster OVH 1 — incidents"
+    # default_ttl = "30d"
+    # receipts = true
+    #
+    #   [[channels.managed.access]]
+    #   oidc_group = "infra-admins"
+    #   scopes = ["publish", "subscribe", "manage"]
+
+  channels:
+    onRemoved: archive # archive | delete
+    reload: sighup
+
+# ─────────────────────────────────────────────────────────────────────────────
+# web — notify-web: the nginx bundle, config rendered at container boot
+# (ADR-0021), never at build time.
+# ─────────────────────────────────────────────────────────────────────────────
+web:
+  replicaCount: 2
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  ingress:
+    enabled: false
+    className: ""
+    host: notify.example.com
+    annotations: {}
+    tls: []
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  podAntiAffinity: soft
+  terminationGracePeriodSeconds: 15
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+  # nginx-unprivileged's own uid (the Containerfile's `USER 101`), asserted here
+  # for the same reason it is asserted there.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  # Rendered into `/env.js` at container boot (ADR-0021) — bare origins, no path,
+  # no trailing slash (the CSP built from these cannot parse either — same ADR).
+  env:
+    # The server Ingress's origin, e.g. https://api.notify.example.com — never a
+    # same-host path like `/api`, see `server.ingress`'s comment.
+    apiBaseUrl: ""
+    oidcIssuer: ""
+    oidcClientId: weebo-notify
+    # Defaults to same-origin `/csp-report` (the nginx template's own `return
+    # 204`) when empty.
+    cspReportUrl: ""
+    # Only needed when attachments are served from a third origin the CSP has to
+    # name explicitly (rare: the API usually presigns from its own origin).
+    attachmentOrigin: ""
+
+networkPolicy:
+  # Default-deny plus the flows this chart knows about: web -> server on
+  # `server.service.port`, server -> Postgres/S3/Redis/OIDC on 0.0.0.0/0 (their
+  # actual location is outside this chart's knowledge). Ingress-controller
+  # traffic is allowed via `policyTypes: [Ingress]` on the two Services rather
+  # than a namespace label, which is the one thing this cannot guess for you —
+  # set `networkPolicy.ingressFrom` to your controller's namespace selector.
+  enabled: false
+  ingressFrom: []

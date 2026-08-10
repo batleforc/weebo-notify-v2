@@ -24,6 +24,7 @@ use notify_app::{
     SelfJoin, SendDndDigests, SetApiKeyLimit, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
     UlidKeyGenerator, UpdateChannel, UpdateProfile, UpsertNotification,
 };
+use notify_attachments_fs::{FsAttachments, FsConfig};
 use notify_attachments_s3::{S3Attachments, S3Config};
 use notify_avatars::{ImageAttachmentThumbnailer, ImageAvatarProcessor};
 use notify_domain::{Pattern, TrustPolicies, TrustPolicy as DomainTrustPolicy};
@@ -42,7 +43,7 @@ use notify_sinks_email::{EmailSink, SmtpSettings};
 use notify_sinks_webhook::WebhookSink;
 
 use crate::bus::SharedBus;
-use crate::config::Config;
+use crate::config::{AttachmentsBackend, Config};
 use crate::push::TransportRegistry;
 use crate::reconcile::Reconciler;
 use crate::sinks::{SinkFleet, SinkRoutes};
@@ -143,14 +144,31 @@ impl Application {
         // pretends: an avatar upload then answers "not configured" instead of
         // succeeding into nowhere (§14.3 — a port with no adapter is a refusal, not
         // a silent no-op).
+        //
+        // `attachments_fs` is kept alongside as the concrete type, not just the
+        // trait object: the two unauthenticated routes a filesystem backend needs
+        // (ADR-0022) call its `verify` method, which is deliberately not part of
+        // `AttachmentStore` — that trait stays HTTP-agnostic.
+        let mut attachments_fs: Option<Arc<FsAttachments>> = None;
         let attachments: Arc<dyn AttachmentStore> = match &config.attachments {
-            Some(settings) => Arc::new(S3Attachments::connect(&S3Config {
-                endpoint: settings.endpoint.parse()?,
-                bucket: settings.bucket.clone(),
-                region: settings.region.clone(),
-                access_key: settings.access_key.clone(),
-                secret_key: settings.secret_key.clone(),
-            })?),
+            Some(settings) => match settings.kind {
+                AttachmentsBackend::S3 => Arc::new(S3Attachments::connect(&S3Config {
+                    endpoint: settings.endpoint.parse()?,
+                    bucket: settings.bucket.clone(),
+                    region: settings.region.clone(),
+                    access_key: settings.access_key.clone(),
+                    secret_key: settings.secret_key.clone(),
+                })?),
+                AttachmentsBackend::Filesystem => {
+                    let store = Arc::new(FsAttachments::connect(&FsConfig {
+                        root: settings.path.clone().into(),
+                        public_base_url: settings.public_base_url.parse()?,
+                        token_secret: settings.token_secret.clone(),
+                    })?);
+                    attachments_fs = Some(store.clone());
+                    store
+                }
+            },
             None => Arc::new(NoAttachments),
         };
         let avatars = Arc::new(ImageAvatarProcessor::new());
@@ -350,6 +368,7 @@ impl Application {
                 repository.clone(),
                 authorizer.clone(),
             ),
+            attachments_fs: attachments_fs.clone(),
             attachment_thumbnail: notify_app::ReadAttachmentThumbnail::new(
                 notify_app::Attachments {
                     store: attachments.clone(),

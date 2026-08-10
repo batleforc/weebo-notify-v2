@@ -1,0 +1,27 @@
+version: "3"
+
+silent: true
+
+vars:
+  CHART_DIR: '{{.ROOT_DIR}}/charts/weebo-notify'
+
+tasks:
+  lint:
+    desc: "Lint charts/weebo-notify (helm lint)"
+    cmds:
+      - helm lint "{{.CHART_DIR}}"
+
+  template:
+    desc: "Render charts/weebo-notify against the bundled example values, to catch templating errors before a real cluster does"
+    # Bare values.yaml can't render on its own: web.env.apiBaseUrl/oidcIssuer
+    # have no default (see the chart's README on why). The example fills those
+    # in; pass a real values file instead with `task helm:template -- -f
+    # my-values.yaml`.
+    cmds:
+      - helm template weebo-notify "{{.CHART_DIR}}" -f "{{.CHART_DIR}}/examples/values-production.yaml" {{.CLI_ARGS}}
+
+  package:
+    desc: "Package charts/weebo-notify into a .tgz under target/ (not committed)"
+    cmds:
+      - mkdir -p "{{.ROOT_DIR}}/target/helm"
+      - helm package "{{.CHART_DIR}}" --destination "{{.ROOT_DIR}}/target/helm"

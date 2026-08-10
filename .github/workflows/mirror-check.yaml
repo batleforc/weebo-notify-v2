@@ -31,6 +31,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # `notify-cli` (notify-rust's `d` feature) and `xtask` (design's D19 stub
+      # daemon) are both workspace members, so `cargo clippy --workspace` and
+      # `cargo llvm-cov nextest --workspace` below link against libdbus. GitHub's
+      # runner doesn't ship the -dev headers/pkg-config file; the Che workspace
+      # image does, which is why this was invisible outside CI.
+      - name: Install libdbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - uses: jdx/mise-action@v2
         with:
           install: true
@@ -58,6 +66,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # See the `check` job above: `task recu` builds `xtask`, which links libdbus.
+      - name: Install libdbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - uses: jdx/mise-action@v2
         with:

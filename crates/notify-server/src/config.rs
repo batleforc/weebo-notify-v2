@@ -268,9 +268,25 @@ pub(crate) struct EventBus {
     pub redis_url: Option<String>,
 }
 
+/// Which object store `[attachments]` describes (ADR-0002, ADR-0022).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AttachmentsBackend {
+    /// Any S3-compatible bucket — RustFS by default (ADR-0002).
+    #[default]
+    S3,
+    /// A local directory, served through this server's own routes rather than a
+    /// bucket URL — for deployments with no S3-compatible service at all
+    /// (ADR-0022).
+    Filesystem,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Attachments {
+    pub kind: AttachmentsBackend,
+
+    // --- `kind = "s3"` ---
     pub endpoint: String,
     pub bucket: String,
     pub access_key: String,
@@ -279,6 +295,15 @@ pub(crate) struct Attachments {
     /// has a default rather than being asked for.
     #[serde(default = "default_region")]
     pub region: String,
+
+    // --- `kind = "filesystem"` (ADR-0022) ---
+    /// Where attachments live on disk. Created at startup if missing.
+    pub path: String,
+    /// This server's own externally-reachable base URL — the filesystem backend
+    /// presigns against itself, so it has to know its own address.
+    pub public_base_url: String,
+    /// Signs the bearer URLs a filesystem-backed presign hands out.
+    pub token_secret: String,
 }
 
 fn default_region() -> String {
@@ -690,6 +715,30 @@ impl Config {
              use \"postgres\" (LISTEN/NOTIFY)"
         );
 
+        if let Some(attachments) = &self.attachments {
+            match attachments.kind {
+                AttachmentsBackend::S3 => {}
+                AttachmentsBackend::Filesystem => {
+                    anyhow::ensure!(
+                        !attachments.path.is_empty(),
+                        "[attachments] kind = \"filesystem\" requires `path`"
+                    );
+                    anyhow::ensure!(
+                        !attachments.public_base_url.is_empty(),
+                        "[attachments] kind = \"filesystem\" requires `public_base_url` \
+                         — the address this server presigns its own upload/download \
+                         URLs against"
+                    );
+                    anyhow::ensure!(
+                        !attachments.token_secret.is_empty(),
+                        "[attachments] kind = \"filesystem\" requires `token_secret` \
+                         — it signs the URLs presign hands out, and an empty one would \
+                         mean an unsigned, open directory"
+                    );
+                }
+            }
+        }
+
         for channel in &self.channels.managed {
             anyhow::ensure!(
                 !channel.id.is_empty(),
@@ -1014,6 +1063,36 @@ mod tests {
             error.contains("not implemented"),
             "two leaders across a cluster is the failure this prevents: {error}"
         );
+    }
+
+    #[test]
+    fn a_filesystem_attachment_store_without_its_required_fields_is_refused() {
+        let path = with_config("fs-incomplete", "[attachments]\nkind = \"filesystem\"\n");
+
+        let error = Config::load(&path).unwrap_err().to_string();
+
+        assert!(
+            error.contains("requires `path`"),
+            "an unset directory would be a filesystem store with nowhere to write: {error}"
+        );
+    }
+
+    #[test]
+    fn a_complete_filesystem_attachment_store_parses_and_validates() {
+        let path = with_config(
+            "fs-complete",
+            "[attachments]\n\
+             kind = \"filesystem\"\n\
+             path = \"/data/attachments\"\n\
+             public_base_url = \"https://notify.weebo.poc\"\n\
+             token_secret = \"correct-horse-battery-staple\"\n",
+        );
+
+        let config = Config::load(&path).expect("a complete filesystem config validates");
+        let attachments = config.attachments.expect("[attachments] was set");
+
+        assert_eq!(attachments.kind, AttachmentsBackend::Filesystem);
+        assert_eq!(attachments.path, "/data/attachments");
     }
 
     #[test]

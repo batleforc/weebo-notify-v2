@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+spec:
+  type: {{ .Values.server.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.server.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 4 }}

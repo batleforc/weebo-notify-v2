@@ -26,6 +26,7 @@ use notify_app::{
     SearchNotifications, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd, SilenceNotification,
     SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
+use notify_attachments_fs::{FsAttachments, FsConfig};
 use notify_avatars::{ImageAttachmentThumbnailer, ImageAvatarProcessor};
 use notify_domain::{Channel, ChannelId, Membership, Origin, Principal, Scope, User, UserId};
 use notify_http_actix::ApiState;
@@ -33,7 +34,9 @@ use notify_ports::test_utils::{
     CountingKeyGenerator, InMemory, InMemoryAttachments, StaticTokenVerifier, StubSecretHasher,
     TestClock, TestRateLimiter,
 };
-use notify_ports::{ChannelRepository, Clock as _, UserRepository, VerifiedClaims};
+use notify_ports::{
+    AttachmentStore as _, ChannelRepository, Clock as _, UserRepository, VerifiedClaims,
+};
 use serde_json::{Value, json};
 use time::Duration;
 use url::Url;
@@ -211,6 +214,11 @@ impl Harness {
                 Arc::new(store.clone()),
                 authorizer.clone(),
             ),
+            // No filesystem backend in this fixture — the in-memory double behind
+            // `attachments` above stands in for whichever store is configured, and
+            // the two `attachments_fs` routes are exercised against a real
+            // `FsAttachments` in their own test module instead.
+            attachments_fs: None,
             sync: SyncBacklog::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -1457,6 +1465,132 @@ async fn critical_t15_a_presign_over_the_ceiling_is_refused_before_it_is_signed(
     let response = test::call_service(&app, request).await;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+/// A real filesystem store, over a scratch directory this test owns.
+fn fs_store() -> (FsAttachments, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FsAttachments::connect(&FsConfig {
+        root: dir.path().to_path_buf(),
+        public_base_url: Url::parse("http://localhost:8080/").unwrap(),
+        token_secret: "test-secret".to_owned(),
+    })
+    .unwrap();
+    (store, dir)
+}
+
+fn path_and_query(url: &Url) -> String {
+    format!("{}?{}", url.path(), url.query().unwrap_or_default())
+}
+
+#[actix_web::test]
+async fn fs_bytes_round_trip_through_the_unauthenticated_upload_and_download_routes() {
+    // ADR-0022: unlike the S3 pair (`critical_t15_a_presign_over_the_ceiling_is_
+    // refused_before_it_is_signed` above), these two routes carry bytes rather than
+    // hand out a bucket URL, and take no `Authorization` header at all — the token
+    // in the query string is the only credential.
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let signed_upload = fs
+        .presign_upload(&notify_ports::UploadRequest {
+            content_type: "image/png".to_owned(),
+            content_length: 4,
+        })
+        .await
+        .unwrap();
+
+    let upload = test::TestRequest::put()
+        .uri(&path_and_query(&signed_upload.url))
+        .insert_header(("content-type", "image/png"))
+        .set_payload(b"\x89PNG".to_vec())
+        .to_request();
+    let response = test::call_service(&app, upload).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let signed_download = fs.presign_download(signed_upload.id).await.unwrap();
+    let download = test::TestRequest::get()
+        .uri(&path_and_query(&signed_download.url))
+        .to_request();
+    let response = test::call_service(&app, download).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "image/png"
+    );
+    assert_eq!(test::read_body(response).await.as_ref(), b"\x89PNG");
+}
+
+#[actix_web::test]
+async fn fs_upload_is_refused_without_a_valid_token() {
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let id = notify_domain::AttachmentId::generate();
+    let request = test::TestRequest::put()
+        .uri(&format!(
+            "/api/v1/attachments/fs/{id}/upload?token=not-a-real-token"
+        ))
+        .insert_header(("content-type", "image/png"))
+        .set_payload(b"whatever".to_vec())
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        fs.get(id).await.unwrap().is_none(),
+        "an unsigned request must not reach the disk"
+    );
+}
+
+#[actix_web::test]
+async fn fs_download_of_an_id_that_was_never_uploaded_is_a_404_even_with_a_valid_token() {
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let id = notify_domain::AttachmentId::generate();
+    let signed = fs.presign_download(id).await.unwrap();
+
+    let request = test::TestRequest::get()
+        .uri(&path_and_query(&signed.url))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[actix_web::test]
+async fn fs_routes_answer_501_on_a_deployment_running_no_filesystem_backend() {
+    // The default `Harness` — same as every other test in this file — runs the
+    // in-memory double, not `FsAttachments`, which is the ordinary S3 deployment's
+    // shape as far as `attachments_fs` is concerned: `None`.
+    let (_harness, state) = Harness::new();
+    let app = service!(state);
+
+    let id = notify_domain::AttachmentId::generate();
+    for request in [
+        test::TestRequest::put()
+            .uri(&format!("/api/v1/attachments/fs/{id}/upload?token=x"))
+            .to_request(),
+        test::TestRequest::get()
+            .uri(&format!("/api/v1/attachments/fs/{id}/download?token=x"))
+            .to_request(),
+    ] {
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
 }
 
 #[actix_web::test]

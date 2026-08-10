@@ -70,6 +70,7 @@ pub(crate) async fn presign(
 /// Sign a download of an attachment a notification shows.
 #[utoipa::path(
     get,
+    operation_id = "presign_download",
     path = "/attachments/{id}",
     tag = "notifications",
     params(("id" = String, Path, description = "The attachment id a payload references")),

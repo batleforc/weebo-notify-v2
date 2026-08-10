@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddMemberData, AddMemberErrors, AddMemberResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, DlqData, DlqErrors, DlqResponses, DownloadData, DownloadErrors, DownloadResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PresignData, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadChannelData, ReadChannelErrors, ReadChannelResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RequeueDeadLetterData, RequeueDeadLetterErrors, RequeueDeadLetterResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SetKeyLimitData, SetKeyLimitErrors, SetKeyLimitResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, ThumbnailData, ThumbnailErrors, ThumbnailResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UnreadData, UnreadErrors, UnreadResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
+import type { AddMemberData, AddMemberErrors, AddMemberResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, DlqData, DlqErrors, DlqResponses, DownloadData, DownloadErrors, DownloadResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, FsDownloadData, FsDownloadErrors, FsDownloadResponses, FsUploadData, FsUploadErrors, FsUploadResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PresignData, PresignDownloadData, PresignDownloadErrors, PresignDownloadResponses, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadChannelData, ReadChannelErrors, ReadChannelResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RequeueDeadLetterData, RequeueDeadLetterErrors, RequeueDeadLetterResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SetKeyLimitData, SetKeyLimitErrors, SetKeyLimitResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, ThumbnailData, ThumbnailErrors, ThumbnailResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UnreadData, UnreadErrors, UnreadResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -138,6 +138,24 @@ export const setKeyLimit = <ThrowOnError extends boolean = false>(options: Optio
 });
 
 /**
+ * Hand back the bytes a `presign_download` URL was signed for.
+ */
+export const fsDownload = <ThrowOnError extends boolean = false>(options: Options<FsDownloadData, ThrowOnError>): RequestResult<FsDownloadResponses, FsDownloadErrors, ThrowOnError> => (options.client ?? client).get<FsDownloadResponses, FsDownloadErrors, ThrowOnError>({ url: '/api/v1/attachments/fs/{id}/download', ...options });
+
+/**
+ * Accept the bytes a `presign_upload` URL was signed for.
+ */
+export const fsUpload = <ThrowOnError extends boolean = false>(options: Options<FsUploadData, ThrowOnError>): RequestResult<FsUploadResponses, FsUploadErrors, ThrowOnError> => (options.client ?? client).put<FsUploadResponses, FsUploadErrors, ThrowOnError>({
+    bodySerializer: null,
+    url: '/api/v1/attachments/fs/{id}/upload',
+    ...options,
+    headers: {
+        'Content-Type': 'application/octet-stream',
+        ...options.headers
+    }
+});
+
+/**
  * Sign an upload to the object store.
  */
 export const presign = <ThrowOnError extends boolean = false>(options: Options<PresignData, ThrowOnError>): RequestResult<PresignResponses, PresignErrors, ThrowOnError> => (options.client ?? client).post<PresignResponses, PresignErrors, ThrowOnError>({
@@ -154,7 +172,7 @@ export const presign = <ThrowOnError extends boolean = false>(options: Options<P
 /**
  * Sign a download of an attachment a notification shows.
  */
-export const download = <ThrowOnError extends boolean = false>(options: Options<DownloadData, ThrowOnError>): RequestResult<DownloadResponses, DownloadErrors, ThrowOnError> => (options.client ?? client).get<DownloadResponses, DownloadErrors, ThrowOnError>({
+export const presignDownload = <ThrowOnError extends boolean = false>(options: Options<PresignDownloadData, ThrowOnError>): RequestResult<PresignDownloadResponses, PresignDownloadErrors, ThrowOnError> => (options.client ?? client).get<PresignDownloadResponses, PresignDownloadErrors, ThrowOnError>({
     responseType: 'json',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/attachments/{id}',
@@ -305,6 +323,20 @@ export const upsert = <ThrowOnError extends boolean = false>(options: Options<Up
         'Content-Type': 'application/json',
         ...options.headers
     }
+});
+
+/**
+ * Download the `notify` CLI binary this server was built with.
+ *
+ * No scope beyond "logged in" (`Authenticated` alone, the same weakest
+ * requirement `GET /whoami` uses) — a person and a CI service account are
+ * equally allowed to fetch it, which is why the principal is never narrowed.
+ */
+export const download = <ThrowOnError extends boolean = false>(options?: Options<DownloadData, ThrowOnError>): RequestResult<DownloadResponses, DownloadErrors, ThrowOnError> => (options?.client ?? client).get<DownloadResponses, DownloadErrors, ThrowOnError>({
+    responseType: 'blob',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/cli',
+    ...options
 });
 
 /**

@@ -1,0 +1,37 @@
+[package]
+name = "notify-attachments-fs"
+description = "Attachment store over a local filesystem directory, for deployments with no S3-compatible bucket (ADR-0022)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+# Pinned locally rather than through `[workspace.dependencies]`, same as
+# `notify-sinks-webhook`: this is the only adapter that needs an HMAC primitive to
+# sign its own bearer URLs, and one more workspace-wide dependency line is not worth
+# it for a single crate.
+hmac = "0.12"
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+# `fs` on top of the shared feature set: this is the one adapter that reads and
+# writes files as its actual job, unlike the rest of the workspace's `std::fs`
+# uses for local config at startup.
+tokio = { workspace = true, features = ["fs"] }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

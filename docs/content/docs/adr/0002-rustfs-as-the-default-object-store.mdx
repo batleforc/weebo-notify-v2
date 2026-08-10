@@ -18,6 +18,10 @@ seconds without a heavyweight service.
 presign, put, get, head, delete. The contract we depend on is "S3-compatible", not
 "RustFS".
 
+For a deployment with no S3-compatible service at all, see ADR-0022: a filesystem
+backend is a sibling option, not a variant of this one — it does not touch what is
+decided here.
+
 ## Consequences
 
 **Positive**

@@ -34,6 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # See mirror-check.yaml's `check` job: `notify-cli`/`xtask` link libdbus,
+      # which the runner doesn't ship the -dev headers for.
+      - name: Install libdbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - uses: jdx/mise-action@v2
         with:
           install: true

@@ -1,0 +1,7 @@
+# KSV-0014: the web Deployment's `seed-html` init container runs with a
+# writable root filesystem on purpose — its only job is `cp -a`ing the image's
+# baked static assets into the emptyDir the main `web` container then mounts
+# read-write (see templates/web-deployment.yaml's header comment). The main
+# container itself keeps readOnlyRootFilesystem: true; only this scratch
+# init container is exempted.
+KSV-0014

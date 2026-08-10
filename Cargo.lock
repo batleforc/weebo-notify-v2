@@ -2968,6 +2968,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "notify-attachments-fs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hmac 0.12.1",
+ "notify-domain",
+ "notify-ports",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "notify-attachments-s3"
 version = "0.1.0"
 dependencies = [
@@ -3087,11 +3104,13 @@ dependencies = [
  "futures",
  "image",
  "notify-app",
+ "notify-attachments-fs",
  "notify-avatars",
  "notify-domain",
  "notify-ports",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
  "tracing",
@@ -3284,6 +3303,7 @@ dependencies = [
  "figment",
  "futures",
  "notify-app",
+ "notify-attachments-fs",
  "notify-attachments-s3",
  "notify-avatars",
  "notify-domain",
