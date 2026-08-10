@@ -119,6 +119,16 @@ jobs:
           restore-keys: oidc-${{ runner.os }}-
 
       - name: Install pinned tools
+        # Not optional, and not a nicety: the `aqua:` backend resolves every version
+        # through the GitHub API, which allows 60 requests an hour to an
+        # UNAUTHENTICATED caller — counted per IP, and a GitHub-hosted runner shares
+        # its egress with everyone else on that host. The first run of this pipeline
+        # exhausted it and died on `cargo-tauri` with a 403 that reads like the
+        # release was deleted. The token every workflow already has raises the limit
+        # to 1000/hour for this repository and needs no scopes to read public
+        # releases.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mise install --yes
 
       # --- Dex ------------------------------------------------------------
@@ -174,8 +184,20 @@ jobs:
           set -euo pipefail
           # The compose stack the developer environment already describes (§12.3),
           # so CI and a laptop run the same Authentik with the same blueprint.
-          task dev:env
-          docker compose -f dev/compose.yaml --profile authentik up -d --wait
+          #
+          # `task dev:auth` and not a hand-written `docker compose` line. That line
+          # was written here once and it was wrong: the invocation needs
+          # `--env-file dev/.env --env-file dev/.env.local`, because the bootstrap
+          # password `dev:env` generates lives in the second file and Compose only
+          # auto-loads the first. The first execution this job ever had died on
+          # "required variable AUTHENTIK_BOOTSTRAP_PASSWORD is missing a value" —
+          # having just printed the password it could not find. `.tasks/dev.yaml`
+          # owns that command; this asks for it instead of restating it.
+          #
+          # `dev:auth` depends on `dev:setup`, which generates those credentials, so
+          # the separate `task dev:env` this step used to run is now redundant rather
+          # than missing.
+          task dev:auth
           task dev:seed
 
           . dev/.env.local
@@ -201,4 +223,8 @@ jobs:
         run: |
           docker ps -a
           docker logs dex 2>&1 | tail -50 || true
-          docker compose -f dev/compose.yaml --profile authentik logs --tail 50 || true
+          # `task dev:logs:tail` rather than a second hand-written compose line, for
+          # the reason the step above now carries: without the `--env-file` flags
+          # this prints an interpolation error instead of the logs — failing to
+          # explain the failure, at the one moment it exists to explain it.
+          task dev:logs:tail || true

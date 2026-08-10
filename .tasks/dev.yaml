@@ -359,6 +359,25 @@ tasks:
           {{.CHE_GUARD}}
           {{.COMPOSE}} logs -f
 
+  logs:tail:
+    desc: "Print the last N lines (TAIL, default 50) of every dev service and exit"
+    # `logs` above follows, which is right at a terminal and wrong everywhere else:
+    # CI wants the tail of a stack that has already failed, and `-f` there is a job
+    # that hangs until the timeout. Split rather than parameterised because "follow"
+    # and "dump and exit" are different intents, and a flag would make the common
+    # one longer to type.
+    #
+    # It also keeps the compose invocation in this file. The one place that spelled
+    # `docker compose -f dev/compose.yaml …` out by hand — the Authentik leg of
+    # oidc-compat — dropped both `--env-file` flags and failed on the first run it
+    # ever had.
+    vars:
+      TAIL: '{{.TAIL | default "50"}}'
+    cmds:
+      - cmd: |
+          {{.CHE_GUARD}}
+          {{.COMPOSE}} --profile authentik --profile dex --profile sinks logs --tail {{.TAIL}}
+
   down:
     desc: "Stop every dev service, keeping the volumes"
     # `env` and not `setup`: compose needs the env file to resolve, and tearing a

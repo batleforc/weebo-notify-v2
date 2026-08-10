@@ -69,6 +69,17 @@ jobs:
           echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
 
       - name: Install pinned tools
+        # `mise` resolves `aqua:` versions through the GitHub API even here, and an
+        # unauthenticated caller gets 60 requests an hour counted per IP. On the
+        # primary forge the fix is `secrets.GITHUB_TOKEN`; there is no equivalent on
+        # this one, because a Forgejo token means nothing to api.github.com.
+        #
+        # `GH_API_TOKEN` is therefore an OPTIONAL secret on the mirror: set it to a
+        # scopeless github.com token and these jobs stop being one busy hour away
+        # from a 403 that reads like a deleted release. Left unset it is empty, which
+        # is exactly the behaviour this file had before the variable existed.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN }}
         run: mise install --yes
 
       - name: Install the JavaScript dependencies
@@ -119,6 +130,17 @@ jobs:
           echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
 
       - name: Install pinned tools
+        # `mise` resolves `aqua:` versions through the GitHub API even here, and an
+        # unauthenticated caller gets 60 requests an hour counted per IP. On the
+        # primary forge the fix is `secrets.GITHUB_TOKEN`; there is no equivalent on
+        # this one, because a Forgejo token means nothing to api.github.com.
+        #
+        # `GH_API_TOKEN` is therefore an OPTIONAL secret on the mirror: set it to a
+        # scopeless github.com token and these jobs stop being one busy hour away
+        # from a 403 that reads like a deleted release. Left unset it is empty, which
+        # is exactly the behaviour this file had before the variable existed.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN }}
         run: mise install --yes
 
       - name: Install the JavaScript dependencies

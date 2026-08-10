@@ -95,6 +95,16 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build the client
+        # `GITHUB_TOKEN` for the `mise install` below, not for anything this job
+        # publishes: the `aqua:` backend resolves versions through the GitHub API,
+        # and an unauthenticated runner gets 60 requests an hour shared by IP. See
+        # `check.yaml` for the failure that put this line in every workflow.
+        #
+        # Note the two tokens in this file do entirely different jobs and neither can
+        # stand in for the other: this one reads public releases, and the one the
+        # next step mints is an OIDC identity assertion (§5.3).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mise install
           mise exec -- cargo build --quiet --release -p notify-cli
