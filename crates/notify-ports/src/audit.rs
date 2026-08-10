@@ -223,6 +223,10 @@ pub mod actions {
     pub const MANAGED_ACCOUNT_ADDED: AuditAction = AuditAction("managed.service_account.added");
     /// A managed service account's declaration changed.
     pub const MANAGED_ACCOUNT_CHANGED: AuditAction = AuditAction("managed.service_account.changed");
+    /// A managed service account left the configuration and was disabled, its
+    /// keys revoked with it — never deleted, so the audit trail naming it stays
+    /// readable.
+    pub const MANAGED_ACCOUNT_REMOVED: AuditAction = AuditAction("managed.service_account.removed");
 }
 
 /// The closed vocabulary: every value [`AuditAction::parse`] accepts.
@@ -253,6 +257,7 @@ pub const AUDIT_ACTIONS: &[AuditAction] = &[
     actions::MANAGED_CHANNEL_REMOVED,
     actions::MANAGED_ACCOUNT_ADDED,
     actions::MANAGED_ACCOUNT_CHANGED,
+    actions::MANAGED_ACCOUNT_REMOVED,
 ];
 
 #[cfg(test)]

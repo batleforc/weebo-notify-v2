@@ -172,7 +172,9 @@
       "description": "A team bot never runs on a human's key: someone leaving the company must not turn off the deployment.",
       "create": "Create",
       "disabled": "disabled",
-      "deactivate": "Deactivate"
+      "deactivate": "Deactivate",
+      "created": "created {at}",
+      "owner": "created by"
     }
   },
   "inbox": {

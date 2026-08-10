@@ -172,7 +172,9 @@
       "description": "Un bot d'équipe ne tourne jamais sur la clé d'un humain : partir de la société ne doit pas éteindre le déploiement.",
       "create": "Créer",
       "disabled": "désactivé",
-      "deactivate": "Désactiver"
+      "deactivate": "Désactiver",
+      "created": "créé {at}",
+      "owner": "créé par"
     }
   },
   "inbox": {

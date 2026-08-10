@@ -485,6 +485,7 @@ impl Application {
             repository.clone(),
             clock,
             repository.clone(),
+            repository.clone(),
             repository,
         );
 

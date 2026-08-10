@@ -10,13 +10,13 @@ url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/carg
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598214"
 
 [[tools."aqua:nextest-rs/nextest/cargo-nextest"]]
-version = "0.9.140"
+version = "0.9.143"
 backend = "aqua:nextest-rs/nextest/cargo-nextest"
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.linux-x64"]
-checksum = "sha256:bc2a998567816eef7b087b920036f49fb89aa2a8a603f6a3d84098be160b62c5"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/467467089"
+checksum = "sha256:6d891c18105ec2d33f6e441a4f92b7ccab47ba263e22055c8bb66884243f3389"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/501883394"
 
 [[tools."aqua:rustsec/rustsec/cargo-audit"]]
 version = "0.22.2"
@@ -38,12 +38,12 @@ url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/4
 provenance = "github-attestations"
 
 [[tools.awscli]]
-version = "2.36.14"
+version = "2.36.19"
 backend = "aqua:aws/aws-cli"
 
 [tools.awscli."platforms.linux-x64"]
-checksum = "blake3:2b4ee19cf4726328468a253f1ec5c6993705d49a25d0b32d6b905c03ed233f6e"
-url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.36.14.zip"
+checksum = "blake3:ee6c3147d260b91acceaddd529ed8d5a2351612483d86910de98c01810cf60be"
+url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.36.19.zip"
 
 [[tools.cargo-binstall]]
 version = "1.21.1"
@@ -60,12 +60,12 @@ version = "0.9.0"
 backend = "cargo:sqlx-cli"
 
 [[tools.claude]]
-version = "2.1.220"
+version = "2.1.226"
 backend = "aqua:anthropics/claude-code"
 
 [tools.claude."platforms.linux-x64"]
-checksum = "blake3:075b59b77f21fd5cf4dff6cc515467b1a26b960bc063393a80375a390ad2bfe7"
-url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-x64/claude"
+checksum = "blake3:569cfc5e62d18983edb31e4366bb0c3ee3865396fb785e178da92f36412cdc76"
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.226/linux-x64/claude"
 
 [[tools.cocogitto]]
 version = "7.0.0"
@@ -86,40 +86,40 @@ url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8
 url_api = "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/378332058"
 
 [[tools.herdr]]
-version = "0.7.5"
+version = "0.8.0"
 backend = "aqua:ogulcancelik/herdr"
 
 [tools.herdr."platforms.linux-x64"]
-checksum = "sha256:3dc83288073e4c2d3c679a30e7be97bcca9141c6fd17dbbb9219142e95c59253"
-url = "https://github.com/herdrdev/herdr/releases/download/v0.7.5/herdr-linux-x86_64"
-url_api = "https://api.github.com/repos/herdrdev/herdr/releases/assets/484992544"
+checksum = "sha256:b872ea7e40fa2cb17e857ac9b62b1bf26db7b403c622f5d2f3f5b35f6e9acd28"
+url = "https://github.com/herdrdev/herdr/releases/download/v0.8.0/herdr-linux-x86_64"
+url_api = "https://api.github.com/repos/herdrdev/herdr/releases/assets/500422625"
 
 [[tools.node]]
-version = "24.18.1"
+version = "24.19.0"
 backend = "core:node"
 
 [tools.node."platforms.linux-x64"]
-checksum = "sha256:9f5eb6ac21845a66c493c91a253b1da32fd684e89e9b7202d4936982336be4ca"
-url = "https://nodejs.org/dist/v24.18.1/node-v24.18.1-linux-x64.tar.gz"
+checksum = "sha256:f625d97cd707df4ff96254916fbc5ff014f09c09effe5a1e0ca8f6d41a8789d4"
+url = "https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-x64.tar.gz"
 
 [[tools.pnpm]]
-version = "11.18.0"
+version = "11.20.0"
 backend = "aqua:pnpm/pnpm"
 
 [tools.pnpm."platforms.linux-x64"]
-checksum = "sha256:f4e62794c56f7a1ad01097f94b90ca95680080aa2e83ebc3d0a751fb8aa8e4ad"
-url = "https://github.com/pnpm/pnpm/releases/download/v11.18.0/pnpm-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/493764737"
+checksum = "sha256:b4ad6ad2b21db2f8cd50af416c3aa148ba704c31c84893f465a770a01c2c4572"
+url = "https://github.com/pnpm/pnpm/releases/download/v11.20.0/pnpm-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/500142376"
 provenance = "github-attestations"
 
 [[tools.rtk]]
-version = "0.44.1"
+version = "0.45.0"
 backend = "aqua:rtk-ai/rtk"
 
 [tools.rtk."platforms.linux-x64"]
-checksum = "sha256:986f29704469b3d1051e2474105c6c75ab8b73651068dcd61612c1fb3938ad95"
-url = "https://github.com/rtk-ai/rtk/releases/download/v0.44.1/rtk-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/rtk-ai/rtk/releases/assets/492781820"
+checksum = "sha256:c4c036fbf181fc55ef329786c8c17e0d427972b053b825944d968a6aafef1ba4"
+url = "https://github.com/rtk-ai/rtk/releases/download/v0.45.0/rtk-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/rtk-ai/rtk/releases/assets/504971573"
 
 [[tools.rust]]
 version = "1.97.1"
@@ -135,11 +135,11 @@ url = "https://github.com/go-task/task/releases/download/v3.52.0/task_linux_amd6
 url_api = "https://api.github.com/repos/go-task/task/releases/assets/464613330"
 
 [[tools.trivy]]
-version = "0.72.0"
+version = "0.73.0"
 backend = "aqua:aquasecurity/trivy"
 
 [tools.trivy."platforms.linux-x64"]
-checksum = "sha256:bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea"
-url = "https://github.com/aquasecurity/trivy/releases/download/v0.72.0/trivy_0.72.0_Linux-64bit.tar.gz"
-url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/462015055"
+checksum = "sha256:2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b"
+url = "https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz"
+url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/499939909"
 provenance = "cosign"

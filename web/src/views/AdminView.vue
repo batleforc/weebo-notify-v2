@@ -21,7 +21,7 @@
  * reconciliation.
  */
 import { KeyRound, Plus, Trash2 } from "lucide-vue-next";
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 import {
@@ -46,7 +46,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { exact } from "@/lib/format";
+import { Tooltip } from "@/components/ui/tooltip";
+import { ago, exact } from "@/lib/format";
 import { useChannels } from "@/stores/channels";
 
 const devices = ref<Device[]>([]);
@@ -128,6 +129,13 @@ const newKeyLabel = ref("");
 const newKeyAccount = ref("");
 const newKeyChannel = ref("");
 const newAccountId = ref("");
+
+// A disabled account cannot authenticate a key minted for it (§5.2, T25): a
+// picker that offered one anyway would let the form succeed and the first use
+// fail, with nothing on this screen explaining why.
+const activeAccounts = computed(() =>
+  accounts.value.filter((account) => !account.disabled_at),
+);
 
 async function load(): Promise<void> {
   error.value = null;
@@ -335,7 +343,7 @@ onMounted(load);
             class="h-9 rounded-md border border-input bg-background px-3 text-sm"
           >
             <option value="">{{ t("admin.keys.accountPlaceholder") }}</option>
-            <option v-for="account in accounts" :key="account.id" :value="account.id">
+            <option v-for="account in activeAccounts" :key="account.id" :value="account.id">
               {{ account.display_name || account.id }}
             </option>
           </select>
@@ -402,35 +410,56 @@ onMounted(load);
         <div
           v-for="account in accounts"
           :key="account.id"
-          class="flex items-center justify-between gap-2 border-b border-border pb-2 text-sm last:border-0"
+          class="space-y-1 border-b border-border pb-2 text-sm last:border-0"
         >
-          <span class="min-w-0">
-            <span class="font-medium">{{ account.display_name || account.id }}</span>
-            <Badge v-if="account.origin === 'managed'" variant="muted" class="ml-2">
-              managed
+          <div class="flex items-center justify-between gap-2">
+            <span class="min-w-0">
+              <span class="font-medium">{{ account.display_name || account.id }}</span>
+              <code class="ml-2 text-xs text-muted-foreground">{{ account.id }}</code>
+              <Badge v-if="account.origin === 'managed'" variant="muted" class="ml-2">
+                managed
+              </Badge>
+            </span>
+            <Badge v-if="account.disabled_at" variant="muted">
+              {{ t("admin.accounts.disabled") }}
             </Badge>
-          </span>
-          <Badge v-if="account.disabled_at" variant="muted">
-            {{ t("admin.accounts.disabled") }}
-          </Badge>
-          <!-- A managed account has no button at all: the configuration is its
-               source of truth, and an API call would be undone by the next
-               reconciliation (§11). -->
-          <Button
-            v-else-if="account.origin !== 'managed'"
-            variant="ghost"
-            size="sm"
-            :disabled="busy"
-            @click="
-              act(() => deactivateAccount({ path: { id: account.id }, throwOnError: true }))
-            "
-          >
-            <Trash2 />
-            {{ t("admin.accounts.deactivate") }}
-          </Button>
-          <span v-else class="text-xs text-muted-foreground">
-            {{ t("admin.managedByConfig") }}
-          </span>
+            <!-- A managed account has no button at all: the configuration is its
+                 source of truth, and an API call would be undone by the next
+                 reconciliation (§11). -->
+            <Button
+              v-else-if="account.origin !== 'managed'"
+              variant="ghost"
+              size="sm"
+              :disabled="busy"
+              @click="
+                act(() => deactivateAccount({ path: { id: account.id }, throwOnError: true }))
+              "
+            >
+              <Trash2 />
+              {{ t("admin.accounts.deactivate") }}
+            </Button>
+            <span v-else class="text-xs text-muted-foreground">
+              {{ t("admin.managedByConfig") }}
+            </span>
+          </div>
+
+          <!-- The id and the creation date are what actually tell two accounts
+               with the same display name apart — the name alone was the whole
+               reason a duplicate went unnoticed. -->
+          <div class="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+            <span v-if="account.description">{{ account.description }}</span>
+            <span v-if="account.description" aria-hidden="true">·</span>
+            <Tooltip>
+              <span class="cursor-default">
+                {{ t("admin.accounts.created", { at: ago(account.created_at) }) }}
+              </span>
+              <template #content>{{ exact(account.created_at) }}</template>
+            </Tooltip>
+            <template v-if="account.created_by">
+              <span aria-hidden="true">·</span>
+              <span>{{ t("admin.accounts.owner") }} <code>{{ account.created_by }}</code></span>
+            </template>
+          </div>
         </div>
       </CardContent>
     </Card>

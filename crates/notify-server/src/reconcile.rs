@@ -28,8 +28,9 @@ use notify_domain::{
     ServiceAccountId, TtlPolicy,
 };
 use notify_ports::{
-    AuditAction, AuditActor, AuditEntry, AuditLog, ChannelRepository, Clock, Declaration,
-    DeclarationKind, DeclarationStore, ServiceAccountRepository, UserRepository, actions,
+    ApiKeyRepository, AuditAction, AuditActor, AuditEntry, AuditLog, ChannelRepository, Clock,
+    Declaration, DeclarationKind, DeclarationStore, ServiceAccountRepository, UserRepository,
+    actions,
 };
 use time::OffsetDateTime;
 
@@ -42,7 +43,8 @@ pub(crate) struct ReconcileReport {
     pub channels: usize,
     /// Managed service accounts written.
     pub accounts: usize,
-    /// Channels that left the config and were archived or deleted.
+    /// Channels that left the config and were archived or deleted, plus
+    /// service accounts that left it and were disabled.
     pub removed: usize,
     /// Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
     pub pending: Vec<String>,
@@ -138,6 +140,10 @@ pub(crate) struct Reconciler {
     declarations: Arc<dyn DeclarationStore>,
     /// Where that goes.
     audit: Arc<dyn AuditLog>,
+    /// So a service account retired by [`Self::retire_departed_accounts`] loses
+    /// its keys in the same pass, not on whatever schedule they would otherwise
+    /// expire on.
+    keys: Arc<dyn ApiKeyRepository>,
 }
 
 impl core::fmt::Debug for Reconciler {
@@ -154,6 +160,7 @@ impl Reconciler {
         clock: Arc<dyn Clock>,
         declarations: Arc<dyn DeclarationStore>,
         audit: Arc<dyn AuditLog>,
+        keys: Arc<dyn ApiKeyRepository>,
     ) -> Self {
         Self {
             channels,
@@ -162,6 +169,7 @@ impl Reconciler {
             clock,
             declarations,
             audit,
+            keys,
         }
     }
 
@@ -190,11 +198,25 @@ impl Reconciler {
                     created_at: existing
                         .as_ref()
                         .map_or_else(|| self.clock.now(), |account| account.created_at),
-                    disabled_at: existing.and_then(|account| account.disabled_at),
+                    // Not carried forward from `existing`: declaring the account is
+                    // what config uses to mean "this exists and is active" — the same
+                    // rule `build()` applies to a managed channel reappearing after
+                    // being archived. An account `retire_departed_accounts` disabled
+                    // because it left the file must become usable again if the file
+                    // names it once more, or removing and re-adding an id would be a
+                    // one-way trip with no API able to undo it (`ensure_may_disable`
+                    // refuses `Origin::Managed` outright).
+                    disabled_at: None,
                 })
                 .await?;
             report.accounts += 1;
         }
+
+        let declared_accounts: Vec<ServiceAccountId> = config
+            .service_accounts
+            .iter()
+            .map(|account| ServiceAccountId::parse(&account.id))
+            .collect::<Result<_, _>>()?;
 
         let declared: Vec<ChannelId> = config
             .channels
@@ -209,7 +231,8 @@ impl Reconciler {
             report.channels += 1;
         }
 
-        report.removed = self.drop_departed(config, &declared).await?;
+        report.removed = self.drop_departed(config, &declared).await?
+            + self.retire_departed_accounts(&declared_accounts).await?;
 
         // Last, and after the writes: a pass that fails half way must not have
         // announced changes it did not finish applying. The cost is the opposite
@@ -251,11 +274,12 @@ impl Reconciler {
             (
                 DeclarationKind::ServiceAccount,
                 managed_accounts(config),
-                // No `removed`: `drop_departed` archives channels, and nothing
-                // withdraws a service account — an account that leaves the file
-                // stays, because its keys and its history do. Inventing an action
-                // for something no code path can produce is exactly what
-                // M4duovicies removed `trust_policy.changed` for.
+                // Still `None`, but not for the old reason: a departed managed
+                // account *is* retired now (disabled, its keys revoked) by
+                // `retire_departed_accounts`, which writes its own audit entry —
+                // richer than this generic declaration-diff could produce, since
+                // it carries how many keys that took. Wiring this vocabulary's
+                // `removed` too would double-journal the same event.
                 Vocabulary {
                     added: actions::MANAGED_ACCOUNT_ADDED,
                     changed: actions::MANAGED_ACCOUNT_CHANGED,
@@ -465,6 +489,66 @@ impl Reconciler {
 
         Ok(removed)
     }
+
+    /// Disable managed service accounts that left the configuration, revoking
+    /// their keys with them — the service-account analogue of
+    /// [`Self::drop_departed`] above.
+    ///
+    /// Disable, never archive-to-dynamic: a stray managed account is usually
+    /// the id changing between passes rather than the account really being
+    /// withdrawn (see the module doc's note on `service_account` bindings),
+    /// and a dynamic account is still fully usable — the opposite of what a
+    /// stray one needs. Idempotent: an already-disabled account is skipped,
+    /// so a steady instance reconciling every SIGHUP does not re-revoke keys
+    /// or re-journal the same retirement forever.
+    async fn retire_departed_accounts(
+        &self,
+        declared: &[ServiceAccountId],
+    ) -> anyhow::Result<usize> {
+        let stored = self.accounts.list_managed().await?;
+        let mut retired = 0;
+
+        for mut account in stored {
+            if declared.contains(&account.id) || account.disabled_at.is_some() {
+                continue;
+            }
+
+            let now = self.clock.now();
+            // Keys revoked *before* the account is marked disabled, on the same
+            // terms `DeactivateServiceAccount` already sets for the API path: the
+            // account row alone would stop only *new* authentications, and a key
+            // left usable is a credential still in somebody's CI configuration.
+            // The order also makes a failure between the two calls self-healing —
+            // `disabled_at` is the flag this loop treats as "already retired", so
+            // it must not be persisted until the keys are actually gone. If the
+            // upsert below fails, the next pass finds the account still enabled
+            // and revokes (a no-op the second time) and disables it again, rather
+            // than skipping it forever with its keys still live.
+            let revoked = self.keys.revoke_all_for(&account.principal(), now).await?;
+            account.disable(now);
+            self.accounts.upsert(&account).await?;
+
+            self.audit
+                .record(&AuditEntry {
+                    actor: AuditActor::configuration(),
+                    action: actions::MANAGED_ACCOUNT_REMOVED,
+                    target: Some(account.id.as_str().to_owned()),
+                    channel: None,
+                    detail: Some(serde_json::json!({ "keys_revoked": revoked })),
+                    at: now,
+                })
+                .await?;
+
+            tracing::warn!(
+                account = %account.id,
+                keys_revoked = revoked,
+                "disabled: it left the configuration, so it is no longer managed"
+            );
+            retired += 1;
+        }
+
+        Ok(retired)
+    }
 }
 
 #[cfg(test)]
@@ -475,7 +559,8 @@ mod tests {
         reason = "a failing assertion is a failing test"
     )]
 
-    use notify_domain::{Scope, User, UserId};
+    use notify_domain::{ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, Scope, User, UserId};
+    use notify_ports::StoredApiKey;
     use notify_ports::test_utils::{InMemory, TestClock};
 
     use super::*;
@@ -487,6 +572,7 @@ mod tests {
             Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(clock.clone()),
+            Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(store.clone()),
         )
@@ -885,6 +971,99 @@ mod tests {
             stored.origin,
             Origin::Dynamic,
             "deleting takes the history with it, and a config typo should not"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_account_that_leaves_the_config_is_disabled_and_its_keys_revoked() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let id = ServiceAccountId::parse("bot-argocd").unwrap();
+
+        let mut declared = config(Vec::new());
+        declared.service_accounts = vec![ManagedServiceAccount {
+            id: "bot-argocd".to_owned(),
+            display_name: Some("ArgoCD".to_owned()),
+            description: None,
+        }];
+        reconciler(&store, &clock).execute(&declared).await.unwrap();
+
+        // A key minted for it while it was still declared.
+        store.seed_api_key(StoredApiKey {
+            key: ApiKey {
+                id: ApiKeyId::generate(),
+                label: Some("ci".to_owned()),
+                prefix: ApiKeyPrefix::parse("wnk1abcd").unwrap(),
+                owner: ApiKeyOwner::ServiceAccount { id: id.clone() },
+                scopes: vec![Scope::Publish],
+                channels: Vec::new(),
+                publish_per_minute: None,
+                created_at: clock.now(),
+                expires_at: None,
+                last_used_at: None,
+                revoked_at: None,
+            },
+            secret_hash: "stub$secret".to_owned(),
+        });
+
+        // The next sync's config no longer names it — the id churned, or it was
+        // genuinely withdrawn; either way this instance must stop trusting it.
+        let report = reconciler(&store, &clock)
+            .execute(&config(Vec::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.removed, 1);
+
+        let stored = ServiceAccountRepository::get(&store, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            stored.disabled_at.is_some(),
+            "left the config, so it must stop being usable"
+        );
+
+        let keys = ApiKeyRepository::list_for(&store, &Principal::ServiceAccount { id })
+            .await
+            .unwrap();
+        assert!(
+            keys[0].revoked_at.is_some(),
+            "a stray managed account's keys must not keep authenticating"
+        );
+    }
+
+    #[tokio::test]
+    async fn retiring_an_account_twice_does_not_re_revoke_or_re_journal() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+
+        let mut declared = config(Vec::new());
+        declared.service_accounts = vec![ManagedServiceAccount {
+            id: "bot-argocd".to_owned(),
+            display_name: Some("ArgoCD".to_owned()),
+            description: None,
+        }];
+        reconciler(&store, &clock).execute(&declared).await.unwrap();
+
+        let departed = config(Vec::new());
+        let first = reconciler(&store, &clock).execute(&departed).await.unwrap();
+        let second = reconciler(&store, &clock).execute(&departed).await.unwrap();
+
+        assert_eq!(first.removed, 1);
+        assert_eq!(
+            second.removed, 0,
+            "already disabled — nothing left to retire"
+        );
+
+        let entries = journal(&store).await;
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.action.as_str() == "managed.service_account.removed")
+                .count(),
+            1,
+            "one retirement, one audit entry — not one per pass"
         );
     }
 
