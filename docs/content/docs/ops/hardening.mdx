@@ -19,6 +19,7 @@ reports itself perfectly healthy. Each links to the section that explains why.
 - [ ] **NetworkPolicy is enabled** and `ingressFrom` names your ingress controller and monitoring namespaces — enabling it without them blocks the API
 - [ ] `[cli] binary_path` points **inside the image**, at nothing writable ([a code-execution surface](#cli-binary_path-is-a-code-execution-surface))
 - [ ] Release signing keys are in **CI secrets scoped to the release workflow**, with a written rotation ([Release signing keys](#release-signing-keys))
+- [ ] The **Android release keystore is backed up** somewhere a disk failure and a resignation both survive — losing it strands every existing install permanently ([Three signing systems](#three-signing-systems-and-why-they-are-not-one))
 - [ ] Somebody has read [Key rotation](#key-rotation) **before** needing it — two of those secrets break things that are already in the world
 
 ## Encryption at rest is your job
@@ -171,6 +172,71 @@ execution across every installed desktop client** if it leaks. Strict custody: C
 secrets scoped to the release workflow alone, never in the repository, with a
 documented rotation. The same applies to cosign, the Android signing keystore and the
 APNs `.p8` key.
+
+### Three signing systems, and why they are not one
+
+The obvious question — *can one key sign everything?* — has a firm no, and it is
+worth writing down so it does not get re-asked and answered differently. Each
+signature exists to satisfy a **different verifier**, and no verifier reads any
+other's output:
+
+| What | Verified by | Key system | Rotatable? |
+| --- | --- | --- | --- |
+| Container images, published files | `cosign verify`, admission controller | **keyless** — no key at all | n/a |
+| APK / AAB | Android `PackageManager` | X.509 in a PKCS#12 keystore | **effectively never** |
+| Desktop updater bundles | The Tauri updater, in-app | minisign Ed25519 | yes, forcibly |
+| `.msi` / `.dmg` | Authenticode / Gatekeeper | CA-issued certificate | per CA policy |
+
+Three of those are forced. Tauri's updater understands minisign and nothing else.
+Windows and macOS require a certificate **issued by a CA they already trust**, which
+cannot be self-generated at any price. And Android's signing key *is* the
+application's identity: an update must be signed by the same key or the install is
+refused as a different app.
+
+The only pair that *could* share material is cosign and `apksigner` — `cosign
+import-key-pair` accepts an existing RSA or EC key. **It is deliberately not done**,
+for three reasons:
+
+- **Blast radius.** One key means one leak forges images, owns the desktop fleet
+  through the updater, and takes the Android identity permanently.
+- **Rotation couples to the worst case.** The Android key essentially cannot rotate.
+  Sharing it binds the most rotatable secret in the project to the least rotatable
+  one, forever.
+- **It is a downgrade.** Images are signed **keyless** today: there is no key to
+  leak, the identity is the release workflow, and Rekor logs it. Introducing a
+  shared static key adds custody where none currently exists.
+
+So the count is **two secrets, not one and not four**: the Android keystore and the
+minisign key, both unavoidable. Everything else — images, SBOMs, CLI archives,
+desktop bundles, and the APK's *provenance* — is keyless, and needs no custody at
+all.
+
+<Callout type="warn">
+  The APK is signed **twice**, and both are required. `apksigner` with the keystore is
+  what makes a device install it; `cosign sign-blob` is what proves it came from your
+  release. Neither substitutes for the other — a cosign signature does not make an
+  APK installable, and an `apksigner` signature says nothing about provenance.
+</Callout>
+
+### The development keystore is not a release key
+
+`task android:keystore` mints `dev/secrets/android-dev.keystore` so an APK can be
+installed on a device during development. Its password is published in this
+repository and its certificate says `CN=weebo-notify DEVELOPMENT ONLY`. An APK signed
+with it is trustworthy to the person who generated it and to nobody else.
+
+The release keystore is generated once, offline, and never leaves the CI secret it is
+stored in:
+
+```bash
+keytool -genkeypair -keystore weebo-notify-release.jks \
+  -alias weebo-notify -keyalg RSA -keysize 4096 -validity 10000 \
+  -dname "CN=weebo-notify, O=<your org>, C=<your country>"
+```
+
+Losing it means **no existing installation can ever be updated again** — a new key is
+a new app, with a new listing and no upgrade path for anyone who installed the old
+one. Back it up somewhere a disk failure and a resignation both survive.
 
 ## Verify the signature, or it protects nobody
 

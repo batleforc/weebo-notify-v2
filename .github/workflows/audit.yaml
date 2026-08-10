@@ -7,6 +7,9 @@ name: audit
 # dependency vulnerable that was clean at merge time. A job that only ran on pull
 # requests would report the state of the world on the day of the merge and never
 # again.
+#
+# Moved here from `.forgejo/workflows/` when GitHub became the primary forge — see
+# `check.yaml`'s header for what the move changed.
 
 on:
   schedule:
@@ -28,9 +31,7 @@ on:
 
 jobs:
   audit:
-    runs-on: docker
-    container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout

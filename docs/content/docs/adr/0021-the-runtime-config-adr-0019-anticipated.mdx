@@ -19,7 +19,7 @@ policy too."*
 
 `web/Containerfile` is that container image now, and it is that question. A build
 argument means one image per deployment — `docker/build-push-action` in
-`.forgejo/workflows/release.yaml` already passes three `VITE_*` build args pulled
+`.github/workflows/release.yaml` already passes three `VITE_*` build args pulled
 from repository variables, and a second workflow publishing to a second registry
 (`.github/workflows/publish-main.yaml`) would need the same three configured a
 second time, in a second place, forever. Neither workflow's job is to know a
@@ -79,7 +79,7 @@ from the do-not-disturb rule.
 
 **Positive**
 
-- One web image serves every deployment. `.forgejo/workflows/release.yaml` and
+- One web image serves every deployment. `.github/workflows/release.yaml` and
   `.github/workflows/publish-main.yaml` both build and push it with no
   `--build-arg` at all; an operator's `docker run -e WNK_API_BASE_URL=…` is what
   a deployment is now, not a rebuild.
@@ -123,7 +123,7 @@ from the do-not-disturb rule.
   `docker-entrypoint.d` step that refuses to start nginx on a value carrying a
   path is the natural follow-up, not written yet.
 - Multi-arch, trivy-scanned, cosign-signed images stay the tagged release's job
-  (`.forgejo/workflows/release.yaml`, self-hosted). `publish-main.yaml`'s
+  (`.github/workflows/release.yaml`). `publish-main.yaml`'s
   `:main`/`:sha-*` images are amd64-only and unsigned by design — this record
   does not change that split, only removes the build args both pipelines used to
   need.

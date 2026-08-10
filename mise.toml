@@ -26,6 +26,19 @@ trivy = "latest"                 # Containerfile/image + filesystem CVE scan (ta
 awscli = "latest"                # seeds the RustFS bucket in dev/seed/seed.sh
 "cargo:sqlx-cli" = "latest"      # `sqlx migrate` in dev/seed/seed.sh (not in the mise registry)
 helm = "latest"                  # lint/template/package charts/weebo-notify (task helm)
+# The Tauri CLI — `task tauri:bundle` (the .deb and the AppImage) and
+# `task android:build` (the APK). It started in `mise.android.toml`, on the reasoning
+# that mobile was its only consumer; that stopped being true the moment the desktop
+# bundles needed packaging rather than just compiling, and a tool two targets need is
+# not an Android tool.
+#
+# Here rather than in `mise.dev.toml` because CI builds both clients and CI does not
+# load `dev`. The cost is the one SEC-P2-08 names — this now installs in the release
+# job too, alongside the registry token — and it is accepted rather than overlooked:
+# the §3.2bis artefact matrix puts desktop and Android packages *in* that job, so the
+# binary has to be there anyway. `aqua:` fetches tauri-apps' own signed release rather
+# than compiling `cargo:tauri-cli` from source on every runner.
+"aqua:tauri-apps/tauri/cargo-tauri" = "2"
 # `yq` used to live here for `task gen:devfile`, which inlined the identity
 # provider's configuration into devfile.yaml. The provider reads the committed file
 # directly now (ADR-0014), so both the step and the tool are gone.

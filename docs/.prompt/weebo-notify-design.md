@@ -125,7 +125,7 @@ Le repo est bootstrappé depuis [`batleforc/weebo-base`](https://github.com/batl
 | `Taskfile.yaml` + `.tasks/` | Point d'entrée unique des commandes (`task init`, `task recu`, `task lint`) | `recu` = export de la spec OpenAPI (utoipa) + régénération des **clients dérivés de la spec** (TS pour le web, Rust `notify-client-api`), spec **et** clients commités ; `lint` = `cargo fmt && cargo clippy` + lint web ; ajout du namespace `dev:*` (§12) |
 | `cog.toml` + `.hooks/` | Conventional commits (cocogitto), changelog, hooks `commit-msg` (`cog verify`/`cog check`) et `pre-commit` (`task recu`, `task lint`, `gitleaks`, EOL/whitespace) | Champs `repository`/`owner` du changelog pointés sur `weebo-notify` |
 | `devfile.yaml` | Workspace Eclipse Che, `parent` → [`WeeboDevImage`](https://github.com/batleforc/WeeboDevImage) `che-min-mise` | Étendu avec les sidecars de l'env de dev (§12) |
-| `.forgejo/` / `.github/` | Double forge : Forgejo = forge principale (CI), GitHub = miroir | Workflows CI (§3.2) |
+| `.github/` / `.forgejo/` | Double forge : GitHub = forge principale (CI), Forgejo = miroir | Workflows CI (§3.2) |
 | `.rtk/`, `CLAUDE.md`, `.claude/` | Outillage token-optimisé + instructions agent | Conservés |
 
 Workflow d'initialisation inchangé :
@@ -135,7 +135,7 @@ Workflow d'initialisation inchangé :
 task init          # mise upgrade + cog install-hook -a -o + task dev:setup (§12.7)
 ```
 
-### 3.2 CI (Forgejo Actions, miroir GitHub)
+### 3.2 CI (GitHub Actions, miroir Forgejo)
 
 - `check` : `task lint` + `cargo llvm-cov nextest` (tests **et** coverage en un seul run — pas de double exécution de la suite) + tests web — sur chaque push/PR.
 - `contract` : `task recu` puis `git diff --exit-code` — la spec OpenAPI et les clients générés (TS + Rust) étant commités, ils ne peuvent pas dériver du code serveur ; un oubli de régénération casse la PR.
@@ -149,7 +149,7 @@ task init          # mise upgrade + cog install-hook -a -o + task dev:setup (§1
 - **Rust** : `cargo llvm-cov nextest` (source-based, précision branche/région) ; **web** : `vitest run --coverage` (provider v8). Les deux sortent du LCOV, fusionné en un rapport unique.
 - **Périmètre honnête** : le code généré est exclu de la mesure (`notify-client-api`, client TS) ; les adapters I/O sont mesurés via les E2E testcontainers mais **le gate ne porte que sur `notify-domain` + `notify-app`** — logique pure, testable in-memory (§4), donc exigence haute : **≥ 90 %**.
 - **Anti-régression plutôt que cible globale** : sur PR, résumé posté en commentaire ; échec si la **diff coverage** des lignes touchées < 80 % ou si la couverture domaine/app **baisse** (ratchet). Pas de gate sur le chiffre global : un seuil unique se game (tests sans assertions) et pénalise injustement le code d'adaptation.
-- **Self-hosted** : aucune dépendance codecov.io — rapport HTML en artefact CI, badge servi depuis le job Forgejo.
+- **Self-hosted** : aucune dépendance codecov.io — rapport HTML en artefact CI, badge servi depuis le job `check` (GitHub Actions ; le miroir Forgejo rejoue le même job sans servir de badge).
 
 ### 3.2bis Release — tout part d'un tag
 
@@ -161,7 +161,7 @@ Règle : **poser le tag est la seule action humaine**. `task release` (localemen
    - binaires **CLI/TUI** (linux amd64/arm64, macOS, Windows) en archives + `SHA256SUMS` signé ;
    - packages **desktop Tauri** (`.deb`/`.rpm`/AppImage/`.dmg`/`.msi`, §10bis.3) + manifest updater signé minisign ;
    - **APK Android** signé (dès M6), build iOS → TestFlight (dès M7, runner macOS §10bis.5).
-3. **Publication atomique** : la release Forgejo est créée en *draft*, les artefacts uploadés, les notes remplies depuis le changelog cocogitto, puis publiée **d'un coup** — jamais de release à moitié vide ; le miroir GitHub reçoit la même release.
+3. **Publication atomique** : la release GitHub est créée en *draft*, les artefacts uploadés, les notes remplies depuis le changelog cocogitto, puis publiée **d'un coup** — jamais de release à moitié vide. Le miroir Forgejo ne publie plus rien : il rejoue les deux gates bon marché (`.forgejo/workflows/mirror-check.yaml`) et rien d'autre.
 4. **Post-publication** : le manifest updater du canal concerné est mis à jour (le point qui rend l'update desktop effective), et la CI notifie le canal `ci-infra` de weebo-notify via la fédération §5.3 (dogfooding).
 
 **Pre-releases** — tag SemVer `vX.Y.Z-rc.N` (`task release -- --pre rc`) :
@@ -2684,7 +2684,7 @@ Le retard est `delivered_at - created_at`, au-delà d'un seuil de cinq minutes e
 
 Fait et vérifié : la **config Dex** que §15 signalait comme absente du dépôt existe (`dev/dex/`, un template plus `render.sh` qui génère mot de passe et secret client à chaque exécution et les hashe en bcrypt — vérifié en le lançant, hash `$2a$` valide, fichiers rendus gitignorés) ; un service `dex` dans le compose et un `task dev:dex` pour reproduire à la main un leg rouge en CI ; et la suite paramétrée là où elle devait l'être — `WNK_TEST_OIDC_USERNAME`, parce que **le connecteur local de Dex authentifie sur l'`email`** et non sur le `username`, donc « alice » n'y est pas un login. C'est exactement le genre d'écart que la matrice existe pour faire apparaître ; le coder en dur aurait été en cacher un.
 
-Écrit et **jamais exécuté** : les deux étapes de démarrage dans `.forgejo/workflows/oidc-compat.yaml`, et la matrice qui passe de un fournisseur à trois. Ce qui rend ça tenable plutôt qu'imprudent est une propriété de la suite et non du workflow — **nommer un fournisseur injoignable panique au lieu de sauter**, donc un leg mal câblé devient rouge en nommant la variable qui manque. Aucune de ces étapes ne peut produire la panne que ce job existe pour empêcher : un tic vert qui veut dire « rien n'a tourné ». La première exécution sur une vraie forge est le test, comme pour D12.
+Écrit et **jamais exécuté** : les deux étapes de démarrage dans `.github/workflows/oidc-compat.yaml`, et la matrice qui passe de un fournisseur à trois. Ce qui rend ça tenable plutôt qu'imprudent est une propriété de la suite et non du workflow — **nommer un fournisseur injoignable panique au lieu de sauter**, donc un leg mal câblé devient rouge en nommant la variable qui manque. Aucune de ces étapes ne peut produire la panne que ce job existe pour empêcher : un tic vert qui veut dire « rien n'a tourné ». La première exécution sur une vraie forge est le test, comme pour D12.
 
 Deux inconnues nommées plutôt que supposées résolues : que le grant `password` d'Authentik réponde pour un client **public** (le blueprint le déclare ainsi), et que la socket Docker montée dans le job suffise à joindre depuis le conteneur de job ce qu'il a démarré (d'où `--network host`). Les deux échouent bruyamment.
 
@@ -2836,7 +2836,7 @@ Ce que ça coûte, exactement : le seul chemin vers une notification qu'on ne vo
 
 *Et c'est exactement ce qui s'est passé*, ce qui vaut d'être gardé écrit : la partie testée était juste, et les trois défauts que M4quatervicies a corrigés en ouvrant la page — deux gris indiscernables, une sélection qui sort de l'écran, une listbox sans sémantique — étaient tous dans la moitié que personne ne regardait. La leçon n'est pas « il fallait tester l'apparence » ; c'est que « écrit et testé » et « vu » sont deux états différents, et que la table de §14.1 a raison de les distinguer.
 
-**D12 — un workflow commité qui n'a jamais tourné.** `.forgejo/workflows/notify.yaml` est écrit contre le contrat de §5.3 et les deux commandes qu'il lance sont vérifiées contre un vrai serveur, mais aucune forge n'existe ici pour répondre des deux dernières lignes : que `id-token: write` rende un jeton, et que son `aud` nomme weebo-notify.
+**D12 — un workflow commité qui n'a jamais tourné.** `.github/workflows/notify.yaml` est écrit contre le contrat de §5.3 et les deux commandes qu'il lance sont vérifiées contre un vrai serveur, mais aucune forge n'existe ici pour répondre des deux dernières lignes : que `id-token: write` rende un jeton, et que son `aud` nomme weebo-notify.
 
 *Solution* : le pousser sur la forge principale et regarder. C'est la seule façon, et le risque est borné pour une raison qui vaut d'être dite — **les deux inconnues échouent bruyamment** : pas de jeton donne une variable vide et une étape rouge, un mauvais `aud` donne le 401 que §5.3 est fait pour rendre. Aucune des deux ne peut produire un tick vert qui ne veut rien dire, ce qui est la propriété que D7 et D8 réclament partout ailleurs.
 

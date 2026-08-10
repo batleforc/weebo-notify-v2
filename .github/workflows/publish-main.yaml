@@ -1,14 +1,28 @@
 name: publish-main
 
-# Continuous images from `main`, one per commit — not the tagged release.
+# Continuous builds from `main`, one per commit — not the tagged release.
 #
-# The tagged pipeline (.forgejo/workflows/release.yaml, self-hosted Forgejo) stays
-# the one that matters: multi-arch, trivy-scanned, cosign-signed, and the source of
-# `:latest`. This one is GitHub-hosted and amd64-only on purpose — its only job is
-# giving `:main` something to pull between releases, not replacing the release.
+# Two things come out of it, and they are published differently on purpose:
+#
+#   * `:main` and `:sha-*` images, pushed to ghcr.io. amd64-only.
+#   * The CLI and the Android app, as workflow ARTEFACTS. They expire in fourteen
+#     days, they carry no cosign provenance, and they are not installed from
+#     anywhere — they exist so somebody can try a commit without building it.
+#
+# `release.yaml` in this directory stays the one that matters: multi-arch,
+# trivy-scanned, cosign-signed, and the source of `:latest`. Nothing here replaces
+# it, and the §3.2bis artefact matrix still lands there with M5.
+#
+# The client job is also the only thing in this repository that builds either
+# client on a schedule anybody controls. `web/src-tauri` sits outside the cargo
+# workspace (D13), so no gate ever compiled it; the Android target in particular was
+# one `#[cfg(desktop)]` away from breaking silently between releases.
 #
 # Gated the same way release.yaml gates a tag: lint and the critical suite have to
-# pass before anything is pushed, so a broken `main` never produces an image.
+# pass before anything is pushed, so a broken `main` never produces an image. That
+# is deliberately its own gate rather than a dependency on `check.yaml` — the two
+# run concurrently, and a workflow that publishes should not be waiting on one that
+# reports.
 
 on:
   push:
@@ -34,21 +48,211 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # See mirror-check.yaml's `check` job: `notify-cli`/`xtask` link libdbus,
-      # which the runner doesn't ship the -dev headers for.
       - name: Install libdbus headers
+        # `notify-cli` (notify-rust's `d` feature) and `xtask` (design's D19 stub
+        # daemon) are both workspace members. See `check.yaml`.
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
-        with:
-          install: true
-          cache: true
+      - name: Install the toolchain
+        # The same pinned, checksum-verified bootstrap every other workflow in this
+        # directory uses. It used to be `jdx/mise-action` here and the manual block
+        # everywhere else; two ways of installing the toolchain meant two things to
+        # keep on the same version, and the pinned-binary reasoning (see any of the
+        # other files) applies to this job as much as to the ones holding tokens.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        run: mise install --yes
 
       - name: Lint
-        run: task lint:check
+        run: mise exec -- task lint:check
 
       - name: Critical suite
-        run: task test:critical
+        run: mise exec -- task test:critical
+
+  clients:
+    name: CLI and Android app
+    needs: gate
+    runs-on: ubuntu-latest
+    # Its own job rather than steps in `publish`, for two reasons: the image build
+    # has no use for a 3 GB Android SDK, and a client that fails to build should not
+    # stop `:main` being published. They run concurrently off the same gate.
+    #
+    # These are ARTEFACTS, not a release. They expire, they are not signed, and they
+    # are not what §3.2bis means by the artefact matrix — that still lands with M5,
+    # in `release.yaml`, with cosign provenance attached. What this job buys is that
+    # both clients are *built* on every commit to main, which until now nothing did:
+    # `web/src-tauri` is outside the cargo workspace, so no gate compiled it, and the
+    # Android target was one `#[cfg(desktop)]` away from breaking silently at any
+    # time.
+    env:
+      # The Android half of the toolchain (JDK 17, the SDK command-line tools and the
+      # Tauri CLI) lives in `mise.android.toml` and loads only under this. Not
+      # `dev,android`: `mise.dev.toml` is a developer's tools and CI has no use for
+      # them (SEC-P2-08).
+      MISE_ENV: android
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Install libdbus headers
+        # `notify-cli` links it through notify-rust's `d` feature. See `check.yaml`.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install the toolchain
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Restore caches
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.local/share/mise
+            target
+            web/node_modules
+          key: clients-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock', 'web/pnpm-lock.yaml') }}
+          restore-keys: clients-${{ runner.os }}-
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Install the JavaScript dependencies
+        # Before either shell build, not between them: `cargo tauri build` runs
+        # `pnpm build` as its `beforeBuildCommand` (tauri.conf.json) on desktop and
+        # on Android alike, so both need a complete `web/node_modules`. This sat
+        # after the desktop step once, which failed only there and looked like a
+        # packaging problem.
+        run: mise exec -- pnpm -C web install --frozen-lockfile
+
+      # --- CLI --------------------------------------------------------------
+      #
+      # linux-x64 only, which is the runner's own architecture. Cross-building the
+      # CLI for macOS and Windows is a release concern (§3.2bis) and needs runners
+      # this job does not ask for; naming the limit beats shipping an artefact whose
+      # scope somebody has to infer from the filename.
+      - name: Build the CLI
+        run: mise exec -- cargo build --release -p notify-cli
+
+      - name: Upload the CLI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notify-cli-linux-x64-${{ steps.sha.outputs.short }}
+          path: target/release/notify
+          retention-days: 14
+          if-no-files-found: error
+
+      # --- Desktop ----------------------------------------------------------
+      - name: Install the GTK/WebKit stack
+        # What `task tauri:doctor` reports on, and the reason `web/src-tauri` sits
+        # outside the cargo workspace (D13): Tauri on Linux links against system C
+        # libraries that mise cannot carry and a Che workspace cannot install. A
+        # GitHub runner can, with sudo, which is what makes this the first place in
+        # the project where the desktop shell is built by something other than a
+        # person.
+        #
+        # `libayatana-appindicator3-dev` is the tray (§10bis.3ter), `librsvg2-dev`
+        # renders the icons, and `patchelf` and `xdg-utils` are what the AppImage
+        # bundler calls — those last four are packaging dependencies rather than
+        # compile ones, so leaving them out fails late, in the bundler, rather than
+        # at link time. `xdg-utils` is on this list because leaving it out is
+        # precisely what happened: the .deb built, then the AppImage stopped on
+        # `xdg-mime binary not found`.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      - name: Build the desktop bundles
+        # `.deb` and AppImage, per `tauri.conf.json`'s `bundle.targets`. Unsigned:
+        # neither format carries an OS-enforced signature, and what §3.2bis signs for
+        # them — the minisign updater manifest and cosign provenance — belongs to the
+        # release path, not to a per-commit convenience build.
+        run: mise exec -- task tauri:bundle
+
+      - name: Upload the desktop bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: weebo-notify-desktop-linux-x64-${{ steps.sha.outputs.short }}
+          path: |
+            web/src-tauri/target/release/bundle/deb/*.deb
+            web/src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 14
+          if-no-files-found: error
+
+      # --- Android ----------------------------------------------------------
+      - name: Restore the Android SDK
+        # Keyed on `.tasks/android.yaml` because that file holds the pinned platform,
+        # build-tools and NDK versions — bump one and the cache correctly misses.
+        # Worth the ~2.3 GB entry: without it every commit to main re-downloads the
+        # NDK, and the NDK is most of the three gigabytes.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.android-sdk
+          key: android-sdk-${{ runner.os }}-${{ hashFiles('.tasks/android.yaml') }}
+
+      - name: Install the Android SDK components
+        # The repository's own task rather than a second copy of the version pins in
+        # YAML. It is incremental, so a cache hit above makes this close to a no-op,
+        # and running it here means `task android:sdk` cannot rot unnoticed.
+        run: mise exec -- task android:sdk
+
+      - name: Build the Android app
+        # `--debug`, and that is the difference between an artefact somebody can use
+        # and one they cannot: Gradle signs a debug build with the auto-generated
+        # debug keystore, so the APK installs. A release build here would come out
+        # unsigned, and Android refuses to install an unsigned APK at all — see
+        # `task android:sign` for what a real one needs.
+        #
+        # `--target aarch64` only. arm64-v8a covers essentially every device made
+        # this decade, and building all four ABIs would quadruple the slowest step in
+        # this workflow for architectures nobody is going to install this on.
+        run: mise exec -- task android:build -- --debug --target aarch64
+
+      - name: Upload the Android app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: weebo-notify-android-arm64-debug-${{ steps.sha.outputs.short }}
+          # `/debug/` and not `**/*.apk`: a runner with a warm build directory also
+          # holds the release APK, which is unsigned and does not install. Uploading
+          # both would ship the broken one under the same name as the working one.
+          path: web/src-tauri/gen/android/app/build/outputs/apk/**/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
 
   publish:
     name: Build and push images

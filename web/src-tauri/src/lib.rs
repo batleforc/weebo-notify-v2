@@ -31,13 +31,29 @@
 //! tauri::mobile_entry_point)]`-annotated `run()` — a `fn main` cannot be that
 //! entry point, Android and iOS do not call one. `main.rs` is now the few lines
 //! Tauri's desktop target still needs a binary for; this file is what both targets
-//! actually run. That split is the **whole** of this increment's Android work: no
-//! platform code was added, nothing here has been built for Android, and nothing
-//! claims otherwise — `cargo tauri android init` still needs an SDK/NDK this
-//! workspace does not have (§14.4, D33; `docs/upstream/che-min-mise-android.md`).
-//! What changed is that the crate is now the shape that command expects to find
-//! the day it can run, rather than a desktop-only layout somebody would have had
-//! to restructure under a red build later.
+//! actually run.
+//!
+//! # What mobile does not do yet
+//!
+//! Android now builds — `task android:build` produces an APK and an AAB — but what
+//! it builds is deliberately small, and the `#[cfg(desktop)]` density below is the
+//! honest map of it. On a phone this shell is a webview and a deep-link handler.
+//! Everything else is desktop-gated, in two groups and for two different reasons:
+//!
+//! - **Cannot exist there.** `tauri::menu` and `tauri::tray` are `#[cfg(desktop)]`
+//!   in Tauri itself, and `tauri-plugin-single-instance` has no `init` on mobile.
+//!   The tray, its menu and the DND quick actions hanging off it therefore have no
+//!   mobile form at all; Android's equivalent is a notification action, which is a
+//!   feature nobody has designed yet rather than a port of this one.
+//! - **Would be wrong there.** The store-warming daemon (§9.3bis) exists to keep the
+//!   shared SQLite cache warm *for the CLI and the TUI* — neither of which exists on
+//!   a phone — and a background thread polling every 20s is not how Android wants
+//!   work done anyway. It is gated off rather than left to fail quietly.
+//!
+//! So: no tray, no menu, no DND shortcut, no polling and no daemon on mobile. The
+//! notification plugin is registered and its `POST_NOTIFICATIONS` permission is
+//! merged in from the plugin's own manifest, but nothing in this file posts one yet
+//! — the shell has no push consumer on any platform (see "Live means polled").
 //!
 //! # First build
 //!
@@ -45,28 +61,44 @@
 //! the `che-mise-webkit` dev image landed (§12.4, D13) — `web/src-tauri` is still
 //! outside the cargo workspace (see `Cargo.toml`), so no gate in this repository
 //! builds it, but `task tauri:build`/`:dev`/`:check` do on a machine `task
-//! tauri:doctor` clears. The mobile targets this file is now shaped for have no
-//! equivalent doctor yet, because there is nothing in this repository for one to
-//! check against until D33's image lands.
+//! tauri:doctor` clears, and `task android:build` does on one `task android:doctor`
+//! clears. Neither is run by CI: D13's reasoning is unchanged, and an Android build
+//! additionally wants ~3 GB of SDK that no gate should be downloading.
 
+// Split by platform, and the size of the two halves is the honest summary of where
+// the mobile shell is: `tauri::menu` and `tauri::tray` are `#[cfg(desktop)]` in
+// Tauri itself, so the tray, its menu, the DND quick actions and the store-warming
+// daemon are all desktop-only surface. What Android and iOS share with them is a
+// webview and a deep link, and that is the whole list — see the module doc's
+// "What mobile does not do yet".
+use notify_client_core::{DeepLink, parse_deep_link};
+use tauri::{Emitter as _, Manager as _, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_deep_link::DeepLinkExt as _;
+
+#[cfg(desktop)]
 use std::time::Duration;
 
+#[cfg(desktop)]
 use notify_client_core::types::DndDraft;
+#[cfg(desktop)]
 use notify_client_core::{
-    ClientError, DEFAULT_PROFILE, DeepLink, DndPreset, Link, Profile, Session, Store,
-    StreamLease, StreamSignal, Tray, TrayIcon as TrayIconState, now_utc, parse_deep_link,
-    quiet_now, try_hold_stream, tray,
+    ClientError, DEFAULT_PROFILE, DndPreset, Link, Profile, Session, Store, StreamLease,
+    StreamSignal, Tray, TrayIcon as TrayIconState, now_utc, quiet_now, tray, try_hold_stream,
 };
+#[cfg(desktop)]
+use tauri::AppHandle;
+#[cfg(desktop)]
 use tauri::image::Image;
+#[cfg(desktop)]
 use tauri::menu::{MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder, SubmenuBuilder};
+#[cfg(desktop)]
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Emitter as _, Manager as _, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_deep_link::DeepLinkExt as _;
 
 /// How often the tray re-reads the server. See the module doc: this stands in for
 /// real push until `notify-client-core` grows a stream consumer, and is a plain
 /// judgment call rather than derived from any documented rate limit (§8.2 bounds
 /// SSE connections, not `/unread` or `/preferences/dnd`).
+#[cfg(desktop)]
 const POLL: Duration = Duration::from_secs(20);
 
 /// Build and run the app. Called from `main()` on desktop; called by the mobile
@@ -74,19 +106,29 @@ const POLL: Duration = Duration::from_secs(20);
 /// does not yet, D33/M6).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // Relaunching focuses the window that already exists (§10bis.3): a second
-        // process would hold a second SSE stream against §8.2's ceiling and pop
-        // every notification twice.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            focus_main(app);
-            // On Windows and Linux a deep link reaches the *second* launch as an
-            // argument, which is why it is read here as well as in the handler
-            // below — the same click arrives by two different roads per platform.
-            if let Some(link) = argv.iter().skip(1).find_map(|arg| parse_deep_link(arg)) {
-                navigate(app, &link);
-            }
-        }))
+    let builder = tauri::Builder::default();
+
+    // Relaunching focuses the window that already exists (§10bis.3): a second
+    // process would hold a second SSE stream against §8.2's ceiling and pop
+    // every notification twice.
+    //
+    // Desktop only, and not a capability being dropped: `tauri-plugin-single-instance`
+    // has no `init` at all on Android and iOS, because the question does not arise
+    // there. The OS runs one instance of an app, and the `android:launchMode="singleTask"`
+    // that `cargo tauri android init` writes into the manifest already routes a
+    // second launch back to the first activity rather than starting another.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        focus_main(app);
+        // On Windows and Linux a deep link reaches the *second* launch as an
+        // argument, which is why it is read here as well as in the handler
+        // below — the same click arrives by two different roads per platform.
+        if let Some(link) = argv.iter().skip(1).find_map(|arg| parse_deep_link(arg)) {
+            navigate(app, &link);
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
@@ -106,9 +148,15 @@ pub fn run() {
 
             // Shown only after the first paint, with the background token as the
             // window colour, so there is no white flash (§10bis.3bis).
+            //
+            // `cfg!(mobile)` rather than a flat `false`: on desktop the app's normal
+            // mode of life is the tray, and the window is brought up from there or
+            // by a deep link. A phone has no tray and no second road back, so a
+            // window that starts hidden there is an app that starts as a black
+            // screen and stays one.
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("weebo-notify")
-                .visible(false)
+                .visible(cfg!(mobile))
                 .build()?;
 
             // Close hides rather than quits (§10bis.3ter): the app's normal mode of
@@ -117,119 +165,138 @@ pub fn run() {
             // a machine where the tray build below fails, this makes the window
             // reachable only by killing the process, a named cost rather than a
             // silent one.
-            let close_window = window.clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = close_window.hide();
-                }
-            });
-
-            // The synchronous half of startup, done on the main thread before
-            // anything async runs, so the tray's very first paint reflects the
-            // real (`Disconnected`) starting state rather than nothing at all —
-            // §10bis.3bis's "no white flash" extended to the tray icon. Neither
-            // call can fail in a way worth more than a line on stderr: a profile
-            // is almost never absent (`Profile::load` falls back to a default),
-            // and a session that fails to open just leaves the tray static.
-            let profile = Profile::load(DEFAULT_PROFILE);
-            let session = match &profile {
-                Ok(profile) => Session::open(profile).ok(),
-                Err(error) => {
-                    eprintln!("weebo-notify: no usable profile: {error}");
-                    None
-                }
-            };
-
-            let icons = TrayIcons::load();
-            let initial = tray_now(0, false, false);
-
-            let status_item = MenuItemBuilder::with_id("status", &initial.status)
-                .enabled(false)
-                .build(&handle)?;
-
-            let mut menu_builder = MenuBuilder::new(&handle)
-                .item(&status_item)
-                .separator()
-                .text("open-inbox", "Ouvrir l'inbox");
-
-            // Present only when there is a session to write through — omitted
-            // rather than disabled, the same "no dead affordance" reasoning that
-            // keeps an inert "Rechercher les mises à jour" off this menu entirely
-            // (no updater exists yet to check against).
-            if session.is_some() {
-                let dnd_menu = SubmenuBuilder::new(&handle, "Ne pas déranger")
-                    .text("dnd-1h", "1h")
-                    .text("dnd-until-morning", "jusqu'à demain 8h")
-                    .text("dnd-off", "désactiver")
-                    .build()?;
-                menu_builder = menu_builder.separator().item(&dnd_menu);
+            //
+            // Desktop only for the same reason the window starts visible there:
+            // preventing the close of the one window on a device with no tray does
+            // not hide the app, it traps the person in it.
+            #[cfg(desktop)]
+            {
+                let close_window = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = close_window.hide();
+                    }
+                });
             }
 
-            // A manual item rather than `PredefinedMenuItem::quit`: muda documents
-            // that predefined item as "Linux: Unsupported" — exactly the platform
-            // this shell builds on today — so the native item would be a silent
-            // no-op click here rather than the affordance §10bis.3bis asks native
-            // menus to be.
-            let menu = menu_builder.separator().text("quit", "Quitter").build()?;
+            // Nothing below this point runs on mobile — the tray, the menu it hangs
+            // off, the polling that keeps it honest and the daemon that warms the
+            // shared store are all desktop surface, and the store in particular is
+            // warmed *for* the CLI and the TUI, neither of which exists on a phone.
+            // Binding `window` keeps its `Drop` out of this block's tail on the
+            // platforms that do not use it again.
+            #[cfg(mobile)]
+            let _ = window;
 
-            let tray_result = TrayIconBuilder::new()
-                .icon(icons.for_state(initial.icon))
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(on_menu_event)
-                .build(&handle);
-
-            match (tray_result, session) {
-                (Ok(tray_icon), Some(session)) => {
-                    // Managed so `on_menu_event` — which only ever sees an
-                    // `AppHandle`, never this closure's locals — can reach it for
-                    // the DND quick actions.
-                    app.manage(session.clone());
-
-                    if let Some(daemon) = open_daemon() {
-                        let daemon_session = session.clone();
-                        // Its own OS thread with its own current-thread runtime,
-                        // not `tauri::async_runtime::spawn` — `Store` wraps a
-                        // `rusqlite::Connection`, which is `Send` but not `Sync`
-                        // (a `RefCell` inside), so a future that holds `&Store`
-                        // across an `.await` (as `Session::sync_into` does) is not
-                        // `Send` and cannot go on Tauri's multi-thread runtime.
-                        // `notify-cli`'s own `block_on` exists for exactly this
-                        // reason (`crates/notify-cli/src/main.rs`) — this mirrors
-                        // it rather than fighting the same constraint twice.
-                        let _ = std::thread::Builder::new()
-                            .name("weebo-notify-daemon".to_owned())
-                            .spawn(move || run_daemon(daemon_session, daemon));
+            #[cfg(desktop)]
+            {
+                // The synchronous half of startup, done on the main thread before
+                // anything async runs, so the tray's very first paint reflects the
+                // real (`Disconnected`) starting state rather than nothing at all —
+                // §10bis.3bis's "no white flash" extended to the tray icon. Neither
+                // call can fail in a way worth more than a line on stderr: a profile
+                // is almost never absent (`Profile::load` falls back to a default),
+                // and a session that fails to open just leaves the tray static.
+                let profile = Profile::load(DEFAULT_PROFILE);
+                let session = match &profile {
+                    Ok(profile) => Session::open(profile).ok(),
+                    Err(error) => {
+                        eprintln!("weebo-notify: no usable profile: {error}");
+                        None
                     }
+                };
 
-                    tauri::async_runtime::spawn(poll_loop(
-                        session,
-                        icons,
-                        tray_icon,
-                        status_item,
-                        initial,
-                    ));
+                let icons = TrayIcons::load();
+                let initial = tray_now(0, false, false);
+
+                let status_item = MenuItemBuilder::with_id("status", &initial.status)
+                    .enabled(false)
+                    .build(&handle)?;
+
+                let mut menu_builder = MenuBuilder::new(&handle)
+                    .item(&status_item)
+                    .separator()
+                    .text("open-inbox", "Ouvrir l'inbox");
+
+                // Present only when there is a session to write through — omitted
+                // rather than disabled, the same "no dead affordance" reasoning that
+                // keeps an inert "Rechercher les mises à jour" off this menu entirely
+                // (no updater exists yet to check against).
+                if session.is_some() {
+                    let dnd_menu = SubmenuBuilder::new(&handle, "Ne pas déranger")
+                        .text("dnd-1h", "1h")
+                        .text("dnd-until-morning", "jusqu'à demain 8h")
+                        .text("dnd-off", "désactiver")
+                        .build()?;
+                    menu_builder = menu_builder.separator().item(&dnd_menu);
                 }
-                // No usable profile/session: nothing to poll, so the tray stays at
-                // its initial `Disconnected` frame — the "no popup error loop"
-                // rule §10bis.3ter states for this icon, extended to the whole
-                // startup path rather than just the network calls.
-                (Ok(_), None) => {}
-                // No tray host on this machine — real on Linux even after
-                // `task tauri:doctor` is clean: the appindicator backend `dlopen`s
-                // its library at *runtime*, with no build-time probe. The window
-                // still works; this run is then an ordinary windowed app, minus
-                // the close-to-hide affordance's way back in (see above).
-                (Err(error), _) => {
-                    eprintln!("weebo-notify: tray unavailable: {error}");
+
+                // A manual item rather than `PredefinedMenuItem::quit`: muda documents
+                // that predefined item as "Linux: Unsupported" — exactly the platform
+                // this shell builds on today — so the native item would be a silent
+                // no-op click here rather than the affordance §10bis.3bis asks native
+                // menus to be.
+                let menu = menu_builder.separator().text("quit", "Quitter").build()?;
+
+                let tray_result = TrayIconBuilder::new()
+                    .icon(icons.for_state(initial.icon))
+                    .menu(&menu)
+                    .show_menu_on_left_click(true)
+                    .on_menu_event(on_menu_event)
+                    .build(&handle);
+
+                match (tray_result, session) {
+                    (Ok(tray_icon), Some(session)) => {
+                        // Managed so `on_menu_event` — which only ever sees an
+                        // `AppHandle`, never this closure's locals — can reach it for
+                        // the DND quick actions.
+                        app.manage(session.clone());
+
+                        if let Some(daemon) = open_daemon() {
+                            let daemon_session = session.clone();
+                            // Its own OS thread with its own current-thread runtime,
+                            // not `tauri::async_runtime::spawn` — `Store` wraps a
+                            // `rusqlite::Connection`, which is `Send` but not `Sync`
+                            // (a `RefCell` inside), so a future that holds `&Store`
+                            // across an `.await` (as `Session::sync_into` does) is not
+                            // `Send` and cannot go on Tauri's multi-thread runtime.
+                            // `notify-cli`'s own `block_on` exists for exactly this
+                            // reason (`crates/notify-cli/src/main.rs`) — this mirrors
+                            // it rather than fighting the same constraint twice.
+                            let _ = std::thread::Builder::new()
+                                .name("weebo-notify-daemon".to_owned())
+                                .spawn(move || run_daemon(daemon_session, daemon));
+                        }
+
+                        tauri::async_runtime::spawn(poll_loop(
+                            session,
+                            icons,
+                            tray_icon,
+                            status_item,
+                            initial,
+                        ));
+                    }
+                    // No usable profile/session: nothing to poll, so the tray stays at
+                    // its initial `Disconnected` frame — the "no popup error loop"
+                    // rule §10bis.3ter states for this icon, extended to the whole
+                    // startup path rather than just the network calls.
+                    (Ok(_), None) => {}
+                    // No tray host on this machine — real on Linux even after
+                    // `task tauri:doctor` is clean: the appindicator backend `dlopen`s
+                    // its library at *runtime*, with no build-time probe. The window
+                    // still works; this run is then an ordinary windowed app, minus
+                    // the close-to-hide affordance's way back in (see above).
+                    (Err(error), _) => {
+                        eprintln!("weebo-notify: tray unavailable: {error}");
+                    }
                 }
             }
 
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("the desktop shell failed to start");
+        .expect("the shell failed to start");
 }
 
 /// The four committed tray glyphs (`icons/tray-*.png`), decoded once at startup.
@@ -239,6 +306,7 @@ pub fn run() {
 /// to their rasterisation. A `PNG` that exists but fails to decode is a build-time
 /// mistake in an already-committed, already-rasterised asset, not a runtime
 /// condition, so [`TrayIcons::load`] expects rather than handles it.
+#[cfg(desktop)]
 struct TrayIcons {
     neutral: Image<'static>,
     unread: Image<'static>,
@@ -246,6 +314,7 @@ struct TrayIcons {
     offline: Image<'static>,
 }
 
+#[cfg(desktop)]
 impl TrayIcons {
     fn load() -> Self {
         Self {
@@ -281,6 +350,7 @@ impl TrayIcons {
 /// from `Session::unread`/`Session::dnd`, not the cache, so nothing else in this
 /// increment needs to touch it — the daemon behaviour exists purely to keep the
 /// shared cache warm for the CLI/TUI while this is the one thing running.
+#[cfg(desktop)]
 struct Daemon {
     store: Store,
     signal: StreamSignal,
@@ -298,6 +368,7 @@ struct Daemon {
 /// `Session` alone; it just never becomes the daemon. Each is logged distinctly
 /// because they point at different fixes (a permissions problem vs. nothing to fix
 /// at all), but none of them is worth failing startup over.
+#[cfg(desktop)]
 fn open_daemon() -> Option<Daemon> {
     let store = match Store::open(DEFAULT_PROFILE) {
         Ok(store) => store,
@@ -338,6 +409,7 @@ fn open_daemon() -> Option<Daemon> {
 /// push. Runs on Tauri's own multi-thread runtime (`tauri::async_runtime::spawn`),
 /// which is why this never touches [`Store`] — see [`run_daemon`] for the half
 /// that does, and why it runs somewhere else entirely.
+#[cfg(desktop)]
 async fn poll_loop(
     session: Session,
     icons: TrayIcons,
@@ -392,6 +464,7 @@ async fn poll_loop(
 /// `Session::sync_into` does) cannot run on a multi-thread runtime. Nothing here
 /// touches the tray — that is [`poll_loop`]'s job, running concurrently on Tauri's
 /// own runtime.
+#[cfg(desktop)]
 fn run_daemon(session: Session, mut daemon: Daemon) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -424,6 +497,7 @@ fn run_daemon(session: Session, mut daemon: Daemon) {
 
 /// Dispatch a tray menu click. Registered once, in `setup`, on the tray itself —
 /// this only ever sees clicks from that one menu in this increment.
+#[cfg(desktop)]
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         "open-inbox" => focus_main(app),
@@ -458,6 +532,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 /// other client (the web sidebar, the TUI) already learns of the change instantly
 /// via the `preference` SSE event (§8.1); this shell's own icon catches up on its
 /// next poll.
+#[cfg(desktop)]
 async fn write_dnd(session: &Session, preset: DndPreset) -> Result<(), ClientError> {
     let current = session.dnd().await?;
     // The preference's own zone, not this machine's (§7.4): somebody travelling
@@ -488,6 +563,12 @@ fn focus_main(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         // Un-minimise before focusing: a focused-but-minimised window is the
         // "nothing happened" bug of every single-instance implementation.
+        //
+        // Desktop only because Tauri has no `unminimize` on mobile — not an
+        // omission on their part, there is nothing to un-minimise: an Android
+        // activity is either resumed or it is not, and `show`/`set_focus` below
+        // (which do exist on both) are the whole of the operation there.
+        #[cfg(desktop)]
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -517,6 +598,7 @@ fn navigate(app: &tauri::AppHandle, link: &DeepLink) {
 }
 
 /// What the tray shows, from the one state everything else reads.
+#[cfg(desktop)]
 fn tray_now(unread: u64, quiet: bool, connected: bool) -> Tray {
     tray(
         unread,

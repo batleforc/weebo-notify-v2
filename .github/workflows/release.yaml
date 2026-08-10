@@ -17,6 +17,34 @@ name: release
 # signed updater manifest, the Android APK — lands with milestone M5, when there is
 # something to package. Until then a release carries the two images, their digests
 # and their SBOMs, which is the set a deployment actually consumes.
+#
+# SIGNING: three systems, because three different verifiers exist and none of them
+# reads the others' output. They are not alternatives and no key is shared between
+# them (§3.2bis lists each as its own custody problem):
+#
+#   * cosign, keyless — images (`cosign sign`) and every published file
+#     (`cosign sign-blob`). No key exists: the identity is this workflow, attested
+#     by Fulcio and logged in Rekor. This is *provenance*, and it is the only one
+#     of the three that covers everything.
+#   * The Android keystore — `apksigner`, an X.509 key in a PKCS#12 store. Android
+#     refuses to install an APK without it, and the key IS the app's identity, so it
+#     effectively cannot be rotated. Not in this file yet; `task android:sign` is
+#     where it is applied, and the release key belongs in a secret scoped here.
+#   * minisign (Ed25519) — the Tauri updater (§837), whose verifier is in the app
+#     and understands minisign and nothing else.
+#
+# The temptation to unify them is worth naming, since it will come up again: the
+# closest possible is sharing one key between cosign and `apksigner`, which would
+# bind the most rotatable secret in the project to the least rotatable one and
+# replace a keyless setup that has no key to leak. Deliberately not done.
+#
+# FORGE: this moved from `.forgejo/workflows/` when GitHub became primary. Three
+# things got simpler and are worth knowing when reading against the old file:
+# the job runs on `ubuntu-latest` with a working Docker rather than inside
+# `act-24.04` with the socket mounted; `gh` no longer needs `GH_HOST`/`GH_REPO`
+# set, because it is now talking to the forge it was built for; and the keyless
+# signing identity below is a github.com identity, which is what
+# `--certificate-identity-regexp` already expected.
 
 on:
   push:
@@ -34,14 +62,16 @@ jobs:
   gate:
     # A tag never exempts anything from the gates a pull request had to pass.
     name: Replay the pull-request gates
-    runs-on: docker
-    container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
-      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install libdbus headers
+        # `task recu` builds `xtask` and `task test:critical` builds the workspace;
+        # both link libdbus through notify-rust's `d` feature. See `check.yaml`.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Install the toolchain
         # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
@@ -80,7 +110,7 @@ jobs:
   publish:
     name: Build and publish
     needs: gate
-    runs-on: docker
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
@@ -88,11 +118,6 @@ jobs:
       # with an OIDC error that reads like a registry problem — the same trap §5.3
       # documents for the other direction of this token.
       id-token: write
-    container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
-      # The image build needs an engine, and this job did not ask for one while it
-      # only echoed a warning.
-      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
 
     steps:
       - name: Checkout
@@ -153,6 +178,12 @@ jobs:
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Log in to the registry
+        # REGISTRY_TOKEN and not GITHUB_TOKEN, even though the latter can push to
+        # ghcr.io for this owner: pushing an image and editing a release are
+        # different authorities and should not share one credential (§10 A3). That
+        # reasoning did not change with the forge, so neither did this — but it does
+        # mean REGISTRY_TOKEN has to exist as a secret here, which is one of the two
+        # settings this move requires somebody to click.
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.IMAGE_REGISTRY }}
@@ -238,31 +269,21 @@ jobs:
         # this run produced. `--verify-tag` refuses to publish against a tag that is
         # not the one this workflow was triggered by.
         #
-        # NOT VERIFIED, same terms as the image build above: this step has never
-        # run. The forge-targeting in particular is the part to watch on the first
-        # tag — Forgejo is the primary forge here and GitHub is a mirror, so `gh`
-        # is told its host and repository explicitly rather than inferring them
-        # from the checkout's remote. Forgejo implements the release API
-        # compatibly; if `gh` proves fussy against it, the fallback is a `curl` to
-        # `${{ github.api_url }}/repos/${{ github.repository }}/releases`, and the
-        # asset upload is the one call whose shape differs between the two.
+        # NOT VERIFIED: this step has never run. What the move to GitHub removed is
+        # the part that was most likely to break — `gh` is talking to github.com now,
+        # so the explicit `GH_HOST`/`GH_REPO` targeting the Forgejo version needed,
+        # and the `curl` fallback its comment described, are both gone.
         env:
-          # The token the runner already has for this repository on this forge.
+          # The token the runner already has for this repository.
           # Deliberately not REGISTRY_TOKEN: pushing an image and editing a release
           # are different authorities and should not share one credential (§10 A3).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_HOST: ${{ github.server_url }}
-          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.kind.outputs.tag }}
           PRERELEASE: ${{ steps.kind.outputs.prerelease }}
           SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
           WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
         run: |
           set -euo pipefail
-          # `github.server_url` is a URL and GH_HOST wants a bare host.
-          GH_HOST="${GH_HOST#https://}"
-          GH_HOST="${GH_HOST#http://}"
-          export GH_HOST
 
           # cog wrote the changelog at bump time; this extracts the section for the
           # tag being released rather than shipping the whole file.
@@ -283,6 +304,16 @@ jobs:
             printf '| Image | Digest |\n| --- | --- |\n'
             printf '| `%s:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$SERVER_DIGEST"
             printf '| `%s-web:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$WEB_DIGEST"
+            printf '\n## Files\n\n'
+            printf 'Every file below is published with a `.sig` and a `.pem` beside it,\n'
+            printf 'signed by this workflow with no key involved. To check one:\n\n'
+            printf '```\n'
+            printf 'cosign verify-blob <file> \\\n'
+            printf '  --signature <file>.sig \\\n'
+            printf '  --certificate <file>.pem \\\n'
+            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \\\n'
+            printf '  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n'
+            printf '```\n'
           } > release-notes.md
 
           # The SBOM buildx attached to each image, pulled back out so it is
@@ -306,6 +337,26 @@ jobs:
             gh release edit "$TAG" --draft=false
           fi
 
+          # Every downloadable asset gets what the images already get: a keyless
+          # cosign signature, the certificate that proves which workflow made it, and
+          # a Rekor transparency entry. Same identity, same verification command, so
+          # "is this really yours?" has one answer for an image, an SBOM, a CLI
+          # archive and an APK rather than four.
+          #
+          # A loop over a list rather than three copied blocks, because this list is
+          # what grows when the artefact matrix lands (see SCOPE): adding a file here
+          # signs and publishes it, and forgetting to sign it is not one of the
+          # available mistakes.
+          #
+          # This does NOT replace the signatures those artefacts need to *function* —
+          # an APK still has to be signed with the Android keystore or no device will
+          # install it, and the updater bundles still need their minisign key. Those
+          # are different questions with different verifiers; this one is provenance.
           for asset in "weebo-notify-${TAG}-server.sbom.json" "weebo-notify-${TAG}-web.sbom.json"; do
-            [ -s "$asset" ] && gh release upload "$TAG" "$asset" --clobber
+            [ -s "$asset" ] || continue
+            cosign sign-blob --yes \
+              --output-signature "${asset}.sig" \
+              --output-certificate "${asset}.pem" \
+              "$asset"
+            gh release upload "$TAG" "$asset" "${asset}.sig" "${asset}.pem" --clobber
           done

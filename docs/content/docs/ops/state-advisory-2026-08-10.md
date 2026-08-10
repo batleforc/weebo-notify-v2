@@ -1109,4 +1109,9 @@ either fixed or dismissed.
 
 ### Not from this review, but blocking its publication
 
-- [ ] **SEC-MISC-01** — The docs site does not build: `observability.mdx` uses a ` ```promql ` fence and Shiki has no such language, which fails `next build` for the whole site. Verified as pre-existing at `0138581`, unrelated to this report — but this page cannot be published until it is fixed. Register the language, or relabel the fence. → `docs/content/docs/ops/observability.mdx`
+<Callout>
+  **Done.** This page can now be published — the docs site builds all 129 pages,
+  including this one.
+</Callout>
+
+- [x] **SEC-MISC-01** — Fixed, and fixed at the mechanism rather than at the fence. One ```promql block failed `next build` for all 129 pages: Shiki bundles 723 grammars and promql is not one of them. Relabelling that fence would have worked until the next unknown language did the same thing, so the docs pipeline now sets `rehypeCodeOptions.fallbackLanguage: "text"` — an unrecognised language renders as plain text instead of throwing. Verified both ways: the site builds with the file in place, and an added ```totally-not-a-language fence builds clean too. The fence keeps its `promql` label, which nothing displays (`addLanguageClass` is off for every block on this site) but which is what a grammar would attach to later. → `docs/src/lib/source.ts`

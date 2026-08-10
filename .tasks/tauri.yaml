@@ -95,6 +95,40 @@ tasks:
           # way to live in the background (§10bis.3ter).
           cd web/src-tauri && cargo build --release
 
+  bundle:
+    desc: "Package the desktop shell as a .deb and an AppImage (§10bis.3, M5)"
+    # Distinct from `build` above, which compiles and stops. That is the fast loop —
+    # it answers "does it still build" without spending minutes on packaging. This is
+    # the one that produces something somebody can install, and it is `cargo tauri
+    # build` rather than `cargo build` because the bundlers live in the Tauri CLI.
+    #
+    # The targets come from `tauri.conf.json` (`bundle.targets`: deb, appimage), not
+    # from a list here — two lists would disagree, and the config is what the
+    # release path will read too.
+    #
+    # Unsigned, and on Linux that is the normal state rather than a gap: `.deb` and
+    # AppImage carry no OS-enforced signature the way an APK or a notarised `.dmg`
+    # does. What §3.2bis signs for these is the *updater* manifest (minisign) and
+    # their provenance (cosign) — neither is this task's job, and neither exists yet.
+    cmds:
+      - cmd: |
+          # `set -e` is not decoration here. Without it the `echo` below is the last
+          # command in the block, so its exit code is the task's: a bundler that
+          # failed produced a green task and a "Bundles:" line pointing at a
+          # directory holding whatever the previous run left. That is exactly how
+          # this was first written, and CI would have uploaded a stale artefact.
+          set -eu
+          {{.NEED_STACK}}
+          if ! command -v cargo-tauri >/dev/null 2>&1; then
+            echo "The Tauri CLI is missing — run \`mise install\`."
+            echo
+            echo "Nothing was built."
+            exit 0
+          fi
+          cd web/src-tauri && cargo tauri build {{.CLI_ARGS}}
+          echo
+          echo "Bundles: web/src-tauri/target/release/bundle/"
+
   dev:
     desc: "Run the desktop shell against the Vite dev server (§10bis.3, M5)"
     cmds:

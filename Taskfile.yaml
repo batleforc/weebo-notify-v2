@@ -14,6 +14,7 @@ includes:
   browser: ./.tasks/browser.yaml
   desktop: ./.tasks/desktop.yaml
   helm: ./.tasks/helm.yaml
+  android: ./.tasks/android.yaml
 
 tasks:
   init:

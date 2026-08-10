@@ -7,6 +7,9 @@ name: contract
 # the devfile's inlined OIDC configuration cannot drift from the code they come
 # from. Forgetting to run `task recu` breaks the pull request instead of shipping a
 # client that disagrees with the server.
+#
+# Moved here from `.forgejo/workflows/` when GitHub became the primary forge — see
+# `check.yaml`'s header for what the move changed.
 
 on:
   push:
@@ -23,13 +26,15 @@ env:
 
 jobs:
   contract:
-    runs-on: docker
-    container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install libdbus headers
+        # `task recu` builds `xtask`, which links libdbus. See `check.yaml`.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Install the toolchain
         # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.

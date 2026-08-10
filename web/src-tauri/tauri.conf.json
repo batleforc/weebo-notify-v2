@@ -19,7 +19,8 @@
     "deep-link": {
       "desktop": {
         "schemes": ["weebo-notify"]
-      }
+      },
+      "mobile": [{ "scheme": ["weebo-notify"] }]
     }
   },
   "bundle": {

@@ -1,0 +1,85 @@
+# The Android toolchain (M6, design §10bis.4). Loaded only under `MISE_ENV=android`.
+#
+# Three files, three audiences: `mise.toml` is what every gate needs, `mise.dev.toml`
+# is what a developer wants and CI has no use for, and this is what the handful of
+# people building the mobile shell need. `MISE_ENV` composes, so
+# `MISE_ENV=dev,android mise install` layers all three.
+#
+# Separate rather than a block in `mise.toml` because this is a ~150 MB install that
+# no gate runs and most contributors never need — and because it is the doorway to a
+# further ~3 GB of SDK components that `task android:sdk` fetches.
+#
+# # Why none of this is in the dev image
+#
+# It used to be planned that way: `docs/upstream/` carried a proposal to bake the
+# SDK/NDK into `che-min-mise` with a root `sdkmanager` script, on the belief that
+# mise had no Android backend. It has one, it needs no root, and it sets
+# `ANDROID_HOME`/`ANDROID_SDK_ROOT` itself — so the toolchain comes here instead,
+# where the versions this product picks are this product's business rather than
+# every consumer of a shared base image's problem.
+#
+# The one part that genuinely cannot live here is the GTK/WebKit stack the *desktop*
+# shell links against: mise carries tools, not C libraries. That is in the image
+# (`che-mise-webkit`), and `task tauri:doctor` reports it.
+#
+# # Not covered by mise.lock
+#
+# mise writes the lockfile for `mise.toml` only — verified — so nothing here is
+# pinned by it. Every version below is therefore explicit rather than `latest`,
+# which is what makes them reproducible.
+
+[tools]
+# JDK 17 because Android Gradle Plugin 8.x — the version `cargo tauri android init`
+# scaffolds — requires 17 or newer. The version matters less than the side effect:
+# mise's java backend exports JAVA_HOME, which `sdkmanager` refuses to run without
+# and which a distro JDK package does not set for you.
+java = "temurin-17"
+
+# The Android command-line tools, and only those: `sdkmanager` and `avdmanager`.
+# No platform, no build-tools, no NDK, no adb — `task android:sdk` installs those,
+# into a persistent root, because this directory belongs to mise and is replaced
+# wholesale on a version bump.
+"vfox:mise-plugins/vfox-android-sdk" = "13.0"
+
+# Deliberately absent:
+#
+#   cargo-tauri — it lived here while Android was its only consumer. `task
+#            tauri:bundle` packages the desktop .deb and AppImage with the same
+#            binary, so it moved to `mise.toml`: a tool two targets need is not an
+#            Android tool, and this file would have been an odd thing to load to
+#            build a Linux desktop package.
+#
+#   gradle — `cargo tauri android init` generates a Gradle *wrapper* under
+#            `web/src-tauri/gen/android`. A system Gradle would be a second version,
+#            silently disagreeing with the one the project pins.
+#   kotlin — same: the Kotlin plugin version comes from that generated build, not
+#            from a standalone compiler. Add it the day something outside Gradle
+#            has to compile Kotlin.
+
+# Where the SDK *components* live — `task android:sdk`'s three gigabytes of
+# platform, build-tools and NDK.
+#
+# This is not decoration, it is a correction. `vfox-android-sdk` exports both of
+# these variables itself, pointing at its own install directory, and it does so
+# whether or not anybody wanted that: `task android:sdk` resolves its `SDK_ROOT` as
+# `{{ANDROID_SDK_ROOT | default "/home/user/.android-sdk"}}`, the `default` filter
+# only fires on an *unset* value, so before these two lines the fallback was dead
+# code and three gigabytes installed into the one directory the `[tools]` comment
+# above says must not hold them — mise replaces `installs/<tool>/<version>` wholesale
+# on a version bump, so going from 13.0 to 13.1 would have silently deleted the SDK.
+#
+# mise applies config `[env]` after tool-provided environment, so these win. Both
+# names on purpose, for the same reason `devfile.yaml` sets both: Gradle reads
+# ANDROID_HOME, newer Google tooling prefers ANDROID_SDK_ROOT, and setting only one
+# is how a build works for one tool and not the other.
+#
+# `devfile.yaml` sets the same pair, and that is not redundancy: the devfile value
+# only exists inside the Che workspace, and only after a restart, while this one
+# travels with the repository and applies the moment `MISE_ENV=android` is set.
+# `{{env.HOME}}` rather than a literal `/home/user`: that path is this Che
+# workspace's home and nobody else's, and the first place it broke was CI, where the
+# runner is `/home/runner` and a hardcoded path would have sent three gigabytes
+# somewhere unwritable.
+[env]
+ANDROID_HOME = "{{env.HOME}}/.android-sdk"
+ANDROID_SDK_ROOT = "{{env.HOME}}/.android-sdk"

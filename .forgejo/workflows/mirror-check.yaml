@@ -1,0 +1,135 @@
+name: mirror-check
+
+# Forgejo is a MIRROR. GitHub is the primary forge and runs the full pipeline —
+# check, contract, e2e, oidc-compat, audit, notify, release (see .github/workflows/).
+#
+# This file is the exact inverse of what used to live at .github/mirror-check.yaml,
+# and it exists for the same reason that one did: a mirror should not be a
+# repository of unknown quality. It replays the two cheap, decisive gates so that a
+# broken tree is visible here too, without duplicating the parts that need a
+# container engine, a provider matrix or a registry token.
+#
+# ── Why the direction reversed ─────────────────────────────────────────────────
+#
+# The images have always been published to ghcr.io, and the keyless cosign identity
+# in every `cosign verify` line the docs print is a github.com identity. The forge
+# that owns the release was therefore already the one this project's consumers
+# trust; this change stopped pretending otherwise.
+#
+# One consequence worth knowing rather than discovering: the dogfooding workflow
+# (.github/workflows/notify.yaml) exchanges the *runner's* OIDC identity for a
+# publish token, so the receiving instance's trust policy is keyed to the forge that
+# runs it. Both issuers are listed in that file's header during the transition. If
+# this mirror is ever made to publish again, it needs its own entry back.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  check:
+    runs-on: docker
+    container:
+      # The act image, which is the Forgejo convention and already carries the
+      # libdbus headers the GitHub workflows have to install for themselves.
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`
+        # — same reasoning as the primary pipeline, and the same pinned version, so
+        # the two forges are not quietly testing against different toolchains.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Install the JavaScript dependencies
+        run: |
+          mise exec -- pnpm -C docs install --frozen-lockfile
+          mise exec -- pnpm -C web install --frozen-lockfile
+
+      - name: Lint
+        run: mise exec -- task lint:check
+
+      - name: Tests and coverage
+        run: mise exec -- task cover
+
+      - name: Coverage gates
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            mise exec -- task test:cover:gate -- "origin/${{ github.base_ref }}" | tee coverage.md
+          else
+            mise exec -- task test:cover:gate | tee coverage.md
+          fi
+
+      - name: Publish the coverage summary
+        if: always()
+        run: cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+
+  contract:
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the toolchain
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        run: mise install --yes
+
+      - name: Install the JavaScript dependencies
+        run: mise exec -- pnpm -C web install --frozen-lockfile
+
+      - name: Regenerate everything derived from the code
+        run: mise exec -- task recu
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated artefacts are out of date. Run \`task recu\` and commit the result."
+            exit 1
+          fi

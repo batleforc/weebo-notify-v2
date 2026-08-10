@@ -24,7 +24,8 @@ metadata:
 parent:
   uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-mise-webkit/devfile.yaml
   # `tools` is inherited wholly from the parent (`che-mise-webkit`) — nothing here
-  # redeclares its image or mounts, only endpoints. This has to live under
+  # redeclares its image, only endpoints, one mount and two variables. This has to
+  # live under
   # `parent.components`, not the top-level `components:` list below: that list
   # declares NEW components, and a `tools` entry there collides with the parent's
   # `tools` rather than patching it. `parent.components` is what devfile actually
@@ -47,6 +48,20 @@ parent:
           # several minutes on this cluster, so `oidc-mock` gets the same fixed
           # pre-provisioned route as `server`/`web` rather than relying on it.
           - {name: oidc, targetPort: 9110, exposure: public, protocol: https, secure: true}
+        # Where `task android:sdk` puts the SDK components (M6). Both variable names
+        # on purpose: Gradle reads ANDROID_HOME, newer Google tooling prefers
+        # ANDROID_SDK_ROOT, and setting only one is how a build works for one tool
+        # and not the other.
+        #
+        # They point here rather than at mise's install directory — which the
+        # `vfox-android-sdk` plugin would otherwise set them to — because that
+        # directory holds the command-line tools only, and mise replaces it whole on
+        # a version bump. `sdkmanager` is always called with `--sdk_root` to match.
+        env:
+          - {name: ANDROID_HOME, value: /home/user/.android-sdk}
+          - {name: ANDROID_SDK_ROOT, value: /home/user/.android-sdk}
+        volumeMounts:
+          - {name: android-sdk, path: /home/user/.android-sdk}
 components:
   - name: postgres
     container:
@@ -155,6 +170,16 @@ components:
     volume: {size: 2Gi}
   - name: rustfs-data
     volume: {size: 2Gi}
+  # The Android SDK components `task android:sdk` installs (M6, §10bis.4): the
+  # platform, build-tools and one NDK, on the order of three gigabytes. A volume
+  # rather than a fresh download on every workspace start, and rather than an image
+  # layer — only the people building Android should pay for it, and mise's own
+  # install tree cannot hold it because mise replaces that on a version bump.
+  #
+  # Sized with room for a second NDK or platform during an upgrade, when both the
+  # old and new have to exist at once.
+  - name: android-sdk
+    volume: {size: 6Gi}
 commands:
   # What a freshly created workspace has to create before anything runs: the
   # Authentik bootstrap and the VAPID key `[push.webpush]` reads. Idempotent, and
