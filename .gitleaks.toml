@@ -31,6 +31,33 @@ description = "Generated code carries example values from the OpenAPI document, 
 paths = [
     '''^crates/notify-client-api/src/generated\.rs$''',
     '''^web/src/lib/api/.*''',
+    # `openapi-ts` writes here (ADR-0009); the path moved and the old one above is
+    # kept so a `gitleaks detect` over history stays clean too.
+    '''^web/src/api/generated/.*''',
+    '''^docs/content/docs/api/openapi\.json$''',
+]
+
+[[allowlists]]
+description = """
+Test fixtures that are shaped like credentials and are not any.
+
+A full-history `gitleaks detect` reported six findings, all of them here: a JWT
+literal inside a `#[cfg(test)]` assertion, a VAPID keypair minted for a unit test,
+a Web Push fixture, and the phrase "the token itself" in a doc comment that the
+generic-api-key rule matches on.
+
+They are listed rather than left, because the value of this scan is entirely in its
+signal-to-noise: a repository whose secret scan always reports six findings is a
+repository where the seventh is not noticed. Each entry is a specific file, never a
+rule-wide disable — a real secret committed to any of these paths would still have
+to get past a reviewer, but it would no longer be hidden in a standing list of
+known noise.
+"""
+paths = [
+    '''^crates/notify-adapters/oidc/src/federation\.rs$''',
+    '''^crates/notify-adapters/push-webpush/src/lib\.rs$''',
+    '''^crates/notify-ports/src/tokens\.rs$''',
+    '''^web/src/lib/push\.spec\.ts$''',
 ]
 
 [[allowlists]]

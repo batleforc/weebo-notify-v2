@@ -6,7 +6,7 @@
  * to the identity provider and comes back holding a token, which is what makes the
  * server able to keep zero sessions.
  */
-import { LogIn } from "lucide-vue-next";
+import { LogIn } from "@lucide/vue";
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";

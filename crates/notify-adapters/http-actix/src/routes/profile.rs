@@ -187,7 +187,7 @@ pub(crate) async fn read_avatar(
         .into());
     };
 
-    Ok(HttpResponse::Ok()
+    Ok(crate::routes::served_bytes(&mut HttpResponse::Ok())
         .content_type(object.content_type)
         // Immutable: replacing an avatar mints a new id (§2.4), so a cached one can
         // never be stale — and an inbox renders the same face on every row.

@@ -17,12 +17,12 @@ use notify_app::{
     CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
     DeleteNotification, DrainSinks, EnrolDevice, ExchangeToken, Fanout, GetNotification,
     ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox, ListInteractions,
-    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt,
-    PresignAttachment, PublishNotification, PurgeExpired, ReadAvatar, ReadChannel, ReadDnd,
-    ReadProfile, ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction,
+    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, OsRngKeyGenerator,
+    PostReceipt, PresignAttachment, PublishNotification, PurgeExpired, ReadAvatar, ReadChannel,
+    ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction,
     RequeueDeadLetter, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
     SelfJoin, SendDndDigests, SetApiKeyLimit, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
-    UlidKeyGenerator, UpdateChannel, UpdateProfile, UpsertNotification,
+    UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_fs::{FsAttachments, FsConfig};
 use notify_attachments_s3::{S3Attachments, S3Config};
@@ -31,7 +31,9 @@ use notify_domain::{Pattern, TrustPolicies, TrustPolicy as DomainTrustPolicy};
 use notify_eventbus_pg::PgEventBus;
 use notify_http_actix::ApiState;
 use notify_metrics_prometheus::PrometheusMetrics;
-use notify_oidc::{Argon2SecretHasher, FederationTokens, OidcConfig, OidcVerifier};
+use notify_oidc::{
+    Argon2SecretHasher, FederationTokens, GuardedSecretHasher, OidcConfig, OidcVerifier,
+};
 use notify_persistence_pg::{PgLeaderElection, PgStore};
 use notify_ports::{
     AttachmentStore, AttachmentThumbnailer, EventBus, SinkRegistry as _, SystemClock,
@@ -126,7 +128,14 @@ impl Application {
         oidc.audiences.extend(config.oidc.audiences.iter().cloned());
         oidc.groups_claim.clone_from(&config.oidc.groups_claim);
         let verifier = Arc::new(OidcVerifier::new(oidc, clock.clone())?);
-        let hasher = Arc::new(Argon2SecretHasher);
+        // Argon2id, behind the memoisation and the admission gate that bound what an
+        // anonymous caller can make it spend (`notify_oidc::guard`). The cost of the
+        // KDF is the point and stays untouched; what changes is that the *same*
+        // question is not paid for twice, and that a flood is shed rather than
+        // queued into a memory limit. The wrapping happens here rather than inside
+        // `Argon2SecretHasher` so the port stays a plain KDF and the guard is a
+        // visible line in the composition root.
+        let hasher = Arc::new(GuardedSecretHasher::new(Argon2SecretHasher));
 
         // The exporter (§13). One registry per process, handed to everything that
         // measures: the HTTP layer, the push registry below, and the drain loop.
@@ -224,7 +233,10 @@ impl Application {
         let federation = federation_tokens(config, clock.clone())?;
         // The CLI download (design §9, new). `None` here is what makes `GET /cli`
         // answer 501 — same absent-block-one-behaviour rule as federation above.
-        let cli_binary = cli_binary(config)?;
+        let (cli_binary, cli_digest) = match cli_binary(config)? {
+            Some((bytes, digest)) => (Some(bytes), Some(digest)),
+            None => (None, None),
+        };
         // One set, shared, and swappable on SIGHUP (D31). It used to be built twice
         // — once for the exchange, once for the console — on the reasoning that a
         // read-only screen should not be tied to an authentication path. The reason
@@ -416,7 +428,7 @@ impl Application {
             create_key: CreateApiKey::new(
                 repository.clone(),
                 hasher,
-                Arc::new(UlidKeyGenerator),
+                Arc::new(OsRngKeyGenerator),
                 authorizer,
                 repository.clone(),
                 clock.clone(),
@@ -457,6 +469,7 @@ impl Application {
             ),
 
             cli_binary,
+            cli_digest,
         };
 
         let purge = PurgeExpired::new(
@@ -700,7 +713,7 @@ fn federation_tokens(
 /// readable, the same rule `federation_tokens` above and `[push.webpush]` set:
 /// starting up silently unable to serve what an operator explicitly configured
 /// is a worse failure than refusing to start at all.
-fn cli_binary(config: &Config) -> anyhow::Result<Option<actix_web::web::Bytes>> {
+fn cli_binary(config: &Config) -> anyhow::Result<Option<(actix_web::web::Bytes, String)>> {
     let Some(settings) = &config.cli else {
         return Ok(None);
     };
@@ -712,7 +725,29 @@ fn cli_binary(config: &Config) -> anyhow::Result<Option<actix_web::web::Bytes>> 
         )
     })?;
 
-    Ok(Some(actix_web::web::Bytes::from(bytes)))
+    // Hashed once at boot, alongside the read. `GET /api/v1/cli` serves it as
+    // `X-Content-Digest` so a recipient can check the executable they were handed
+    // against the digest published with the release (SEC-P2-26/27).
+    let digest = {
+        use sha2::{Digest as _, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        hasher
+            .finalize()
+            .iter()
+            .fold(String::with_capacity(64), |mut out, byte| {
+                use core::fmt::Write as _;
+                let _ = write!(out, "{byte:02x}");
+                out
+            })
+    };
+    tracing::info!(
+        path = %settings.binary_path.display(),
+        sha256 = %digest,
+        "serving the CLI binary at GET /api/v1/cli"
+    );
+
+    Ok(Some((actix_web::web::Bytes::from(bytes), digest)))
 }
 
 /// The trust policies, global and channel-scoped, as the domain wants them.
@@ -1012,9 +1047,15 @@ mod tests {
             ..Default::default()
         };
 
-        let served = cli_binary(&config).unwrap();
+        let (bytes, digest) = cli_binary(&config).unwrap().unwrap();
 
-        assert_eq!(served.unwrap().as_ref(), b"not really a binary, but bytes");
+        assert_eq!(bytes.as_ref(), b"not really a binary, but bytes");
+        // The digest served as `X-Content-Digest`, so a recipient can check the
+        // executable they were handed against the release notes (SEC-P2-26/27).
+        assert_eq!(
+            digest, "181dcdff3eebcb931b129e19f67aecbbaff4816770bd0c1da0d2af3b4b60a113",
+            "the digest is not SHA-256 of the bytes actually read"
+        );
     }
 
     #[test]

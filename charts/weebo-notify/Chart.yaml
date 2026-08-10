@@ -20,4 +20,4 @@ maintainers:
   - name: Max Batleforc
     url: https://github.com/batleforc
 annotations:
-  artifacthub.io/license: MIT
+  artifacthub.io/license: Apache-2.0

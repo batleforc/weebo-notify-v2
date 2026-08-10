@@ -19,6 +19,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 description = "weebo-notify desktop shell"
+# Spelled out rather than inherited: this crate is deliberately not a workspace
+# member (above), so `license.workspace = true` is not available to it and it
+# declared nothing at all until `task audit:cargo` started reading this manifest
+# and said so. Same licence as everything else in the repository.
+license = "Apache-2.0"
 
 # Required by Tauri's own tooling before `cargo tauri android/ios init` will do
 # anything at all — mobile links this crate as a `staticlib`/`cdylib` and calls

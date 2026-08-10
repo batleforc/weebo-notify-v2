@@ -11,7 +11,7 @@
  * available, permission still "default" — so this never asks for a permission the
  * browser would refuse to raise again, or a deployment cannot honour.
  */
-import { BellRing, X } from "lucide-vue-next";
+import { BellRing, X } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 

@@ -27,7 +27,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -39,7 +39,7 @@ jobs:
       - name: Install libdbus headers
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
         with:
           install: true
           cache: true
@@ -65,13 +65,13 @@ jobs:
   contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # See the `check` job above: `task recu` builds `xtask`, which links libdbus.
       - name: Install libdbus headers
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
         with:
           install: true
           cache: true

@@ -34,6 +34,34 @@ On `SIGTERM` a replica **drains** — stops accepting connections, closes its st
 cleanly so clients reconnect elsewhere, and finishes in-flight requests within the
 termination grace period.
 
+## Sizing Postgres, and the pooler that breaks the event bus
+
+Postgres is four things at once here: the database, the event bus, the rate limiter
+and the leader lock. That is a deliberate trade — it is why there is no Redis to run
+— and it means connection sizing is a capacity decision rather than a detail.
+
+Per replica:
+
+- `[database] max_connections`, **16** by default;
+- **one more** for this replica's dedicated `LISTEN` connection, which is not drawn from that pool;
+- the leader's background loops, on the same pool.
+
+So a deployment at the chart's `autoscaling.maxReplicas: 6` asks for roughly
+`6 × 17 ≈ 102` connections before anything else on the cluster connects. Size the
+server's `max_connections` above that with headroom, or lower
+`server.config.database.maxConnections` — and remember that a rolling update briefly
+runs old and new pods together.
+
+<Callout type="warn">
+  **PgBouncer in transaction mode will break live streams.** The obvious answer to
+  connection pressure is a pooler, and transaction pooling does not support
+  `LISTEN`/`NOTIFY` — the connection that carries the event bus must either bypass
+  the pooler or use **session** mode. The failure is quiet: writes keep working,
+  `/readyz` stays green, and notifications simply stop arriving in real time until
+  something reconnects. If you put a pooler in front of this, route
+  `[database] url` through it and give the bus its own direct DSN.
+</Callout>
+
 ## Remaining single points of failure
 
 Stated plainly, because pretending otherwise helps nobody:

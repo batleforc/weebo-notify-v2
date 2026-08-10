@@ -33,6 +33,7 @@
 mod claims;
 mod config;
 mod federation;
+mod guard;
 mod jwks;
 mod secrets;
 #[cfg(test)]
@@ -41,6 +42,7 @@ mod verifier;
 
 pub use config::OidcConfig;
 pub use federation::FederationTokens;
+pub use guard::GuardedSecretHasher;
 pub use jwks::{HttpJwksSource, JwksSource};
 pub use secrets::Argon2SecretHasher;
 pub use verifier::OidcVerifier;

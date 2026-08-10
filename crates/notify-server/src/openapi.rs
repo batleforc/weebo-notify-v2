@@ -24,7 +24,10 @@ use utoipa_actix_web::AppExt as _;
         description = "Rich, multi-channel, multi-device notification platform. \
                        Notifications are lifecycle objects: they carry state, accumulate \
                        revisions, expose actions and collect receipts.",
-        license(name = "MPL-2.0", url = "https://www.mozilla.org/en-US/MPL/2.0/")
+        license(
+            name = "Apache-2.0",
+            url = "https://www.apache.org/licenses/LICENSE-2.0"
+        )
     ),
     tags(
         (name = "channels", description = "Channels, their members and their policy"),

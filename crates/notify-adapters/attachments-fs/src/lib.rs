@@ -112,7 +112,7 @@ impl FsAttachments {
     /// See [`TokenError`].
     pub fn verify(
         &self,
-        purpose: Purpose,
+        purpose: Purpose<'_>,
         id: AttachmentId,
         given: &str,
     ) -> Result<(), TokenError> {
@@ -133,13 +133,13 @@ impl FsAttachments {
 
     fn url_for(
         &self,
-        purpose: Purpose,
+        purpose: Purpose<'_>,
         id: AttachmentId,
         expires_at: OffsetDateTime,
     ) -> PortResult<Url> {
         let token = token::sign(&self.secret, purpose, id, expires_at);
         let segment = match purpose {
-            Purpose::Upload => "upload",
+            Purpose::Upload { .. } => "upload",
             Purpose::Download => "download",
         };
 
@@ -207,13 +207,23 @@ impl AttachmentStore for FsAttachments {
     async fn presign_upload(&self, request: &UploadRequest) -> PortResult<PresignedUpload> {
         let id = AttachmentId::generate();
         let expires_at = OffsetDateTime::now_utc() + PRESIGN_TTL;
-        let url = self.url_for(Purpose::Upload, id, expires_at)?;
+        let url = self.url_for(
+            Purpose::Upload {
+                content_type: &request.content_type,
+            },
+            id,
+            expires_at,
+        )?;
 
         Ok(PresignedUpload {
             id,
             url,
-            // The client sends this header on the PUT; the upload route checks it
-            // matches, the way S3's signature checks it there instead.
+            // The client sends this header on the PUT, and it is **inside the
+            // signature** rather than merely advertised here: the upload route feeds
+            // the header it actually receives through the same MAC, so a PUT
+            // declaring anything else fails to verify. That is the same guarantee
+            // S3 gets from listing `content-type` among its SigV4 signed headers,
+            // and this adapter claimed it for a while before it had it.
             headers: [("content-type".to_owned(), request.content_type.clone())].into(),
             expires_at,
         })

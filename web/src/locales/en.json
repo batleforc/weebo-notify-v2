@@ -369,6 +369,7 @@
       "exceptionsHintEmphasis": "except",
       "scopeRestricted": "Scope is restricted to specific channels; for now it's changed from the CLI (notify dnd).",
       "urgentBypass": "Let {emphasis} notifications through",
+      "urgentBypassEmphasis": "urgent",
       "urgentBypassHint": "You decide what can wake you, never the sender.",
       "cancel": "Cancel",
       "saveFailed": "Could not save.",
@@ -386,6 +387,7 @@
     "push": {
       "title": "Push notifications",
       "description": "Receive notifications even when the tab is closed. This browser becomes a {device}: it appears in Admin → Devices, and revoking it there cuts its push and its sync cursor.",
+      "descriptionDevice": "device",
       "checking": "Checking…",
       "unsupported": "This browser cannot receive push — usually a private window or an insecure origin.",
       "unavailable": "This deployment doesn't do Web Push: no VAPID key is configured. The real-time stream keeps working.",

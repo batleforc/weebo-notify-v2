@@ -8,7 +8,7 @@
  * the rule is invisible until it surprises somebody. So every field says whose it
  * is, and offers to hand it back.
  */
-import { KeyRound, RotateCcw, Trash2, Upload } from "lucide-vue-next";
+import { KeyRound, RotateCcw, Trash2, Upload } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 

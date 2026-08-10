@@ -30,4 +30,3 @@ overrides:
   # pulled in at build time by @vue/compiler-sfc — same "only a build tool"
   # reasoning as js-yaml above, and the same one-line fix.
   nanoid: ^3.3.17
-

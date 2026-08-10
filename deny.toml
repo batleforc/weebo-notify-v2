@@ -18,9 +18,16 @@ yanked = "deny"
 ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
 
 [licenses]
-# weebo-notify ships under MPL-2.0. The list below is the permissive set that is
-# compatible with distributing a binary — anything copyleft-at-the-binary-level
-# (GPL, AGPL) is deliberately absent and must be an explicit, reviewed exception.
+# weebo-notify ships under Apache-2.0 — the licence in `LICENSE.md`, and the one
+# `Cargo.toml`, both Containerfiles, `Chart.yaml` and the OpenAPI document all
+# declare. They said three different things until 2026-08-10; the list below is
+# written against the one they agree on now.
+#
+# It is the permissive set that is compatible with distributing a binary — anything
+# copyleft-at-the-binary-level (GPL, AGPL) is deliberately absent and must be an
+# explicit, reviewed exception. `MPL-2.0` stays *on* the list: it is file-level
+# copyleft, so a dependency under it is fine to link and ship, which is a separate
+# question from what we license our own work under.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

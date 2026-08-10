@@ -38,8 +38,21 @@ pub(crate) async fn download(
         .clone()
         .ok_or(notify_ports::PortError::NotConfigured { what: "cli" })?;
 
-    Ok(HttpResponse::Ok()
+    let mut response = HttpResponse::Ok();
+    response
         .content_type("application/octet-stream")
         .insert_header(("content-disposition", "attachment; filename=\"notify\""))
-        .body(binary))
+        // Executables must never be sniffed into something a browser will render.
+        .insert_header(("x-content-type-options", "nosniff"));
+
+    // What was served, so it can be checked against the digest published with the
+    // release rather than trusted because the connection looked fine. A strong
+    // ETag as well, because that is the header caches already understand.
+    if let Some(digest) = &state.cli_digest {
+        response
+            .insert_header(("x-content-digest", format!("sha-256={digest}")))
+            .insert_header(("etag", format!("\"{digest}\"")));
+    }
+
+    Ok(response.body(binary))
 }

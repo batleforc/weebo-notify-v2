@@ -20,6 +20,52 @@ tasks:
     cmds:
       - helm template weebo-notify "{{.CHART_DIR}}" -f "{{.CHART_DIR}}/examples/values-production.yaml" {{.CLI_ARGS}}
 
+  check:
+    desc: "Lint the chart, render the production example, and assert the properties an operator inherits from it"
+    # The example is the file people copy. Rendering it is not enough on its own:
+    # it rendered perfectly well while shipping `networkPolicy.enabled: true`
+    # with an empty `ingressFrom`, which produced a deployment whose own Ingress
+    # and metrics scrape were both blocked. These assertions are the difference
+    # between "the template compiles" and "the result is a deployment that works".
+    cmds:
+      - task: lint
+      - cmd: |
+          set -eu
+          rendered="$(helm template weebo-notify "{{.CHART_DIR}}" \
+            -f "{{.CHART_DIR}}/examples/values-production.yaml")"
+
+          fail() { echo "helm:check — $1" >&2; exit 1; }
+          # `yq` prints an empty line for every document a `select` does not
+          # match, so a bare capture picks up the blanks as well as the answer.
+          pick() { printf '%s' "$rendered" | yq "$1" | grep -v '^$' | head -1; }
+
+          # The server's NetworkPolicy must admit more than the web pods, or the
+          # server Ingress and the ServiceMonitor scrape are both refused.
+          sources="$(pick 'select(.kind == "NetworkPolicy" and .metadata.name == "weebo-notify-server") | .spec.ingress[0].from | length')"
+          [ "${sources:-0}" -ge 2 ] || fail \
+            "the server NetworkPolicy admits only ${sources:-0} source(s); ingressFrom is unset, so the API and the scrape are blocked"
+
+          # Two replicas and a PDB: the example is the high-availability shape.
+          replicas="$(pick 'select(.kind == "Deployment" and .metadata.name == "weebo-notify-server") | .spec.replicas')"
+          [ "${replicas:-0}" -ge 2 ] || fail \
+            "the server Deployment renders ${replicas:-0} replica(s)"
+
+          pdb="$(pick 'select(.kind == "PodDisruptionBudget" and .metadata.name == "weebo-notify-server") | .spec.minAvailable')"
+          [ -n "$pdb" ] || fail "no PodDisruptionBudget for the server"
+
+          # Scale-down churns live streams; the window must be deliberate.
+          window="$(pick 'select(.kind == "HorizontalPodAutoscaler" and .metadata.name == "weebo-notify-server") | .spec.behavior.scaleDown.stabilizationWindowSeconds')"
+          [ -n "$window" ] && [ "$window" != "null" ] || fail \
+            "the server HPA has no scaleDown stabilisation window"
+
+          # The Ingress publishes /api/v1 and nothing else: that prefix is the
+          # only thing keeping /metrics, /healthz and /readyz off the internet.
+          paths="$(pick 'select(.kind == "Ingress" and .metadata.name == "weebo-notify-server") | [.spec.rules[].http.paths[].path] | join(",")')"
+          [ "$paths" = "/api/v1" ] || fail \
+            "the server Ingress publishes [$paths]; anything beyond /api/v1 exposes the exporter"
+
+          echo "helm:check — production example renders and holds its properties"
+
   package:
     desc: "Package charts/weebo-notify into a .tgz under target/ (not committed)"
     cmds:

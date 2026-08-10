@@ -7,7 +7,7 @@
  * folds away behind a button and the detail takes the whole screen when something
  * is open, which is the mobile behaviour §10.4 asks for.
  */
-import { Menu, X } from "lucide-vue-next";
+import { Menu, X } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";

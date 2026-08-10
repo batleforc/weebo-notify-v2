@@ -2737,7 +2737,7 @@ export type FsUploadData = {
 
 export type FsUploadErrors = {
     /**
-     * The token is missing, expired, or for another id/purpose
+     * The token is missing, expired, or for another id/purpose/content type
      */
     403: unknown;
     /**
@@ -2748,6 +2748,10 @@ export type FsUploadErrors = {
      * Over the 25 MiB ceiling (§8.2)
      */
     413: unknown;
+    /**
+     * The declared content type is not an allowed attachment type
+     */
+    415: unknown;
     /**
      * This deployment is not running the filesystem backend
      */

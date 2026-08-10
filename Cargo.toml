@@ -48,7 +48,7 @@ edition = "2024"
 # syscall; a four-release floor bump is the cheaper of the two, and this project
 # pins `rust = "latest"` in mise anyway.
 rust-version = "1.89"
-license = "MPL-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/batleforc/weebo-notify-v2"
 authors = ["Maxime Leriche <maxleriche.60@gmail.com>"]
 # Nothing here goes to crates.io. The product ships as binaries and images from a
@@ -187,6 +187,12 @@ reqwest = { version = "0.13", default-features = false, features = [
 # of it. `sha2` is the PKCE S256 challenge, and the KDF below.
 p256 = { version = "0.14", features = ["ecdsa", "pem"] }
 sha2 = "0.10"
+# The bounded verdict cache in front of the API-key KDF (notify-oidc::guard).
+# Already in the graph through ratatui; named here so the version is one decision.
+lru = "0.18"
+# The OS CSPRNG behind API-key generation (notify-app::keys). Direct rather than
+# through `rand`: reading random bytes is the whole requirement.
+getrandom = "0.3"
 base64 = "0.22"
 # The sealed box of design §6.2 (M6): X25519 for the ephemeral ECDH, `sha2` (above)
 # as the HKDF hash, XChaCha20-Poly1305 for the AEAD. `x25519-dalek` builds on

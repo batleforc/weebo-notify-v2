@@ -10,7 +10,7 @@
  * narrow screen: on mobile it takes the bottom of the viewport instead, where the
  * thumb is not.
  */
-import { X } from "lucide-vue-next";
+import { X } from "@lucide/vue";
 import { useRouter } from "vue-router";
 
 import { useToasts } from "@/stores/toasts";

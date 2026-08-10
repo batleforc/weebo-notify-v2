@@ -11,9 +11,9 @@ node = "24"
 rust = { version = "latest", profile = "default" }
 task = "latest"
 gitleaks = "latest"
-claude = "latest"
-rtk = "latest"
-herdr = "latest"
+
+# Developer-only tools (claude, rtk, herdr) live in `mise.dev.toml` and load only
+# under MISE_ENV=dev — see that file. CI installs what is below and nothing else.
 
 # --- weebo-notify additions (design §3.1) ---
 pnpm = "latest"                  # web/ and docs/ package manager (ADR-0011)

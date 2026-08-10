@@ -11,7 +11,7 @@
  * Devices in Admin, and revoking it there kills the subscription and the sync
  * cursor together. That is why the copy names it.
  */
-import { BellOff, BellRing } from "lucide-vue-next";
+import { BellOff, BellRing } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -63,11 +63,21 @@ async function toggle(): Promise<void> {
       <CardTitle>{{ t("settings.push.title") }}</CardTitle>
     </CardHeader>
     <CardContent class="space-y-3 text-sm">
-      <!-- Static, locale-file text only — never anything a caller supplies. -->
-      <p
+      <!-- The markup is a slot, so the locale file carries text and only text.
+           This used to be `v-html` over an interpolated translation: correct as
+           written, and correct only for as long as every interpolation stayed a
+           literal. A slot makes that structural — and it fixed a real bug on the
+           way, since the emphasised word was hardcoded English in every locale. -->
+      <i18n-t
+        keypath="settings.push.description"
+        tag="p"
+        scope="global"
         class="text-muted-foreground"
-        v-html="t('settings.push.description', { device: '<strong>device</strong>' })"
-      />
+      >
+        <template #device>
+          <strong>{{ t("settings.push.descriptionDevice") }}</strong>
+        </template>
+      </i18n-t>
 
       <p v-if="!status" class="text-muted-foreground">
         {{ t("settings.push.checking") }}

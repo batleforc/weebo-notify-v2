@@ -320,6 +320,7 @@ impl Harness {
             // deployment that does not serve the binary is supposed to do. The
             // test for the other case sets its own.
             cli_binary: None,
+            cli_digest: None,
         };
 
         let harness = Self {
@@ -1527,6 +1528,165 @@ async fn fs_bytes_round_trip_through_the_unauthenticated_upload_and_download_rou
         "image/png"
     );
     assert_eq!(test::read_body(response).await.as_ref(), b"\x89PNG");
+}
+
+#[actix_web::test]
+async fn a_presign_for_an_image_does_not_authorise_uploading_markup() {
+    // The regression test for the content-type bypass: the presign use case
+    // allowlists `image/png`, and the token used to bind only (purpose, id, expiry).
+    // A caller approved for an image could therefore PUT `text/html` and have the
+    // download route serve it back with that type — attacker-controlled markup on
+    // this origin, past an allowlist that had been satisfied with a different
+    // answer. The content type is inside the signature now, so this is a mismatch.
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let signed_upload = fs
+        .presign_upload(&notify_ports::UploadRequest {
+            content_type: "image/png".to_owned(),
+            content_length: 32,
+        })
+        .await
+        .unwrap();
+
+    let smuggled = test::TestRequest::put()
+        .uri(&path_and_query(&signed_upload.url))
+        .insert_header(("content-type", "text/html"))
+        .set_payload(b"<script>alert(1)</script>".to_vec())
+        .to_request();
+    let response = test::call_service(&app, smuggled).await;
+
+    // 415 and not 403: the allowlist is checked before the token, so the answer does
+    // not depend on holding a valid credential.
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(
+        fs.get(signed_upload.id).await.unwrap().is_none(),
+        "nothing may reach the disk under a type the presign never approved"
+    );
+}
+
+#[actix_web::test]
+async fn an_allowlisted_type_the_presign_did_not_approve_is_still_refused() {
+    // The narrower half of the same hole, and the one an allowlist alone would miss:
+    // `image/gif` is perfectly uploadable, just not under a token signed for
+    // `image/png`. Only the signature can tell these apart.
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let signed_upload = fs
+        .presign_upload(&notify_ports::UploadRequest {
+            content_type: "image/png".to_owned(),
+            content_length: 4,
+        })
+        .await
+        .unwrap();
+
+    let swapped = test::TestRequest::put()
+        .uri(&path_and_query(&signed_upload.url))
+        .insert_header(("content-type", "image/gif"))
+        .set_payload(b"GIF8".to_vec())
+        .to_request();
+    let response = test::call_service(&app, swapped).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(fs.get(signed_upload.id).await.unwrap().is_none());
+}
+
+#[actix_web::test]
+async fn a_content_type_wearing_parameters_still_matches_what_was_signed() {
+    // The other direction: the honest client. `image/png; charset=binary` is the
+    // same type wearing decoration, and normalising at both ends is what keeps it
+    // from being refused for punctuation.
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let signed_upload = fs
+        .presign_upload(&notify_ports::UploadRequest {
+            content_type: "image/png".to_owned(),
+            content_length: 4,
+        })
+        .await
+        .unwrap();
+
+    let decorated = test::TestRequest::put()
+        .uri(&path_and_query(&signed_upload.url))
+        .insert_header(("content-type", "IMAGE/PNG; charset=binary"))
+        .set_payload(b"\x89PNG".to_vec())
+        .to_request();
+    let response = test::call_service(&app, decorated).await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        fs.get(signed_upload.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .content_type,
+        "image/png",
+        "the normalised type is what gets stored, not the raw header"
+    );
+}
+
+#[actix_web::test]
+async fn served_bytes_carry_nosniff_and_a_download_disposition() {
+    // Defence in depth behind the signature: even a store that somehow held an
+    // unexpected type must not have it rendered by a browser following the URL.
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let signed_upload = fs
+        .presign_upload(&notify_ports::UploadRequest {
+            content_type: "image/png".to_owned(),
+            content_length: 4,
+        })
+        .await
+        .unwrap();
+    let upload = test::TestRequest::put()
+        .uri(&path_and_query(&signed_upload.url))
+        .insert_header(("content-type", "image/png"))
+        .set_payload(b"\x89PNG".to_vec())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, upload).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let signed_download = fs.presign_download(signed_upload.id).await.unwrap();
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&path_and_query(&signed_download.url))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-content-type-options")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "nosniff"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "attachment"
+    );
 }
 
 #[actix_web::test]

@@ -18,7 +18,7 @@ import {
   CircleX,
   Info,
   type LucideIcon,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 
 import type { Priority, State, Status } from "@/api/generated/types.gen";
 import { i18n } from "@/i18n";

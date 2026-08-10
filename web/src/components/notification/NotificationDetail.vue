@@ -9,7 +9,7 @@
  *     because §7.2bis words those two differently on purpose;
  *   * refused — the problem's `code` decided the message (§8).
  */
-import { Check, Copy, Eye, Link2 } from "lucide-vue-next";
+import { Check, Copy, Eye, Link2 } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 

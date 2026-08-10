@@ -12,9 +12,11 @@ name: release
 #   * Every job is idempotent. Re-running a failed run resumes without duplicating
 #     or corrupting what was already published.
 #
-# SCOPE: this file currently implements the gate and the server image. The full
-# artefact matrix — desktop packages, CLI archives, the signed updater manifest,
-# the Android APK — lands with milestone M5, when there is something to package.
+# SCOPE: this file implements the gate, both images, their signatures and the
+# release object. The full artefact matrix — desktop packages, CLI archives, the
+# signed updater manifest, the Android APK — lands with milestone M5, when there is
+# something to package. Until then a release carries the two images, their digests
+# and their SBOMs, which is the set a deployment actually consumes.
 
 on:
   push:
@@ -39,11 +41,25 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
         run: |
-          curl -fsSL https://mise.run | sh
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
 
@@ -80,7 +96,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Determine the release kind
         id: kind
@@ -100,8 +116,22 @@ jobs:
       - name: Install the toolchain
         # The `gate` job installs it too, and this is not duplication to factor out:
         # jobs do not share a filesystem, and the scan step below runs `task`.
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
         run: |
-          curl -fsSL https://mise.run | sh
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
 
@@ -109,21 +139,21 @@ jobs:
         run: mise install --yes
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Set up buildx
         # Needed for the multi-arch build below: the stock builder emits one
         # architecture, and §3.2bis asks for amd64 and arm64 from the same tag.
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Set up QEMU
         # arm64 on an amd64 runner. Slow, and the alternative is a second runner
         # nobody has yet — worth naming so the day one exists, this step goes away
         # rather than being cargo-culted forward.
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Log in to the registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.IMAGE_REGISTRY }}
           username: ${{ github.actor }}
@@ -134,7 +164,8 @@ jobs:
         # with no container engine (§12.4), so the first execution of this step is
         # its first test — the same state D7 and D12 are open for, and named here
         # rather than discovered by whoever pushes the first tag.
-        uses: docker/build-push-action@v6
+        id: server_image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Containerfile
@@ -150,7 +181,8 @@ jobs:
         # No build args since ADR-0021 superseded ADR-0019: one image now serves
         # every deployment, and the API origin, the issuer and the client id are
         # read at container boot instead (`web/nginx/docker-entrypoint.d/`).
-        uses: docker/build-push-action@v6
+        id: web_image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./web
           file: ./web/Containerfile
@@ -175,15 +207,105 @@ jobs:
         # cosign keyless: the identity is the workflow itself, and the signature
         # lands in Rekor (§3.2bis). No private key to keep, which is the only key
         # custody story that cannot leak — §15 lists the ones that can.
+        #
+        # BY DIGEST, NOT BY TAG. `cosign sign repo:v1.2.3` re-resolves the tag at
+        # signing time, which is a second lookup of a mutable reference: what gets
+        # signed is whatever the tag points at *now*, not necessarily what the step
+        # above pushed. It also signs the wrong object for a multi-arch build — the
+        # consumer that matters is an admission controller, and it verifies the
+        # digest it is about to run. `build-push-action` reports that digest as an
+        # output; using it closes the window and makes the signature refer to the
+        # exact bytes.
         env:
           COSIGN_EXPERIMENTAL: "1"
+          SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
         run: |
-          cosign sign --yes "${{ env.IMAGE_NAME }}:${{ steps.kind.outputs.tag }}"
-          cosign sign --yes "${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}"
+          set -euo pipefail
+          # A build that somehow reported no digest must stop the release rather
+          # than sign `image@` and produce a signature nothing can verify.
+          test -n "$SERVER_DIGEST" && test -n "$WEB_DIGEST"
+          cosign sign --yes "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}"
+          cosign sign --yes "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
 
       - name: Publish the release
         # Created as a draft, filled with artefacts and the changelog notes, then
         # published in one move — never a half-empty release visible to anyone.
+        #
+        # The digests are the point of the body rather than decoration: they are what
+        # `cosign verify` above signed, and the only way somebody pulling `:0.1.0`
+        # six months from now can check that the tag still resolves to the artefact
+        # this run produced. `--verify-tag` refuses to publish against a tag that is
+        # not the one this workflow was triggered by.
+        #
+        # NOT VERIFIED, same terms as the image build above: this step has never
+        # run. The forge-targeting in particular is the part to watch on the first
+        # tag — Forgejo is the primary forge here and GitHub is a mirror, so `gh`
+        # is told its host and repository explicitly rather than inferring them
+        # from the checkout's remote. Forgejo implements the release API
+        # compatibly; if `gh` proves fussy against it, the fallback is a `curl` to
+        # `${{ github.api_url }}/repos/${{ github.repository }}/releases`, and the
+        # asset upload is the one call whose shape differs between the two.
+        env:
+          # The token the runner already has for this repository on this forge.
+          # Deliberately not REGISTRY_TOKEN: pushing an image and editing a release
+          # are different authorities and should not share one credential (§10 A3).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_HOST: ${{ github.server_url }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.kind.outputs.tag }}
+          PRERELEASE: ${{ steps.kind.outputs.prerelease }}
+          SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
         run: |
-          echo "::warning::Release publication lands with the artefact matrix in M5."
-          echo "Would publish ${{ steps.kind.outputs.tag }} (prerelease=${{ steps.kind.outputs.prerelease }})"
+          set -euo pipefail
+          # `github.server_url` is a URL and GH_HOST wants a bare host.
+          GH_HOST="${GH_HOST#https://}"
+          GH_HOST="${GH_HOST#http://}"
+          export GH_HOST
+
+          # cog wrote the changelog at bump time; this extracts the section for the
+          # tag being released rather than shipping the whole file.
+          notes="$(mise exec -- cog changelog --at "$TAG" 2>/dev/null || true)"
+          if [ -z "$notes" ]; then
+            echo "::warning::no changelog section for $TAG — publishing with digests only"
+          fi
+
+          {
+            printf '%s\n\n' "$notes"
+            printf '## Images\n\n'
+            printf 'Verify before you run them:\n\n'
+            printf '```\n'
+            printf 'cosign verify %s@%s \\\n' "${{ env.IMAGE_NAME }}" "$SERVER_DIGEST"
+            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \\\n'
+            printf '  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n'
+            printf '```\n\n'
+            printf '| Image | Digest |\n| --- | --- |\n'
+            printf '| `%s:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$SERVER_DIGEST"
+            printf '| `%s-web:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$WEB_DIGEST"
+          } > release-notes.md
+
+          # The SBOM buildx attached to each image, pulled back out so it is
+          # downloadable without a registry client.
+          cosign download sbom "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}" \
+            > "weebo-notify-${TAG}-server.sbom.json" 2>/dev/null || \
+            echo "::warning::no SBOM attached to the server image"
+          cosign download sbom "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}" \
+            > "weebo-notify-${TAG}-web.sbom.json" 2>/dev/null || \
+            echo "::warning::no SBOM attached to the web image"
+
+          # Idempotent, because every job in this file has to be: a re-run of a
+          # failed release edits the draft it already made rather than failing on a
+          # release that exists.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file release-notes.md --draft=false \
+              --prerelease="$PRERELEASE" --verify-tag
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md \
+              --prerelease="$PRERELEASE" --verify-tag --draft
+            gh release edit "$TAG" --draft=false
+          fi
+
+          for asset in "weebo-notify-${TAG}-server.sbom.json" "weebo-notify-${TAG}-web.sbom.json"; do
+            [ -s "$asset" ] && gh release upload "$TAG" "$asset" --clobber
+          done

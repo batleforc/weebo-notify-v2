@@ -369,6 +369,7 @@
       "exceptionsHintEmphasis": "sauf",
       "scopeRestricted": "La portée est restreinte à certains canaux ; elle se modifie depuis la CLI (notify dnd) pour l'instant.",
       "urgentBypass": "Laisser passer les notifications {emphasis}",
+      "urgentBypassEmphasis": "urgentes",
       "urgentBypassHint": "C'est vous qui décidez ce qui peut vous réveiller, jamais l'émetteur.",
       "cancel": "Annuler",
       "saveFailed": "Enregistrement impossible.",
@@ -386,6 +387,7 @@
     "push": {
       "title": "Notifications push",
       "description": "Recevoir les notifications même quand l'onglet est fermé. Ce navigateur devient un {device} : il apparaît dans Admin → Devices, et le révoquer coupe ses push et son curseur de sync.",
+      "descriptionDevice": "appareil",
       "checking": "Vérification…",
       "unsupported": "Ce navigateur ne sait pas recevoir de push — une fenêtre privée ou une origine non sécurisée, le plus souvent.",
       "unavailable": "Ce déploiement ne fait pas de Web Push : aucune clé VAPID n'y est configurée. Le flux temps réel continue de fonctionner.",

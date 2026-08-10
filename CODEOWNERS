@@ -1,0 +1,49 @@
+# Who has to look at what before it merges.
+#
+# Ownership here is a review requirement, not a claim about who wrote something.
+# The entries below are the paths where a change is disproportionately more
+# dangerous than it looks in a diff.
+
+* @batleforc
+
+# ── Paths where a small diff can be a large change ───────────────────────────
+
+# Credential handling, token verification and the sealed box. A one-character
+# change in any of these is a security change.
+/crates/notify-adapters/oidc/                 @batleforc
+/crates/notify-adapters/sealed-box/           @batleforc
+/crates/notify-app/src/auth.rs                @batleforc
+/crates/notify-app/src/authz.rs               @batleforc
+/crates/notify-app/src/keys.rs                @batleforc
+/crates/notify-adapters/attachments-fs/src/token.rs  @batleforc
+
+# The release pipeline and what it builds. Anything that can put bytes into a
+# published image or a signed release is supply chain, whether or not it is code.
+/.forgejo/workflows/                          @batleforc
+/.github/workflows/                           @batleforc
+/Containerfile                                @batleforc
+/web/Containerfile                            @batleforc
+/renovate.json                                @batleforc
+
+# The suppression files. Each entry in these is an argument that something is not
+# reachable; they are where a real finding would be quietest if it were waved
+# through.
+/.cargo/audit.toml                            @batleforc
+/deny.toml                                    @batleforc
+/.trivyignore                                 @batleforc
+/.gitleaks.toml                               @batleforc
+/charts/weebo-notify/.trivyignore             @batleforc
+/SECURITY.md                                  @batleforc
+
+# Translations, and the reason they are listed with the security-sensitive paths:
+# reviewers read code diffs carefully and locale diffs quickly, which is exactly
+# what makes a locale file an attractive place to hide markup. Components render
+# these through `<i18n-t>` slots and `src/locales/locales.spec.ts` asserts the
+# files contain no HTML — so this entry is the third layer, for the day a
+# community translation arrives.
+/web/src/locales/                             @batleforc
+
+# Deployment defaults an operator inherits without reading.
+/charts/weebo-notify/values.yaml              @batleforc
+/charts/weebo-notify/examples/                @batleforc
+/charts/weebo-notify/templates/networkpolicy.yaml  @batleforc

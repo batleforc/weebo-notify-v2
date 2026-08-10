@@ -186,6 +186,15 @@ pub struct ApiState {
     /// nothing to decide — cloning it into a response is a refcount bump, not a
     /// copy of a multi-megabyte binary per download.
     pub cli_binary: Option<actix_web::web::Bytes>,
+    /// The SHA-256 of [`Self::cli_binary`], lowercase hex.
+    ///
+    /// Served as `X-Content-Digest` and as a strong `ETag` so a recipient can
+    /// check what they got against a value published out of band with the release
+    /// (advisory SEC-P2-26/27). It is **not a signature**: it proves the bytes are
+    /// the ones this server holds, not that this server is trustworthy. The
+    /// detached minisign signature that would close that gap belongs with the
+    /// desktop updater's key custody in M5.
+    pub cli_digest: Option<String>,
 }
 
 impl core::fmt::Debug for ApiState {

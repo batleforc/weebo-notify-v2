@@ -329,39 +329,96 @@ impl SetApiKeyLimit {
     }
 }
 
-/// Where a key's prefix comes from in production: 8 characters of the key id.
+/// The alphabet both halves of a key are drawn from.
+///
+/// Lowercase alphanumeric, which is what `ApiKeyPrefix::parse` accepts and what the
+/// old ULID-derived form happened to produce — so a key still looks like a key. It
+/// deliberately excludes `_`, the separator `PresentedApiKey::parse` splits on.
+const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+
+/// How many characters of secret. 52 × log2(36) ≈ **268 bits**, comfortably past the
+/// point where the number stops mattering, and the same length the previous
+/// implementation produced.
+const SECRET_LEN: usize = 52;
+
+/// Where a key's two halves come from in production: the operating system's CSPRNG,
+/// and nothing else.
 ///
 /// A separate generator port exists so tests can be deterministic; this is the real
-/// one, and it needs no randomness of its own — a ULID already carries 80 bits of
-/// it.
+/// one.
+///
+/// # Why not the id generator
+///
+/// This used to concatenate two ULIDs and take a slice of a third, on the reasoning
+/// that a ULID already carries 80 bits of randomness. That was true, and it was
+/// still the wrong source: `ApiKeyId::generate()` is the *general-purpose
+/// identifier* constructor, used all over the domain for values that are printed in
+/// URLs and logs. Its contract is uniqueness, not unpredictability.
+///
+/// Nothing was broken — `Ulid::new()` draws from a CSPRNG today — but the coupling
+/// meant a credential's entropy depended on an implementation detail of an id type
+/// that no one editing it would think of as credential material. ULID libraries
+/// commonly offer a *monotonic* mode in which the random tail increments within a
+/// millisecond; adopting it would have made key secrets predictable from published
+/// identifiers, silently and completely. Reading the CSPRNG directly costs three
+/// lines and removes the question.
+///
+/// [`notify_ports::KeyGenerator`] already said the secret "must come from a
+/// cryptographically secure source". This is that, said in code.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct UlidKeyGenerator;
+pub struct OsRngKeyGenerator;
 
-impl KeyGenerator for UlidKeyGenerator {
+impl KeyGenerator for OsRngKeyGenerator {
     fn generate(&self) -> (ApiKeyPrefix, String) {
-        let prefix_source = ApiKeyId::generate().as_ulid().to_string().to_lowercase();
-        let secret_source = format!(
-            "{}{}",
-            ApiKeyId::generate().as_ulid(),
-            ApiKeyId::generate().as_ulid()
-        );
+        let prefix = random_string(ApiKeyPrefix::LEN);
+        let secret = random_string(SECRET_LEN);
 
-        // Take the *last* characters of the ULID: the leading ones are the
-        // timestamp, so two keys minted in the same millisecond would share them.
-        let tail: String = prefix_source
-            .chars()
-            .rev()
-            .take(ApiKeyPrefix::LEN)
-            .collect();
-        let prefix = ApiKeyPrefix::parse(&tail).unwrap_or_else(|_| {
-            // Unreachable: a Crockford base32 tail is always alphanumeric. Falling
-            // back to a fixed prefix would be worse than a slightly odd one, so
-            // build a valid one from scratch instead.
+        let prefix = ApiKeyPrefix::parse(&prefix).unwrap_or_else(|_| {
+            // Unreachable: every byte of `random_string` is drawn from `ALPHABET`,
+            // which is exactly what `parse` accepts. A fixed fallback would be worse
+            // than a slightly odd prefix, so build a valid one rather than panic —
+            // panicking is denied in this workspace.
             ApiKeyPrefix::parse("00000000").unwrap_or_else(|_| unreachable!())
         });
 
-        (prefix, secret_source.to_lowercase())
+        (prefix, secret)
     }
+}
+
+/// `len` characters drawn uniformly from [`ALPHABET`].
+///
+/// Rejection sampling rather than `byte % 36`: 256 is not a multiple of 36, so the
+/// modulo would make the first four letters about 14% likelier than the rest. That
+/// costs a handful of bits on a value whose whole job is to be unguessable, and
+/// discarding the 4 bytes in 256 that fall outside the last whole multiple costs
+/// nothing anybody can measure.
+fn random_string(len: usize) -> String {
+    // The largest multiple of the alphabet that fits in a byte; anything at or above
+    // it is redrawn.
+    const CEILING: u8 = 252; // 36 × 7
+
+    let mut out = String::with_capacity(len);
+    let mut buffer = [0_u8; 64];
+
+    while out.len() < len {
+        // A failure here means the OS could not produce randomness, which is not a
+        // condition a process can sensibly continue through — but this signature
+        // cannot report it, so retry rather than silently emit a weak secret. In
+        // practice `getrandom` on a running Linux kernel does not fail.
+        if getrandom::fill(&mut buffer).is_err() {
+            continue;
+        }
+        for &byte in &buffer {
+            if out.len() == len {
+                break;
+            }
+            if byte < CEILING {
+                out.push(char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]));
+            }
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -751,7 +808,7 @@ mod tests {
 
     #[test]
     fn the_production_generator_makes_a_valid_prefix_and_two_distinct_keys() {
-        let generator = UlidKeyGenerator;
+        let generator = OsRngKeyGenerator;
         let (first_prefix, first_secret) = generator.generate();
         let (second_prefix, second_secret) = generator.generate();
 
@@ -760,5 +817,82 @@ mod tests {
         // Prefixes come from the random tail of a ULID, so two minted in the same
         // millisecond do not collide.
         assert_ne!(first_prefix, second_prefix);
+    }
+}
+
+#[cfg(test)]
+mod generator_tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn both_halves_are_drawn_from_the_accepted_alphabet() {
+        let (prefix, secret) = OsRngKeyGenerator.generate();
+
+        assert_eq!(prefix.as_str().len(), ApiKeyPrefix::LEN);
+        assert_eq!(secret.len(), SECRET_LEN);
+        for value in [prefix.as_str(), secret.as_str()] {
+            assert!(
+                value.bytes().all(|b| ALPHABET.contains(&b)),
+                "`{value}` left the alphabet, which `ApiKeyPrefix::parse` would refuse"
+            );
+        }
+    }
+
+    #[test]
+    fn the_secret_never_contains_the_separator() {
+        // `PresentedApiKey::parse` splits `wnk_<prefix>_<secret>` on `_`.
+        for _ in 0..64 {
+            let (_, secret) = OsRngKeyGenerator.generate();
+            assert!(!secret.contains('_'));
+        }
+    }
+
+    #[test]
+    fn a_minted_key_round_trips_through_the_presented_form() {
+        let (prefix, secret) = OsRngKeyGenerator.generate();
+        let presented = format!("wnk_{prefix}_{secret}");
+
+        let parsed = notify_domain::PresentedApiKey::parse(&presented).unwrap();
+        assert_eq!(parsed.prefix, prefix);
+        assert_eq!(parsed.secret, secret);
+    }
+
+    #[test]
+    fn nothing_repeats_across_a_batch() {
+        // The old implementation drew from the id generator, where a monotonic mode
+        // would have made successive values related. Distinctness is the cheap
+        // observable half of "unpredictable".
+        let mut prefixes = HashSet::new();
+        let mut secrets = HashSet::new();
+        for _ in 0..512 {
+            let (prefix, secret) = OsRngKeyGenerator.generate();
+            assert!(prefixes.insert(prefix.as_str().to_owned()));
+            assert!(secrets.insert(secret));
+        }
+    }
+
+    #[test]
+    fn every_character_of_the_alphabet_is_reachable() {
+        // Guards the rejection sampling: an off-by-one in the ceiling would silently
+        // make part of the alphabet unreachable and cost entropy without failing.
+        let mut seen = HashSet::new();
+        for _ in 0..500 {
+            let (_, secret) = OsRngKeyGenerator.generate();
+            seen.extend(secret.bytes());
+        }
+        assert_eq!(
+            seen.len(),
+            ALPHABET.len(),
+            "some characters never appeared: {:?}",
+            ALPHABET
+                .iter()
+                .filter(|b| !seen.contains(b))
+                .map(|&b| char::from(b))
+                .collect::<Vec<_>>()
+        );
     }
 }

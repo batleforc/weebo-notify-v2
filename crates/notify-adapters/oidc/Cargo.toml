@@ -24,9 +24,11 @@ base64 = { workspace = true }
 # derives the public half from it, so the two cannot drift apart in a config file.
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 jsonwebtoken = { workspace = true }
+lru = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

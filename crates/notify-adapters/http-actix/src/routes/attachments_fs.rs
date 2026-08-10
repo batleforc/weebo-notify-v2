@@ -65,6 +65,13 @@ pub(crate) enum FsError {
     NotFound,
     /// The token does not check out for this id and purpose.
     Invalid(TokenError),
+    /// The declared content type is not one attachments may be.
+    ///
+    /// Distinct from [`Self::Invalid`] on purpose: the token may be perfectly good
+    /// and the type still refused, and `415` says which of the two happened. It is
+    /// also checked *before* the token, so a caller learns their type is unsupported
+    /// without the answer depending on whether they hold a valid credential.
+    UnsupportedType,
     /// The object is not there.
     NoSuchObject,
     /// The store itself failed.
@@ -83,6 +90,10 @@ impl core::fmt::Display for FsError {
             Self::Invalid(TokenError::Mismatch) => {
                 write!(f, "the token does not match this attachment")
             }
+            Self::UnsupportedType => write!(
+                f,
+                "attachments are images: png, jpeg, webp or gif (design §2.3)"
+            ),
             Self::Store(_) => write!(f, "the request could not be served"),
         }
     }
@@ -100,6 +111,7 @@ impl ResponseError for FsError {
             Self::NotConfigured => StatusCode::NOT_IMPLEMENTED,
             Self::NotFound | Self::NoSuchObject => StatusCode::NOT_FOUND,
             Self::Invalid(_) => StatusCode::FORBIDDEN,
+            Self::UnsupportedType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::Store(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -126,9 +138,10 @@ impl ResponseError for FsError {
     request_body(content = RawBytes, content_type = "application/octet-stream", description = "The raw bytes"),
     responses(
         (status = 204, description = "Stored"),
-        (status = 403, description = "The token is missing, expired, or for another id/purpose"),
+        (status = 403, description = "The token is missing, expired, or for another id/purpose/content type"),
         (status = 404, description = "Not a valid attachment id"),
         (status = 413, description = "Over the 25 MiB ceiling (§8.2)"),
+        (status = 415, description = "The declared content type is not an allowed attachment type"),
         (status = 501, description = "This deployment is not running the filesystem backend"),
     ),
 )]
@@ -146,18 +159,43 @@ pub(crate) async fn fs_upload(
         .ok_or(FsError::NotConfigured)?;
     let id: AttachmentId = id.into_inner().parse().map_err(|_| FsError::NotFound)?;
 
+    // Normalised the same way the presign use case normalised it, by the same
+    // function — comparing a raw header against a normalised signature would refuse
+    // `image/png; charset=binary`, which is the honest client, while the dishonest
+    // one is caught either way.
+    let declared = notify_app::normalised_content_type(
+        request
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default(),
+    );
+
+    // The allowlist, applied again at the route that carries the bytes. The presign
+    // already checked it — against a *different request*, which is precisely why the
+    // payload ceiling is re-applied here too (`payload_config` below). A check that
+    // ran on the request before this one is not a check on this one.
+    if !notify_app::is_allowed_attachment_type(&declared) {
+        return Err(FsError::UnsupportedType);
+    }
+
+    // The content type goes through the token's MAC, so this single call is also the
+    // comparison against what the presign approved: a PUT declaring `text/html`
+    // against a token signed for `image/png` fails here, exactly as it would against
+    // an S3 signature.
     store
-        .verify(Purpose::Upload, id, &query.token)
+        .verify(
+            Purpose::Upload {
+                content_type: &declared,
+            },
+            id,
+            &query.token,
+        )
         .map_err(FsError::Invalid)?;
 
-    let content_type = request
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("application/octet-stream")
-        .to_owned();
-
-    store.put(id, &content_type, body.to_vec()).await?;
+    // The normalised form is stored, never the raw header: what was signed is what
+    // is served back.
+    store.put(id, &declared, body.to_vec()).await?;
 
     Ok(HttpResponse::NoContent().finish())
 }
@@ -196,7 +234,7 @@ pub(crate) async fn fs_download(
 
     let object = store.get(id).await?.ok_or(FsError::NoSuchObject)?;
 
-    Ok(HttpResponse::Ok()
+    Ok(crate::routes::served_bytes(&mut HttpResponse::Ok())
         .content_type(object.content_type)
         .body(object.bytes))
 }

@@ -21,6 +21,7 @@ notify-domain = { workspace = true }
 notify-ports = { workspace = true }
 
 async-trait = { workspace = true }
+getrandom = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }

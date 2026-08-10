@@ -41,6 +41,35 @@ use crate::authz::{Authorizer, Caller};
 /// keeping a decoder away from something hostile.
 const ALLOWED: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
+/// Reduce a `Content-Type` header to the bare type this list is written against.
+///
+/// `image/png; charset=binary` is the same type wearing decoration, and a client
+/// that sends it should not be refused for punctuation. Lowercased because the
+/// header is case-insensitive.
+///
+/// Public because the filesystem backend's own upload route
+/// (`notify-http-actix::routes::attachments_fs`) has to answer the *same* question
+/// about the *same* header, and two copies of this rule is exactly how a
+/// presign-time check and an upload-time check come to disagree — which is the gap
+/// the content type was able to walk through before it was bound into the token.
+#[must_use]
+pub fn normalised_content_type(raw: &str) -> String {
+    raw.split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Whether a **normalised** content type is one clients may upload.
+///
+/// Takes the output of [`normalised_content_type`] rather than a raw header, so
+/// there is one place that decides what "the same type" means.
+#[must_use]
+pub fn is_allowed_attachment_type(declared: &str) -> bool {
+    ALLOWED.contains(&declared)
+}
+
 /// The two halves of attachment storage, handed round together.
 ///
 /// The bucket holds the bytes; the registry remembers which ids we signed for
@@ -123,16 +152,8 @@ impl PresignAttachment {
             .into());
         }
 
-        // Compared without parameters: `image/png; charset=binary` is the same type
-        // wearing decoration, and a client that sends it should not be refused for
-        // punctuation. Lowercased because the header is case-insensitive.
-        let declared = content_type
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        if !ALLOWED.contains(&declared.as_str()) {
+        let declared = normalised_content_type(content_type);
+        if !is_allowed_attachment_type(&declared) {
             return Err(DomainError::Malformed {
                 field: "attachment.content_type",
                 reason: "attachments are images: png, jpeg, webp or gif (design §2.3)",

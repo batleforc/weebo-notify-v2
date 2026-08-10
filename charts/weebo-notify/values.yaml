@@ -83,8 +83,36 @@ server:
     # connexions SSE)") needs a custom-metrics adapter (Prometheus Adapter, KEDA)
     # reading `sse_connections` off /metrics — infrastructure this chart does not
     # assume. Add entries under `server.autoscaling.customMetrics` once one exists;
-    # they are appended to the HPA's `metrics` list verbatim.
+    # they are appended to the HPA's `metrics` list verbatim. A worked example,
+    # once an adapter is exposing the exporter's own gauge:
+    #
+    #   customMetrics:
+    #     - type: Pods
+    #       pods:
+    #         metric:
+    #           name: sse_connections
+    #         target:
+    #           type: AverageValue
+    #           averageValue: "500"
+    #
+    # Worth wiring rather than leaving as a note: CPU is a weak proxy for a
+    # workload whose scarce resource is long-lived idle connections, and a replica
+    # can sit at 5% CPU while holding every stream it can carry.
     customMetrics: []
+
+    # Passed to the HPA verbatim. The default slows scale-*down* only, because
+    # that is the direction that costs something: removing a replica drops its
+    # SSE and WebSocket connections, and every one of those clients reconnects
+    # and replays from its cursor. Correct, and not free — without a window, a
+    # workload oscillating around the CPU target churns streams continuously.
+    # Scale-up is left at the Kubernetes default, which is fast.
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
 
   podDisruptionBudget:
     enabled: true

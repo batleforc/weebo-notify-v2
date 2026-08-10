@@ -19,6 +19,33 @@ pub(crate) mod sync;
 use notify_domain::{DomainError, Principal, ServiceAccountId, UserId};
 use utoipa_actix_web::service_config::ServiceConfig;
 
+/// The two headers every route that returns **stored bytes** owes.
+///
+/// Three routes serve bytes somebody else supplied — the filesystem download, the
+/// attachment thumbnail and the avatar — and all three used to echo a stored
+/// content type with neither of these. That is the difference between "a stored
+/// object of an unexpected type is inert" and "it renders", and it is not a
+/// judgement any one of the three should make for itself:
+///
+/// * **`nosniff`** stops a browser from second-guessing the declared type. The type
+///   is allowlisted on the way in, so sniffing could only ever disagree with a
+///   value we already checked;
+/// * **`Content-Disposition: attachment`** governs *top-level navigation* only —
+///   browsers ignore it for subresource loads — so an `<img src>` in the web client
+///   is unaffected, while somebody following the raw URL downloads a file instead of
+///   rendering a page.
+///
+/// Defence in depth rather than the control itself: with the content type now bound
+/// into the upload signature and re-checked against the allowlist, nothing hostile
+/// should reach a store to begin with.
+pub(crate) fn served_bytes(
+    builder: &mut actix_web::HttpResponseBuilder,
+) -> &mut actix_web::HttpResponseBuilder {
+    builder
+        .insert_header(("x-content-type-options", "nosniff"))
+        .insert_header(("content-disposition", "attachment"))
+}
+
 /// Register every M1 route under `/api/v1`.
 ///
 /// Takes no state: the composition root supplies that separately, which is what

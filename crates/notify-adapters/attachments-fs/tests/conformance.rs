@@ -122,8 +122,28 @@ async fn a_presigned_upload_names_the_object_carries_a_verifiable_token_and_expi
 
     let token = token_of(&signed.url);
     store
-        .verify(Purpose::Upload, signed.id, &token)
+        .verify(
+            Purpose::Upload {
+                content_type: "image/png",
+            },
+            signed.id,
+            &token,
+        )
         .expect("the token this store minted verifies against itself");
+
+    assert!(
+        store
+            .verify(
+                Purpose::Upload {
+                    content_type: "text/html"
+                },
+                signed.id,
+                &token
+            )
+            .is_err(),
+        "the content type is signed material: a presign for an image must not \
+         authorise storing markup the download route would then serve"
+    );
 }
 
 #[tokio::test]
@@ -136,7 +156,15 @@ async fn a_download_token_does_not_verify_as_an_upload() {
 
     assert!(store.verify(Purpose::Download, id, &token).is_ok());
     assert!(
-        store.verify(Purpose::Upload, id, &token).is_err(),
+        store
+            .verify(
+                Purpose::Upload {
+                    content_type: "image/png"
+                },
+                id,
+                &token
+            )
+            .is_err(),
         "a download credential must not double as an upload one"
     );
 }

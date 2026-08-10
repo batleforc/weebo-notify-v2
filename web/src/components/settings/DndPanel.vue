@@ -21,7 +21,7 @@
  * this month. The field is pre-filled from the browser as a convenience and stays
  * editable, and the server refuses anything that is not an IANA name.
  */
-import { Plus, Trash2 } from "lucide-vue-next";
+import { Plus, Trash2 } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -246,31 +246,34 @@ async function resume(): Promise<void> {
               {{ t("settings.dnd.everyDay") }}
             </span>
           </div>
-          <!-- Static, locale-file text only — never anything a caller supplies. -->
-          <p
+          <!-- Markup in a slot, never in the locale file — see PushPanel.vue. -->
+          <i18n-t
             v-if="window.end <= window.start"
+            keypath="settings.dnd.midnightHint"
+            tag="p"
+            scope="global"
             class="text-xs text-muted-foreground"
-            v-html="
-              t('settings.dnd.midnightHint', {
-                emphasis: `<strong>${t('settings.dnd.midnightHintEmphasis')}</strong>`,
-              })
-            "
-          />
+          >
+            <template #emphasis>
+              <strong>{{ t("settings.dnd.midnightHintEmphasis") }}</strong>
+            </template>
+          </i18n-t>
         </div>
       </div>
 
       <!-- Scope and exceptions: the on-call case. -->
       <div class="space-y-2">
         <span class="font-medium">{{ t("settings.dnd.exceptionsTitle") }}</span>
-        <!-- Static, locale-file text only — never anything a caller supplies. -->
-        <p
+        <i18n-t
+          keypath="settings.dnd.exceptionsHint"
+          tag="p"
+          scope="global"
           class="text-xs text-muted-foreground"
-          v-html="
-            t('settings.dnd.exceptionsHint', {
-              emphasis: `<em>${t('settings.dnd.exceptionsHintEmphasis')}</em>`,
-            })
-          "
-        />
+        >
+          <template #emphasis>
+            <em>{{ t("settings.dnd.exceptionsHintEmphasis") }}</em>
+          </template>
+        </i18n-t>
         <div class="flex flex-wrap gap-1">
           <Button
             v-for="channel in channels.all"
@@ -297,8 +300,11 @@ async function resume(): Promise<void> {
           class="mt-1 size-4"
         />
         <span>
-          <!-- Static, locale-file text only — never anything a caller supplies. -->
-          <span v-html="t('settings.dnd.urgentBypass', { emphasis: '<strong>urgent</strong>' })" />
+          <i18n-t keypath="settings.dnd.urgentBypass" tag="span" scope="global">
+            <template #emphasis>
+              <strong>{{ t("settings.dnd.urgentBypassEmphasis") }}</strong>
+            </template>
+          </i18n-t>
           <span class="block text-xs text-muted-foreground">
             {{ t("settings.dnd.urgentBypassHint") }}
           </span>

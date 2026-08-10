@@ -30,20 +30,34 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The changed-lines coverage gate diffs against the base branch, which
           # needs more than a shallow clone.
           fetch-depth: 0
 
       - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
         run: |
-          curl -fsSL https://mise.run | sh
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
 
       - name: Restore caches
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -70,6 +84,14 @@ jobs:
         # The read-only flavour: a pull request must not be green on code that was
         # never formatted.
         run: mise exec -- task lint:check
+
+      - name: Chart
+        # Renders the production example and asserts the properties an operator
+        # inherits by copying it. Not folded into `lint:check`: that task is about
+        # code somebody wrote, and this is about a deployment somebody will get —
+        # the example rendered perfectly well while shipping a NetworkPolicy that
+        # blocked the API it was meant to publish.
+        run: mise exec -- task helm:check
 
       - name: Web production build
         # The unit suite never runs `vite build`, and the build is where the
@@ -98,7 +120,7 @@ jobs:
 
       - name: Upload the coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage
           path: |

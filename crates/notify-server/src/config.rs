@@ -143,6 +143,18 @@ pub(crate) struct Server {
     /// Closed by default (§5.1): an origin that is not listed cannot call the API
     /// from a browser.
     pub cors_origins: Vec<String>,
+    /// Whether `/api/docs` serves the Scalar UI and the OpenAPI document.
+    ///
+    /// **On by default, and that is the right default**: the API surface of an
+    /// open-source product is public information, the endpoint reads no data, and
+    /// being able to send somebody a documentation link is most of its value.
+    ///
+    /// It is a setting rather than a constant because "the shape of our API is not
+    /// something we publish" is a legitimate position for a private deployment to
+    /// take, and there was previously no way to hold it. Turning it off answers
+    /// `404`, not `401` — an endpoint that exists and refuses is still an
+    /// admission that it exists.
+    pub docs: bool,
 }
 
 impl Default for Server {
@@ -150,6 +162,7 @@ impl Default for Server {
         Self {
             bind: SocketAddr::from(([0, 0, 0, 0], 8080)),
             cors_origins: Vec::new(),
+            docs: true,
         }
     }
 }

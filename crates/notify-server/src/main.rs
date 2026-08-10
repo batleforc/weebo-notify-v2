@@ -18,6 +18,7 @@ use utoipa_scalar::Servable as _;
 
 mod bus;
 mod config;
+mod doctor;
 mod health;
 mod openapi;
 mod push;
@@ -59,6 +60,15 @@ enum Command {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+
+    /// Review this deployment's configuration against the hardening checklist,
+    /// print what it finds, and exit non-zero on anything that looks wrong.
+    ///
+    /// Reads configuration only — it connects to nothing, so it is safe to run
+    /// against a live deployment and its output is safe to paste into an issue.
+    /// The guarantees it *cannot* check are listed in the output rather than
+    /// quietly omitted.
+    Doctor,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -66,7 +76,20 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Command::DumpOpenapi { output }) => dump_openapi(output.as_deref()),
+        Some(Command::Doctor) => doctor_report(&cli.config),
         None => run(&cli.config),
+    }
+}
+
+/// `notify-server doctor`.
+fn doctor_report(config_path: &std::path::Path) -> anyhow::Result<()> {
+    let config = config::Config::load(config_path)?;
+    if doctor::report(&config) {
+        Ok(())
+    } else {
+        // Non-zero, so this is usable in a deployment pipeline as a gate rather
+        // than only as something a human reads.
+        std::process::exit(1);
     }
 }
 
@@ -131,6 +154,12 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         tracing::warn!(%pending, "configuration key not honoured by this build");
     }
 
+    // The deployment-owed guarantees, said out loud once per boot. Every item in
+    // `hardening.mdx` fails silently — nothing logs "your bucket is world-readable"
+    // — so an operator who never reads the documentation still meets the list here.
+    // `notify-server doctor` prints the same review on demand.
+    doctor::log_review(&config);
+
     let application = wiring::Application::build(&config).await?;
 
     // Migrations before anything is served: a replica that answers requests against
@@ -163,6 +192,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
 
     let bind = config.server.bind;
     let cors_origins = config.server.cors_origins.clone();
+    let serve_docs = config.server.docs;
     let state = actix_web::web::Data::new(application.state);
     let readiness = actix_web::web::Data::new(health::Dependencies::new(
         application.store.clone(),
@@ -206,7 +236,13 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             .configure(notify_http_actix::configure)
             .split_for_parts();
 
-        app.service(utoipa_scalar::Scalar::with_url("/api/docs", api))
+        // `[server] docs = false` unmounts it entirely rather than answering `401`:
+        // a route that exists and refuses still confirms it is there.
+        if serve_docs {
+            app.service(utoipa_scalar::Scalar::with_url("/api/docs", api))
+        } else {
+            app
+        }
     })
     .bind(bind)?
     // A drain that outlives an in-flight publish, and no longer: SSE connections

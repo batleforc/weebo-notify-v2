@@ -8954,6 +8954,7 @@ Arguments:
             403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             413u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            415u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             501u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             _ => Err(Error::UnexpectedResponse(response)),
         }

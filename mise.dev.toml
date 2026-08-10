@@ -1,0 +1,21 @@
+# Tools a developer wants and a CI runner has no use for (advisory SEC-P2-08).
+#
+# Loaded only when `MISE_ENV=dev` is set, which `task init` arranges. `mise.toml`
+# holds what building, testing and releasing this project needs; everything here is
+# for the person doing it.
+#
+# Why the split is a security item rather than tidiness: every workflow runs
+# `mise install --yes`, including the release job that holds the registry token and
+# the keyless signing identity. Each tool installed in that job is another
+# publisher's infrastructure inside the blast radius of a release, for no benefit —
+# none of these three is invoked by any gate.
+#
+# Adding a tool here costs CI nothing. Adding one to `mise.toml` puts it in the
+# release path, so that is the decision worth pausing over.
+
+[tools]
+# The assistant this repository is developed with.
+claude = "latest"
+# Token-optimised command wrappers (see CLAUDE.md).
+rtk = "latest"
+herdr = "latest"

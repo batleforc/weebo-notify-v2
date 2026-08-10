@@ -18,7 +18,7 @@
 # moved between two runs of the same pipeline. `bookworm` is not a preference — it
 # has to be the same Debian as the runtime stage below, or the binary links against
 # a glibc the runtime does not have.
-FROM docker.io/library/rust:1.97-slim-bookworm AS builder
+FROM docker.io/library/rust:1.97-slim-bookworm@sha256:96c0af8cf054fd006435089f0076729716784ec9be485bd655de59c55df105ce AS builder
 
 WORKDIR /build
 
@@ -52,7 +52,7 @@ RUN cargo build --release --locked -p notify-server -p notify-cli
 #
 # `nonroot` is the tag, not a runtime flag: the image has no shell, no package
 # manager and no root user to drop from.
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS runtime
 
 COPY --from=builder /build/target/release/notify-server /usr/local/bin/notify-server
 
@@ -67,9 +67,19 @@ COPY --from=builder /build/target/release/notify /usr/local/bin/notify
 # is a server pointing at somebody else's idea of a database.
 VOLUME ["/etc/weebo-notify"]
 
-# 8080 is the API and the web UI's origin; 9090 is the Prometheus exporter (§13,
-# M4ter), which is a separate listener so it can stay off the public ingress.
-EXPOSE 8080 9090
+# 8080, and only 8080. This used to also expose 9090 and describe it as "the
+# Prometheus exporter, a separate listener so it can stay off the public ingress",
+# which was not true of any build of this image: `notify-server` binds one socket,
+# and `/metrics`, `/healthz` and `/readyz` all answer on it beside the API.
+#
+# Worth correcting rather than leaving as an aspiration, because it is the kind of
+# claim an operator builds a network policy on. What actually keeps the exporter
+# private today is the Ingress, which routes `/api/v1` and nothing else — so a
+# deployment that fronts this Service with a catch-all path, a second Ingress or a
+# LoadBalancer publishes the exporter along with the API. `hardening.mdx` says so
+# too. The second listener remains a reasonable thing to build; when it exists,
+# this line and that paragraph change together.
+EXPOSE 8080
 
 # No HEALTHCHECK, and it is a decision rather than an omission: `trivy config`
 # reports its absence at LOW, below the gate `task audit` enforces. A distroless
@@ -80,7 +90,7 @@ EXPOSE 8080 9090
 LABEL org.opencontainers.image.title="weebo-notify"
 LABEL org.opencontainers.image.description="Self-hosted notification hub — server"
 LABEL org.opencontainers.image.source="https://github.com/batleforc/weebo-notify-v2"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 USER nonroot:nonroot
 

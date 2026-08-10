@@ -57,7 +57,10 @@ pub mod sinks;
 pub mod sync;
 
 pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
-pub use attachments::{Attachments, PresignAttachment, ReadAttachment, ReadAttachmentThumbnail};
+pub use attachments::{
+    Attachments, PresignAttachment, ReadAttachment, ReadAttachmentThumbnail,
+    is_allowed_attachment_type, normalised_content_type,
+};
 pub use attribution::Attribution;
 pub use auth::{Authenticate, Credential};
 pub use authz::{Authorizer, Caller, Grant};
@@ -72,8 +75,8 @@ pub use interact::{
     ListInteractions, PostReceipt, ReadReceipts, RecordInteraction, SilenceNotification,
 };
 pub use keys::{
-    CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, RevokeApiKey, SetApiKeyLimit,
-    UlidKeyGenerator,
+    CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, OsRngKeyGenerator, RevokeApiKey,
+    SetApiKeyLimit,
 };
 pub use maintenance::{PurgeExpired, PurgeReport};
 pub use platform::{

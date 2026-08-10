@@ -19,7 +19,11 @@ tasks:
   init:
     desc: "Install the toolchain and the git hooks, then create the local secrets — run once after cloning"
     cmds:
-      - mise install
+      # `MISE_ENV=dev` pulls in `mise.dev.toml` as well — the tools a developer
+      # wants and CI has no use for (SEC-P2-08). Export it in your shell profile
+      # to keep them on your PATH afterwards; without it you get exactly what CI
+      # gets, which is a supported and slightly emptier setup.
+      - MISE_ENV=dev mise install
       - cog install-hook -a -o
       - cmd: '[ -f docs/package.json ] && pnpm -C docs install || true'
         silent: true

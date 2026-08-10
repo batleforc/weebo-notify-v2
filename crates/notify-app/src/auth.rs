@@ -33,8 +33,16 @@ use notify_ports::{
     ApiKeyRepository, Clock, Failure, FederationVerifier, SecretHasher, ServiceAccountRepository,
     TokenRejection, TokenVerifier, UserRepository,
 };
+use time::OffsetDateTime;
 
 use crate::authz::{Caller, Grant};
+
+/// How stale `last_used_at` may get before a request pays to refresh it.
+///
+/// One minute: fine enough that "is this key still in use" is answered honestly,
+/// coarse enough that a pipeline publishing every second writes once rather than
+/// sixty times.
+const LAST_USED_GRANULARITY: time::Duration = time::Duration::minutes(1);
 
 /// What arrived on the request.
 #[derive(Debug, Clone)]
@@ -275,7 +283,17 @@ impl Authenticate {
         // Best-effort by contract: this is the hot path of every authenticated
         // request, and failing a publish over a `last_used` write would be a poor
         // trade.
-        if let Err(error) = self.keys.touch(stored.key.id, now).await {
+        //
+        // Throttled as well as best-effort. Unthrottled this is one row update per
+        // authenticated request — a write amplifying the busiest read path in the
+        // product, on the single Postgres that is also the event bus, the rate
+        // limiter and the leader lock. `last_used_at` answers "is this key still in
+        // use", a question no operator asks to the second, so a granularity of
+        // [`LAST_USED_GRANULARITY`] costs nothing anybody wanted and removes a write
+        // from every request a CI fleet makes.
+        if Self::should_touch(stored.key.last_used_at, now)
+            && let Err(error) = self.keys.touch(stored.key.id, now).await
+        {
             tracing::warn!(?error, "could not record api key usage");
         }
 
@@ -293,6 +311,16 @@ impl Authenticate {
             groups: Vec::new(),
             platform_admin: false,
         })
+    }
+
+    /// Whether `last_used_at` is stale enough to be worth a write.
+    ///
+    /// A key that has never been used is always recorded — the first use is the one
+    /// somebody actually looks for, when they are asking whether a key they just
+    /// minted works. A clock that has gone backwards (an NTP step) also writes,
+    /// rather than going quiet until the wall clock catches up.
+    fn should_touch(last_used_at: Option<OffsetDateTime>, now: OffsetDateTime) -> bool {
+        last_used_at.is_none_or(|last| now - last >= LAST_USED_GRANULARITY || now < last)
     }
 
     const fn unauthenticated(_rejection: TokenRejection) -> Failure {
@@ -857,5 +885,36 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod last_used_tests {
+    use super::*;
+
+    fn at(seconds: i64) -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds)
+    }
+
+    #[test]
+    fn a_key_that_has_never_been_used_is_always_recorded() {
+        // The first use is the one somebody is actually watching for, right after
+        // they mint a key and want to know it works.
+        assert!(Authenticate::should_touch(None, at(0)));
+    }
+
+    #[test]
+    fn a_burst_within_the_granularity_writes_once() {
+        let first = at(1_000);
+        assert!(!Authenticate::should_touch(Some(first), at(1_001)));
+        assert!(!Authenticate::should_touch(Some(first), at(1_059)));
+        assert!(Authenticate::should_touch(Some(first), at(1_060)));
+    }
+
+    #[test]
+    fn a_clock_that_went_backwards_writes_rather_than_going_quiet() {
+        // An NTP step must not leave `last_used_at` frozen in the future until the
+        // wall clock catches up to it.
+        assert!(Authenticate::should_touch(Some(at(1_000)), at(900)));
     }
 }

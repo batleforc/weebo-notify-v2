@@ -123,7 +123,7 @@ pub(crate) async fn thumbnail(
     let id: AttachmentId = id.into_inner().parse()?;
     let object = state.attachment_thumbnail.execute(&caller.0, id).await?;
 
-    Ok(HttpResponse::Ok()
+    Ok(crate::routes::served_bytes(&mut HttpResponse::Ok())
         .content_type(object.content_type)
         // Immutable for the same reason the avatar's is: an attachment is never
         // replaced in place, so a revision showing a different image references a

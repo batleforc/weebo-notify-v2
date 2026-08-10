@@ -8,8 +8,8 @@
       "email": "maxleriche.60@gmail.com"
     },
     "license": {
-      "name": "MPL-2.0",
-      "url": "https://www.mozilla.org/en-US/MPL/2.0/"
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
     "version": "0.1.0"
   },
@@ -728,13 +728,16 @@
             "description": "Stored"
           },
           "403": {
-            "description": "The token is missing, expired, or for another id/purpose"
+            "description": "The token is missing, expired, or for another id/purpose/content type"
           },
           "404": {
             "description": "Not a valid attachment id"
           },
           "413": {
             "description": "Over the 25 MiB ceiling (§8.2)"
+          },
+          "415": {
+            "description": "The declared content type is not an allowed attachment type"
           },
           "501": {
             "description": "This deployment is not running the filesystem backend"

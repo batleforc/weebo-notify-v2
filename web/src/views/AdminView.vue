@@ -20,7 +20,7 @@
  * all, because config owns it (§11) and an API call would be undone at the next
  * reconciliation.
  */
-import { KeyRound, Plus, Trash2 } from "lucide-vue-next";
+import { KeyRound, Plus, Trash2 } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 

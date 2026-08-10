@@ -35,4 +35,13 @@ spec:
     {{- with .Values.server.autoscaling.customMetrics }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+  {{- with .Values.server.autoscaling.behavior }}
+  # Scaling *down* is the direction that costs something here: every replica
+  # removed drops its SSE and WebSocket connections, and every one of those
+  # clients reconnects and replays from its cursor. Correct, but not free — so
+  # the default stabilisation window is deliberately long, and scale-up is left
+  # responsive.
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}

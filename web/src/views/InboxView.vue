@@ -16,7 +16,7 @@
  * (§10.1), and it is also what makes the list usable while reading a stack trace
  * with the other hand on a terminal.
  */
-import { Inbox as InboxIcon, RefreshCw } from "lucide-vue-next";
+import { Inbox as InboxIcon, RefreshCw } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";

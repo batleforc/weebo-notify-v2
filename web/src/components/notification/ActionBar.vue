@@ -10,7 +10,7 @@
  * `ack` and `choice` are keyed and idempotent, `reply` is free text, and `silence`
  * is a preference rather than an answer.
  */
-import { BellOff, Check, ExternalLink, Send } from "lucide-vue-next";
+import { BellOff, Check, ExternalLink, Send } from "@lucide/vue";
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 

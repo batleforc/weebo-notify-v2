@@ -46,12 +46,36 @@ use notify_domain::{Principal, limits::MAX_STREAMS_PER_PRINCIPAL};
 /// number; the number is a suggestion.
 pub(crate) const RETRY_AFTER_SECONDS: u32 = 30;
 
+/// How many live connections this **replica** will hold in total, across every
+/// principal (advisory SEC-P2-31).
+///
+/// The per-principal cap bounds what one caller costs. It does not bound what the
+/// replica costs: with the cap at 20, four hundred principals is eight thousand
+/// held sockets, tasks and buffers on one process — every one of them legitimate,
+/// none of them refused, and the pod dies of its memory limit rather than of
+/// anything anybody did wrong.
+///
+/// The number is generous on purpose. It is not a quality-of-service knob, it is
+/// the point past which this replica stops being able to serve anybody: refusing
+/// the ten-thousand-and-first connection with a `429` and a `Retry-After` costs
+/// that client a reconnect to a different replica, which is exactly what the HPA
+/// and the load balancer are for. Being OOM-killed costs every connection on the
+/// replica instead.
+pub(crate) const MAX_STREAMS_PER_REPLICA: usize = 10_000;
+
 /// The live connections this replica is holding, per principal.
 #[derive(Debug, Default)]
 pub struct StreamSlots {
     /// Absent means zero: a principal with no connection has no entry, so the map
     /// stays the size of the connected population rather than of the user table.
     held: Mutex<HashMap<Principal, usize>>,
+    /// The sum of the map above, maintained alongside it.
+    ///
+    /// Kept rather than summed on demand: `acquire` runs on every connection and
+    /// walking the map there would make the cost of connecting proportional to the
+    /// number of connected principals. Both are updated under the same lock, so
+    /// they cannot disagree.
+    total: Mutex<usize>,
 }
 
 impl StreamSlots {
@@ -69,6 +93,7 @@ impl StreamSlots {
     /// to be one too many.
     pub fn acquire(self: &Arc<Self>, principal: &Principal) -> Option<StreamSlot> {
         let mut held = self.lock();
+        let mut total = self.lock_total();
         let count = held.get(principal).copied().unwrap_or(0);
 
         if count >= MAX_STREAMS_PER_PRINCIPAL {
@@ -78,7 +103,21 @@ impl StreamSlots {
             return None;
         }
 
+        if *total >= MAX_STREAMS_PER_REPLICA {
+            // The replica is full of connections that are each individually within
+            // their rights. Shedding here is what turns "this pod dies" into "this
+            // client reconnects somewhere else".
+            tracing::warn!(
+                total = *total,
+                ceiling = MAX_STREAMS_PER_REPLICA,
+                "refusing a stream: this replica is at its connection ceiling"
+            );
+            return None;
+        }
+
         held.insert(principal.clone(), count + 1);
+        *total += 1;
+        drop(total);
         drop(held);
 
         Some(StreamSlot {
@@ -93,8 +132,17 @@ impl StreamSlots {
         self.lock().get(principal).copied().unwrap_or(0)
     }
 
+    /// How many this replica holds in total. Test and diagnostics only.
+    #[must_use]
+    pub fn held_total(&self) -> usize {
+        *self.lock_total()
+    }
+
     fn release(&self, principal: &Principal) {
         let mut held = self.lock();
+        let mut total = self.lock_total();
+        *total = total.saturating_sub(1);
+        drop(total);
         if let Some(count) = held.get_mut(principal) {
             *count -= 1;
             if *count == 0 {
@@ -113,6 +161,14 @@ impl StreamSlots {
     /// better than a stream endpoint that is down.
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Principal, usize>> {
         self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Always taken *after* [`Self::lock`], so the two can never deadlock against
+    /// each other.
+    fn lock_total(&self) -> std::sync::MutexGuard<'_, usize> {
+        self.total
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -274,5 +330,116 @@ mod tests {
             MAX_STREAMS_PER_PRINCIPAL,
             "a refusal counts nothing, in either direction"
         );
+    }
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
+    use notify_domain::UserId;
+
+    use super::*;
+
+    fn somebody() -> Principal {
+        Principal::User {
+            id: UserId::generate(),
+        }
+    }
+
+    /// Fill the replica using one principal per `MAX_STREAMS_PER_PRINCIPAL`, so the
+    /// per-principal cap is never the thing doing the refusing.
+    fn fill(slots: &Arc<StreamSlots>, connections: usize) -> Vec<StreamSlot> {
+        let mut held = Vec::with_capacity(connections);
+        while held.len() < connections {
+            let principal = somebody();
+            for _ in 0..MAX_STREAMS_PER_PRINCIPAL {
+                if held.len() == connections {
+                    break;
+                }
+                match slots.acquire(&principal) {
+                    Some(slot) => held.push(slot),
+                    None => return held,
+                }
+            }
+        }
+        held
+    }
+
+    #[test]
+    fn a_replica_refuses_past_its_own_ceiling_however_many_principals_ask() {
+        // SEC-P2-31: the per-principal cap bounds what one caller costs and says
+        // nothing about what the replica costs. Enough distinct principals, each
+        // entirely within their rights, used to be able to exhaust the process.
+        let slots = Arc::new(StreamSlots::new());
+        let held = fill(&slots, MAX_STREAMS_PER_REPLICA);
+
+        assert_eq!(held.len(), MAX_STREAMS_PER_REPLICA);
+        assert_eq!(slots.held_total(), MAX_STREAMS_PER_REPLICA);
+        assert!(
+            slots.acquire(&somebody()).is_none(),
+            "a fresh principal was admitted past the replica ceiling"
+        );
+    }
+
+    #[test]
+    fn the_total_unwinds_completely_when_connections_end() {
+        // SEC-P2-30, the part that is checkable without a network: a leaked total
+        // would refuse every connection on the replica until it restarted, and the
+        // leak would be invisible until it was total.
+        let slots = Arc::new(StreamSlots::new());
+
+        for _ in 0..3 {
+            let held = fill(&slots, 512);
+            assert_eq!(slots.held_total(), 512);
+            drop(held);
+            assert_eq!(
+                slots.held_total(),
+                0,
+                "the replica total did not return to zero after every stream ended"
+            );
+        }
+
+        // And the per-principal map is empty too, or it grows once per principal
+        // that has ever connected.
+        let after = somebody();
+        assert_eq!(slots.held_by(&after), 0);
+        assert!(slots.acquire(&after).is_some());
+    }
+
+    #[test]
+    fn a_refusal_at_the_ceiling_allocates_nothing() {
+        // The refusal path runs on a public endpoint. If it left a counter or a map
+        // entry behind, being refused would itself be the attack.
+        let slots = Arc::new(StreamSlots::new());
+        let held = fill(&slots, MAX_STREAMS_PER_REPLICA);
+
+        let refused = somebody();
+        for _ in 0..1_000 {
+            assert!(slots.acquire(&refused).is_none());
+        }
+
+        assert_eq!(slots.held_by(&refused), 0);
+        assert_eq!(slots.held_total(), MAX_STREAMS_PER_REPLICA);
+        drop(held);
+        assert_eq!(slots.held_total(), 0);
+    }
+
+    #[test]
+    fn churn_does_not_drift_the_total() {
+        // Open and abandon repeatedly, interleaved, which is the shape of the attack
+        // in §10 A7: connections dropped at the socket level rather than closed.
+        let slots = Arc::new(StreamSlots::new());
+        let long_lived = fill(&slots, 100);
+
+        for _ in 0..200 {
+            let transient = fill(&slots, 50);
+            assert_eq!(slots.held_total(), 150);
+            drop(transient);
+            assert_eq!(slots.held_total(), 100);
+        }
+
+        drop(long_lived);
+        assert_eq!(slots.held_total(), 0);
     }
 }
