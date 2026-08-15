@@ -48,6 +48,7 @@ entries:
 
   # --- Test users. Fixed password, no IdP privileges, disposable (§12.5) ---
   - model: authentik_core.user
+    id: user-alice
     identifiers:
       username: alice
     attrs:
@@ -61,6 +62,7 @@ entries:
         - !KeyOf group-platform-admins
 
   - model: authentik_core.user
+    id: user-bob
     identifiers:
       username: bob
     attrs:
@@ -74,6 +76,7 @@ entries:
 
   # No group: the "IdP without a groups claim" degradation path (T29).
   - model: authentik_core.user
+    id: user-carol
     identifiers:
       username: carol
     attrs:
@@ -82,6 +85,56 @@ entries:
       email: carol@weebo.local
       password: weebo-dev
       is_active: true
+
+  # --- App passwords, so a test can get a token without driving a login form ---
+  #
+  # Authentik's `grant_type=password` is NOT RFC 6749's password grant. It lands in
+  # the same handler as `client_credentials`, and the `password` it authenticates is
+  # an app-password *token* belonging to the user — never the user's own password
+  # (authentik/providers/oauth2/views/token.py, 2025.6). Posting alice/weebo-dev
+  # there returns `invalid_grant` however correct the password is, which is what the
+  # oidc-compat leg spent its first green seed discovering.
+  #
+  # One per account and not one shared: a token is looked up by key and then checked
+  # against the user, so two accounts cannot share one. `expiring: false` because a
+  # fixture that starts failing on a date is worse than no fixture (see the seven-day
+  # fuse in `InMemory`).
+  #
+  # These are dev credentials of the same kind as the passwords above — a disposable
+  # environment holding no production value, and dev/ is allowlisted in
+  # .gitleaks.toml for exactly this.
+  - model: authentik_core.token
+    identifiers:
+      identifier: weebo-compat-alice
+    attrs:
+      identifier: weebo-compat-alice
+      intent: app_password
+      user: !KeyOf user-alice
+      key: weebo-dev-app-password-alice
+      expiring: false
+      description: oidc-compat, the in-groups account
+
+  - model: authentik_core.token
+    identifiers:
+      identifier: weebo-compat-bob
+    attrs:
+      identifier: weebo-compat-bob
+      intent: app_password
+      user: !KeyOf user-bob
+      key: weebo-dev-app-password-bob
+      expiring: false
+      description: oidc-compat spare; bob exists in every other fixture, so he has one here too
+
+  - model: authentik_core.token
+    identifiers:
+      identifier: weebo-compat-carol
+    attrs:
+      identifier: weebo-compat-carol
+      intent: app_password
+      user: !KeyOf user-carol
+      key: weebo-dev-app-password-carol
+      expiring: false
+      description: oidc-compat, the group-less account (T29)
 
   # --- Scope mapping so `groups` reaches the ACCESS token, not just the id token.
   # The API authorises on the access token alone (§5.1), so this mapping is what
@@ -107,7 +160,14 @@ entries:
       name: weebo-notify
       client_type: public
       client_id: weebo-notify
-      sub_mode: hashed_user_id
+      # `user_username` and not Authentik's `hashed_user_id` default, because the
+      # compat suite asserts `sub == username` on this provider and says in so many
+      # words that it holds "where this suite arranged it — the mock, whose
+      # identities file sets it, and the Authentik blueprint, which maps it"
+      # (crates/notify-adapters/oidc/tests/oidc_compat.rs). It did not map it. The
+      # property the code depends on is stability (§5.1), which every sub_mode has;
+      # the equality is a fixture convenience, and this is where it gets arranged.
+      sub_mode: user_username
       include_claims_in_id_token: true
       access_code_validity: minutes=1
       access_token_validity: minutes=15

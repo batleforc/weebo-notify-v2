@@ -322,7 +322,7 @@ async fn sign_in_through_the_browser(issuer: &Url, username: &str) -> String {
 async fn password_grant(issuer: &Url, username: &str, provider: Provider) -> String {
     let endpoint = discover(issuer, "token_endpoint").await;
     let client_id = client_id();
-    let password = required("WNK_TEST_OIDC_PASSWORD", provider);
+    let password = password_for(username, provider);
     let secret = std::env::var("WNK_TEST_OIDC_CLIENT_SECRET").unwrap_or_default();
 
     let mut form = vec![
@@ -356,6 +356,50 @@ async fn password_grant(issuer: &Url, username: &str, provider: Provider) -> Str
         .as_str()
         .expect("an access token")
         .to_owned()
+}
+
+/// The secret the password grant should send for this account.
+///
+/// `WNK_TEST_OIDC_PASSWORD_<ACCOUNT>` first, `WNK_TEST_OIDC_PASSWORD` after it.
+///
+/// The per-account variable exists because Authentik's `grant_type=password` is not
+/// RFC 6749's: it shares a handler with `client_credentials`, and the `password` it
+/// authenticates is an app-password **token** belonging to the user rather than the
+/// user's password (`authentik/providers/oauth2/views/token.py`, 2025.6). Tokens are
+/// looked up by key and then checked against the user, so one value cannot stand for
+/// both alice and carol — and this suite needs both, because "carries no groups" is
+/// only worth asserting about somebody who is in none.
+///
+/// Dex, whose password really is a password, sets the plain variable and never sees
+/// the other one.
+fn password_for(username: &str, provider: Provider) -> String {
+    let per_account = format!(
+        "WNK_TEST_OIDC_PASSWORD_{}",
+        username
+            .to_uppercase()
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    );
+
+    for name in [per_account.as_str(), "WNK_TEST_OIDC_PASSWORD"] {
+        if let Ok(value) = std::env::var(name)
+            && !value.is_empty()
+        {
+            return value;
+        }
+    }
+
+    // Naming both, because which one is missing decides the fix: a provider whose
+    // accounts share a secret wants the second, and one whose accounts each carry
+    // their own — Authentik — wants the first. Falling back to another account's
+    // secret would be worse than this panic: Authentik checks the token against the
+    // user, so it would fail as `invalid_grant`, which reads like a broken
+    // blueprint rather than a variable nobody set.
+    panic!(
+        "WNK_TEST_OIDC_PROVIDER={provider:?} needs a secret for {username}, and \
+         neither {per_account} nor WNK_TEST_OIDC_PASSWORD is set. This suite fails \
+         rather than skips: a compatibility job that is green because no provider \
+         was reachable is worse than no job at all (§15)."
+    );
 }
 
 fn client_id() -> String {

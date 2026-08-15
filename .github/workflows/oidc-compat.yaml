@@ -209,8 +209,22 @@ jobs:
           {
             echo "WNK_TEST_OIDC_ISSUER=http://127.0.0.1:9100/application/o/weebo-notify/"
             echo "WNK_TEST_OIDC_CLIENT_ID=weebo-notify"
-            echo "WNK_TEST_OIDC_USERNAME=alice"
-            echo "WNK_TEST_OIDC_PASSWORD=weebo-dev"
+            # No WNK_TEST_OIDC_USERNAME. It overrides the *account* the fixture
+            # picks, not just its spelling, so pinning it to alice sent the
+            # group-less test (T29) to sign in as somebody in two groups and assert
+            # they were in none. Dex needs the override because its local connector
+            # authenticates on an email; Authentik knows alice and carol by exactly
+            # the names the blueprint declares, so it needs nothing.
+            #
+            # These are app-password token keys, not passwords —
+            # dev/authentik/blueprints/weebo-notify.yaml says why, and why there
+            # have to be one per account rather than one shared. No plain
+            # WNK_TEST_OIDC_PASSWORD for the same reason: a shared fallback would
+            # send alice's token for an account it does not belong to, and
+            # Authentik would answer `invalid_grant` — a variable nobody set,
+            # wearing the costume of a broken blueprint.
+            echo "WNK_TEST_OIDC_PASSWORD_ALICE=weebo-dev-app-password-alice"
+            echo "WNK_TEST_OIDC_PASSWORD_CAROL=weebo-dev-app-password-carol"
           } >> "$GITHUB_ENV"
 
       - name: Run the auth suite against ${{ matrix.provider }}
