@@ -58,8 +58,11 @@ impl Harness {
                   root has to spell it out"
     )]
     fn new() -> (Self, ApiState) {
-        let store = InMemory::new();
         let clock = TestClock::new();
+        // The store hides what is gone "as of now", and its now has to be this one:
+        // `InMemory::new()` reads a clock of its own, and a store whose calendar
+        // runs ahead of the use cases' reports every closed notification as expired.
+        let store = InMemory::with_clock(clock.clone());
         let tokens = StaticTokenVerifier::with_clock(Arc::new(clock.clone()));
         let limiter = TestRateLimiter::default();
         let attachments = InMemoryAttachments::new();

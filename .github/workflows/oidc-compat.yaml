@@ -110,9 +110,14 @@ jobs:
       - name: Restore caches
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
+          # `~/.rustup` alongside `~/.local/share/mise`: the mise install is the
+          # rustup proxies, the toolchain they run is in `~/.rustup`, and caching
+          # one without the other leaves mise sure a toolchain is installed that
+          # rustup then re-downloads on first use — see check.yaml.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.rustup
             ~/.local/share/mise
             target
           key: oidc-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock') }}

@@ -21,6 +21,7 @@ use time::OffsetDateTime;
 
 use crate::audit::{AuditEntry, AuditLog, AuditQuery};
 use crate::channels::ChannelRepository;
+use crate::clock::Clock as _;
 use crate::declarations::{Declaration, DeclarationKind, DeclarationStore};
 use crate::devices::DeviceRepository;
 use crate::error::{PortError, PortResult};
@@ -40,6 +41,7 @@ use crate::preferences::{DeferredTally, PreferenceRepository};
 use crate::push::{PushDispatcher, PushMessage, PushOutcome};
 use crate::receipts::{ReceiptRepository, Visibility};
 use crate::sinks::{DeadLetter, SinkDelivery, SinkQueue};
+use crate::test_utils::clock::TestClock;
 
 /// A row plus the cursor it was last written at.
 #[derive(Debug, Clone)]
@@ -178,12 +180,41 @@ impl State {
 #[derive(Debug, Clone, Default)]
 pub struct InMemory {
     state: Arc<Mutex<State>>,
+    /// The time this store hides expired rows against.
+    ///
+    /// A store that answered "is this gone?" from the wall clock while the use case
+    /// asking read [`TestClock`] is not a double, it is a second, disagreeing
+    /// system — and the disagreement is invisible until the calendar catches up.
+    /// It did: `TestClock::EPOCH` plus the seven-day default retention fell due on
+    /// 2026-08-09, and from that morning every notification a test had *closed*
+    /// read as expired to `list`, `search`, `unread_counts` and
+    /// `attachment_is_visible`, however recently the test had closed it.
+    ///
+    /// Parked at [`TestClock::EPOCH`] by default, which is where every harness's
+    /// own clock starts. A test that drives time has to hand the same clock over
+    /// with [`Self::with_clock`], or the two will part company again.
+    clock: TestClock,
 }
 
 impl InMemory {
-    /// An empty store.
+    /// An empty store, reading a clock parked at [`TestClock::EPOCH`].
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty store that reads the caller's clock — the one the use cases under
+    /// test are reading, so that advancing it moves both.
+    #[must_use]
+    pub fn with_clock(clock: TestClock) -> Self {
+        Self {
+            state: Arc::default(),
+            clock,
+        }
+    }
+
+    /// What this store believes the time is.
+    fn now(&self) -> OffsetDateTime {
+        self.clock.now()
     }
 
     /// The rows a purge with this window would delete.
@@ -397,7 +428,7 @@ impl NotificationRepository for InMemory {
 
     async fn list(&self, query: &InboxQuery) -> PortResult<Page<Notification>> {
         let state = self.state();
-        let now = OffsetDateTime::now_utc();
+        let now = self.now();
 
         let mut matched: Vec<&Row<Notification>> = state
             .notifications
@@ -441,7 +472,7 @@ impl NotificationRepository for InMemory {
         channels: &[ChannelId],
     ) -> PortResult<Vec<UnreadCount>> {
         let state = self.state();
-        let now = OffsetDateTime::now_utc();
+        let now = self.now();
 
         let seen: std::collections::HashSet<NotificationId> = state
             .receipts
@@ -490,7 +521,7 @@ impl NotificationRepository for InMemory {
 
     async fn search(&self, query: &SearchQuery) -> PortResult<Page<Notification>> {
         let state = self.state();
-        let now = OffsetDateTime::now_utc();
+        let now = self.now();
         let needle = query.text.to_lowercase();
 
         let mut matched: Vec<&Row<Notification>> = state
@@ -624,7 +655,7 @@ impl NotificationRepository for InMemory {
         channels: &[ChannelId],
     ) -> PortResult<bool> {
         let state = self.state();
-        let now = OffsetDateTime::now_utc();
+        let now = self.now();
 
         Ok(state.revisions.iter().any(|row| {
             attachment_of(&row.value) == Some(*attachment)

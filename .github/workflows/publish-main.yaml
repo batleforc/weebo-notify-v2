@@ -142,9 +142,13 @@ jobs:
       - name: Restore caches
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
+          # `~/.rustup` alongside `~/.local/share/mise` — see check.yaml: they are
+          # the two halves of one rust installation, and this job's `rustup target
+          # add` for the Android ABIs (.tasks/android.yaml) lands in the former.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.rustup
             ~/.local/share/mise
             target
             web/node_modules

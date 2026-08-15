@@ -12,8 +12,14 @@ metadata:
 # and what lets a developer switch IdP with a single WNK_OIDC__ISSUER override
 # instead of a second config file.
 #
-# Applied by `task dev:seed` through the API using AUTHENTIK_BOOTSTRAP_TOKEN; the
-# /blueprints mount in compose is only a convenience.
+# Applied by Authentik itself: the /blueprints mount in compose plus the
+# `instantiate` label above are what create and apply it, on startup and on every
+# scan afterwards. `task dev:seed` asks for that to happen immediately — using
+# AUTHENTIK_BOOTSTRAP_TOKEN — and then waits for the OIDC provider to answer, so a
+# blueprint that cannot be applied fails the seed instead of the next thing to run.
+# That is the wrong way round from how this comment read until the oidc-compat job
+# proved it: the API call was aimed at a route that does not exist, so the mount had
+# been doing all the work all along.
 
 entries:
   # --- Groups, mirroring the channel access rules in config/dev.toml (§11) ---

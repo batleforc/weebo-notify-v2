@@ -143,7 +143,8 @@ version = "1.97.1"
 backend = "core:rust"
 
 [tools.rust.options]
-profile = "default"
+components = "clippy,rustfmt"
+profile = "minimal"
 
 [[tools.task]]
 version = "3.52.0"

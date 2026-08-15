@@ -75,9 +75,17 @@ jobs:
       - name: Restore caches
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
+          # `~/.rustup` is listed next to `~/.local/share/mise` because they are two
+          # halves of one installation, and caching one without the other is what
+          # broke this job: mise's rust tool is the rustup *proxies*, and the
+          # toolchain those proxies execute lives in `~/.rustup`. Restoring the
+          # proxies alone left mise reporting "all tools are installed" over a
+          # toolchain that was not there, so the first `cargo fmt` made rustup
+          # install one on the spot — with rustup's own profile, i.e. no rustfmt.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.rustup
             ~/.local/share/mise
             target
             docs/node_modules
@@ -97,6 +105,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mise install --yes
+
+      - name: Complete the Rust toolchain
+        # `mise install` skips a tool it already sees, and `restore-keys` means the
+        # cache it sees may predate the `components` line in mise.toml — proxies
+        # from one run, a toolchain from an older one. This job is the only one that
+        # needs rustfmt and clippy, and it needs them three steps from here, where
+        # the symptom ("error: 'cargo-fmt' is not installed") explains nothing about
+        # the cache that caused it. Asking rustup directly costs nothing when the
+        # components are already there and states the requirement where it fails.
+        run: |
+          mise exec -- rustup toolchain install "$(mise current rust)" \
+            --profile minimal --component rustfmt --component clippy --no-self-update
 
       - name: Install the JavaScript dependencies
         # `task lint:check` and `task cover` both reach into web/ and docs/, and
@@ -141,8 +161,17 @@ jobs:
 
       - name: Publish the coverage summary
         # Runs even when the gate failed — the number is most useful precisely then.
+        # But `always()` also covers the runs that never reached the gate: a lint
+        # failure used to be reported twice, once truthfully and once as
+        # "cat: coverage.md: No such file or directory", and the second one is the
+        # one that lands at the bottom of the log where people look first.
         if: always()
-        run: cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [ -f coverage.md ]; then
+            cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The run failed before the coverage gate — no summary to publish." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload the coverage report
         if: always()
