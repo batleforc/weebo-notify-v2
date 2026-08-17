@@ -44,6 +44,7 @@
     },
     "channels": {
       "title": "Channels",
+      "all": "All channels",
       "empty": "No channels. Access comes from a group in your identity provider or an invitation (§5.1)."
     },
     "filters": {

@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use figment::Figment;
 use figment::providers::{Env, Format as _, Serialized, Toml};
-use notify_domain::{HumanDuration, Priority, Scope, Ttl};
+use notify_domain::{CloseAfter, HumanDuration, Priority, Scope, Ttl};
 use serde::{Deserialize, Serialize};
 
 /// The environment prefix, shared with the clients (design §9.1) so one habit
@@ -352,6 +352,10 @@ pub(crate) struct ManagedChannel {
     pub name: Option<String>,
     pub default_ttl: Option<Ttl>,
     pub max_ttl: Option<HumanDuration>,
+    /// How long without activity before the server closes a lifecycle
+    /// notification here (§7.2bis). Absent means the published default of one
+    /// week; `"0"` means this channel's publishers close their own.
+    pub close_after: Option<CloseAfter>,
     pub default_priority: Option<Priority>,
     pub receipts: bool,
     pub limits: Option<ChannelLimits>,

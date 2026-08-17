@@ -254,6 +254,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let store = application.store;
     let jobs = actix_web::rt::spawn(background(
         application.purge,
+        application.close_stale,
         application.digests,
         application.drain,
         application.metrics.clone(),
@@ -380,17 +381,20 @@ impl Reconciling {
 
 async fn background(
     purge: notify_app::PurgeExpired,
+    close_stale: notify_app::CloseStale,
     digests: notify_app::SendDndDigests,
     drain: notify_app::DrainSinks,
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     mut reconciling: Reconciling,
 ) {
     let mut purge_tick = actix_web::rt::time::interval(JOB_INTERVAL);
+    let mut closure_tick = actix_web::rt::time::interval(JOB_INTERVAL);
     let mut digest_tick = actix_web::rt::time::interval(JOB_INTERVAL);
     let mut sink_tick = actix_web::rt::time::interval(SINK_INTERVAL);
     let mut reconcile_tick = actix_web::rt::time::interval(RECONCILE_INTERVAL);
     // The first tick fires immediately and all of these have just run at boot.
     purge_tick.tick().await;
+    closure_tick.tick().await;
     digest_tick.tick().await;
     sink_tick.tick().await;
     reconcile_tick.tick().await;
@@ -428,6 +432,22 @@ async fn background(
                 // Not leading is the normal answer on all but one replica.
                 Ok(_) => {}
                 Err(error) => tracing::warn!(?error, "purge pass failed; retrying next tick"),
+            },
+            // Its own arm on the same interval rather than a step inside the purge:
+            // the two are independent jobs with independent leader locks, and a
+            // purge that fails must not stop notifications from being closed. What
+            // this closes becomes what the *next* purge tick can expire — a
+            // lifecycle notification does not age until it closes (§7.2bis).
+            _ = closure_tick.tick() => match close_stale.execute().await {
+                Ok(report) if report.led => tracing::info!(
+                    closed = report.closed,
+                    channels_watched = report.channels_watched,
+                    "stale-closure pass complete"
+                ),
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(?error, "stale-closure pass failed; retrying next tick");
+                }
             },
             // A quiet period ending is the absence of an event, so somebody has to
             // look — which is why this is a timer rather than a moment (§7.4).

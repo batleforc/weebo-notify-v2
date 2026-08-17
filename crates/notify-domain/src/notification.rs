@@ -443,6 +443,40 @@ impl Notification {
     pub fn delete(&mut self, now: OffsetDateTime) {
         self.deleted_at.get_or_insert(now);
     }
+
+    /// Close it on the publisher's behalf, because nothing has happened to it for
+    /// longer than its channel allows (design §7.2bis, [`CloseAfter`]).
+    ///
+    /// Returns whether this changed anything, so a sweep does not write a row and
+    /// announce a closure it did not perform.
+    ///
+    /// # Why this is not a revision
+    ///
+    /// Every other state change is one, and has an author, because somebody asked
+    /// for it. Nobody asked for this one: it is the absence of anybody asking, for
+    /// a week. Minting a revision would mean minting a principal to sign it — a
+    /// system identity that would then exist everywhere principals do, in the
+    /// audit log and in every client's author rendering, to express "no author".
+    ///
+    /// So the history stays honest: the last revision still records that the
+    /// publisher said `open`, because they did, and `EventPayload::Closure` is what
+    /// says the server closed it afterwards. What changes here is the aggregate's
+    /// current state, which is the thing that was never true — a notification
+    /// nobody will ever touch again is not open.
+    ///
+    /// [`CloseAfter`]: crate::CloseAfter
+    pub fn close(&mut self, at: OffsetDateTime) -> bool {
+        if !self.head.state.is_live() {
+            return false;
+        }
+        self.head.state = State::Closed;
+        // Same rule as [`Self::apply`]'s: closing is what starts the retention
+        // clock, and it starts now rather than at the last revision — retention is
+        // measured from the moment a notification stopped being live, and that
+        // moment is this one.
+        self.closed_at = Some(at);
+        true
+    }
 }
 
 #[cfg(test)]
@@ -528,6 +562,48 @@ mod tests {
         assert!(
             !notification.is_expired(at + TimeDuration::days(3650)),
             "an incident that is still open must never be purged out from under its channel"
+        );
+    }
+
+    #[test]
+    fn closing_for_inactivity_starts_the_retention_clock() {
+        let at = now();
+        let mut notification = create(RevisionDraft::lifecycle(State::Open, content()), at);
+        assert_eq!(
+            notification.expires_at(),
+            None,
+            "an open notification has no deadline — that is the whole problem"
+        );
+
+        let swept_at = at + TimeDuration::days(7);
+        assert!(notification.close(swept_at));
+
+        assert_eq!(notification.closed_at, Some(swept_at));
+        assert_eq!(notification.head.state, State::Closed);
+        assert_eq!(
+            notification.expires_at(),
+            Some(swept_at + TimeDuration::days(7)),
+            "closing is what makes the channel's TTL apply at all"
+        );
+        assert_eq!(
+            notification.head.status,
+            Status::Info,
+            "the server closes it, it does not reinterpret what it said"
+        );
+    }
+
+    /// A sweep that announced a closure it did not perform would emit an event and
+    /// a log line for every already-closed row it looked at, every pass, forever.
+    #[test]
+    fn closing_an_already_closed_notification_changes_nothing() {
+        let at = now();
+        let mut notification = create(RevisionDraft::lifecycle(State::Closed, content()), at);
+        let closed_at = notification.closed_at;
+
+        assert!(!notification.close(at + TimeDuration::days(30)));
+        assert_eq!(
+            notification.closed_at, closed_at,
+            "a second closure must not push retention back"
         );
     }
 

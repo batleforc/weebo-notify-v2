@@ -249,7 +249,11 @@ tasks:
           echo "oidc issuer : $issuer"
           echo "cors origin : $web"
           WNK_OIDC__ISSUER="$issuer" \
-          WNK_SERVER__CORS_ORIGINS="[\"http://localhost:5173\",\"http://localhost:8080\",\"$web\"]" \
+          # The whole list, not just `$web`: this variable replaces
+          # `config/dev.toml`'s rather than adding to it, so anything left out here
+          # is an origin the server stops accepting for as long as this task runs —
+          # including the desktop shell's `tauri://localhost` (see that file).
+          WNK_SERVER__CORS_ORIGINS="[\"http://localhost:5173\",\"http://localhost:8080\",\"tauri://localhost\",\"http://tauri.localhost\",\"$web\"]" \
           cargo run -p notify-server -- --config config/dev.toml
 
   web:

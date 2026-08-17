@@ -75,6 +75,14 @@ use notify_client_core::{DeepLink, parse_deep_link};
 use tauri::{Emitter as _, Manager as _, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt as _;
 
+// Desktop-only, and not an omission on mobile: the loopback listener of RFC 8252
+// is the answer to "a packaged shell has no registrable origin", and a phone
+// answers that with its own registered scheme through the deep link above —
+// Android and iOS both hand `weebo-notify://oauth/callback` back to the app the
+// system browser was launched from, so there is nothing to listen on.
+#[cfg(desktop)]
+mod oauth;
+
 #[cfg(desktop)]
 use std::time::Duration;
 
@@ -128,9 +136,22 @@ pub fn run() {
         }
     }));
 
+    // The two commands the login needs (`oauth`), registered on the same
+    // `#[cfg(desktop)]` terms as the module they come from.
+    #[cfg(desktop)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        oauth::loopback_authorize,
+        oauth::open_external
+    ]);
+
     builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
+        // Opens URLs in the *system* browser. Used from Rust only (`oauth`), so it
+        // needs no entry in `capabilities/` — the ACL gates what the webview may
+        // ask for, and the webview asks for `loopback_authorize`, not for an
+        // arbitrary URL to be opened.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
 

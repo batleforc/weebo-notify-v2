@@ -15,7 +15,21 @@
 [server]
 bind = "0.0.0.0:8080"
 # Closed by default; the dev origins are listed explicitly (§5.1).
-cors_origins = ["http://localhost:5173", "http://localhost:8080"]
+#
+# The last two are the desktop shell, and they are origins in the same sense the
+# others are: a packaged Tauri app serves its own bundle over a custom protocol,
+# so every request it makes to this API carries `Origin: tauri://localhost` on
+# Linux and macOS, and `http://tauri.localhost` on Windows and Android. Without
+# them the shell signs in, gets a valid token and then cannot use it — every call
+# dies in preflight, which the UI can only report as "the server is unreachable".
+# Not a development-only need: any deployment that ships the desktop app has to
+# list them too (`charts/weebo-notify`, `[server] cors_origins`).
+cors_origins = [
+  "http://localhost:5173",
+  "http://localhost:8080",
+  "tauri://localhost",
+  "http://tauri.localhost",
+]
 
 [database]
 url = "postgres://weebo:weebo@localhost:5432/weebo_notify"
@@ -114,6 +128,11 @@ id = "cluster-ovh-1"
 name = "Cluster OVH 1 — incidents"
 default_ttl = "30d"
 max_ttl = "90d"
+# An incident channel is patient on purpose: a real incident stays open for as long
+# as it takes, and the sweep must not close one out from under whoever is working on
+# it. `close_after` counts revisions AND acknowledgements as activity, so this only
+# fires on a publisher that has genuinely stopped calling (§7.2bis).
+close_after = "14d"
 default_priority = "high"
 receipts = true
 limits = { publish_per_min = 120 }
@@ -144,6 +163,10 @@ limits = { publish_per_min = 120 }
 id = "ci-infra"
 name = "CI infra"
 default_ttl = "48h"
+# A build says something every few minutes or it is over. Two days of silence on a
+# CI notification means the runner died, so this is short — and until it existed,
+# a failed deploy stayed "open" forever and its 48h TTL never started.
+close_after = "2d"
 receipts = false
 
   [[channels.managed.access]]

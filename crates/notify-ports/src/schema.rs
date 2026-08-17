@@ -78,6 +78,7 @@ impl PartialSchema for Event {
             .item(carrying::<Receipt>("receipt", Reach::Channel))
             .item(carrying::<InteractionRecord>("interaction", Reach::Channel))
             .item(tombstone())
+            .item(closure())
             .item(carrying::<PreferenceEvent>("preference", Reach::User))
             .into()
     }
@@ -89,7 +90,7 @@ impl ToSchema for Event {
     }
 
     fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
-        // Everything the five branches reference, directly or through a payload. A
+        // Everything the six branches reference, directly or through a payload. A
         // `$ref` to a schema nobody registered is a document that does not resolve,
         // and the generators report that in a way nobody enjoys reading.
         register::<Cursor>(schemas);
@@ -142,6 +143,42 @@ fn tombstone() -> ObjectBuilder {
         .required("notification_id")
         .property("reason", Ref::from_schema_name(TombstoneReason::name()))
         .required("reason")
+}
+
+/// The closure branch. Same reasoning as [`tombstone`] for having no payload type:
+/// "this one closed, at this instant" is two fields.
+///
+/// Distinct from a tombstone on the wire because it means the opposite thing to a
+/// client — the notification is still there, and still readable, it has only
+/// stopped being open. A client that treated this as a tombstone would make a
+/// closed incident disappear from the inbox that is supposed to keep it until its
+/// TTL runs out.
+fn closure() -> ObjectBuilder {
+    envelope("closure", Reach::Channel)
+        .title(Some(branch_title("closure")))
+        .description(Some(
+            "A lifecycle notification was closed by the server because nothing had \
+             happened to it for longer than its channel allows; clients mark their \
+             copy closed rather than dropping it.",
+        ))
+        .property(
+            "notification_id",
+            Ref::from_schema_name(NotificationId::name()),
+        )
+        .required("notification_id")
+        .property(
+            "closed_at",
+            Object::builder()
+                .schema_type(Type::String)
+                .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                    utoipa::openapi::KnownFormat::DateTime,
+                )))
+                .description(Some(
+                    "When the server closed it, and therefore when its retention \
+                     clock starts.",
+                )),
+        )
+        .required("closed_at")
 }
 
 /// What every event carries whatever happened: where it sits in the log, when it was
@@ -343,6 +380,13 @@ mod tests {
                 EventPayload::Tombstone {
                     notification_id: NotificationId::generate(),
                     reason: TombstoneReason::Expired,
+                },
+            ),
+            (
+                Audience::Channel { id: channel() },
+                EventPayload::Closure {
+                    notification_id: NotificationId::generate(),
+                    closed_at: now(),
                 },
             ),
             (

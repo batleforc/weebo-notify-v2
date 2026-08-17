@@ -46,8 +46,8 @@ pub use tray::{Link, Tray, TrayIcon, tray};
 pub mod types {
     pub use notify_client_api::types::{
         Action, ActionKey, Actions, Channel, ChannelId, ChannelPolicyBody, ChoiceOption,
-        ChoiceOptionKey, Day, Device, Dnd, DndDraft, DndScope, HumanDuration, Image, Interaction,
-        Notification, Principal, Priority, Progress, Published, QuietHours, Scope, SilenceBody,
-        SilenceScope, State, Status, Ttl, UnreadCount, UserId, WallClock,
+        ChoiceOptionKey, CloseAfter, Day, Device, Dnd, DndDraft, DndScope, HumanDuration, Image,
+        Interaction, Notification, Principal, Priority, Progress, Published, QuietHours, Scope,
+        SilenceBody, SilenceScope, State, Status, Ttl, UnreadCount, UserId, WallClock,
     };
 }

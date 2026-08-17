@@ -25,8 +25,19 @@ export const router = createRouter({
       component: AppLayout,
       children: [
         { path: "", name: "inbox", component: InboxView },
+        // `/n/<id>` stays a context-free permalink: a link pasted into a CI log
+        // names a notification and knows nothing about which list its reader was
+        // looking at. Opening one from *inside* a channel takes the nested route
+        // below instead, so the URL keeps saying where you are as well as what you
+        // are reading — without it, clicking a row inside a channel silently threw
+        // you back to every channel.
         { path: "n/:id", name: "notification", component: InboxView },
-        { path: "c/:id", name: "channel", component: InboxView },
+        { path: "c/:channel", name: "channel", component: InboxView },
+        {
+          path: "c/:channel/n/:id",
+          name: "channel-notification",
+          component: InboxView,
+        },
         { path: "settings", name: "settings", component: SettingsView },
         { path: "admin", name: "admin", component: AdminView },
         { path: "console", name: "console", component: ConsoleView },

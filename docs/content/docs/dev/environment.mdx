@@ -115,6 +115,95 @@ export WNK_OIDC__ISSUER=$WNK_OIDC_MOCK_ISSUER                  # what the server
 Every configuration key is env-overridable, so this needs no second file — the
 `WNK_OIDC__ISSUER` above simply beats `config/dev.toml`.
 
+## Looking at things: the two headed sidecars
+
+The workspace schedules two containers whose only job is to be *seen*. Both publish a
+noVNC route, and both start their app **parked** (`NO_START`) — the display comes up
+in a second, the heavy process only when a task asks for it.
+
+| Sidecar | What runs in it | Tasks |
+| --- | --- | --- |
+| `browser` | Chrome, with CDP on `:9222` and WebDriver on `:9515` | `task browser:start`, `:open`, `:shot`, `:eval`, `:logs`, `:pwd` |
+| `desktop` | The Tauri shell, on Xvfb + openbox with a session bus | `task desktop:up`, `:start`, `:stop`, `:status`, `:shot`, `:logs`, `:pwd` |
+
+`task browser:*` wakes Chrome by itself when it needs it, so parking costs nothing but
+the first second of a session. `task browser:pwd` and `task desktop:pwd` print the
+route and the VNC password when you want to look rather than assert.
+
+### The desktop shell, end to end
+
+The split is: **build in `tools`, run in `desktop`**. The `tools` container carries the
+GTK/WebKit stack (`task tauri:doctor` says so), the sidecar carries the runtime, and
+both see the same `/projects` — so nothing has to travel.
+
+```bash
+task desktop:up                  # web bundle + shell + launch, then prints the route
+task desktop:pwd                 # the noVNC route and its password
+task desktop:notifyd             # watch the notifications the shell emits (D19)
+task desktop:shot OUT=target/desktop.png
+```
+
+`task desktop:up` rebuilds everything; the loop you actually live in is
+`task tauri:build && task desktop:start`, which reuses the bundle. Closing the window
+inside noVNC is enough to pick up a rebuilt binary — the sidecar respawns it.
+
+Notifications are the reason the shell is pinned to a session bus on a shared path
+(`dev/.dbus/session`, opened by `task desktop:bus`, which the tasks above depend on):
+`xtask notifyd` runs in `tools` and answers `org.freedesktop.Notifications`, so what
+the shell sends is visible from this side. Neither sidecar image ships a real
+notification daemon, and no rootless workspace can install one.
+
+Two things about that window are worth knowing before they cost you an afternoon. It
+**starts hidden**: on desktop the shell's normal home is the tray, and openbox has no
+panel to render a tray icon into — so a freshly launched shell is a black display
+rather than a broken one. Launching the binary a second time is what brings it up,
+because the single-instance plugin routes that into a `show()`:
+
+```bash
+kubectl exec "$HOSTNAME" -c desktop -- sh -c \
+  'DISPLAY=${XVFB_DISPLAY:-:97} \
+   DBUS_SESSION_BUS_ADDRESS=unix:path=$PWD/dev/.dbus/session \
+   /projects/weebo-notify-v2/web/src-tauri/target/release/weebo-notify-desktop'
+```
+
+And the same applies after the sidecar respawns a rebuilt binary: closing the window
+picks the new one up, but you have to ask for the window back.
+
+### Signing in from the shell
+
+The shell does not sign in the way the web app does. Its origin is `tauri://localhost`,
+which no identity provider will register, so it uses the loopback redirect of RFC 8252
+(§10bis.2): the authorization request goes to the **system browser**, and the shell
+listens on `http://127.0.0.1:1420/auth/callback` for the code. Only the code comes
+back — the window, the PKCE verifier and the `state` value never leave the app.
+
+The `desktop` sidecar has no browser for it to open, so in Che the shell says so and
+prints the URL instead:
+
+```bash
+task desktop:logs | grep -A1 'open this URL'
+```
+
+Every container in the pod shares one network namespace, which is what makes the rest
+work: Chrome in the `browser` sidecar reaches both the identity provider on
+`localhost:9110` and the listener on `127.0.0.1:1420`.
+
+```bash
+task browser:open URL='<the URL from the log>'   # log in as alice / weebo-dev
+task browser:pwd                                 # to watch it happen
+```
+
+The browser lands on "Connexion terminée", the shell redeems the code and the window
+is signed in. Logging out opens the provider's end-session URL the same way — the
+session cookie belongs to that browser, not to the shell.
+
+<Callout type="info">
+  Both sidecars are Eclipse Che only. On a laptop these tasks no-op and point at the
+  local equivalent: your own browser, and `task tauri:dev` against your real desktop
+  session — which has a real notification daemon, a real tray and a real browser for
+  the login to open, and therefore means more.
+</Callout>
+
 ## Credentials
 
 Everything under `dev/` is committed on purpose: the stack is disposable, holds no

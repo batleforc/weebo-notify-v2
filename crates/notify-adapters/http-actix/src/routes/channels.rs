@@ -1,7 +1,9 @@
 //! Channels and their members (design §8, §11).
 
 use actix_web::{HttpResponse, delete, get, patch, post, web};
-use notify_domain::{Ceiling, Channel, ChannelId, PolicyEdit, Principal, Priority, Scope, Ttl};
+use notify_domain::{
+    Ceiling, Channel, ChannelId, CloseAfter, PolicyEdit, Principal, Priority, Scope, Ttl,
+};
 use notify_ports::Page;
 use serde::Deserialize;
 use utoipa::ToSchema;
@@ -47,6 +49,15 @@ pub struct ChannelPolicyBody {
     /// The forced ceiling, e.g. `48h`. `"0"` lifts it.
     #[serde(default)]
     pub max_ttl: Option<Ttl>,
+    /// How long a lifecycle notification may go without activity before the
+    /// server closes it, e.g. `7d`. `"0"` turns it off for this channel.
+    ///
+    /// `"0"` needs no operator opt-in here, unlike `default_ttl`'s: turning this
+    /// off cannot pin an operator's storage, it only leaves the job of closing to
+    /// the publishers — and the retention ceiling still applies the moment they
+    /// do (§7.2bis).
+    #[serde(default)]
+    pub close_after: Option<CloseAfter>,
     /// The priority applied when a publisher asks for none.
     #[serde(default)]
     pub default_priority: Option<Priority>,
@@ -63,6 +74,7 @@ impl From<ChannelPolicyBody> for PolicyEdit {
                 Ttl::Forever => Ceiling::None,
                 Ttl::For(duration) => Ceiling::At(duration),
             }),
+            close_after: body.close_after,
             default_priority: body.default_priority,
             receipts_enabled: body.receipts_enabled,
         }

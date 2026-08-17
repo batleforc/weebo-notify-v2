@@ -19,7 +19,7 @@ use crate::limits::MAX_TITLE_CHARS;
 use crate::notification::Priority;
 use crate::origin::Origin;
 use crate::principal::Principal;
-use crate::ttl::{Ttl, TtlPolicy};
+use crate::ttl::{CloseAfter, Ttl, TtlPolicy};
 
 /// What a principal may do in a channel (design §5.2).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -122,6 +122,26 @@ impl GroupBinding {
 pub struct ChannelPolicy {
     /// Retention rules (design §7.2bis).
     pub ttl: TtlPolicy,
+    /// How long a lifecycle notification may go without activity before the
+    /// server closes it, which is what makes [`ttl`](Self::ttl) apply to one at
+    /// all — until a notification closes, its retention clock has not started
+    /// (see [`CloseAfter`]).
+    ///
+    /// Defaulted on the wire like `publish_per_minute` below, and the consequence
+    /// is worth stating rather than discovering: a policy stored before this
+    /// field existed deserialises to one week, so every channel that predates it
+    /// starts closing its abandoned notifications. That is the intent — the
+    /// alternative, defaulting old channels to `Never`, would leave exactly the
+    /// notifications this was written for untouched forever.
+    /// `serde(default)` is for *stored* JSON, where a policy written before this
+    /// field existed has to load; `schema(required)` is for the wire, where it is
+    /// never absent because the server always serialises it. Without the second,
+    /// utoipa reads the first and every generated client gets an `Option` it can
+    /// never see as `None` — an unwrap in each of them, forever, for a case that
+    /// cannot happen.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(required))]
+    pub close_after: CloseAfter,
     /// Priority applied when a publisher says nothing.
     pub default_priority: Priority,
     /// Whether delivery and read receipts are collected and shown as "seen by
@@ -149,6 +169,7 @@ impl Default for ChannelPolicy {
     fn default() -> Self {
         Self {
             ttl: TtlPolicy::default(),
+            close_after: CloseAfter::default(),
             default_priority: Priority::Default,
             receipts_enabled: false,
             publish_per_minute: None,
@@ -180,6 +201,14 @@ pub struct PolicyEdit {
     pub default_ttl: Option<Ttl>,
     /// The forced ceiling, or its removal.
     pub max_ttl: Option<Ceiling>,
+    /// How long without activity before the server closes a lifecycle
+    /// notification. `CloseAfter::Never` turns it off for this channel.
+    ///
+    /// Editable through the API, unlike `publish_per_minute`: this one cannot be
+    /// used to escape an operator's limits. Turning it off only means a channel's
+    /// publishers keep the job of closing what they open, and the retention
+    /// ceiling the operator set still applies the moment they do.
+    pub close_after: Option<CloseAfter>,
     /// The priority applied when a publisher says nothing.
     pub default_priority: Option<Priority>,
     /// Whether receipts are collected and shown as "seen by 3/5" (§7.3).
@@ -195,6 +224,7 @@ impl PolicyEdit {
     pub const fn is_empty(&self) -> bool {
         self.default_ttl.is_none()
             && self.max_ttl.is_none()
+            && self.close_after.is_none()
             && self.default_priority.is_none()
             && self.receipts_enabled.is_none()
     }
@@ -356,6 +386,9 @@ impl Channel {
                 Ceiling::None => None,
                 Ceiling::At(duration) => Some(duration),
             };
+        }
+        if let Some(close_after) = edit.close_after {
+            policy.close_after = close_after;
         }
         if let Some(priority) = edit.default_priority {
             policy.default_priority = priority;
@@ -588,8 +621,59 @@ mod policy_tests {
         assert!(changed);
         assert_eq!(channel.policy.ttl.max, Some(hours(24)));
         assert_eq!(channel.policy.ttl.default, before.ttl.default);
+        assert_eq!(channel.policy.close_after, before.close_after);
         assert_eq!(channel.policy.default_priority, before.default_priority);
         assert_eq!(channel.policy.receipts_enabled, before.receipts_enabled);
+    }
+
+    #[test]
+    fn close_after_is_editable_and_can_be_turned_off() {
+        let mut channel = channel();
+        assert_eq!(
+            channel.policy.close_after,
+            CloseAfter::default(),
+            "a fresh channel closes abandoned notifications after a week"
+        );
+
+        assert!(
+            channel
+                .edit_policy(PolicyEdit {
+                    close_after: Some(CloseAfter::After(hours(48))),
+                    ..PolicyEdit::default()
+                })
+                .unwrap()
+        );
+        assert_eq!(channel.policy.close_after, CloseAfter::After(hours(48)));
+        assert_eq!(
+            channel.policy.ttl.default,
+            ChannelPolicy::default().ttl.default
+        );
+
+        // The opt-out has to be reachable through the same road, or a channel whose
+        // publishers do close what they open has no way to say so.
+        assert!(
+            channel
+                .edit_policy(PolicyEdit {
+                    close_after: Some(CloseAfter::Never),
+                    ..PolicyEdit::default()
+                })
+                .unwrap()
+        );
+        assert_eq!(channel.policy.close_after, CloseAfter::Never);
+    }
+
+    /// A policy written before `close_after` existed has to load, and has to load
+    /// as "close after a week" rather than as "never" — the notifications this
+    /// feature exists for are exactly the ones stored under the old shape.
+    #[test]
+    fn a_policy_stored_without_close_after_reads_as_the_default() {
+        let stored = serde_json::json!({
+            "ttl": {"default": "7d", "allow_forever": false},
+            "default_priority": "default",
+            "receipts_enabled": false,
+        });
+        let policy: ChannelPolicy = serde_json::from_value(stored).unwrap();
+        assert_eq!(policy.close_after, CloseAfter::default());
     }
 
     #[test]

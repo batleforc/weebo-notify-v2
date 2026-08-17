@@ -94,6 +94,18 @@ pub struct ExpiredNotification {
     pub was_delivered: bool,
 }
 
+/// A notification the server closed for want of activity (design §7.2bis).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedNotification {
+    /// Which one.
+    pub id: NotificationId,
+    /// Where it lived. The closure event goes to that channel, and an operator
+    /// watching a channel close everything it publishes is watching a publisher
+    /// that has stopped calling — which is the signal this feature exists to make
+    /// visible rather than to hide.
+    pub channel: ChannelId,
+}
+
 /// Notifications and their revisions.
 #[async_trait::async_trait]
 pub trait NotificationRepository: Send + Sync {
@@ -227,4 +239,32 @@ pub trait NotificationRepository: Send + Sync {
     /// Hard-delete previously soft-deleted rows, once their tombstones have had
     /// time to reach every client (design §7.2bis).
     async fn purge(&self, deleted_before: OffsetDateTime, limit: u32) -> PortResult<u64>;
+
+    /// Close the open lifecycle notifications whose channel has run out of
+    /// patience, and say which ones (design §7.2bis).
+    ///
+    /// `deadlines` pairs a channel with the instant a notification's **last
+    /// activity** must predate to count as abandoned. One list rather than one
+    /// call per channel: the sweep is a background pass and would otherwise issue
+    /// a query per channel per tick, which is a cost that grows with an operator's
+    /// org chart for no reason.
+    ///
+    /// A channel whose policy is [`CloseAfter::Never`] is simply absent from the
+    /// list. That is the whole of the opt-out, and it is why the caller computes
+    /// deadlines rather than passing durations: "no deadline" and "a deadline very
+    /// far away" have to be different things, or a channel that opted out would be
+    /// swept the day the arithmetic overflowed.
+    ///
+    /// Closing is a state change and not a revision: no principal asked for it, so
+    /// there is nobody to author one (see `EventPayload::Closure`). Implementations
+    /// set `state`/`closed_at`, which starts the retention clock, and append that
+    /// event so connected clients mark their copy closed.
+    ///
+    /// [`CloseAfter::Never`]: notify_domain::CloseAfter::Never
+    async fn close_stale(
+        &self,
+        deadlines: &[(ChannelId, OffsetDateTime)],
+        at: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<ClosedNotification>>;
 }

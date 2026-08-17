@@ -15,8 +15,8 @@ use notify_domain::{
     Ttl,
 };
 use notify_ports::{
-    Audience, EventPayload, ExpiredNotification, InboxQuery, NotificationRepository, Page,
-    PageRequest, PortResult, RevisionEvent, SearchQuery, UnreadCount,
+    Audience, ClosedNotification, EventPayload, ExpiredNotification, InboxQuery,
+    NotificationRepository, Page, PageRequest, PortResult, RevisionEvent, SearchQuery, UnreadCount,
 };
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
@@ -32,6 +32,16 @@ use crate::mapping::{
 /// Everything a [`Notification`] needs, head revision included, plus whatever the
 /// caller appends.
 ///
+/// `state` comes from `n` and every other head column from `r`, which looks like an
+/// inconsistency and is the point. The notification row holds the *current* state —
+/// it is what `insert`/`append_revision` write and what the inbox filters on — while
+/// a revision row holds what a publisher said at one moment, immutably. Those agree
+/// for every publisher-driven change, and they part company exactly once: when the
+/// server closes an abandoned notification without a revision (design §7.2bis,
+/// `close_stale`). Reading `head_state` from `r` there would report a notification
+/// as open while its retention clock was already running, and the inbox would filter
+/// it as closed while the detail view called it open.
+///
 /// A macro rather than a `const`, so the result is still one `&'static str`: sqlx
 /// refuses a runtime-built query string, and it is right to — a `format!` here is
 /// how an injection gets in even when today's arguments happen to be literals.
@@ -41,7 +51,7 @@ macro_rules! select_notification {
             "SELECT n.id, n.channel_id, n.external_id, n.kind, n.last_seq, n.revision_count,
                     n.created_at, n.closed_at, n.deleted_at, n.ttl, n.cursor_seq,
                     r.id AS head_id, r.seq AS head_seq, r.author AS head_author,
-                    r.received_at AS head_received_at, r.state AS head_state,
+                    r.received_at AS head_received_at, n.state AS head_state,
                     r.status AS head_status, r.priority AS head_priority,
                     r.content AS head_content
              FROM notifications n
@@ -501,6 +511,122 @@ impl NotificationRepository for PgStore {
             .map_err(|error| fail("notification", error))?;
 
         Ok(claimed)
+    }
+
+    async fn close_stale(
+        &self,
+        deadlines: &[(ChannelId, OffsetDateTime)],
+        at: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<ClosedNotification>> {
+        // Nothing to compare against: every channel opted out, or there are no
+        // channels yet. Asked before the query rather than after, because
+        // `unnest` of two empty arrays is a join that matches nothing and a round
+        // trip that costs something.
+        if deadlines.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (channels, cutoffs): (Vec<String>, Vec<OffsetDateTime>) = deadlines
+            .iter()
+            .map(|(channel, cutoff)| (channel.to_string(), *cutoff))
+            .unzip();
+
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("notification", error))?;
+
+        // `unnest` of two arrays rather than a `channel_id = ANY($1)` plus one
+        // cutoff: the deadline differs per channel, and flattening it to the
+        // earliest would close another channel's notifications early.
+        //
+        // The TTL comes back with the row because closing has to set `expires_at`
+        // in the same statement that sets `closed_at` — the purge keys on the
+        // first and would never see a row that only had the second. It is parsed
+        // here rather than added in SQL: `ttl` is a JSON duration string, and
+        // teaching Postgres to read `"2d"` would be a second implementation of
+        // `HumanDuration` living where nothing tests it.
+        //
+        // SKIP LOCKED for the same reason `claim_expired` uses it (scenario T22).
+        let due: Vec<(String, String, serde_json::Value)> = sqlx::query_as(
+            "SELECT n.id, n.channel_id, n.ttl
+             FROM notifications n
+             JOIN unnest($1::text[], $2::timestamptz[]) AS d(channel_id, cutoff)
+               ON d.channel_id = n.channel_id
+             WHERE n.deleted_at IS NULL
+               AND n.state <> 'closed'
+               AND GREATEST(
+                     n.created_at,
+                     (SELECT MAX(r.received_at) FROM revisions r
+                       WHERE r.notification_id = n.id),
+                     (SELECT MAX(i.recorded_at) FROM interactions i
+                       WHERE i.notification_id = n.id)
+                   ) <= d.cutoff
+             ORDER BY n.created_at
+             LIMIT $3
+             FOR UPDATE OF n SKIP LOCKED",
+        )
+        .bind(&channels)
+        .bind(&cutoffs)
+        .bind(i64::from(limit))
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|error| fail("notification", error))?;
+
+        let mut closed = Vec::with_capacity(due.len());
+        for (id, channel, ttl) in due {
+            let notification = parse("notification.id", &id, str::parse::<NotificationId>)?;
+            let channel = parse("notification.channel", &channel, ChannelId::parse)?;
+            let ttl = from_json::<Ttl>("notification.ttl", ttl)?;
+
+            // `Ttl::Forever` leaves `expires_at` NULL, exactly as publishing does:
+            // this closure starts a clock that was configured never to ring.
+            let expires_at = ttl.duration().and_then(|duration| {
+                at.checked_add(time::Duration::seconds(
+                    i64::try_from(duration.as_secs()).ok()?,
+                ))
+            });
+
+            let cursor = append_event(
+                &mut transaction,
+                &Audience::Channel {
+                    id: channel.clone(),
+                },
+                &EventPayload::Closure {
+                    notification_id: notification,
+                    closed_at: at,
+                },
+                at,
+            )
+            .await?;
+
+            sqlx::query(
+                "UPDATE notifications
+                    SET state = 'closed', closed_at = $2, expires_at = $3, cursor_seq = $4
+                  WHERE id = $1",
+            )
+            .bind(&id)
+            .bind(at)
+            .bind(expires_at)
+            .bind(sequence(cursor))
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| fail("notification", error))?;
+
+            closed.push(ClosedNotification {
+                id: notification,
+                channel,
+            });
+        }
+
+        transaction
+            .commit()
+            .await
+            .map_err(|error| fail("notification", error))?;
+
+        Ok(closed)
     }
 
     async fn attachment_is_visible(

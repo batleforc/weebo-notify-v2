@@ -105,6 +105,10 @@ impl Menu {
                         label: "Politique de rétention…",
                         line: "channel set-ttl ",
                     },
+                    MenuItem::Prefill {
+                        label: "Clôture automatique…",
+                        line: "channel set-close-after ",
+                    },
                 ],
             },
             MenuItem::Group {
@@ -233,7 +237,13 @@ mod tests {
         let labels: Vec<&str> = menu.items().iter().map(MenuItem::label).collect();
         assert_eq!(
             labels,
-            ["Lister", "Créer…", "Rejoindre…", "Politique de rétention…"]
+            [
+                "Lister",
+                "Créer…",
+                "Rejoindre…",
+                "Politique de rétention…",
+                "Clôture automatique…"
+            ]
         );
 
         assert!(menu.back(), "one level to pop before the root");
@@ -258,7 +268,7 @@ mod tests {
             menu.activate(), // "Lister", a Run item
             MenuOutcome::RunLine("channel list".to_owned())
         );
-        assert_eq!(menu.items().len(), 4, "a Run item does not push a level");
+        assert_eq!(menu.items().len(), 5, "a Run item does not push a level");
     }
 
     #[test]

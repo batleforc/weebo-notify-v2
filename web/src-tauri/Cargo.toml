@@ -35,6 +35,16 @@ license = "Apache-2.0"
 name = "weebo_notify_desktop"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Tauri's production switch, and the one thing that decides what the shell shows.
+# `WebviewUrl::default()` resolves to the embedded `frontendDist` (web/dist) when
+# this is on, and to `build.devUrl` (http://localhost:5173) when it is not — so a
+# release binary built without it opens a window reading « Could not connect to
+# localhost: Connection refused » unless a Vite dev server happens to be running.
+# `cargo tauri build` passes it by itself; `cargo build`, which `task tauri:build`
+# uses, does not, and it cannot pass what the manifest never declared.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -54,6 +64,12 @@ serde_json = "1"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-notification = "2"
+# Opens the authorization URL in the system browser (RFC 8252 wants an external
+# user-agent — see `oauth.rs`). The plugin rather than a `Command::new("xdg-open")`
+# of our own: the Windows spelling is `cmd /C start`, whose argument parsing treats
+# the `&` between every OAuth query parameter as a command separator, and getting
+# that wrong produces a login that works on two platforms out of three.
+tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 # Direct rather than only transitive: Tauri already runs its own tokio runtime
 # (`tauri::async_runtime`), but naming `tokio::time::interval` needs a manifest

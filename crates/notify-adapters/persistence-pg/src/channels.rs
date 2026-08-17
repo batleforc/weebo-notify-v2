@@ -242,6 +242,26 @@ impl ChannelRepository for PgStore {
             .map(|id| crate::mapping::parse("channel.id", id, ChannelId::parse))
             .collect()
     }
+
+    async fn all_policies(&self) -> PortResult<Vec<(ChannelId, ChannelPolicy)>> {
+        // Two columns and no member fan-out, same as `all_ids` above: the caller is
+        // the stale-closure sweep, which needs `close_after` and nothing else about
+        // a channel (design §7.2bis).
+        let rows: Vec<(String, serde_json::Value)> =
+            sqlx::query_as("SELECT id, policy FROM channels ORDER BY id")
+                .fetch_all(self.pool())
+                .await
+                .map_err(|error| fail("channel", error))?;
+
+        rows.into_iter()
+            .map(|(id, policy)| {
+                Ok((
+                    crate::mapping::parse("channel.id", &id, ChannelId::parse)?,
+                    crate::mapping::from_json::<ChannelPolicy>("channel.policy", policy)?,
+                ))
+            })
+            .collect()
+    }
 }
 
 impl PgStore {

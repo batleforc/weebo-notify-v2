@@ -417,6 +417,7 @@ mod tests {
             "members": [],
             "group_access": [],
             "policy": {
+                "close_after": "7d",
                 "default_priority": "default",
                 "receipts_enabled": false,
                 "ttl": { "allow_forever": false, "default": "7d" },

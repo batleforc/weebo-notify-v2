@@ -27,10 +27,10 @@ mod e2e {
 
     use notify_domain::{
         ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, AttachmentId, Author, Channel, ChannelId,
-        ChannelPolicy, ContentDraft, Cursor, Day, Device, DeviceId, DevicePublicKey, Dnd, DndScope,
-        ExternalId, GroupBinding, HumanDuration, Image, Interaction, InteractionLog, Membership,
-        Notification, NotificationId, Principal, Priority, PushTransport, QuietHours, Receipt,
-        ReceiptKind, RevisionDraft, Scope, ServiceAccount, ServiceAccountId, Silence,
+        ChannelPolicy, CloseAfter, ContentDraft, Cursor, Day, Device, DeviceId, DevicePublicKey,
+        Dnd, DndScope, ExternalId, GroupBinding, HumanDuration, Image, Interaction, InteractionLog,
+        Membership, Notification, NotificationId, Principal, Priority, PushTransport, QuietHours,
+        Receipt, ReceiptKind, RevisionDraft, Scope, ServiceAccount, ServiceAccountId, Silence,
         SilenceTarget, State, Status, TombstoneReason, Ttl, User, UserId, WallClock,
     };
     use notify_persistence_pg::{PgLeaderElection, PgStore};
@@ -940,6 +940,320 @@ mod e2e {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    // --- Stale closure (§7.2bis) -------------------------------------------
+
+    /// The whole sweep against real SQL: an abandoned lifecycle notification is
+    /// closed, its retention clock starts, and the purge can finally see it.
+    #[tokio::test]
+    async fn close_stale_closes_what_nobody_has_touched() {
+        let store = store!();
+        let (alice_id, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        let published_at = now() - Duration::days(9);
+        let (published, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("deploy prod-eu-3")),
+            None,
+            published_at,
+        )
+        .await;
+        assert_eq!(
+            published.expires_at(),
+            None,
+            "an open notification has no deadline — that is the bug this closes"
+        );
+
+        let before = EventStore::head(&store).await.unwrap();
+        let at = now();
+        let closed = store
+            .close_stale(&[(channel.clone(), at - Duration::days(7))], at, 100)
+            .await
+            .unwrap();
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].id, published.id);
+        assert_eq!(closed[0].channel, channel);
+
+        let reloaded = NotificationRepository::get(&store, published.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reloaded.head.state,
+            State::Closed,
+            "the read model has to agree with the sweep, or the inbox filters it \
+             as closed while the detail view calls it open"
+        );
+        // Compared to the microsecond: `timestamptz` keeps six decimal places and
+        // `OffsetDateTime::now_utc()` carries nine, so an exact match here would be
+        // asserting about Postgres's storage format rather than about the sweep.
+        let closed_at = reloaded.closed_at.unwrap();
+        assert!(
+            (closed_at - at).abs() < Duration::milliseconds(1),
+            "closed at {closed_at}, swept at {at}"
+        );
+        let expires_at = reloaded.expires_at().unwrap();
+        assert!(
+            (expires_at - (at + Duration::days(7))).abs() < Duration::milliseconds(1),
+            "closing is what makes the channel's TTL apply at all; got {expires_at}"
+        );
+
+        // The event a connected client needs to mark its copy closed.
+        let backlog = store
+            .sync(
+                alice_id,
+                &SyncQuery {
+                    after: Some(before),
+                    channels: vec![channel.clone()],
+                    groups: Vec::new(),
+                    page: PageRequest::first(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            backlog.events.iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::Closure { notification_id, .. }
+                    if *notification_id == published.id
+            )),
+            "a closure nobody is told about is a notification that stays open on \
+             every screen already showing it"
+        );
+    }
+
+    /// The false positive that would matter most: activity has to count, and both
+    /// kinds of it.
+    #[tokio::test]
+    async fn close_stale_leaves_anything_with_recent_activity_alone() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        // Published long ago, revised an hour ago: still being attended to.
+        let (revised, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("long incident")),
+            None,
+            now() - Duration::days(30),
+        )
+        .await;
+        let mut aggregate = revised.clone();
+        let written = aggregate
+            .revise(
+                RevisionDraft::lifecycle(State::Working, ContentDraft::titled("still on it")),
+                Author::anonymous(alice.clone()),
+                now() - Duration::hours(1),
+                &ChannelPolicy::default(),
+            )
+            .unwrap();
+        store
+            .append_revision(&aggregate, &written.revision)
+            .await
+            .unwrap();
+
+        // Published long ago, acknowledged an hour ago: somebody is on it, even
+        // though the publisher has said nothing since.
+        let actions = notify_domain::Actions::new(vec![
+            notify_domain::ActionDraft::Ack {
+                key: "ack-incident".to_owned(),
+                label: "Acknowledge".to_owned(),
+            }
+            .try_into()
+            .unwrap(),
+        ])
+        .unwrap();
+        let (acked, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    actions,
+                    ..ContentDraft::titled("acked incident")
+                },
+            ),
+            None,
+            now() - Duration::days(30),
+        )
+        .await;
+        let recorded = InteractionLog::default()
+            .record(
+                &acked.head.content.actions,
+                acked.id,
+                author(&alice),
+                Interaction::Ack {
+                    key: notify_domain::ActionKey::parse("ack-incident").unwrap(),
+                },
+                now() - Duration::hours(1),
+            )
+            .unwrap();
+        InteractionRepository::apply(&store, &recorded)
+            .await
+            .unwrap();
+
+        let at = now();
+        let closed = store
+            .close_stale(&[(channel.clone(), at - Duration::days(7))], at, 100)
+            .await
+            .unwrap();
+
+        assert!(
+            closed.is_empty(),
+            "closed {closed:?} — a sweep that closes what somebody is working on \
+             is worse than no sweep"
+        );
+    }
+
+    /// The opt-out, and the isolation between channels: a channel absent from the
+    /// deadlines is never looked at, whatever its neighbour asked for.
+    #[tokio::test]
+    async fn close_stale_only_touches_the_channels_it_was_given() {
+        let store = store!();
+        let (_, alice) = user();
+        let swept = seeded_channel(&store, &alice).await;
+        let spared = seeded_channel(&store, &alice).await;
+
+        let published_at = now() - Duration::days(30);
+        let (doomed, _) = publish_with(
+            &store,
+            &swept,
+            &alice,
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("swept")),
+            None,
+            published_at,
+        )
+        .await;
+        let (untouched, _) = publish_with(
+            &store,
+            &spared,
+            &alice,
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("opted out")),
+            None,
+            published_at,
+        )
+        .await;
+
+        let at = now();
+        let closed = store
+            .close_stale(&[(swept.clone(), at - Duration::days(7))], at, 100)
+            .await
+            .unwrap();
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].id, doomed.id);
+        assert_eq!(
+            NotificationRepository::get(&store, untouched.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .head
+                .state,
+            State::Open
+        );
+
+        // And an empty list is not a query that matches everything.
+        assert!(store.close_stale(&[], at, 100).await.unwrap().is_empty());
+    }
+
+    /// Running twice must be a no-op the second time: a closed notification is not
+    /// a candidate, or every pass would push its retention deadline back.
+    #[tokio::test]
+    async fn close_stale_is_idempotent() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("abandoned")),
+            None,
+            now() - Duration::days(30),
+        )
+        .await;
+
+        let at = now();
+        let deadlines = [(channel.clone(), at - Duration::days(7))];
+        assert_eq!(
+            store.close_stale(&deadlines, at, 100).await.unwrap().len(),
+            1
+        );
+        assert!(
+            store
+                .close_stale(&deadlines, at + Duration::hours(1), 100)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A simple notification is born closed, so it must never be a candidate —
+    /// sweeping one would restart a retention clock that was already running.
+    #[tokio::test]
+    async fn close_stale_ignores_simple_notifications() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        let (simple, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::simple(ContentDraft::titled("brief")),
+            None,
+            now() - Duration::days(30),
+        )
+        .await;
+        let deadline = simple.expires_at();
+
+        let at = now();
+        assert!(
+            store
+                .close_stale(&[(channel.clone(), at - Duration::days(7))], at, 100)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let after = NotificationRepository::get(&store, simple.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .expires_at()
+            .unwrap();
+        assert!(
+            (after - deadline.unwrap()).abs() < Duration::milliseconds(1),
+            "its clock started when it was published and must not be restarted"
+        );
+    }
+
+    /// `all_policies` is what turns `close_after` into those deadlines, so it has
+    /// to survive the round trip through the JSON the policy is stored as.
+    #[tokio::test]
+    async fn all_policies_round_trips_close_after() {
+        let store = store!();
+        let (_, alice) = user();
+        let id = seeded_channel(&store, &alice).await;
+
+        let mut channel = channels(&store).get(&id).await.unwrap().unwrap();
+        channel.policy.close_after = CloseAfter::Never;
+        channels(&store).upsert(&channel).await.unwrap();
+
+        let policies = channels(&store).all_policies().await.unwrap();
+        let stored = policies
+            .into_iter()
+            .find(|(channel, _)| *channel == id)
+            .expect("the channel that was just written");
+        assert_eq!(stored.1.close_after, CloseAfter::Never);
     }
 
     // --- Channels ----------------------------------------------------------

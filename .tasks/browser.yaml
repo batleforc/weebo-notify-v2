@@ -17,36 +17,113 @@ silent: true
 #     from the endpoints list; it is the same browser, so a page opened here is
 #     the page seen there.
 #
+# Chrome itself is parked at boot (`NO_START` in the devfile) and the tasks that
+# need it wake it, so nothing here asks you to remember an extra command — see
+# `NEED_BROWSER` below for why the status task is the one exception.
+#
 # Outside Che these no-op rather than fail: the sidecar comes from the devfile,
 # and `dev/compose.yaml` has no browser — looking at a page on a laptop is what
 # the laptop's own browser is for.
 
 vars:
-  NO_BROWSER: |
-    if ! curl -sf -o /dev/null http://127.0.0.1:9222/json/version; then
-      echo "No browser on 127.0.0.1:9222."
-      if [ -z "$DEVWORKSPACE_ID" ]; then
-        echo "Not in an Eclipse Che workspace — use your own browser (§12.4)."
-      else
-        echo "The sidecar is declared in devfile.yaml; restart the workspace from it."
+  CDP: curl -sf -o /dev/null http://127.0.0.1:9222/json/version
+  # `sidecar-app` toggles the flag file the sidecar's respawn loop watches. It is in
+  # that image and in no other, so every use of it goes through `kubectl exec`.
+  #
+  # The prefix is not decoration: on Task 3.52 a `vars:` name defined in two included
+  # taskfiles resolves to whichever include won the race, differently from run to run
+  # — this was first written as `APP` here and in `.tasks/desktop.yaml`, and
+  # `task browser:check` exec'd into the `desktop` container about half the time.
+  # Every top-level var in `.tasks/` therefore has to be unique across all of them.
+  BROWSER_APP: kubectl exec "$HOSTNAME" -c browser -- sidecar-app
+
+  # Chrome is parked at boot since the devfile sets NO_START (see the `browser`
+  # component). The VNC stack is not, so the `novnc` route works from the first
+  # second — it is the browser itself that has to be woken.
+  #
+  # Waking it here rather than telling you to: a task that does its own prerequisite
+  # is one command, and a task that prints "run this other task first" is two plus
+  # the second's latency anyway. `check` below deliberately does NOT — a status
+  # command that changes the status it reports is a bad status command.
+  NEED_BROWSER: |
+    if ! {{.CDP}}; then
+      if [ -z "${DEVWORKSPACE_ID:-}" ]; then
+        echo "No browser on 127.0.0.1:9222, and this is not an Eclipse Che workspace —"
+        echo "use your own browser (§12.4)."
+        exit 0
       fi
-      exit 0
+      echo "Chrome is parked (NO_START) — starting it."
+      {{.BROWSER_APP}} start >/dev/null || exit 1
+      for _ in $(seq 1 60); do
+        {{.CDP}} && break
+        sleep 0.5
+      done
+      if ! {{.CDP}}; then
+        echo "Chrome did not answer on 9222 within 30s. \`kubectl logs $HOSTNAME -c browser\` says why."
+        exit 1
+      fi
     fi
 
 tasks:
   check:
     desc: "Say whether the browser sidecar is reachable, and which page it is showing"
+    # Reports, never starts: this is the task you run to find out what state things
+    # are in, and `task browser:start` is the one that changes it.
     cmds:
       - cmd: |
-          {{.NO_BROWSER}}
+          if [ -z "${DEVWORKSPACE_ID:-}" ]; then
+            echo "Not in an Eclipse Che workspace — use your own browser (§12.4)."
+            exit 0
+          fi
+          echo "sidecar: $({{.BROWSER_APP}} status 2>&1)"
+          if ! {{.CDP}}; then
+            echo "No browser on 127.0.0.1:9222 — \`task browser:start\` wakes it."
+            exit 0
+          fi
           curl -s http://127.0.0.1:9222/json/version | grep -o '"Browser": *"[^"]*"'
           node dev/browser/cdp.mjs where
+
+  start:
+    desc: "Wake the parked Chrome and wait until CDP answers — printed with its noVNC route"
+    cmds:
+      - cmd: |
+          {{.NEED_BROWSER}}
+          curl -s http://127.0.0.1:9222/json/version | grep -o '"Browser": *"[^"]*"'
+          echo "noVNC: $(url novnc)"
+          echo "password: $(cat /projects/.sidecar/vnc-password-browser.txt 2>/dev/null || echo '/projects/.sidecar/vnc-password-browser.txt')"
+
+  pwd:
+    desc: "Print the noVNC route and its password — what you need to look through this browser"
+    # It used to `kubectl exec ... cat /tmp/vnc_password.txt`, which named a file the
+    # image does not write: `/tmp/vnc.pass` is x11vnc's *hashed* form. The plaintext
+    # is dropped on the shared `/projects/.sidecar/`, precisely so this side can read
+    # it without entering the container at all.
+    cmds:
+      - cmd: |
+          if [ -z "${DEVWORKSPACE_ID:-}" ]; then
+            echo "Not in an Eclipse Che workspace — no sidecar, no route, no password."
+            exit 0
+          fi
+          echo "noVNC:    $(url novnc)"
+          echo "password: $(cat /projects/.sidecar/vnc-password-browser.txt)"
+
+  stop:
+    desc: "Park Chrome again, keeping the VNC stack and the route up (§12.4)"
+    # Worth doing between two pieces of work rather than only at the end of the day:
+    # this pod also carries a second headed sidecar now, and neither of them is small.
+    cmds:
+      - cmd: |
+          if [ -z "${DEVWORKSPACE_ID:-}" ]; then
+            echo "Not in an Eclipse Che workspace — nothing to park."
+            exit 0
+          fi
+          {{.BROWSER_APP}} stop
 
   open:
     desc: "Point the browser at a URL — `task browser:open URL=http://localhost:5173/`"
     cmds:
       - cmd: |
-          {{.NO_BROWSER}}
+          {{.NEED_BROWSER}}
           node dev/browser/cdp.mjs open "{{.URL}}"
     requires:
       vars: [URL]
@@ -57,7 +134,7 @@ tasks:
     # the useful sequence is open, look, and shoot again if it caught a skeleton.
     cmds:
       - cmd: |
-          {{.NO_BROWSER}}
+          {{.NEED_BROWSER}}
           node dev/browser/cdp.mjs shot "{{.OUT}}"
     requires:
       vars: [OUT]
@@ -66,7 +143,7 @@ tasks:
     desc: "Evaluate JavaScript in the page — `task browser:eval JS='location.href'`"
     cmds:
       - cmd: |
-          {{.NO_BROWSER}}
+          {{.NEED_BROWSER}}
           node dev/browser/cdp.mjs eval "{{.JS}}"
     requires:
       vars: [JS]
@@ -75,5 +152,5 @@ tasks:
     desc: "Drain the page's console and errors for a second — where a CSP refusal shows up"
     cmds:
       - cmd: |
-          {{.NO_BROWSER}}
+          {{.NEED_BROWSER}}
           node dev/browser/cdp.mjs logs

@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use futures::stream::BoxStream;
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyPrefix, AttachmentId, Channel, ChannelId, Cursor, DeliveryId, Device,
-    DeviceId, Dnd, ExternalId, InteractionRecord, Notification, NotificationId, Principal, Receipt,
-    ReceiptKind, Recorded, Revision, Scope, ServiceAccount, ServiceAccountId, Silence, Status,
-    TombstoneReason, User, UserId,
+    ApiKey, ApiKeyId, ApiKeyPrefix, AttachmentId, Channel, ChannelId, ChannelPolicy, Cursor,
+    DeliveryId, Device, DeviceId, Dnd, ExternalId, InteractionRecord, Notification, NotificationId,
+    Principal, Receipt, ReceiptKind, Recorded, Revision, Scope, ServiceAccount, ServiceAccountId,
+    Silence, Status, TombstoneReason, User, UserId,
 };
 use time::OffsetDateTime;
 
@@ -34,7 +34,8 @@ use crate::idempotency::{Claim, IdempotencyStore};
 use crate::identities::{ApiKeyRepository, ServiceAccountRepository, StoredApiKey, UserRepository};
 use crate::interactions::InteractionRepository;
 use crate::notifications::{
-    ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery, UnreadCount,
+    ClosedNotification, ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery,
+    UnreadCount,
 };
 use crate::pagination::{Page, PageRequest};
 use crate::preferences::{DeferredTally, PreferenceRepository};
@@ -649,6 +650,57 @@ impl NotificationRepository for InMemory {
         Ok(claimed)
     }
 
+    async fn close_stale(
+        &self,
+        deadlines: &[(ChannelId, OffsetDateTime)],
+        at: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<ClosedNotification>> {
+        let mut state = self.state();
+
+        let due: Vec<(NotificationId, ChannelId)> = state
+            .notifications
+            .iter()
+            .filter(|row| {
+                let notification = &row.value;
+                if notification.deleted_at.is_some() || !notification.head.state.is_live() {
+                    return false;
+                }
+                deadlines
+                    .iter()
+                    .find(|(channel, _)| *channel == notification.channel)
+                    .is_some_and(|(_, cutoff)| last_activity(&state, notification) <= *cutoff)
+            })
+            .take(limit as usize)
+            .map(|row| (row.value.id, row.value.channel.clone()))
+            .collect();
+
+        let mut closed = Vec::with_capacity(due.len());
+        for (id, channel) in due {
+            let cursor = state.append(
+                Audience::Channel {
+                    id: channel.clone(),
+                },
+                EventPayload::Closure {
+                    notification_id: id,
+                    closed_at: at,
+                },
+                at,
+            );
+
+            if let Some(row) = state
+                .notifications
+                .iter_mut()
+                .find(|row| row.value.id == id)
+            {
+                row.value.close(at);
+                row.cursor = cursor;
+            }
+            closed.push(ClosedNotification { id, channel });
+        }
+        Ok(closed)
+    }
+
     async fn attachment_is_visible(
         &self,
         attachment: &AttachmentId,
@@ -773,6 +825,39 @@ fn attachment_of(revision: &Revision) -> Option<AttachmentId> {
     }
 }
 
+/// When something last happened to a notification (design §7.2bis).
+///
+/// Revisions **and** interactions, because both are somebody attending to it: a
+/// publisher pushing an update and a human acknowledging one are the two ways a
+/// notification is not abandoned, and counting only the first would close incidents
+/// out from under the person working on them.
+///
+/// Receipts are deliberately not counted. A `delivered` receipt is a client having
+/// the notification on screen, which happens without anybody deciding anything —
+/// counting it would mean an inbox left open in a browser tab keeps every
+/// notification in it alive forever.
+///
+/// `created_at` is the floor, so a notification whose revisions were pruned still
+/// answers with a real instant rather than reading as infinitely old.
+fn last_activity(state: &State, notification: &Notification) -> OffsetDateTime {
+    let revised = state
+        .revisions
+        .iter()
+        .filter(|row| row.value.notification_id == notification.id)
+        .map(|row| row.value.received_at);
+    let interacted = state
+        .interactions
+        .iter()
+        .filter(|record| record.notification_id == notification.id)
+        .map(|record| record.recorded_at);
+
+    revised
+        .chain(interacted)
+        .chain(core::iter::once(notification.created_at))
+        .max()
+        .unwrap_or(notification.created_at)
+}
+
 /// Take a page and work out whether there is another one behind it.
 fn paginate<T: Clone>(rows: &[&Row<T>], limit: u32) -> Page<T> {
     let limit = limit as usize;
@@ -885,6 +970,17 @@ impl ChannelRepository for InMemory {
         // list whose order depends on insertion is a diff that moves for no reason.
         ids.sort();
         Ok(ids)
+    }
+
+    async fn all_policies(&self) -> PortResult<Vec<(ChannelId, ChannelPolicy)>> {
+        let mut policies: Vec<(ChannelId, ChannelPolicy)> = self
+            .state()
+            .channels
+            .iter()
+            .map(|row| (row.value.id.clone(), row.value.policy))
+            .collect();
+        policies.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(policies)
     }
 }
 

@@ -36,3 +36,13 @@ Which of the two shapes you get is decided by one thing: **whether the payload
 carries a `state` field**. With it, the notification has a lifecycle and cannot
 expire while it is open. Without it, the notification is simple, born closed, and its
 TTL starts immediately.
+
+"Cannot expire while it is open" is why a lifecycle notification is also closed
+**for** you if nothing happens to it. A publisher that crashes, is decommissioned or
+simply forgets its last call would otherwise leave a row whose retention never
+starts, and an inbox showing a deploy that failed last week as though it were still
+running. So each channel has a `close_after` — one week unless it says otherwise —
+and a notification with no revision and no interaction for that long is closed by the
+server. Clients hear about it as a `closure` event; the TTL then runs as it always
+does. A channel whose publishers are trusted to close their own sets `close_after`
+to `"0"`.

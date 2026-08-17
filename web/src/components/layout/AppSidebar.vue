@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   Hash,
+  Inbox,
   Monitor,
   Moon,
   MousePointerClick,
@@ -21,6 +22,7 @@ import {
 } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { useRoute, useRouter } from "vue-router";
 
 import type { Priority, State, Status } from "@/api/generated/types.gen";
 import { useSession } from "@/auth/session";
@@ -45,6 +47,8 @@ import { useUnread } from "@/stores/unread";
 
 const channels = useChannels();
 const inbox = useInbox();
+const route = useRoute();
+const router = useRouter();
 const session = useSession();
 const platform = useConsole();
 const ui = useUi();
@@ -68,14 +72,29 @@ const PRIORITIES: Priority[] = ["min", "low", "default", "high", "urgent"];
 
 const filters = computed(() => inbox.filters);
 
+// The channel is deliberately absent from this list, and from `clear()` below.
+// It is not a filter any more but where you *are* (see `openChannel`), so counting
+// it here would light up "filters active" for simply being in a channel, and
+// `clear all` would silently navigate you somewhere else.
 const filtered = computed(
   () =>
-    filters.value.channels.length > 0 ||
     filters.value.state.length > 0 ||
     filters.value.status.length > 0 ||
     filters.value.minPriority !== null ||
     filters.value.tags.length > 0 ||
     filters.value.hasActions !== null,
+);
+
+/**
+ * Which channel is being looked at, straight from the route.
+ *
+ * Read from the URL rather than from `inbox.filters` because the URL is what makes
+ * it shareable, survivable across a reload and reachable with the back button —
+ * and because the sidebar is drawn on Settings, Admin and Console too, where
+ * `inbox.filters` describes a list nobody is looking at.
+ */
+const openChannelId = computed(() =>
+  typeof route.params.channel === "string" ? route.params.channel : null,
 );
 
 // `Collapsible`'s model is "is the content shown"; `ui.filtersCollapsed` is the
@@ -94,11 +113,26 @@ function toggle<T>(list: T[], value: T): T[] {
     : [...list, value];
 }
 
-function toggleChannel(id: string): void {
-  void inbox.apply({
-    ...filters.value,
-    channels: toggle(filters.value.channels, id),
-  });
+/**
+ * Go to a channel — or back to everything, when it is the one already open.
+ *
+ * A navigation and not a checkbox. Clicking a channel used to toggle it in
+ * `inbox.filters` and nothing else: the URL never moved, so the selection could
+ * not be shared, survived no reload and had no back button — and from Settings,
+ * Admin or Console, where this sidebar is also drawn, clicking a channel changed
+ * an invisible filter on a list that was not on screen. Which is exactly what
+ * `/c/<id>` already did correctly for anybody who arrived by link.
+ */
+function openAllChannels(): void {
+  void router.push({ name: "inbox" });
+}
+
+function openChannel(id: string): void {
+  void router.push(
+    openChannelId.value === id
+      ? { name: "inbox" }
+      : { name: "channel", params: { channel: id } },
+  );
 }
 
 function toggleState(state: State): void {
@@ -130,8 +164,15 @@ function toggleHasActions(): void {
   });
 }
 
+/**
+ * Clear the filters — and only the filters.
+ *
+ * The channel is kept: it is where you are, not something you filtered by, and a
+ * "clear all" that quietly moved you out of a channel would contradict the URL
+ * still naming it. Leaving a channel is clicking it again, or "all channels".
+ */
 function clear(): void {
-  void inbox.apply(emptyFilters());
+  void inbox.apply({ ...emptyFilters(), channels: filters.value.channels });
 }
 
 /**
@@ -254,14 +295,31 @@ const connection = computed(() => {
         {{ t("sidebar.channels.empty") }}
       </p>
 
+      <!--
+        Everything, and the way back out of a channel. Present even when no channel
+        is open so the list always says which of the two you are looking at, rather
+        than leaving "no channel highlighted" to mean it.
+      -->
+      <Button
+        v-if="channels.all.length"
+        :variant="openChannelId === null ? 'secondary' : 'ghost'"
+        size="sm"
+        class="w-full justify-start gap-2 font-normal"
+        :aria-current="openChannelId === null ? 'page' : undefined"
+        @click="openAllChannels"
+      >
+        <Inbox class="text-muted-foreground" />
+        <span class="truncate">{{ t("sidebar.channels.all") }}</span>
+      </Button>
+
       <Button
         v-for="channel in channels.all"
         :key="channel.id"
-        :variant="filters.channels.includes(channel.id) ? 'secondary' : 'ghost'"
+        :variant="openChannelId === channel.id ? 'secondary' : 'ghost'"
         size="sm"
         class="w-full justify-start gap-2 font-normal"
-        :aria-pressed="filters.channels.includes(channel.id)"
-        @click="toggleChannel(channel.id)"
+        :aria-current="openChannelId === channel.id ? 'page' : undefined"
+        @click="openChannel(channel.id)"
       >
         <Hash class="text-muted-foreground" />
         <span class="truncate">{{ channel.display_name || channel.id }}</span>

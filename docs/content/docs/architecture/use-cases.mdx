@@ -133,6 +133,10 @@ The TTL purge is leader-only and re-checks that **between batches**. A replica t
 took the lock, lost it during a partition and kept deleting is the failure this
 exists to prevent — losing a lock is only useful if somebody looks.
 
+The stale-closure sweep runs on the same terms, on its own lock, and on every tick
+just before the purge — it is what gives the purge something to find, since a
+lifecycle notification does not start ageing until it closes.
+
 Two retentions, deliberately different. A notification's TTL is a product decision.
 The event log's retention is an operational one: the events of an expired
 notification have to outlive it long enough for a slow client to catch up, and only

@@ -21,8 +21,9 @@ costs latency, never correctness: the cursor catches up.
 
 ## Background jobs run on the leader only
 
-TTL purge, GitOps reconciliation, sink retries and DND digests run on a single
-replica. Leader election is either a Postgres advisory lock (default, no extra
+TTL purge, stale closure, GitOps reconciliation, sink retries and DND digests run on
+a single replica, each under its own lock — a slow purge must not stop notifications
+from being closed. Leader election is either a Postgres advisory lock (default, no extra
 infrastructure) or the Kubernetes Lease API. When the lock is lost another replica
 takes over; non-leaders keep serving the API normally.
 

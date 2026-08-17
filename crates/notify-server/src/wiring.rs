@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Attribution, Authenticate, Authorizer, BrowseAudit, ChannelInventory, CountUnread,
+    Attribution, Authenticate, Authorizer, BrowseAudit, ChannelInventory, CloseStale, CountUnread,
     CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
     DeleteNotification, DrainSinks, EnrolDevice, ExchangeToken, Fanout, GetNotification,
     ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox, ListInteractions,
@@ -62,6 +62,11 @@ pub(crate) struct Application {
     pub pump: actix_web::rt::task::JoinHandle<()>,
     /// The TTL purge, run on a timer by whichever replica leads.
     pub purge: PurgeExpired,
+    /// The stale-closure sweep (§7.2bis), on the same terms — and run *before* the
+    /// purge on every tick, because closing is what gives the purge something to
+    /// find: a lifecycle notification's retention clock does not start until it
+    /// closes.
+    pub close_stale: CloseStale,
     /// The do-not-disturb digest (§7.4), on the same terms.
     pub digests: SendDndDigests,
     /// The outbound sink drain (§7.1bis), on the same terms again.
@@ -491,6 +496,18 @@ impl Application {
             clock.clone(),
         );
 
+        // Its own leader lock, not the purge's: the two run on the same timer, but a
+        // slow purge holding a shared lock would stop closures fleet-wide for no
+        // reason (see `CloseStale::JOB`).
+        let close_stale = CloseStale::new(
+            repository.clone(),
+            repository.clone(),
+            repository.clone(),
+            Arc::new(PgLeaderElection::new(store.pool().clone())),
+            bus.clone(),
+            clock.clone(),
+        );
+
         // The digest of §7.4: one push when a quiet period ends, leader-only for the
         // same reason the purge is — every replica running it would send one each.
         let digests = SendDndDigests::new(
@@ -526,6 +543,7 @@ impl Application {
             store,
             pump,
             purge,
+            close_stale,
             digests,
             drain,
             routes,

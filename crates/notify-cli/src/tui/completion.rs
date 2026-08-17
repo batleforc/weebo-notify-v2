@@ -144,6 +144,7 @@ mod tests {
 
         assert!(offered.contains(&"create".to_owned()));
         assert!(offered.contains(&"set-ttl".to_owned()));
+        assert!(offered.contains(&"set-close-after".to_owned()));
         assert!(
             !offered.contains(&"publish".to_owned()),
             "a root command is not a channel subcommand"

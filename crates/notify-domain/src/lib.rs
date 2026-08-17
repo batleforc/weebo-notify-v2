@@ -88,4 +88,4 @@ pub use profile::{FieldEdit, Profile, ProfileEdit, ProfileField};
 pub use receipt::{Readership, Receipt, ReceiptKind, Sighting};
 pub use silence::{Silence, SilenceTarget};
 pub use sink::{RetryPolicy, SINK_KINDS, SinkId};
-pub use ttl::{Ttl, TtlPolicy, TtlResolution};
+pub use ttl::{CloseAfter, Ttl, TtlPolicy, TtlResolution};

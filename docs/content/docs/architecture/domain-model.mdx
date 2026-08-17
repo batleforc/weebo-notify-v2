@@ -72,6 +72,35 @@ unbounded retention is allowed at all.
   One unit per value; `1h30m` is not a thing. Values come back in the largest unit
   that divides evenly, so `7d` reads back as `1w`.
 
+### Closing what nobody is attending to
+
+Retention above is measured from closure, so a lifecycle notification that never
+closes is never kept for a week — it is kept forever. That is not a hypothetical: a
+publisher only has to crash once, and nothing in the notification says the difference
+between "still running" and "abandoned in March".
+
+So the channel also owns a `close_after`, and a background pass closes any lifecycle
+notification that has gone that long without **activity**:
+
+- a revision, and
+- an interaction — an acknowledgement or a reply.
+
+Receipts do not count. A `delivered` receipt is a client having it on screen, which
+happens without anybody deciding anything; counting it would mean an inbox left open
+in a browser tab keeps every notification in it alive.
+
+The default is one week, including for channels created before the field existed —
+defaulting those to "never" would leave untouched exactly the notifications this
+exists for. `close_after: "0"` opts a channel out, which needs no operator blessing
+the way `ttl: "0"` does: declining the convenience cannot pin anybody's storage.
+
+The closure is **not** a revision. Nobody asked for it — it is the absence of anybody
+asking — and authoring one would mean inventing a system principal that then exists
+everywhere principals do. The last revision keeps saying what the publisher said, a
+`closure` event says the server closed it, and the retention clock starts from there.
+A publisher that comes back to life reopens it with its next revision, exactly as it
+would after any other closure.
+
 ## Content hygiene
 
 Every piece of publisher-supplied text is sanitised **at ingestion**, so every

@@ -384,6 +384,12 @@ impl Reconciler {
                 max: managed.max_ttl,
                 allow_forever: TtlPolicy::default().allow_forever,
             },
+            // Absent means the published default (one week), not "never": a
+            // managed channel that says nothing about `close_after` gets the
+            // behaviour §7.2bis describes, the same way it gets the default TTL.
+            close_after: managed
+                .close_after
+                .unwrap_or(ChannelPolicy::default().close_after),
             default_priority: managed
                 .default_priority
                 .unwrap_or(ChannelPolicy::default().default_priority),

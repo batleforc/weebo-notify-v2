@@ -108,7 +108,8 @@ pub use leader::{LeaderElection, LeaderGuard};
 pub use media::{AttachmentThumbnailer, AvatarProcessor, ImageRejection, ProcessedImage};
 pub use metrics::{Metrics, NoMetrics, PushResult, StreamKind};
 pub use notifications::{
-    ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery, UnreadCount,
+    ClosedNotification, ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery,
+    UnreadCount,
 };
 pub use pagination::{Page, PageRequest};
 pub use preferences::{DeferredTally, PreferenceRepository};

@@ -370,6 +370,26 @@ export type ChannelId = string;
  */
 export type ChannelPolicy = {
     /**
+     * How long a lifecycle notification may go without activity before the
+     * server closes it, which is what makes [`ttl`](Self::ttl) apply to one at
+     * all — until a notification closes, its retention clock has not started
+     * (see [`CloseAfter`]).
+     *
+     * Defaulted on the wire like `publish_per_minute` below, and the consequence
+     * is worth stating rather than discovering: a policy stored before this
+     * field existed deserialises to one week, so every channel that predates it
+     * starts closing its abandoned notifications. That is the intent — the
+     * alternative, defaulting old channels to `Never`, would leave exactly the
+     * notifications this was written for untouched forever.
+     * `serde(default)` is for *stored* JSON, where a policy written before this
+     * field existed has to load; `schema(required)` is for the wire, where it is
+     * never absent because the server always serialises it. Without the second,
+     * utoipa reads the first and every generated client gets an `Option` it can
+     * never see as `None` — an unwrap in each of them, forever, for a case that
+     * cannot happen.
+     */
+    close_after: CloseAfter;
+    /**
      * Priority applied when a publisher says nothing.
      */
     default_priority: Priority;
@@ -422,6 +442,7 @@ export type ChannelPolicy = {
  * operator decision, so it stays in configuration.
  */
 export type ChannelPolicyBody = {
+    close_after?: null | CloseAfter;
     default_priority?: null | Priority;
     default_ttl?: null | Ttl;
     max_ttl?: null | Ttl;
@@ -449,6 +470,11 @@ export type ChoiceOption = {
  * One option of a `choice` action.
  */
 export type ChoiceOptionKey = string;
+
+/**
+ * How long a lifecycle notification may go without activity before the server closes it: a single-unit duration such as `7d`, or `0` to never close it automatically.
+ */
+export type CloseAfter = string;
 
 /**
  * The single-valued tag behind [`AuditActor::Configuration`].
@@ -908,6 +934,24 @@ export type Event = (RevisionEvent & {
     muted_by_dnd?: boolean;
     notification_id: NotificationId;
     reason: TombstoneReason;
+} | {
+    audience: 'channel';
+    channel_id: ChannelId;
+    /**
+     * When the server closed it, and therefore when its retention clock starts.
+     */
+    closed_at: string;
+    cursor: Cursor;
+    event: 'closure';
+    /**
+     * When it was appended, by the server's clock.
+     */
+    logged_at: string;
+    /**
+     * Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+     */
+    muted_by_dnd?: boolean;
+    notification_id: NotificationId;
 } | (PreferenceEvent & {
     audience: 'user';
     cursor: Cursor;

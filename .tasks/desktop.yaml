@@ -2,14 +2,14 @@ version: "3"
 
 silent: true
 
-# The desktop relay of §9.2, made observable (D19).
+# The desktop shell of §10bis.3 and the desktop relay of §9.2, both made observable
+# (D19) — one taskfile because they meet on the same session bus.
 #
 # D19, D21 and D26 all read « écrit, jamais vu ». The browser sidecar closed the
 # last two; it could never close this one, because `--notify-send` targets a
-# notification daemon and not a page. What it *does* provide, unintentionally, is
-# the missing half: `dbus-daemon` ships inside that image, and both containers
-# mount the sources, so a session bus socket on the shared path is reachable from
-# `tools`.
+# notification daemon and not a page. What the sidecars provide is the missing half:
+# `dbus-daemon` ships inside those images, and every container mounts the sources,
+# so a session bus socket on the shared path is reachable from `tools`.
 #
 # The other half is a process owning `org.freedesktop.Notifications`, which no
 # rootless workspace can install — mise carries no dunst, mako or dbus-daemon, and
@@ -19,13 +19,45 @@ silent: true
 # is a message a daemon accepts, with the summary and body intact, which is exactly
 # what nothing here could say before.
 #
+# Since the `desktop` sidecar joined the devfile there is a second sender to point
+# at it, and it is the one D13 was about: the Tauri shell itself, built in `tools`
+# and run over there, where a webview, a tray and a window manager exist. `up`,
+# `stop`, `status`, `shot` and `logs` drive it; `bus`, `notifyd` and `check` are the
+# instrumentation both senders share. The shell is pinned to this bus by the
+# `DESKTOP_APP_CMD` in devfile.yaml, so `task desktop:notifyd` sees what it sends.
+#
 # Outside Che these no-op rather than fail, and the reason inverts: a laptop with a
-# desktop session already has a real daemon, so `task test:notify-send` there runs
-# against GNOME or KDE and means more than it does here.
+# desktop session already has a real daemon and a real display, so `task tauri:dev`
+# and `task test:notify-send` there run against GNOME or KDE and mean more than they
+# do here.
 
 vars:
   BUS_PATH: '{{.ROOT_DIR}}/dev/.dbus/session'
   BUS_ADDRESS: 'unix:path={{.ROOT_DIR}}/dev/.dbus/session'
+  APP_BIN: '{{.ROOT_DIR}}/web/src-tauri/target/release/weebo-notify-desktop'
+  # `sidecar-app` toggles the flag file the sidecar's respawn loop watches — the
+  # devfile parks the app with NO_START, so nothing runs until this says so.
+  # Prefixed, and `REQUIRE_DESKTOP` below likewise: see the note on `BROWSER_APP` in
+  # `.tasks/browser.yaml` — a var name shared by two included taskfiles resolves at
+  # random on Task 3.52.
+  DESKTOP_APP: kubectl exec "$HOSTNAME" -c desktop -- sidecar-app
+
+  # Two failures with two different fixes, and the second is the one a workspace
+  # started before this sidecar existed hits: `kubectl exec -c desktop` answers
+  # « container desktop not found », which reads like a bug rather than like a
+  # workspace that has not been restarted since devfile.yaml changed.
+  REQUIRE_DESKTOP: |
+    if [ -z "${DEVWORKSPACE_ID:-}" ]; then
+      echo "Not in an Eclipse Che workspace — the desktop sidecar comes from devfile.yaml."
+      echo "On a machine with a desktop session, \`task tauri:dev\` runs the shell directly."
+      exit 0
+    fi
+    if ! kubectl get pod "$HOSTNAME" -o jsonpath='{.spec.containers[*].name}' \
+         | tr ' ' '\n' | grep -qx desktop; then
+      echo "No \`desktop\` container in this pod. It is declared in devfile.yaml —"
+      echo "restart the workspace from the local devfile to schedule it."
+      exit 1
+    fi
 
   # A bus is either already in the environment (a real desktop) or ours to start.
   NEED_BUS: |
@@ -42,24 +74,161 @@ vars:
 
 tasks:
   bus:
-    desc: "Start a D-Bus session bus in the browser sidecar, on a path `tools` can reach (§12.4)"
+    desc: "Start a D-Bus session bus in a sidecar, on a path `tools` and the shell can reach (§12.4)"
     cmds:
       - cmd: |
           if [ -z "$DEVWORKSPACE_ID" ]; then
             echo "Not in an Eclipse Che workspace — your desktop session already has a bus."
             exit 0
           fi
+          # In a sidecar rather than here: `dbus-daemon` is in those images and in
+          # no other, and there is no way to install one on this side. `desktop`
+          # first, because that is where the shell runs and where the bus belongs;
+          # `browser` is what a workspace still on the previous devfile has.
+          #
+          # Resolved before the liveness check below rather than after, because that
+          # check is itself a `kubectl exec` and needs a container to run in.
+          container=""
+          for c in desktop browser; do
+            if kubectl get pod "$HOSTNAME" -o jsonpath='{.spec.containers[*].name}' \
+                 | tr ' ' '\n' | grep -qx "$c"; then
+              container="$c"
+              break
+            fi
+          done
+          if [ -z "$container" ]; then
+            echo "Neither the desktop nor the browser sidecar is in this pod — restart the"
+            echo "workspace from devfile.yaml."
+            exit 1
+          fi
+
+          # The socket is on `/projects`, which outlives the pod that created it, so
+          # its presence says nothing about a daemon being behind it: a workspace
+          # restart leaves the file and takes the process. This used to `exit 0` on
+          # `[ -S ]` alone and report "Already listening" at a dead socket — and the
+          # symptom landed a long way from here, as an app whose tray never built
+          # (`libayatana-appindicator: Unable to get the session bus: Connection
+          # refused`) and, since the window starts hidden and the tray is the way
+          # back to it, as a display that stayed black. So ask the bus, and treat a
+          # socket that does not answer as the leftover it is.
           if [ -S "{{.BUS_PATH}}" ]; then
-            echo "Already listening on {{.BUS_PATH}}."
-            exit 0
+            if kubectl exec "$HOSTNAME" -c "$container" -- sh -c \
+                 'DBUS_SESSION_BUS_ADDRESS="$0" dbus-send --session --print-reply \
+                    --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames' \
+                 "{{.BUS_ADDRESS}}" >/dev/null 2>&1; then
+              echo "Already listening on {{.BUS_PATH}}."
+              exit 0
+            fi
+            echo "Stale socket at {{.BUS_PATH}} (nothing answers on it) — replacing it."
+            rm -f "{{.BUS_PATH}}"
           fi
           mkdir -p "$(dirname "{{.BUS_PATH}}")"
-          # In the sidecar rather than here: `dbus-daemon` is in that image and in
-          # no other, and there is no way to install one on this side.
-          kubectl exec "$HOSTNAME" -c browser -- \
+          kubectl exec "$HOSTNAME" -c "$container" -- \
             dbus-daemon --session --nopidfile --fork \
                         --address="{{.BUS_ADDRESS}}" --print-address
+          echo "Bus running in the \`$container\` sidecar."
           echo "Point clients at DBUS_SESSION_BUS_ADDRESS={{.BUS_ADDRESS}}"
+
+  up:
+    desc: "Build the desktop shell and run it in the `desktop` sidecar — then open the noVNC route (M5, D13)"
+    # The whole point of the sidecar in one command: `tools` has the GTK/WebKit
+    # stack and builds, `desktop` has the runtime and runs. The bundle is built
+    # first because `frontendDist` in tauri.conf.json points at `web/dist` — a
+    # shell compiled without it is a window with nothing in it.
+    deps: [bus]
+    cmds:
+      - task: :build:web
+      - task: :tauri:build
+      - task: start
+
+  start:
+    desc: "Launch (or relaunch) the already-built shell in the `desktop` sidecar"
+    # Separate from `up` because the loop that matters is `task tauri:build && task
+    # desktop:start`: the bundle rarely changes while you are chasing a window that
+    # renders wrong, and rebuilding it every time is a minute you spend for nothing.
+    deps: [bus]
+    cmds:
+      - cmd: |
+          {{.REQUIRE_DESKTOP}}
+          if [ ! -x "{{.APP_BIN}}" ]; then
+            echo "No shell to run at {{.APP_BIN}}."
+            echo "Build it first — \`task desktop:up\` does both, \`task tauri:build\` just this."
+            exit 1
+          fi
+          # A restart and not just a start: the respawn loop picks the binary up
+          # when it launches it, so a shell already running is the *old* one.
+          {{.DESKTOP_APP}} stop >/dev/null 2>&1 || true
+          {{.DESKTOP_APP}} start
+          for _ in $(seq 1 30); do
+            case "$({{.DESKTOP_APP}} status 2>&1)" in running*) break ;; esac
+            sleep 0.5
+          done
+          echo "shell: $({{.DESKTOP_APP}} status 2>&1)"
+          echo "noVNC: $(url desktop)"
+          echo "password: $(cat /projects/.sidecar/vnc-password-desktop.txt 2>/dev/null || echo '/projects/.sidecar/vnc-password-desktop.txt')"
+          echo
+          echo "Close the window inside noVNC to pick up a rebuilt binary — the sidecar"
+          echo "respawns it. \`task desktop:logs\` is where its stdout goes."
+
+  stop:
+    desc: "Park the desktop shell, keeping the display and the noVNC route up"
+    cmds:
+      - cmd: |
+          {{.REQUIRE_DESKTOP}}
+          {{.DESKTOP_APP}} stop
+
+  status:
+    desc: "Say whether the desktop shell is running, and where to look at it"
+    cmds:
+      - cmd: |
+          {{.REQUIRE_DESKTOP}}
+          echo "shell:  $({{.DESKTOP_APP}} status 2>&1)"
+          echo "binary: $([ -x '{{.APP_BIN}}' ] && echo '{{.APP_BIN}}' || echo 'not built — task tauri:build')"
+          echo "bus:    $([ -S '{{.BUS_PATH}}' ] && echo '{{.BUS_ADDRESS}}' || echo 'not started — task desktop:bus')"
+          echo "noVNC:  $(url desktop)"
+
+  shot:
+    desc: "Screenshot the whole X display of the sidecar — `task desktop:shot OUT=target/desktop.png`"
+    # `scrot` on the display rather than a screenshot API: this is a native window
+    # with a tray and a window manager, and the interesting failures (a window that
+    # never maps, a tray icon that never appears, a dialog behind its parent) are
+    # exactly the ones no in-page capture can see. That is the whole difference
+    # from `task browser:shot`.
+    vars:
+      OUT: '{{.OUT | default "target/desktop.png"}}'
+    cmds:
+      - cmd: |
+          {{.REQUIRE_DESKTOP}}
+          # The sidecar writes the file, so the path has to be one it can see:
+          # relative means "in the repository", and an absolute one only works
+          # under /projects. `/tmp/shot.png` would land in the sidecar's own /tmp
+          # and look, from here, like a screenshot that was never taken.
+          case "{{.OUT}}" in
+            /*) out="{{.OUT}}" ;;
+            *)  out="{{.ROOT_DIR}}/{{.OUT}}" ;;
+          esac
+          mkdir -p "$(dirname "$out")"
+          # DISPLAY is set explicitly: the DevWorkspace operator injects DISPLAY=:0
+          # into every container in the pod, so an `exec` lands on that rather than
+          # on the sidecar's own Xvfb. The image keeps the real one in XVFB_DISPLAY.
+          kubectl exec "$HOSTNAME" -c desktop -- \
+            sh -c 'DISPLAY=${XVFB_DISPLAY:-:97} scrot --overwrite "$0"' "$out"
+          echo "$out"
+
+  pwd:
+    desc: "Print the noVNC route of the desktop and its password — the way in for a human"
+    cmds:
+      - cmd: |
+          {{.REQUIRE_DESKTOP}}
+          echo "noVNC:    $(url desktop)"
+          echo "password: $(cat /projects/.sidecar/vnc-password-desktop.txt)"
+
+  logs:
+    desc: "Tail what the desktop sidecar and the shell it runs are printing"
+    cmds:
+      - cmd: |
+          {{.REQUIRE_DESKTOP}}
+          kubectl logs "$HOSTNAME" -c desktop --tail={{.TAIL | default 50}}
 
   notifyd:
     desc: "Answer org.freedesktop.Notifications and print what arrives, as JSON (D19)"

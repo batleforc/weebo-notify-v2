@@ -19,7 +19,7 @@
 import { Inbox as InboxIcon, RefreshCw } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import NotificationRow from "@/components/notification/NotificationRow.vue";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ import { useInbox } from "@/stores/inbox";
 const channels = useChannels();
 const detail = useDetail();
 const inbox = useInbox();
+const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
 
@@ -72,7 +73,14 @@ function lateness(receivedAt: string): number | undefined {
 }
 
 function open(id: string, viaKeyboard = false): void {
-  const target = { name: "notification", params: { id } };
+  // Inside a channel, the row opens *within* it: `/c/<channel>/n/<id>`. Pushing
+  // the bare `/n/<id>` from here is what threw the reader back to every channel —
+  // the URL stopped naming the channel, so the list widened underneath the panel.
+  const channel = route.params.channel;
+  const target =
+    typeof channel === "string"
+      ? { name: "channel-notification", params: { channel, id } }
+      : { name: "notification", params: { id } };
   // Arrow keys REPLACE rather than push: holding a key through fifty rows would
   // otherwise leave fifty history entries, and Back would walk the list backwards
   // one row at a time instead of leaving it. A click is a real navigation and

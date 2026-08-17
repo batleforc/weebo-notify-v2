@@ -44,6 +44,7 @@
     },
     "channels": {
       "title": "Canaux",
+      "all": "Tous les canaux",
       "empty": "Aucun canal. L'accès vient d'un groupe de ton fournisseur d'identité ou d'une invitation (§5.1)."
     },
     "filters": {

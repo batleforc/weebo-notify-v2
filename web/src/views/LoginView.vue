@@ -9,7 +9,7 @@
 import { LogIn } from "@lucide/vue";
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import { useSession } from "@/auth/session";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ import {
 
 const session = useSession();
 const route = useRoute();
+const router = useRouter();
 const { t } = useI18n();
 
 const failure = ref<string | null>(null);
@@ -34,7 +35,13 @@ async function signIn(): Promise<void> {
   try {
     const returnTo =
       typeof route.query.returnTo === "string" ? route.query.returnTo : "/";
-    await session.login(returnTo);
+    // A browser never gets here — the page has navigated to the provider by now.
+    // The shell does: it signs in without leaving, so this is where the desktop
+    // flow ends, and `target` is the permalink that survived it.
+    const target = await session.login(returnTo);
+    if (target) {
+      await router.replace(target);
+    }
   } catch (error) {
     // A provider that is down, or a discovery document we cannot read: the
     // message says which, because "connexion impossible" helps nobody debug a

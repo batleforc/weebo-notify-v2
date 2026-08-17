@@ -44,7 +44,13 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import { oidcClientId, oidcScopes } from "@/config";
+import { isDesktop } from "@/lib/desktop";
 import { discover } from "./discovery";
+import {
+  awaitLoopbackCallback,
+  LOOPBACK_REDIRECT_URI,
+  openExternal,
+} from "./loopback";
 import {
   beginAuthorization,
   type IdentityClaims,
@@ -52,8 +58,18 @@ import {
   readClaims,
 } from "./pkce";
 
-/** Where the provider sends the browser back. Registered in the IdP (§12.5). */
-export const redirectUri = `${window.location.origin}/auth/callback`;
+/**
+ * Where the provider sends the browser back. Registered in the IdP (§12.5).
+ *
+ * The origin is the right answer in a browser and the wrong one in the shell,
+ * where it is `tauri://localhost` — a scheme no provider will register. Desktop
+ * therefore uses the loopback redirect of RFC 8252 (see `./loopback`). Read once
+ * at module load, which is safe in both: Tauri injects its globals before the app
+ * bundle runs, and a browser never grows them.
+ */
+export const redirectUri = isDesktop()
+  ? LOOPBACK_REDIRECT_URI
+  : `${window.location.origin}/auth/callback`;
 
 const PENDING_KEY = "weebo-notify:pending-auth";
 const REFRESH_KEY = "weebo-notify:refresh-token";
@@ -110,8 +126,15 @@ export const useSession = defineStore("session", () => {
     sessionStorage.removeItem(PENDING_KEY);
   }
 
-  /** Send the browser to the provider. Never returns — the page navigates away. */
-  async function login(returnTo = "/"): Promise<void> {
+  /**
+   * Send the person to the provider.
+   *
+   * Returns `null` in a browser, where this never really returns at all — the page
+   * navigates away and the answer comes back through `/auth/callback`. On desktop
+   * it returns where to go next, because the window never left: the code arrives
+   * over loopback and is redeemed before this resolves.
+   */
+  async function login(returnTo = "/"): Promise<string | null> {
     const metadata = await discover();
     const { pending, challenge } = await beginAuthorization(returnTo);
     sessionStorage.setItem(PENDING_KEY, JSON.stringify(pending));
@@ -125,7 +148,17 @@ export const useSession = defineStore("session", () => {
     url.searchParams.set("code_challenge", challenge);
     url.searchParams.set("code_challenge_method", "S256");
 
+    // The desktop branch redeems the code here rather than in `CallbackView`,
+    // which is a route the shell never visits: nothing navigates, so there is no
+    // callback page to land on. `completeLogin` is shared all the same — the
+    // `state` check and the token exchange are the parts that must not have two
+    // implementations.
+    if (isDesktop()) {
+      return completeLogin(await awaitLoopbackCallback(url.toString()));
+    }
+
     window.location.assign(url.toString());
+    return null;
   }
 
   /**
@@ -254,13 +287,35 @@ export const useSession = defineStore("session", () => {
     if (metadata?.end_session_endpoint) {
       const url = new URL(metadata.end_session_endpoint);
       url.searchParams.set("client_id", oidcClientId);
-      url.searchParams.set(
-        "post_logout_redirect_uri",
-        `${window.location.origin}/`,
-      );
-      window.location.assign(url.toString());
-      return;
+
+      // The shell must not follow this one itself. The provider's session cookie
+      // belongs to the browser that signed in (see `./loopback`), so ending it
+      // there is the only thing that ends it — and navigating the app's own
+      // window to a logout page would strand it on the provider's site with the
+      // local session already forgotten. No `post_logout_redirect_uri` either:
+      // `tauri://localhost/` is not registered, and there is nothing to come back
+      // to, since the app never left.
+      if (isDesktop()) {
+        await openExternal(url.toString()).catch(() => {
+          // A logout that cannot reach the browser has still forgotten
+          // everything this app held, which is the half that protects this
+          // machine. Nothing is worth an error dialog here.
+        });
+      } else {
+        url.searchParams.set(
+          "post_logout_redirect_uri",
+          `${window.location.origin}/`,
+        );
+        window.location.assign(url.toString());
+        return;
+      }
     }
+
+    // Both roads end here on desktop, and the browser's no-`end_session_endpoint`
+    // road too: reload the app at its root. The store is already empty, so the
+    // router's guard lands on the login screen — and going through a reload rather
+    // than a `router.push` is what guarantees no component is still holding a
+    // rendered copy of what the previous session was reading.
     window.location.assign("/");
   }
 

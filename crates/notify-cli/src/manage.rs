@@ -21,7 +21,9 @@
 //! would be output the TUI cannot reach — and a second rendering of every command
 //! is exactly what §9 says not to write.
 
-use notify_client_core::types::{ChannelPolicyBody, Day, DndDraft, QuietHours, Ttl, WallClock};
+use notify_client_core::types::{
+    ChannelPolicyBody, CloseAfter, Day, DndDraft, QuietHours, Ttl, WallClock,
+};
 use notify_client_core::{Session, Store};
 
 use crate::{CliError, OutputFormat};
@@ -61,6 +63,22 @@ pub(crate) enum ChannelCommand {
         /// for "unbounded", so there is one way to say it rather than two.
         #[arg(long)]
         max: Option<String>,
+    },
+
+    /// Change how long a lifecycle notification may go without activity before
+    /// the server closes it. Needs `manage` there.
+    ///
+    /// Its own command rather than a third flag on `set-ttl`, because it answers a
+    /// different question: `set-ttl` says how long a *closed* notification is kept,
+    /// this says when an abandoned one stops being open. Reaching for one when you
+    /// meant the other is the mistake worth making impossible to make silently.
+    SetCloseAfter {
+        /// Which channel.
+        id: String,
+
+        /// How long without a revision or an interaction, e.g. `7d`. `0` turns it
+        /// off, leaving this channel's publishers to close what they open.
+        after: String,
     },
 }
 
@@ -174,6 +192,51 @@ pub(crate) async fn channel(
                         .map_or_else(|| "none".to_owned(), ToOwned::to_owned),
                 )),
             }
+        }
+
+        ChannelCommand::SetCloseAfter { id, after } => {
+            set_close_after(session, &id, after, output).await
+        }
+    }
+}
+
+/// `notify channel set-close-after <id> <after>`.
+///
+/// Its own function rather than a longer `match` arm: `channel` above is already at
+/// the line limit clippy enforces, and a dispatcher that grows a paragraph per
+/// subcommand stops reading as a dispatcher.
+async fn set_close_after(
+    session: &Session,
+    id: &str,
+    after: String,
+    output: OutputFormat,
+) -> Result<String, CliError> {
+    let channel = session
+        .update_channel_policy(
+            id,
+            ChannelPolicyBody {
+                close_after: Some(CloseAfter::from(after)),
+                ..ChannelPolicyBody::default()
+            },
+        )
+        .await?;
+
+    match output {
+        OutputFormat::Json => render_json(&channel),
+        // `0s` comes back from the server as the spelling for "never", and printing
+        // it verbatim would leave somebody wondering whether they had just asked for
+        // every notification to close instantly.
+        OutputFormat::Table => {
+            let close_after = &*channel.policy.close_after;
+            Ok(format!(
+                "{}: closes after {}",
+                channel.id.as_str(),
+                if close_after == "0s" {
+                    "never — publishers close their own"
+                } else {
+                    close_after
+                },
+            ))
         }
     }
 }

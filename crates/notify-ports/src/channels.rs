@@ -1,6 +1,6 @@
 //! Channels, their members and their policy.
 
-use notify_domain::{Channel, ChannelId, Principal, Scope};
+use notify_domain::{Channel, ChannelId, ChannelPolicy, Principal, Scope};
 
 use crate::error::PortResult;
 use crate::pagination::{Page, PageRequest};
@@ -77,4 +77,20 @@ pub trait ChannelRepository: Send + Sync {
     ///
     /// [`list_for`]: ChannelRepository::list_for
     async fn all_ids(&self) -> PortResult<Vec<ChannelId>>;
+
+    /// Every channel's id and policy, for the background passes that apply a
+    /// per-channel rule to rows they have not read yet.
+    ///
+    /// The one caller is the stale-closure sweep (design §7.2bis): `close_after`
+    /// lives in a policy stored as JSON, and turning it into the deadline a query
+    /// can compare against means parsing a duration — which belongs in Rust and
+    /// not in SQL. One read of every policy per pass is the price, and it is the
+    /// right shape: channels are an operator-scale concept, a handful per team,
+    /// while the notifications the sweep is looking through are unbounded.
+    ///
+    /// Unscoped, exactly like [`all_ids`], and the same warning applies: this
+    /// answers "what exists", never "what may you see".
+    ///
+    /// [`all_ids`]: ChannelRepository::all_ids
+    async fn all_policies(&self) -> PortResult<Vec<(ChannelId, ChannelPolicy)>>;
 }

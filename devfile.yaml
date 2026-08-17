@@ -150,22 +150,84 @@ components:
       cpuLimit: "2"
       cpuRequest: "500m"
       mountSources: true
+      # Chrome is parked at boot, and only Chrome: Xvfb, x11vnc and websockify
+      # still start, so the `novnc` route below answers from the first second and
+      # `task browser:start` is the whole cost of waking the browser (it toggles a
+      # flag file the sidecar's respawn loop watches, via `sidecar-app`).
+      #
+      # Why park it: a Chrome nobody is driving is several hundred megabytes of
+      # this pod's budget held for nothing, and this workspace now schedules two
+      # headed sidecars rather than one. The tasks in `.tasks/browser.yaml` start it
+      # on demand, so the only visible difference is the first `task browser:shot`
+      # of a session taking a second longer.
+      env:
+        - {name: NO_START, value: "true"}
       endpoints:
         - {name: novnc, targetPort: 6080, exposure: public, protocol: https, secure: true}
         - {name: cdp, targetPort: 9222, exposure: internal, protocol: http}
         - {name: webdriver, targetPort: 9515, exposure: internal, protocol: http}
-  # NO Tauri component, and the attempt is worth recording so it is not retried.
+  # The desktop shell of §10bis.3 (M5), running where a human can see it — the other
+  # half of D13, and the half that was impossible until both of these landed:
   #
-  # One was written here: a `rust:1-bookworm` sidecar plus a command that
-  # `apt-get install`s the seven packages of §12.4. It cannot work, for the same
-  # reason the `tools` container cannot — a DevWorkspace applies its security
-  # context to the WHOLE pod, so no container in it has root, and `apt-get` fails
-  # in a sidecar exactly as it fails next door. Scheduling a container is not the
-  # same capability as being root inside one, and D13 needs the second.
+  #   * `tools` inherits from `che-mise-webkit` now, so `task tauri:doctor` reports
+  #     the whole GTK/WebKit stack present and `task tauri:build` produces a binary
+  #     here for the first time;
+  #   * this image carries the *runtime* half — libwebkit2gtk, appindicator (the
+  #     tray of §10bis.3ter), a session bus, Xvfb, openbox and a noVNC route.
   #
-  # So §12.4's original sentence stands: the fix belongs to the image. The diff is
-  # ready in `docs/upstream/che-min-mise-tauri.md`, and once `che-min-mise` carries
-  # the packages nothing here changes at all — `tools` inherits from the parent.
+  # The earlier attempt is still worth recording so it is not retried in that form:
+  # a `rust:1-bookworm` sidecar that `apt-get install`ed the packages at start. That
+  # cannot work — a DevWorkspace applies its security context to the WHOLE pod, so
+  # no container in it has root and `apt-get` fails in a sidecar exactly as it fails
+  # next door. Scheduling a container is not the same capability as being root
+  # inside one. §12.4's sentence held: the fix belonged to the *images*, and both of
+  # them now ship it.
+  #
+  # Build in `tools`, run here: `mountSources` puts the same `/projects` under both,
+  # so `DESKTOP_APP_CMD` names the binary `task tauri:build` just wrote and no
+  # artefact has to travel.
+  #
+  # `NO_START: "true"`, same as the browser above and for a sharper reason: without
+  # `DESKTOP_APP_CMD` the sidecar respawns an xterm, and with it, it would respawn
+  # a shell binary that does not exist until somebody builds it — a restart loop and
+  # a noisy log on every fresh workspace. Parked, the display is up and empty until
+  # `task desktop:up` builds and starts the app.
+  #
+  # The `env` wrapper on the command is what makes the notification half testable:
+  # the app is pinned to the session bus `task desktop:bus` opens on a path both
+  # containers can see, so `task desktop:notifyd` — running in `tools` — receives
+  # what this app sends. Without it the app would talk to the private bus this
+  # image's entrypoint launches, on an abstract socket nothing else knows the name
+  # of, and D19 would stay « écrit, jamais vu » for the shell exactly as it was for
+  # the CLI.
+  - name: desktop
+    container:
+      image: ghcr.io/batleforc/weebodevimage/che-desktop:main
+      memoryLimit: 3Gi
+      memoryRequest: 1Gi
+      cpuLimit: "2"
+      cpuRequest: "500m"
+      mountSources: true
+      env:
+        - {name: NO_START, value: "true"}
+        # An absolute path and not `${PROJECT_SOURCE}`: devfile substitutes that in
+        # `exec` commands, not in a container's environment, so the variable would
+        # arrive here as six literal characters and a name. It spells out what
+        # `$PROJECT_SOURCE` resolves to — rename the project directory and this line
+        # is what has to follow, which is why `task desktop:start` checks the binary
+        # is there and says so rather than letting the sidecar respawn nothing.
+        - {name: DESKTOP_APP_CMD, value: "env DBUS_SESSION_BUS_ADDRESS=unix:path=/projects/weebo-notify-v2/dev/.dbus/session /projects/weebo-notify-v2/web/src-tauri/target/release/weebo-notify-desktop"}
+        - {name: DESKTOP_APP_CWD, value: /projects/weebo-notify-v2}
+        # WebKitGTK 2.42+ renders through a DMA-BUF path that needs a GPU it will
+        # not find here; the symptom is the failure that wastes an afternoon,
+        # because the window opens, the app logs nothing and the page is simply
+        # white. Xvfb plus Mesa's software rasteriser is the whole graphics stack in
+        # this pod, so the renderer is told up front. If a future image makes this
+        # unnecessary, dropping the line is the test — and if a white window ever
+        # comes back, `WEBKIT_DISABLE_COMPOSITING_MODE=1` is the next lever.
+        - {name: WEBKIT_DISABLE_DMABUF_RENDERER, value: "1"}
+      endpoints:
+        - {name: desktop, targetPort: 6082, exposure: public, protocol: https, secure: true}
   - name: pg-data
     volume: {size: 2Gi}
   - name: rustfs-data

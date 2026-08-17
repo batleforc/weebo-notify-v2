@@ -1501,11 +1501,15 @@ screen belonging to a channel they may not share with the reader (§2.4).*/
     ///  "description": "The knobs that apply to everything published in a channel.",
     ///  "type": "object",
     ///  "required": [
+    ///    "close_after",
     ///    "default_priority",
     ///    "receipts_enabled",
     ///    "ttl"
     ///  ],
     ///  "properties": {
+    ///    "close_after": {
+    ///      "$ref": "#/components/schemas/CloseAfter"
+    ///    },
     ///    "default_priority": {
     ///      "$ref": "#/components/schemas/Priority"
     ///    },
@@ -1531,6 +1535,7 @@ screen belonging to a channel they may not share with the reader (§2.4).*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ChannelPolicy {
+        pub close_after: CloseAfter,
         pub default_priority: Priority,
         /**This channel's own publish ceiling, per minute, overriding the 600/min of
 design §8.2. `None` means the published default applies.
@@ -1579,6 +1584,9 @@ operator decision, so it stays in configuration.*/
     ///  "description": "A partial change to a channel's policy (design §8).\n\nAbsent fields are left alone, which is what makes this a `PATCH` rather than a\n`PUT`: a client that only wants to lower the TTL ceiling must not have to restate\nthe priority and the receipts flag, and restating them is how two admins on two\nscreens overwrite each other.\n\nLifting a ceiling is spelled `\"0\"`, not `null`, and that is deliberate. §7.2bis\nalready gives `\"0\"` the meaning \"unbounded\" everywhere a duration appears, and a\nceiling of *forever* **is** the absence of a ceiling — so there is one spelling\nrather than two. The alternative, a `null` that means something different from an\nabsent key, is a shape no generated client can express: progenitor renders every\noptional field with `skip_serializing_if`, so the Rust client could omit the key\nbut never send it null (ADR-0009 promises clients come from the contract, which\nmeans the contract may not describe things they cannot say).\n\n`allow_forever` is not here on purpose — §7.2bis makes unbounded retention an\noperator decision, so it stays in configuration.",
     ///  "type": "object",
     ///  "properties": {
+    ///    "close_after": {
+    ///      "$ref": "#/components/schemas/CloseAfter"
+    ///    },
     ///    "default_priority": {
     ///      "$ref": "#/components/schemas/Priority"
     ///    },
@@ -1602,6 +1610,8 @@ operator decision, so it stays in configuration.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ChannelPolicyBody {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub close_after: ::std::option::Option<CloseAfter>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub default_priority: ::std::option::Option<Priority>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub default_ttl: ::std::option::Option<Ttl>,
@@ -1614,6 +1624,7 @@ operator decision, so it stays in configuration.*/
     impl ::std::default::Default for ChannelPolicyBody {
         fn default() -> Self {
             Self {
+                close_after: Default::default(),
                 default_priority: Default::default(),
                 default_ttl: Default::default(),
                 max_ttl: Default::default(),
@@ -1698,6 +1709,57 @@ operator decision, so it stays in configuration.*/
         }
     }
     impl ::std::fmt::Display for ChoiceOptionKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+    ///How long a lifecycle notification may go without activity before the server closes it: a single-unit duration such as `7d`, or `0` to never close it automatically.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How long a lifecycle notification may go without activity before the server closes it: a single-unit duration such as `7d`, or `0` to never close it automatically.",
+    ///  "type": "string"
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    #[serde(transparent)]
+    pub struct CloseAfter(pub ::std::string::String);
+    impl ::std::ops::Deref for CloseAfter {
+        type Target = ::std::string::String;
+        fn deref(&self) -> &::std::string::String {
+            &self.0
+        }
+    }
+    impl ::std::convert::From<CloseAfter> for ::std::string::String {
+        fn from(value: CloseAfter) -> Self {
+            value.0
+        }
+    }
+    impl ::std::convert::From<::std::string::String> for CloseAfter {
+        fn from(value: ::std::string::String) -> Self {
+            Self(value)
+        }
+    }
+    impl ::std::str::FromStr for CloseAfter {
+        type Err = ::std::convert::Infallible;
+        fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+            Ok(Self(value.to_string()))
+        }
+    }
+    impl ::std::fmt::Display for CloseAfter {
         fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
             self.0.fmt(f)
         }
@@ -3115,6 +3177,57 @@ field the server was going to overwrite.
     ///      }
     ///    },
     ///    {
+    ///      "title": "LoggedClosure",
+    ///      "description": "A lifecycle notification was closed by the server because nothing had happened to it for longer than its channel allows; clients mark their copy closed rather than dropping it.",
+    ///      "type": "object",
+    ///      "required": [
+    ///        "audience",
+    ///        "channel_id",
+    ///        "closed_at",
+    ///        "cursor",
+    ///        "event",
+    ///        "logged_at",
+    ///        "notification_id"
+    ///      ],
+    ///      "properties": {
+    ///        "audience": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "channel"
+    ///          ]
+    ///        },
+    ///        "channel_id": {
+    ///          "$ref": "#/components/schemas/ChannelId"
+    ///        },
+    ///        "closed_at": {
+    ///          "description": "When the server closed it, and therefore when its retention clock starts.",
+    ///          "type": "string",
+    ///          "format": "date-time"
+    ///        },
+    ///        "cursor": {
+    ///          "$ref": "#/components/schemas/Cursor"
+    ///        },
+    ///        "event": {
+    ///          "type": "string",
+    ///          "enum": [
+    ///            "closure"
+    ///          ]
+    ///        },
+    ///        "logged_at": {
+    ///          "description": "When it was appended, by the server's clock.",
+    ///          "type": "string",
+    ///          "format": "date-time"
+    ///        },
+    ///        "muted_by_dnd": {
+    ///          "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
+    ///          "type": "boolean"
+    ///        },
+    ///        "notification_id": {
+    ///          "$ref": "#/components/schemas/NotificationId"
+    ///        }
+    ///      }
+    ///    },
+    ///    {
     ///      "title": "LoggedPreference",
     ///      "allOf": [
     ///        {
@@ -3242,6 +3355,20 @@ last-write-wins (design §2.2).*/
             muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             reason: TombstoneReason,
+        },
+        Closure {
+            audience: LoggedClosureAudience,
+            channel_id: ChannelId,
+            ///When the server closed it, and therefore when its retention clock starts.
+            closed_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            cursor: Cursor,
+            event: LoggedClosureEvent,
+            ///When it was appended, by the server's clock.
+            logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
+            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            muted_by_dnd: ::std::option::Option<bool>,
+            notification_id: NotificationId,
         },
         Preference {
             audience: LoggedPreferenceAudience,
@@ -3797,6 +3924,148 @@ past that, publishers upload an attachment instead.*/
         pub notification_id: NotificationId,
         ///When the server recorded it.
         pub recorded_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    }
+    ///`LoggedClosureAudience`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "channel"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum LoggedClosureAudience {
+        #[serde(rename = "channel")]
+        Channel,
+    }
+    impl ::std::fmt::Display for LoggedClosureAudience {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Channel => f.write_str("channel"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for LoggedClosureAudience {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "channel" => Ok(Self::Channel),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for LoggedClosureAudience {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for LoggedClosureAudience {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for LoggedClosureAudience {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`LoggedClosureEvent`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "closure"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum LoggedClosureEvent {
+        #[serde(rename = "closure")]
+        Closure,
+    }
+    impl ::std::fmt::Display for LoggedClosureEvent {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Closure => f.write_str("closure"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for LoggedClosureEvent {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "closure" => Ok(Self::Closure),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for LoggedClosureEvent {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for LoggedClosureEvent {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for LoggedClosureEvent {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
     }
     ///`LoggedInteractionAudience`
     ///

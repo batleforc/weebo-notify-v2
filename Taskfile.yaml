@@ -44,7 +44,3 @@ tasks:
     desc: "Run the whole test suite with coverage and merge the Rust + web LCOV reports"
     cmds:
       - task: test:cover
-  browser:pwd:
-    desc: "Fetch browser pwd"
-    cmds:
-      - kubectl exec $HOSTNAME -c browser -- cat /tmp/vnc_password.txt

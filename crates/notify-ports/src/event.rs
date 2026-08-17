@@ -1,7 +1,8 @@
 //! The event log: one append-only sequence behind the stream, the backlog and
 //! reconnect alike (ADR-0012, design §8.1).
 //!
-//! Every `revision`, `receipt`, `interaction`, `tombstone` and `preference` gets a
+//! Every `revision`, `receipt`, `interaction`, `tombstone`, `closure` and
+//! `preference` gets a
 //! row, and that row's sequence value **is** the cursor a client sends back —
 //! whether as `?cursor=` on `GET /sync` or as `Last-Event-ID` on the stream. "Zero
 //! gaps, zero duplicates" is then a property of the schema rather than something
@@ -85,6 +86,9 @@ pub enum EventKind {
     Interaction,
     /// A notification stopped existing; clients drop it locally.
     Tombstone,
+    /// A lifecycle notification was closed by the server for want of activity;
+    /// clients mark their copy closed rather than dropping it.
+    Closure,
     /// This user's own do-not-disturb or silence state changed.
     Preference,
 }
@@ -98,6 +102,7 @@ impl EventKind {
             Self::Receipt => "receipt",
             Self::Interaction => "interaction",
             Self::Tombstone => "tombstone",
+            Self::Closure => "closure",
             Self::Preference => "preference",
         }
     }
@@ -180,7 +185,7 @@ pub struct PreferenceEvent {
 /// What actually happened.
 ///
 /// Same as [`Audience`]: no schema derive, because [`Event`]'s hand-written schema
-/// describes these five shapes itself (design §14.4, D1).
+/// describes these six shapes itself (design §14.4, D1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventPayload {
@@ -198,6 +203,29 @@ pub enum EventPayload {
         /// Why — clients word "deleted" and "expired" differently.
         reason: TombstoneReason,
     },
+    /// A lifecycle notification was closed by the server, because nothing had
+    /// happened to it for longer than its channel allows (design §7.2bis).
+    ///
+    /// Carries no `reason`, and the absence is the point: staleness is the only
+    /// thing that ever closes a notification without a publisher, so a one-variant
+    /// enum here would be a field every client has to read and no client can
+    /// branch on. A closure the publisher asked for arrives as a [`Revision`]
+    /// like any other, because that is what it is.
+    ///
+    /// [`Revision`]: Self::Revision
+    Closure {
+        /// Which one.
+        notification_id: NotificationId,
+        /// When it was closed — and therefore when its retention clock starts,
+        /// which is the number a client needs to say "expires in 2 days".
+        ///
+        /// RFC 3339 like every other instant on the wire. Without this attribute
+        /// `time` serialises an `OffsetDateTime` as a nine-element array, which is
+        /// valid JSON, is what actually landed in the event log the first time this
+        /// ran, and is not what the schema promises a `date-time` client.
+        #[serde(with = "time::serde::rfc3339")]
+        closed_at: OffsetDateTime,
+    },
     /// See [`PreferenceEvent`].
     Preference(Box<PreferenceEvent>),
 }
@@ -211,6 +239,7 @@ impl EventPayload {
             Self::Receipt(_) => EventKind::Receipt,
             Self::Interaction(_) => EventKind::Interaction,
             Self::Tombstone { .. } => EventKind::Tombstone,
+            Self::Closure { .. } => EventKind::Closure,
             Self::Preference(_) => EventKind::Preference,
         }
     }
@@ -223,6 +252,9 @@ impl EventPayload {
             Self::Receipt(receipt) => Some(receipt.notification_id),
             Self::Interaction(interaction) => Some(interaction.notification_id),
             Self::Tombstone {
+                notification_id, ..
+            }
+            | Self::Closure {
                 notification_id, ..
             } => Some(*notification_id),
             Self::Preference(_) => None,
@@ -493,6 +525,7 @@ mod tests {
             (EventKind::Receipt, "receipt"),
             (EventKind::Interaction, "interaction"),
             (EventKind::Tombstone, "tombstone"),
+            (EventKind::Closure, "closure"),
             (EventKind::Preference, "preference"),
         ] {
             assert_eq!(kind.as_str(), name);
@@ -604,6 +637,28 @@ mod tests {
             "{json}"
         );
         assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), original);
+    }
+
+    /// The shape a client actually parses. `time` defaults to a nine-element array
+    /// for `OffsetDateTime`, so this is not hypothetical — it is what the first run
+    /// of the stale-closure sweep wrote into the event log.
+    #[test]
+    fn a_closure_event_carries_an_rfc3339_instant() {
+        let payload = EventPayload::Closure {
+            notification_id: NotificationId::generate(),
+            closed_at: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+
+        assert_eq!(
+            json["closed_at"].as_str(),
+            Some("2026-07-25T17:20:00Z"),
+            "a `date-time` in the schema has to be a string on the wire: {json}"
+        );
+        assert_eq!(
+            serde_json::from_value::<EventPayload>(json).unwrap(),
+            payload
+        );
     }
 
     #[test]

@@ -53,8 +53,30 @@ const palette = usePalette();
  * routes it used to leave `<main>` visibly short of the viewport, by exactly the
  * height the empty panel still claimed off-screen.
  */
+/** The routes that show the inbox, and therefore care about the channel. */
+const INBOX_ROUTES = [
+  "inbox",
+  "notification",
+  "channel",
+  "channel-notification",
+];
+
+/** The routes that open the detail panel. */
+const DETAIL_ROUTES = ["notification", "channel-notification"];
+
+/**
+ * The channel the current route is in, if any.
+ *
+ * One expression for both channel routes: `/c/<id>` and `/c/<id>/n/<n>` carry it
+ * in the same parameter, which is the point of nesting them — reading a
+ * notification does not leave the channel it was read from.
+ */
+const routeChannel = computed(() =>
+  typeof route.params.channel === "string" ? route.params.channel : null,
+);
+
 const showDetailPane = computed(() =>
-  ["inbox", "notification", "channel"].includes(String(route.name ?? "")),
+  INBOX_ROUTES.includes(String(route.name ?? "")),
 );
 
 /**
@@ -180,32 +202,67 @@ onBeforeUnmount(() => {
   unread.stop();
 });
 
-/** `/n/<id>` is a permalink: opening it must open the panel (§10.4). */
+/** `/n/<id>` — and `/c/<channel>/n/<id>` — are permalinks: opening one must open
+ * the panel (§10.4). */
 watch(
-  () => route.params.id,
-  (id) => {
-    if (route.name === "notification" && typeof id === "string") {
+  () => [route.name, route.params.id] as const,
+  ([name, id]) => {
+    if (DETAIL_ROUTES.includes(String(name ?? "")) && typeof id === "string") {
       void detail.open(id);
-    } else if (route.name !== "notification") {
+    } else {
       detail.close();
     }
   },
   { immediate: true },
 );
 
-/** `/c/<id>` is the channel permalink: it narrows the inbox to that channel. */
+/**
+ * The channel is the route, and the route is the channel.
+ *
+ * `/c/<id>` narrows the inbox to it and `/` widens back to everything — both
+ * directions, which is what was missing: only the first was handled, so leaving a
+ * channel left its filter behind and the inbox stayed narrowed while the URL said
+ * otherwise. The sidebar now navigates rather than toggling a filter, so this
+ * watcher is the single place the two are reconciled.
+ *
+ * Routes that are not the inbox are left alone on purpose. Settings, Admin and
+ * Console draw the same sidebar, and clearing the filter on the way there would
+ * reload a list nobody is looking at and lose the channel on the way back.
+ */
 watch(
-  () => [route.name, route.params.id] as const,
-  ([name, id]) => {
-    if (name === "channel" && typeof id === "string") {
-      void inbox.apply({ ...inbox.filters, channels: [id] });
+  () => [route.name, routeChannel.value] as const,
+  ([name, channel]) => {
+    if (!INBOX_ROUTES.includes(String(name ?? ""))) {
+      return;
     }
+    const next = channel === null ? [] : [channel];
+    const current = inbox.filters.channels;
+    // Compared rather than applied unconditionally: `apply` reloads the page and
+    // restarts the stream, and every `/n/<id>` opened from within a channel would
+    // otherwise do both for no change at all.
+    if (
+      current.length === next.length &&
+      current.every((c, i) => c === next[i])
+    ) {
+      return;
+    }
+    void inbox.apply({ ...inbox.filters, channels: next });
   },
   { immediate: true },
 );
 
+/**
+ * Close the panel by leaving the notification's route — back to the channel it was
+ * read from when there is one, rather than out to every channel. Closing a message
+ * is not leaving the list you found it in.
+ */
 function closeDetail(): void {
-  void router.push({ name: "inbox" });
+  const channel = routeChannel.value;
+  void router.push(
+    channel === null
+      ? { name: "inbox" }
+      : { name: "channel", params: { channel } },
+  );
 }
 </script>
 

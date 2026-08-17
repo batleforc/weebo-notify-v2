@@ -33,7 +33,7 @@
 //! | Interaction | [`RecordInteraction`], [`ListInteractions`], [`SilenceNotification`], [`PostReceipt`], [`ReadReceipts`] |
 //! | Real time | [`SyncBacklog`], [`ResolveStreamStart`] |
 //! | Administration | [`ListChannels`], [`ReadChannel`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`SetApiKeyLimit`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
-//! | Background | [`PurgeExpired`] |
+//! | Background | [`PurgeExpired`], [`CloseStale`] |
 
 pub mod accounts;
 pub mod attachments;
@@ -41,6 +41,7 @@ pub mod attribution;
 pub mod auth;
 pub mod authz;
 pub mod channels;
+pub mod closure;
 pub mod devices;
 pub mod digest;
 pub mod fanout;
@@ -67,6 +68,7 @@ pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{
     CreateChannel, DeleteChannel, ListChannels, ManageMembers, ReadChannel, UpdateChannel,
 };
+pub use closure::{CloseStale, ClosureReport};
 pub use devices::{EnrolDevice, ListDevices, RevokeDevice};
 pub use digest::{DigestReport, SendDndDigests};
 pub use fanout::Fanout;

@@ -13,8 +13,26 @@
 //! infinite retention is allowed at all. A publisher asking for more than the
 //! ceiling is **clamped and told**, not refused — a CI job should not fail because
 //! it wanted its build log kept a week longer than the operator allows.
+//!
+//! # The gap that [`CloseAfter`] closes
+//!
+//! Read the first rule again and the failure mode is right there: a lifecycle
+//! notification does not age until it closes, and *nothing in the system closes
+//! it*. A publisher that crashes, is decommissioned, or simply forgets the final
+//! call leaves a notification open forever — and its TTL, however short, never
+//! starts. The retention a channel configured is silently not applied, which is
+//! worse than having no retention at all, because the policy says otherwise.
+//!
+//! That was not theoretical: it is how every lifecycle notification in the
+//! development database ended up immortal, including a `ci-infra` deploy that had
+//! reported `failure` and then said nothing for a week.
+//!
+//! So a channel also says how long a notification may go **without any activity**
+//! before the server closes it on the publisher's behalf. The clock is then the
+//! ordinary one: closing starts the TTL, and the purge takes it from there.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use time::OffsetDateTime;
 
 use crate::duration::HumanDuration;
 use crate::error::{DomainError, Result};
@@ -90,6 +108,113 @@ impl utoipa::PartialSchema for Ttl {
 
 #[cfg(feature = "openapi")]
 impl utoipa::ToSchema for Ttl {}
+
+/// How long a lifecycle notification may sit without activity before the server
+/// closes it (see the module doc).
+///
+/// Spelled like [`Ttl`] on purpose — `"0"` for "not this channel's business",
+/// a single-unit duration otherwise — so an operator writing `close_after` next to
+/// `default_ttl` writes the same kind of value and reads the same `"0"` escape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseAfter {
+    /// The server never closes on its own: only a publisher does.
+    ///
+    /// Written `"0"`. Unlike [`Ttl::Forever`] this needs no opt-in, and the
+    /// asymmetry is deliberate — `ttl: "0"` pins an operator's storage against
+    /// their will, while this only declines a convenience. A channel whose
+    /// publishers are trusted to close what they open loses nothing by saying so.
+    Never,
+    /// Closed once nothing has happened for this long.
+    After(HumanDuration),
+}
+
+impl CloseAfter {
+    /// Read an operator-supplied value. `"0"` means never.
+    pub fn parse(raw: &str, field: &'static str) -> Result<Self> {
+        let duration = HumanDuration::parse(raw, field)?;
+        Ok(Self::from_duration(duration))
+    }
+
+    /// Interpret a parsed duration, mapping zero to [`CloseAfter::Never`].
+    #[must_use]
+    pub fn from_duration(duration: HumanDuration) -> Self {
+        if duration.is_zero() {
+            Self::Never
+        } else {
+            Self::After(duration)
+        }
+    }
+
+    /// The duration, when there is one.
+    #[must_use]
+    pub fn duration(self) -> Option<HumanDuration> {
+        match self {
+            Self::Never => None,
+            Self::After(duration) => Some(duration),
+        }
+    }
+
+    /// The instant at which a notification last active at `last_activity` becomes
+    /// due for closure, if this policy closes anything at all.
+    ///
+    /// Returns `None` for [`CloseAfter::Never`] *and* for an addition that would
+    /// overflow the calendar, which are the same answer for the caller: there is
+    /// no deadline to sweep for. A `close_after` large enough to overflow is a
+    /// configuration saying "never" in a roundabout way.
+    #[must_use]
+    pub fn due_at(self, last_activity: OffsetDateTime) -> Option<OffsetDateTime> {
+        let duration = self.duration()?;
+        last_activity.checked_add(time::Duration::seconds(
+            i64::try_from(duration.as_secs()).ok()?,
+        ))
+    }
+}
+
+impl Default for CloseAfter {
+    /// One week, matching [`TtlPolicy`]'s own default and the design's stated
+    /// channel default (§7.2bis). A channel that says nothing gets the behaviour
+    /// somebody would describe without reading any configuration: an untouched
+    /// notification stops being open after a week.
+    fn default() -> Self {
+        Self::After(HumanDuration::from_secs_const(7 * 24 * 3_600))
+    }
+}
+
+impl Serialize for CloseAfter {
+    /// A duration string, with `"0s"` standing for never — the spelling an
+    /// operator writes.
+    fn serialize<S: Serializer>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Never => HumanDuration::ZERO.serialize(serializer),
+            Self::After(duration) => duration.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CloseAfter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, D::Error> {
+        HumanDuration::deserialize(deserializer).map(Self::from_duration)
+    }
+}
+
+// Hand-written for the same reason [`Ttl`]'s is: an enum here, a string on the wire.
+#[cfg(feature = "openapi")]
+impl utoipa::PartialSchema for CloseAfter {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .description(Some(
+                "How long a lifecycle notification may go without activity before the server \
+                 closes it: a single-unit duration such as `7d`, or `0` to never close it \
+                 automatically.",
+            ))
+            .examples([serde_json::json!("7d")])
+            .into()
+    }
+}
+
+#[cfg(feature = "openapi")]
+impl utoipa::ToSchema for CloseAfter {}
 
 /// What a channel allows (design §7.2bis, configured per channel in §11).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -177,6 +302,9 @@ impl TtlPolicy {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
+    use time::Duration as TimeDuration;
+
+    use super::CloseAfter::Never;
     use super::*;
 
     fn hours(n: u64) -> HumanDuration {
@@ -229,6 +357,46 @@ mod tests {
             ..TtlPolicy::default()
         };
         assert_eq!(policy.resolve(None).unwrap().ttl, Ttl::For(hours(2)));
+    }
+
+    #[test]
+    fn close_after_defaults_to_a_week_and_zero_opts_out() {
+        assert_eq!(
+            CloseAfter::default().duration().map(HumanDuration::as_secs),
+            Some(7 * 24 * 3_600),
+            "a channel that says nothing should behave the way somebody would \
+             describe it without reading any configuration"
+        );
+        assert_eq!(CloseAfter::parse("0", "close_after").unwrap(), Never);
+        assert_eq!(Never.duration(), None);
+    }
+
+    /// The whole point of the type: a deadline the sweep can compare against.
+    #[test]
+    fn close_after_turns_activity_into_a_deadline() {
+        let last = OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap();
+
+        assert_eq!(
+            CloseAfter::After(hours(48)).due_at(last),
+            Some(last + TimeDuration::hours(48))
+        );
+        assert_eq!(
+            Never.due_at(last),
+            None,
+            "a channel that opted out must produce no deadline at all, not a \
+             deadline far away — the sweep asks this question to build its query"
+        );
+    }
+
+    /// `"0"` is the same escape hatch as `Ttl`'s, and it round-trips through the
+    /// wire form that stores a channel policy as JSON.
+    #[test]
+    fn close_after_round_trips_through_its_wire_form() {
+        for value in [Never, CloseAfter::After(hours(48)), CloseAfter::default()] {
+            let json = serde_json::to_string(&value).unwrap();
+            assert_eq!(serde_json::from_str::<CloseAfter>(&json).unwrap(), value);
+        }
+        assert_eq!(serde_json::to_string(&Never).unwrap(), "\"0s\"");
     }
 
     #[test]

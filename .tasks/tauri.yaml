@@ -93,7 +93,14 @@ tasks:
           # `--no-default-features` is not used: the shell wants the tray, and a
           # build that quietly dropped it would produce an app that runs and has no
           # way to live in the background (§10bis.3ter).
-          cd web/src-tauri && cargo build --release
+          #
+          # `--features custom-protocol` is what `cargo tauri build` adds on its own
+          # and what plain `cargo build` cannot know to add. Without it the binary
+          # keeps Tauri's dev behaviour and loads `build.devUrl` (:5173) instead of
+          # the bundle in `web/dist` — so `task desktop:up`, which builds that bundle
+          # in its first step, ran a shell that ignored it and showed a connection
+          # error. The flag is declared in this crate's `[features]`.
+          cd web/src-tauri && cargo build --release --features custom-protocol
 
   bundle:
     desc: "Package the desktop shell as a .deb and an AppImage (§10bis.3, M5)"
