@@ -160,7 +160,7 @@ impl OidcVerifier {
 
         let mut validation = Validation::new(first);
         validation.algorithms.clone_from(&key.algorithms);
-        validation.set_issuer(&[self.config.issuer.as_str().trim_end_matches('/')]);
+        validation.set_issuer(&accepted_issuers(&self.config.issuer));
         validation.validate_aud = false;
         validation.validate_exp = false;
         validation.required_spec_claims =
@@ -194,7 +194,7 @@ impl TokenVerifier for OidcVerifier {
         };
         let mut validation = Validation::new(first);
         validation.algorithms.clone_from(&key.algorithms);
-        validation.set_issuer(&[self.config.issuer.as_str().trim_end_matches('/')]);
+        validation.set_issuer(&accepted_issuers(&self.config.issuer));
         validation.set_audience(&self.config.audiences);
         // Expiry is checked below against the injected clock rather than here
         // against the wall clock. Every other deadline in this codebase is the
@@ -322,6 +322,26 @@ const fn signature_algorithm(declared: KeyAlgorithm) -> Option<Algorithm> {
     }
 }
 
+/// The spellings of the configured issuer a token's `iss` is allowed to carry.
+///
+/// `iss` is compared as a string — no scheme-and-host normalisation, by design —
+/// and providers disagree about the last character of it. Dex announces
+/// `http://host/dex`, Authentik `https://host/application/o/weebo-notify/`, and
+/// [`Url`] preserves whichever one the operator wrote in the configuration. Every
+/// other issuer comparison in this crate already trims **both** sides
+/// ([`crate::jwks`] on the discovery document, [`crate::federation`] on a forge's
+/// `iss`); this one trimmed only ours, so a provider whose issuer genuinely ends in
+/// a slash had every token it minted refused as [`TokenRejection::WrongIssuer`] —
+/// after discovery had just accepted the same URL. That is how the Authentik leg of
+/// the compatibility matrix failed on its first real run.
+///
+/// Offering both spellings is a normalisation and not a widening: the two differ by
+/// a trailing separator, which cannot make the identifier name a different issuer.
+fn accepted_issuers(issuer: &url::Url) -> [String; 2] {
+    let trimmed = issuer.as_str().trim_end_matches('/');
+    [trimmed.to_owned(), format!("{trimmed}/")]
+}
+
 /// Why the library refused, in the vocabulary the port speaks.
 fn rejection_for(kind: &jsonwebtoken::errors::ErrorKind) -> TokenRejection {
     use jsonwebtoken::errors::ErrorKind as Kind;
@@ -401,14 +421,21 @@ mod tests {
         source: Arc<FakeSource>,
         signer: Signer,
         clock: TestClock,
+        /// The issuer as *configured*, which is not always how a token spells it.
+        issuer: String,
     }
 
     impl Fixture {
         fn new() -> Self {
+            Self::for_issuer(ISSUER)
+        }
+
+        /// One configured with exactly this issuer, trailing slash and all.
+        fn for_issuer(issuer: &str) -> Self {
             let signer = Signer::generate("key-1");
             let source = FakeSource::new(jwk_set(&[&signer]));
             let clock = TestClock::default();
-            let config = OidcConfig::new(Url::parse(ISSUER).unwrap(), "weebo-notify");
+            let config = OidcConfig::new(Url::parse(issuer).unwrap(), "weebo-notify");
             let verifier = OidcVerifier::with_source(
                 config,
                 Arc::clone(&source) as Arc<dyn JwksSource>,
@@ -420,6 +447,7 @@ mod tests {
                 source,
                 signer,
                 clock,
+                issuer: issuer.to_owned(),
             }
         }
 
@@ -429,7 +457,7 @@ mod tests {
 
         fn valid_claims(&self) -> serde_json::Value {
             json!({
-                "iss": ISSUER,
+                "iss": self.issuer,
                 "aud": "weebo-notify",
                 "sub": "alice",
                 "exp": (self.clock.now() + Duration::minutes(5)).unix_timestamp(),
@@ -579,6 +607,63 @@ mod tests {
         let fixture = Fixture::new();
         let mut claims = fixture.valid_claims();
         claims["iss"] = json!("https://someone-else.example");
+
+        let rejected = fixture
+            .verifier
+            .verify(&fixture.token(&claims))
+            .await
+            .unwrap();
+
+        assert_eq!(rejected.unwrap_err(), TokenRejection::WrongIssuer);
+    }
+
+    #[tokio::test]
+    async fn a_trailing_slash_is_not_a_different_issuer() {
+        // Authentik's issuer really is `.../application/o/weebo-notify/`, and its
+        // tokens really do carry that slash in `iss`. Discovery accepts the URL
+        // either way; verification used to accept only the trimmed spelling, so the
+        // whole Authentik leg failed as WrongIssuer on tokens from the very issuer
+        // it had just discovered.
+        for (configured, in_the_token) in [
+            (
+                "https://idp.example/application/o/weebo/",
+                "https://idp.example/application/o/weebo/",
+            ),
+            (
+                "https://idp.example/application/o/weebo",
+                "https://idp.example/application/o/weebo/",
+            ),
+            (
+                "https://idp.example/application/o/weebo/",
+                "https://idp.example/application/o/weebo",
+            ),
+        ] {
+            let fixture = Fixture::for_issuer(configured);
+            let mut claims = fixture.valid_claims();
+            claims["iss"] = json!(in_the_token);
+
+            let accepted = fixture
+                .verifier
+                .verify(&fixture.token(&claims))
+                .await
+                .unwrap();
+
+            assert!(
+                accepted.is_ok(),
+                "configured {configured} refused a token from {in_the_token}: {:?}",
+                accepted.unwrap_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_neighbouring_path_under_the_same_host_is_still_another_issuer() {
+        // The guard on the normalisation above: a trailing separator is all it may
+        // forgive. Two Authentik applications on one host differ by their path, and
+        // a token minted for the other one must not verify here.
+        let fixture = Fixture::for_issuer("https://idp.example/application/o/weebo/");
+        let mut claims = fixture.valid_claims();
+        claims["iss"] = json!("https://idp.example/application/o/weebo-staging/");
 
         let rejected = fixture
             .verifier
