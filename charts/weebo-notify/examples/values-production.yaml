@@ -1,0 +1,106 @@
+# A worked example, not a real deployment: every `existingSecret` here names a
+# Secret nobody created. It exists so `task helm:template` has something
+# complete to render (the two `web.env.*` fields have no default — see this
+# chart's README) and so an operator has a full shape to copy from rather than
+# assembling one field at a time out of values.yaml's comments.
+
+server:
+  ingress:
+    enabled: true
+    className: nginx
+    host: api.notify.example.com
+    tls:
+      - secretName: notify-api-tls
+        hosts: [api.notify.example.com]
+    annotations:
+      # Per-address limits belong here and not in the application: behind an
+      # ingress the peer address is the ingress, and the forwarded one is a
+      # header the client sets (see hardening.mdx). `limit-connections` matters
+      # more than usual for this API — SSE and WebSocket connections are
+      # long-lived by design, so a client holding thousands is not sending
+      # unusual traffic, just holding unusual resources.
+      nginx.ingress.kubernetes.io/limit-rps: "50"
+      nginx.ingress.kubernetes.io/limit-connections: "32"
+      # At the §8.2 attachment ceiling. Below it, uploads fail at the proxy with
+      # an error the API never sees and cannot explain.
+      nginx.ingress.kubernetes.io/proxy-body-size: 25m
+
+  # Hard rather than the chart's `soft` default: soft anti-affinity survives a
+  # pod eviction but not a node failure, since nothing stops both replicas being
+  # scheduled together. `DoNotSchedule` means a cluster that cannot spread them
+  # tells you at deploy time instead of at 3am.
+  podAntiAffinity: hard
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: weebo-notify
+          app.kubernetes.io/component: server
+
+  database:
+    existingSecret: notify-database
+    secretKey: database-url
+
+  attachments:
+    kind: s3
+    endpoint: https://s3.example.com
+    bucket: notify-attachments
+    existingSecret: notify-attachments
+
+  oidc:
+    issuer: https://auth.example.com/application/o/weebo-notify/
+    clientId: weebo-notify
+
+  admin:
+    oidcGroups: ["platform-admins"]
+
+  push:
+    webpush:
+      enabled: true
+      existingSecret: notify-webpush
+      contact: "mailto:ops@example.com"
+
+  autoscaling:
+    enabled: true
+
+  serviceMonitor:
+    enabled: true
+
+web:
+  ingress:
+    enabled: true
+    className: nginx
+    host: notify.example.com
+    tls:
+      - secretName: notify-web-tls
+        hosts: [notify.example.com]
+
+  env:
+    apiBaseUrl: "https://api.notify.example.com"
+    oidcIssuer: "https://auth.example.com/application/o/weebo-notify/"
+    oidcClientId: weebo-notify
+
+  autoscaling:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  # REQUIRED whenever `enabled: true`, and the reason this block is not just
+  # `enabled` on its own: the server's policy admits the `web` pods automatically,
+  # and nothing else. The server has its **own** Ingress (`/api/v1` straight to the
+  # server Service), and the ServiceMonitor scrapes from wherever Prometheus runs —
+  # neither is a `web` pod, so leaving this empty yields a deployment whose API is
+  # unreachable from outside the namespace and whose metrics are never collected.
+  #
+  # Replace both selectors with your own namespaces. They are placeholders and are
+  # deliberately not defaults: guessing a namespace label wrong fails closed against
+  # a real dependency, which is the one failure mode worse than asking.
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring

@@ -1,0 +1,162 @@
+//! Repository chores that need real code rather than a shell one-liner.
+//!
+//! This crate exists for one structural reason: the generated client lives *inside*
+//! `notify-client-api`, so the generator cannot live there too — it would have to
+//! compile before the file it generates exists. `xtask` is built and run
+//! independently, which breaks that cycle.
+//!
+//! The generators here are invoked by `task recu` and their output is committed, so
+//! the `contract` CI job can prove the clients never drift from the server (design
+//! §3.2). Not everything is: [`vapid`] mints a key for a *developer's* machine and
+//! its output is gitignored — it lives here for the same reason as the rest, that a
+//! chore needing real code should not be a shell one-liner with assumptions in it.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::Context as _;
+use clap::{Parser, Subcommand};
+
+mod coverage;
+mod downgrade;
+mod federation;
+mod icons;
+mod notifyd;
+mod password;
+mod vapid;
+
+#[derive(Debug, Parser)]
+#[command(name = "xtask", about = "weebo-notify repository chores")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Generate the Rust API client from the committed OpenAPI document (ADR-0009).
+    ClientRust {
+        /// The OpenAPI document exported by `notify-server dump-openapi`.
+        #[arg(long, default_value = "docs/content/docs/api/openapi.json")]
+        spec: PathBuf,
+        /// Where to write the generated module.
+        #[arg(long, default_value = "crates/notify-client-api/src/generated.rs")]
+        output: PathBuf,
+    },
+
+    /// Enforce the coverage gates and print a markdown summary (design §3.2).
+    CoverageGate {
+        /// LCOV report produced by `task cover`.
+        #[arg(long, default_value = "target/coverage/rust.lcov")]
+        lcov: PathBuf,
+        /// Base ref to diff against for the changed-lines gate. Omit on a push to
+        /// the default branch, where "lines this change touched" is meaningless.
+        #[arg(long)]
+        base: Option<String>,
+    },
+
+    /// Mint the VAPID key `[push.webpush]` reads, for a development deployment.
+    VapidKey {
+        /// Where to write it. Gitignored, and `config/dev.toml` points here.
+        #[arg(long, default_value = "dev/secrets/vapid.pem")]
+        output: PathBuf,
+        /// Replace an existing key. Every subscription taken out under the old one
+        /// stops being deliverable, which is why it is not the default.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Mint the Ed25519 key `[federation]` signs CI tokens with (design §5.3).
+    FederationKey {
+        /// Where to write it. Gitignored, and `config/dev.toml` points here.
+        #[arg(long, default_value = "dev/secrets/federation.pem")]
+        output: PathBuf,
+        /// Replace an existing key. Every CI token in flight stops verifying,
+        /// which is why it is not the default.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Rasterise the desktop icons from their SVG sources (§10bis.3ter, M5).
+    Icons {
+        /// The icon directory: sources in `src/`, rasters written beside them.
+        #[arg(long, default_value = "web/src-tauri/icons")]
+        root: PathBuf,
+    },
+
+    /// Answer `org.freedesktop.Notifications`, so `--notify-send` can be seen (D19).
+    ///
+    /// Needs a session bus: `task desktop:notifyd` starts one in the browser sidecar and
+    /// points `DBUS_SESSION_BUS_ADDRESS` at it.
+    Notifyd {
+        /// Exit once this many notifications have arrived. Omit to run for ever,
+        /// which is what a developer watching the TUI wants.
+        #[arg(long)]
+        expect: Option<u32>,
+        /// Give up after this many seconds without having seen `--expect` of them.
+        /// A scripted check that hangs is a scripted check nobody runs twice.
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+
+    /// Bcrypt the password on stdin, for the Dex leg of the identity matrix (§3.2).
+    BcryptHash {
+        /// Bcrypt cost. Ten is what `htpasswd -C 10` uses in the branch next door,
+        /// and matching it keeps the three branches comparable.
+        #[arg(long, default_value_t = 10)]
+        cost: u32,
+    },
+}
+
+fn main() -> anyhow::Result<()> {
+    match Cli::parse().command {
+        Command::ClientRust { spec, output } => generate_rust_client(&spec, &output),
+        Command::CoverageGate { lcov, base } => coverage::gate(&lcov, base.as_deref()),
+        Command::VapidKey { output, force } => vapid::generate(&output, force),
+        Command::FederationKey { output, force } => federation::generate(&output, force),
+        Command::Icons { root } => icons::generate(&root),
+        Command::Notifyd { expect, timeout } => {
+            notifyd::run(expect, timeout.map(std::time::Duration::from_secs))
+        }
+        Command::BcryptHash { cost } => password::bcrypt_stdin(cost),
+    }
+}
+
+fn generate_rust_client(spec_path: &Path, output: &Path) -> anyhow::Result<()> {
+    let raw = std::fs::read_to_string(spec_path)
+        .with_context(|| format!("reading {}", spec_path.display()))?;
+
+    // utoipa emits 3.1; progenitor reads 3.0. Lower the handful of constructs that
+    // differ before parsing (ADR-0009). The committed spec stays 3.1 — the TS client
+    // and any third-party consumer get the modern document.
+    let mut document: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {} as JSON", spec_path.display()))?;
+    let lowered = downgrade::to_openapi_30(&mut document);
+    println!("lowered {lowered} node(s) from OpenAPI 3.1 to 3.0 for progenitor");
+
+    let spec: openapiv3::OpenAPI = serde_json::from_value(document)
+        .with_context(|| format!("parsing {} as an OpenAPI 3.0 document", spec_path.display()))?;
+
+    let mut generator = progenitor::Generator::default();
+    let tokens = generator
+        .generate_tokens(&spec)
+        .context("generating the client from the OpenAPI document")?;
+
+    let ast = syn::parse2(tokens).context("parsing the generated token stream")?;
+    let mut rendered = String::from(
+        "// @generated by `task recu` — DO NOT EDIT.\n\
+         //\n\
+         // Source: the committed OpenAPI document, itself exported from the utoipa\n\
+         // annotations on the server handlers. Regenerate with `task recu`; the CI\n\
+         // `contract` job fails if this file and the server ever disagree.\n\n",
+    );
+    rendered.push_str(&prettyplease::unparse(&ast));
+
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(output, rendered).with_context(|| format!("writing {}", output.display()))?;
+
+    println!("generated {}", output.display());
+    Ok(())
+}

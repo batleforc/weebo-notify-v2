@@ -1,0 +1,74 @@
+/*
+ * Self-hosted faces for the `monofolio` type system (§10.6): JetBrains Mono for
+ * structure (labels, timestamps, section titles, buttons — see `theme.css`'s
+ * `--font-mono`), IBM Plex Sans for prose (`--font-sans`).
+ *
+ * Fetched once from Google's own CSS2 API and vendored under `public/fonts/`
+ * rather than linked — this project links no font, icon or script CDN anywhere
+ * else (RustFS instead of S3, a self-hosted OIDC mock, `assets/icon-sprite.svg`
+ * instead of an icon font), and a webview loading only embedded assets is a
+ * capability §10bis.6 spells out for the desktop shell specifically. `woff2`
+ * only: every browser this product supports decodes it, and a second format is a
+ * second file nobody here will ever be served.
+ *
+ * Four weights each, the ones actually used: 400 (body/regular labels), 500
+ * (nav/meta), 600 (section titles, card titles), 700 (buttons, emphasis).
+ */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-700.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-700.woff2") format("woff2");
+}

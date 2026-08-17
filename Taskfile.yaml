@@ -2,25 +2,45 @@ version: "3"
 
 includes:
   mise: ./.tasks/mise.yaml
+  build: ./.tasks/build.yaml
+  dev: ./.tasks/dev.yaml
+  gen: ./.tasks/gen.yaml
+  lint: ./.tasks/lint.yaml
+  test: ./.tasks/test.yaml
+  audit: ./.tasks/audit.yaml
+  adr: ./.tasks/adr.yaml
+  release: ./.tasks/release.yaml
+  tauri: ./.tasks/tauri.yaml
+  browser: ./.tasks/browser.yaml
+  desktop: ./.tasks/desktop.yaml
+  helm: ./.tasks/helm.yaml
+  android: ./.tasks/android.yaml
 
 tasks:
   init:
-    desc: "Init folder"
+    desc: "Install the toolchain and the git hooks, then create the local secrets — run once after cloning"
     cmds:
-      - mise install
+      # `MISE_ENV=dev` pulls in `mise.dev.toml` as well — the tools a developer
+      # wants and CI has no use for (SEC-P2-08). Export it in your shell profile
+      # to keep them on your PATH afterwards; without it you get exactly what CI
+      # gets, which is a supported and slightly emptier setup.
+      - MISE_ENV=dev mise install
       - cog install-hook -a -o
+      - cmd: '[ -f docs/package.json ] && pnpm -C docs install || true'
+        silent: true
+      - cmd: '[ -f web/package.json ] && pnpm -C web install || true'
+        silent: true
+      # Last, and part of `init` rather than a step to remember: everything above
+      # is what the repository needs, this is what running it needs, and a setup
+      # split in two is a setup somebody does half of.
+      - task: dev:setup
 
   recu:
-    desc: "Recuring job like regenerating Swagger spec"
+    desc: "Recurring job: export the OpenAPI spec, regenerate the derived clients and the sqlx offline data"
     cmds:
-      - echo "Your future spec generating cmd"
+      - task: gen
 
-  lint:
-    desc: "Linting your project to apply good practice"
+  cover:
+    desc: "Run the whole test suite with coverage and merge the Rust + web LCOV reports"
     cmds:
-      - echo "Something like cargo fmt && cargo clippy"
-
-  audit:
-    desc: "Check dependencies and Containerfile for CVE"
-    cmds:
-      - echo "Something like cargo audit, pnpm audit or trivy fs ."
+      - task: test:cover

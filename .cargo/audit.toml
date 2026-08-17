@@ -1,0 +1,52 @@
+# cargo-audit configuration, read by `task audit:cargo`.
+#
+# An ignore here is a claim that we understand an advisory and that it does not
+# reach us. It is never "the build is red and we want it green", and every entry
+# says what would make us take it back out. The same list is mirrored in
+# deny.toml, because cargo-deny reads its own.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin attack: key recovery through a timing sidechannel
+    # in the `rsa` crate. No fixed version exists.
+    #
+    # It arrives through jsonwebtoken's `rust_crypto` backend, and the attack
+    # targets RSA operations performed with a PRIVATE key — decryption, and
+    # PKCS#1 v1.5 signing. weebo-notify never performs one:
+    #
+    #   * `notify-oidc` only VERIFIES RS256 signatures, with public keys pulled
+    #     from the provider's JWKS (§5.1). There is no RSA private key in the
+    #     product, in its configuration or in its dev environment;
+    #   * `oidc-mock` signs with ES256 (ADR-0014), not RSA;
+    #   * the federated tokens we mint are Ed25519 (§5.3).
+    #
+    # The alternative fix is jsonwebtoken's `aws_lc_rs` backend, which drops the
+    # crate entirely — and adds a C toolchain to every build, including the Che
+    # workspace and the cross-compiled Tauri targets of M5-M7. That is a real cost
+    # against an advisory that cannot reach us, so we take the ignore instead.
+    #
+    # REVISIT IF: anything in this workspace gains an RSA private key — signing a
+    # token, decrypting anything, or loading an RSA key from configuration. At
+    # that point this entry stops being true and the backend swap becomes the
+    # cheaper option. Also revisit if `rsa` ships a fixed release.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0194 and RUSTSEC-2026-0195 — quadratic parsing and unbounded
+    # namespace allocation in `quick-xml`, both fixed in 0.41. We are on 0.38
+    # because `rust-s3` pins `^0.38`; upgrading means patching a dependency's
+    # dependency across a breaking release, which trades a denial-of-service we
+    # cannot reach for a compilation we cannot predict.
+    #
+    # Why it is not reachable: this parser only ever reads **responses from our own
+    # object store**. The bucket is private and inside the trust boundary (§6) —
+    # nothing user-supplied is parsed as XML anywhere in this product, and an
+    # attacker able to craft those responses can already read and write every
+    # attachment in the bucket. A denial of service would be the least of it.
+    #
+    # REVISIT IF: `rust-s3` releases against `quick-xml >= 0.41` (then just
+    # upgrade), or this workspace ever parses XML from somewhere a user can reach —
+    # at which point the reachability argument above stops being true and this
+    # entry has to go.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

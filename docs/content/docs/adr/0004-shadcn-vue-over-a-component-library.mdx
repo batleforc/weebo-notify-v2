@@ -1,0 +1,39 @@
+---
+title: ADR-0004 — shadcn-vue over a component library
+description: Own the component code in-repo so the monofolio design system integrates by editing, not by fighting.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+The frontend needs a dense, sober, keyboard-driven interface, and it must eventually
+wear the `monofolio` design system. An opinionated component library (PrimeVue,
+Vuetify, Naive) would be faster to start with and much harder to re-skin.
+
+## Decision
+
+**shadcn-vue, vendored into `web/src/components/ui/`**, on Reka UI primitives, with
+Tailwind CSS v4 for styling. The components live in the repository and we own them.
+
+Theming is entirely CSS variables, so `monofolio` becomes a token file plus targeted
+component edits rather than a fight with a library's internals.
+
+## Consequences
+
+**Positive**
+
+- Integrating the design system means editing our own components.
+- Reka UI carries accessibility — keyboard, ARIA, focus trapping — which the inbox
+  depends on for parity with the TUI.
+- No component library version to chase.
+
+**Negative**
+
+- Vendored components do not update themselves; upstream fixes are a manual pull.
+- More code in the repository from day one.
+
+**Accepted debt**
+
+- One blocking review rule replaces a lot of process: **no component may reference a
+  raw colour**, only the semantic tokens. Without that, the swap stops being cheap.

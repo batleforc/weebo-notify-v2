@@ -1,0 +1,613 @@
+<script setup lang="ts">
+/**
+ * Settings — profile, avatar, theme, density (§10.4, §2.4).
+ *
+ * The screen exists to make one thing visible that the API models and no other
+ * client shows: **which fields you own**. §2.4 says a field you edited stops being
+ * overwritten by your identity provider, and without a way to see and undo that,
+ * the rule is invisible until it surprises somebody. So every field says whose it
+ * is, and offers to hand it back.
+ */
+import { KeyRound, RotateCcw, Trash2, Upload } from "@lucide/vue";
+import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
+
+import {
+  createKey,
+  listKeys,
+  readProfile,
+  revokeKey,
+  setAvatar,
+  updateProfile,
+  whoami,
+} from "@/api/generated";
+import type {
+  ApiKey,
+  Profile,
+  ProfileField,
+  Scope,
+} from "@/api/generated/types.gen";
+import { failureOf } from "@/api/problem";
+import { useSession } from "@/auth/session";
+import DndPanel from "@/components/settings/DndPanel.vue";
+import PushPanel from "@/components/settings/PushPanel.vue";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { avatarObjectUrl } from "@/lib/avatar";
+import { exact } from "@/lib/format";
+import { LOCALE_KEY, type Locale } from "@/lib/locale";
+import { useChannels } from "@/stores/channels";
+import { useUi } from "@/stores/ui";
+
+const session = useSession();
+const ui = useUi();
+const channels = useChannels();
+const { t } = useI18n();
+
+const profile = ref<Profile | null>(null);
+const loading = ref(true);
+const saving = ref(false);
+const error = ref<string | null>(null);
+const file = ref<HTMLInputElement | null>(null);
+
+const draft = ref({ display_name: "", timezone: "" });
+
+const claimed = computed(
+  () => new Set<ProfileField>(profile.value?.overridden ?? []),
+);
+
+const detailPositionLabel = computed(() =>
+  t(`settings.appearance.detailPosition.${ui.detailPosition}`),
+);
+
+/**
+ * The avatar, as an object URL.
+ *
+ * Not `<img src="${apiBaseUrl}/api/v1/avatars/${id}">`, which is what this was
+ * and which could never have worked: that route is authenticated and this
+ * application keeps zero cookies (§5.1), so a browser `<img>` request carries no
+ * credential and answered 401 every time. The bytes are fetched through the API
+ * client instead — see `lib/avatar`.
+ */
+const avatarUrl = ref<string | null>(null);
+
+async function showAvatar(id: string | null | undefined): Promise<void> {
+  avatarUrl.value = id ? await avatarObjectUrl(id) : null;
+}
+
+function hydrate(next: Profile): void {
+  profile.value = next;
+  // Here rather than in `load`, because this is the one funnel every answer goes
+  // through — `load`, `save`, `release` and `upload` all end up in it. Wiring it to
+  // any single caller is how `showAvatar` ended up with no caller at all, and the
+  // symptom was silent: `avatarUrl` stayed null, `v-if` hid the `<img>`, and the
+  // fallback initials rendered exactly as they do for somebody with no avatar.
+  //
+  // Not awaited: the profile has to paint now, and the face arrives when it
+  // arrives. `avatarObjectUrl` caches by id and never rejects, so a repeat call
+  // costs nothing and a failure leaves the initials up.
+  void showAvatar(next.avatar);
+  draft.value = {
+    display_name: next.display_name ?? "",
+    timezone: next.timezone ?? "",
+  };
+
+  // Inherit the account's chosen UI language the first time the app opens on
+  // this browser — but never fight a choice already made here (§ C5).
+  const prefix = next.locale?.slice(0, 2).toLowerCase();
+  if (
+    !localStorage.getItem(LOCALE_KEY) &&
+    (prefix === "en" || prefix === "fr")
+  ) {
+    ui.locale = prefix;
+  }
+}
+
+async function load(): Promise<void> {
+  loading.value = true;
+  try {
+    const answer = await readProfile({ throwOnError: true });
+    hydrate(answer.data);
+  } catch (caught) {
+    error.value = failureOf(caught).message;
+  } finally {
+    loading.value = false;
+  }
+}
+
+/**
+ * Send only what changed.
+ *
+ * An absent field means "leave it alone" and an explicit `null` means "hand it
+ * back to the provider" (§2.4) — so sending the whole form on every save would
+ * claim three fields when somebody edited one.
+ */
+async function save(): Promise<void> {
+  if (!profile.value) {
+    return;
+  }
+  saving.value = true;
+  error.value = null;
+
+  const body: Record<string, string | null> = {};
+  const current = profile.value;
+  if (draft.value.display_name !== (current.display_name ?? "")) {
+    body.display_name = draft.value.display_name || null;
+  }
+  if (draft.value.timezone !== (current.timezone ?? "")) {
+    body.timezone = draft.value.timezone || null;
+  }
+
+  try {
+    const answer = await updateProfile({ body, throwOnError: true });
+    hydrate(answer.data);
+  } catch (caught) {
+    error.value = failureOf(caught).message;
+  } finally {
+    saving.value = false;
+  }
+}
+
+/**
+ * Set the UI language — immediately (localStorage, live retranslation via
+ * `ui.locale`'s own watcher) and, same as any other claimed profile field,
+ * persisted server-side so a next device inherits it (§ C5).
+ */
+async function setLocale(value: Locale): Promise<void> {
+  ui.locale = value;
+  saving.value = true;
+  error.value = null;
+  try {
+    const answer = await updateProfile({
+      body: { locale: value },
+      throwOnError: true,
+    });
+    hydrate(answer.data);
+  } catch (caught) {
+    error.value = failureOf(caught).message;
+  } finally {
+    saving.value = false;
+  }
+}
+
+/** Hand one field back to the identity provider. */
+async function release(
+  field: "display_name" | "timezone" | "locale",
+): Promise<void> {
+  saving.value = true;
+  error.value = null;
+  try {
+    const answer = await updateProfile({
+      body: { [field]: null },
+      throwOnError: true,
+    });
+    hydrate(answer.data);
+  } catch (caught) {
+    error.value = failureOf(caught).message;
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function upload(event: globalThis.Event): Promise<void> {
+  const picked = (event.target as HTMLInputElement).files?.[0];
+  if (!picked) {
+    return;
+  }
+
+  saving.value = true;
+  error.value = null;
+  try {
+    const answer = await setAvatar({
+      // The `File` itself: the generated type is binary, and reading it into an
+      // ArrayBuffer first would only copy 512 KiB for nothing.
+      body: picked,
+      headers: { "content-type": "application/octet-stream" },
+      throwOnError: true,
+    });
+    hydrate(answer.data);
+  } catch (caught) {
+    // The server refuses a file that is too big, animated or not an image at all
+    // (§2.4) — and its `code` is what turns that into a sentence.
+    error.value = failureOf(caught).message;
+  } finally {
+    saving.value = false;
+  }
+}
+
+/**
+ * A personal token for the CLI/TUI (`notify login`, §9.1).
+ *
+ * Owner is always the caller — never offered as a choice, unlike the admin
+ * screen's service-account keys: §5.2 draws that line at "a durable bot never
+ * runs on a human's key", and the reverse (a human's tool running on a key
+ * that is unmistakably theirs) is exactly what this is for.
+ *
+ * The caller's own [`UserId`] has to be asked for explicitly (`whoami`):
+ * nothing else the browser holds carries it — the OIDC `sub` claim is a
+ * different identifier than the server's internal id.
+ */
+const cliKeys = ref<ApiKey[]>([]);
+const cliKeyLabel = ref(
+  `notify-cli · ${new Date().toISOString().slice(0, 10)}`,
+);
+const cliKeyChannels = ref<Set<string>>(new Set());
+const cliKeyScopes = ref<Set<Scope>>(new Set(["subscribe"]));
+const cliKeyMinted = ref<string | null>(null);
+const cliKeyBusy = ref(false);
+const cliKeyError = ref<string | null>(null);
+
+async function loadCliKeys(): Promise<void> {
+  try {
+    const answer = await listKeys({ throwOnError: true });
+    // Scoped by the server to the caller's own keys (`ListApiKeys::execute`) —
+    // nobody else's tokens ever reach this screen.
+    cliKeys.value = answer.data;
+  } catch (caught) {
+    cliKeyError.value = failureOf(caught).message;
+  }
+}
+
+function toggleCliKeyChannel(id: string): void {
+  if (cliKeyChannels.value.has(id)) {
+    cliKeyChannels.value.delete(id);
+  } else {
+    cliKeyChannels.value.add(id);
+  }
+}
+
+function toggleCliKeyScope(scope: Scope): void {
+  if (cliKeyScopes.value.has(scope)) {
+    cliKeyScopes.value.delete(scope);
+  } else {
+    cliKeyScopes.value.add(scope);
+  }
+}
+
+async function mintCliKey(): Promise<void> {
+  if (cliKeyChannels.value.size === 0 || cliKeyScopes.value.size === 0) {
+    return;
+  }
+  cliKeyBusy.value = true;
+  cliKeyError.value = null;
+  try {
+    const me = await whoami({ throwOnError: true });
+    const answer = await createKey({
+      body: {
+        label: cliKeyLabel.value.trim() || null,
+        owner: { owner: "user", id: me.data.id },
+        channels: [...cliKeyChannels.value],
+        scopes: [...cliKeyScopes.value],
+      },
+      throwOnError: true,
+    });
+    // The one moment this value exists outside the caller's hands (§5.2).
+    cliKeyMinted.value = answer.data.secret;
+    await loadCliKeys();
+  } catch (caught) {
+    cliKeyError.value = failureOf(caught).message;
+  } finally {
+    cliKeyBusy.value = false;
+  }
+}
+
+async function revokeCliKey(id: string): Promise<void> {
+  cliKeyBusy.value = true;
+  cliKeyError.value = null;
+  try {
+    await revokeKey({ path: { id }, throwOnError: true });
+    await loadCliKeys();
+  } catch (caught) {
+    cliKeyError.value = failureOf(caught).message;
+  } finally {
+    cliKeyBusy.value = false;
+  }
+}
+
+onMounted(() => {
+  void load();
+  void channels.load();
+  void loadCliKeys();
+});
+</script>
+
+<template>
+  <div class="h-full space-y-4 overflow-y-auto p-6">
+    <h1 class="text-lg font-semibold">{{ t("settings.title") }}</h1>
+
+    <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t("settings.profile.title") }}</CardTitle>
+        <p class="text-sm text-muted-foreground">
+          {{ t("settings.profile.description") }}
+        </p>
+      </CardHeader>
+
+      <CardContent class="space-y-4">
+        <div class="flex items-center gap-4">
+          <img
+            v-if="avatarUrl"
+            :src="avatarUrl"
+            alt=""
+            class="size-16 rounded-full border border-border object-cover"
+          />
+          <div
+            v-else
+            class="flex size-16 items-center justify-center rounded-full border border-dashed border-border text-xs text-muted-foreground"
+          >
+            {{ t("settings.profile.noAvatar") }}
+          </div>
+
+          <div class="space-y-1">
+            <Button variant="outline" size="sm" :disabled="saving" @click="file?.click()">
+              <Upload />
+              {{ t("settings.profile.changeAvatar") }}
+            </Button>
+            <p class="text-xs text-muted-foreground">
+              {{ t("settings.profile.avatarHint") }}
+            </p>
+          </div>
+          <input
+            ref="file"
+            type="file"
+            class="hidden"
+            accept="image/png,image/jpeg,image/webp"
+            @change="upload"
+          />
+        </div>
+
+        <Separator />
+
+        <label class="block space-y-1">
+          <span class="flex items-center gap-2 text-sm font-medium">
+            {{ t("settings.profile.displayName") }}
+            <Badge v-if="claimed.has('display_name')" variant="secondary">
+              {{ t("settings.profile.claimed") }}
+            </Badge>
+            <Badge v-else variant="muted">{{ t("settings.profile.followsIdp") }}</Badge>
+            <Button
+              v-if="claimed.has('display_name')"
+              variant="ghost"
+              size="sm"
+              class="h-6 px-2 text-xs"
+              @click="release('display_name')"
+            >
+              <RotateCcw class="size-3" />
+              {{ t("settings.profile.releaseToIdp") }}
+            </Button>
+          </span>
+          <Input v-model="draft.display_name" :disabled="loading || saving" />
+        </label>
+
+        <label class="block space-y-1">
+          <span class="flex items-center gap-2 text-sm font-medium">
+            {{ t("settings.profile.timezone") }}
+            <Badge v-if="claimed.has('timezone')" variant="secondary">
+              {{ t("settings.profile.claimed") }}
+            </Badge>
+            <Button
+              v-if="claimed.has('timezone')"
+              variant="ghost"
+              size="sm"
+              class="h-6 px-2 text-xs"
+              @click="release('timezone')"
+            >
+              <RotateCcw class="size-3" />
+              {{ t("settings.profile.releaseToIdp") }}
+            </Button>
+          </span>
+          <Input
+            v-model="draft.timezone"
+            placeholder="Europe/Paris"
+            :disabled="loading || saving"
+          />
+          <span class="text-xs text-muted-foreground">
+            {{ t("settings.profile.timezoneHint") }}
+          </span>
+        </label>
+
+        <div class="space-y-1">
+          <span class="flex items-center gap-2 text-sm font-medium">
+            {{ t("settings.locale.title") }}
+            <Badge v-if="claimed.has('locale')" variant="secondary">
+              {{ t("settings.profile.claimed") }}
+            </Badge>
+            <Badge v-else variant="muted">{{ t("settings.profile.followsIdp") }}</Badge>
+            <Button
+              v-if="claimed.has('locale')"
+              variant="ghost"
+              size="sm"
+              class="h-6 px-2 text-xs"
+              @click="release('locale')"
+            >
+              <RotateCcw class="size-3" />
+              {{ t("settings.profile.releaseToIdp") }}
+            </Button>
+          </span>
+          <div class="flex gap-1">
+            <Button
+              :variant="ui.locale === 'fr' ? 'secondary' : 'outline'"
+              size="sm"
+              :disabled="loading || saving"
+              @click="setLocale('fr')"
+            >
+              {{ t("settings.locale.fr") }}
+            </Button>
+            <Button
+              :variant="ui.locale === 'en' ? 'secondary' : 'outline'"
+              size="sm"
+              :disabled="loading || saving"
+              @click="setLocale('en')"
+            >
+              {{ t("settings.locale.en") }}
+            </Button>
+          </div>
+        </div>
+
+        <Button :disabled="loading || saving" @click="save">
+          {{ saving ? t("settings.profile.saving") : t("settings.profile.save") }}
+        </Button>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t("settings.appearance.title") }}</CardTitle>
+      </CardHeader>
+      <CardContent class="flex flex-wrap items-center gap-2">
+        <Button variant="outline" size="sm" @click="ui.cycleTheme()">
+          {{ t("settings.appearance.theme", { theme: ui.theme }) }}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          @click="ui.density = ui.density === 'compact' ? 'comfortable' : 'compact'"
+        >
+          {{ t("settings.appearance.density", { density: ui.density }) }}
+        </Button>
+        <Button variant="outline" size="sm" @click="ui.cycleDetailPosition()">
+          {{ t("settings.appearance.detail", { position: detailPositionLabel }) }}
+        </Button>
+      </CardContent>
+      <p class="px-6 pb-4 -mt-2 text-xs text-muted-foreground">
+        {{ t("settings.appearance.detailHint") }}
+      </p>
+    </Card>
+
+    <PushPanel />
+
+    <DndPanel />
+
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t("settings.keys.title") }}</CardTitle>
+        <p class="text-sm text-muted-foreground">
+          {{ t("settings.keys.description") }}
+        </p>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <p v-if="cliKeyError" class="text-sm text-destructive">{{ cliKeyError }}</p>
+
+        <!-- Montré une fois, jamais réaffiché : seul le hachage est conservé
+             (§5.2), exactement la même règle que pour une clé de bot. -->
+        <Card v-if="cliKeyMinted" class="border-status-warning">
+          <CardContent class="space-y-2 pt-4">
+            <p class="text-sm text-muted-foreground">
+              {{ t("settings.keys.mintedHint") }}
+            </p>
+            <code class="block break-all rounded-md bg-muted p-3 text-xs">{{
+              cliKeyMinted
+            }}</code>
+            <Button variant="outline" size="sm" @click="cliKeyMinted = null">
+              {{ t("settings.keys.copied") }}
+            </Button>
+          </CardContent>
+        </Card>
+
+        <template v-else>
+          <Input v-model="cliKeyLabel" :placeholder="t('settings.keys.labelPlaceholder')" />
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium text-muted-foreground">
+              {{ t("settings.keys.channels") }}
+            </p>
+            <label
+              v-for="channel in channels.all"
+              :key="channel.id"
+              class="flex items-center gap-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                :checked="cliKeyChannels.has(channel.id)"
+                @change="toggleCliKeyChannel(channel.id)"
+              />
+              {{ channel.display_name || channel.id }}
+            </label>
+            <p v-if="!channels.all.length" class="text-xs text-muted-foreground">
+              {{ t("settings.keys.noChannels") }}
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium text-muted-foreground">
+              {{ t("settings.keys.scope") }}
+            </p>
+            <label
+              v-for="scope in (['subscribe', 'publish', 'manage'] as Scope[])"
+              :key="scope"
+              class="flex items-center gap-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                :checked="cliKeyScopes.has(scope)"
+                @change="toggleCliKeyScope(scope)"
+              />
+              {{ scope }}
+            </label>
+          </div>
+
+          <Button
+            :disabled="cliKeyBusy || !cliKeyChannels.size || !cliKeyScopes.size"
+            @click="mintCliKey"
+          >
+            <KeyRound />
+            {{ t("settings.keys.create") }}
+          </Button>
+        </template>
+
+        <div
+          v-for="key in cliKeys"
+          :key="key.id"
+          class="flex items-center justify-between gap-2 border-b border-border pb-2 text-sm last:border-0"
+        >
+          <span class="min-w-0">
+            <code class="text-xs">{{ key.prefix }}…</code>
+            <span class="ml-2">{{ key.label ?? t("settings.keys.unnamed") }}</span>
+            <span class="ml-2 text-xs text-muted-foreground">
+              {{
+                key.last_used_at
+                  ? t("settings.keys.lastUsed", { at: exact(key.last_used_at) })
+                  : t("settings.keys.neverUsed")
+              }}
+            </span>
+          </span>
+          <Badge v-if="key.revoked_at" variant="muted">
+            {{ t("settings.keys.revoked") }}
+          </Badge>
+          <Button
+            v-else
+            variant="ghost"
+            size="sm"
+            :disabled="cliKeyBusy"
+            @click="revokeCliKey(key.id)"
+          >
+            <Trash2 />
+            {{ t("settings.keys.revoke") }}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t("settings.session.title") }}</CardTitle>
+      </CardHeader>
+      <CardContent class="space-y-2 text-sm">
+        <p class="text-muted-foreground">
+          {{ t("settings.session.connectedAs", { name: session.displayName }) }}
+        </p>
+        <p v-if="session.groups.length" class="text-xs text-muted-foreground">
+          {{ t("settings.session.groups", { groups: session.groups.join(", ") }) }}
+        </p>
+        <Button variant="outline" size="sm" @click="session.logout()">
+          {{ t("settings.session.logout") }}
+        </Button>
+      </CardContent>
+    </Card>
+  </div>
+</template>

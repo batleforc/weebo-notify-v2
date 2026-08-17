@@ -1,0 +1,47 @@
+[package]
+name = "xtask"
+description = "Build-time chores that need real code: OpenAPI client generation (design §3.2)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+# Bcrypting the Dex development password (design §3.2, D7). Dex wants bcrypt and
+# nothing else, and this is what lets `dev/dex/render.sh` run on a machine that has
+# neither caddy nor htpasswd — which is every Eclipse Che workspace.
+bcrypt = { version = "0.19", default-features = false, features = ["std", "zeroize", "getrandom"] }
+clap.workspace = true
+# The stub notification daemon behind `task desktop:notifyd` (D19). Already in the
+# graph — `notify-rust`'s `d` feature is these same bindings — so this adds a name
+# to a manifest and nothing to a build, exactly like `ed25519-dalek` below.
+dbus = "0.9"
+# The VAPID key generator: `pkcs8` on top of the workspace's features, because the
+# key is written in the PKCS#8 PEM form `[push.webpush]` reads.
+getrandom = "0.3"
+# The federation signing key (design §5.3): Ed25519 in the PKCS#8 PEM form
+# `jsonwebtoken` loads. Both are already in the graph through that crate's
+# `rust_crypto` feature, so this adds a name to a manifest and nothing to a build.
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+jsonwebtoken.workspace = true
+openapiv3 = "2.2"
+p256 = { workspace = true, features = ["pkcs8"] }
+prettyplease = "0.2"
+progenitor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+syn = "2"
+# Rasterising the desktop icons (M5). Pure Rust on purpose: `librsvg`, Inkscape and
+# ImageMagick are system packages, and this workspace has no root (§12.4) — the
+# same constraint that keeps the shell itself unbuildable here.
+#
+# No `text` feature: the marks are paths, so font shaping would be a font stack
+# pulled in to render nothing.
+resvg = { version = "0.48.1", default-features = false }

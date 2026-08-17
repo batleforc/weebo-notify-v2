@@ -1,0 +1,17 @@
+{{- /* Skipped for a filesystem-backed deployment: server-deployment.yaml forces
+   replicas to 1 there (ADR-0022's accepted debt), and a PDB with
+   minAvailable >= 1 on a single replica blocks every voluntary eviction —
+   including the node drain an operator needs to run to move the PVC's node. */}}
+{{- if and .Values.server.podDisruptionBudget.enabled (ne .Values.server.attachments.kind "filesystem") }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.server.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+{{- end }}

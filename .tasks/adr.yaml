@@ -1,0 +1,58 @@
+version: "3"
+
+# Task echoes multi-line scripts verbatim; the scripts below print what matters themselves.
+silent: true
+
+# Architecture Decision Records (design §3.3).
+#
+# ADRs are IMMUTABLE: an accepted ADR is never rewritten, it is superseded by a new
+# one ("Superseded by: ADR-00NN"). Write one when a decision is expensive to reverse
+# or was actually debated — not for every library pick.
+#
+# This convention is meant to be promoted back into the weebo-base template.
+
+vars:
+  ADR_DIR: docs/content/docs/adr
+
+tasks:
+  default:
+    desc: 'Create the next numbered ADR from the MADR template — usage: task adr -- "sealed box per device"'
+    cmds:
+      - cmd: |
+          set -eu
+          # Task already shell-quotes CLI_ARGS — do not add quotes around it.
+          title={{.CLI_ARGS}}
+          if [ -z "$title" ]; then
+            echo 'usage: task adr -- "the decision title"' >&2
+            exit 2
+          fi
+          mkdir -p '{{.ADR_DIR}}'
+          # The leading zeros are stripped before the addition, and that is not
+          # cosmetic: shell arithmetic reads `0014` as OCTAL, so the next record
+          # after ADR-0014 came out numbered 0013 and quietly collided with an
+          # existing one. `0008` and `0009` are not even valid octal, which would
+          # have failed outright the day the count reached them.
+          last=$(ls '{{.ADR_DIR}}' 2>/dev/null | grep -oE '^[0-9]{4}' | sort -n | tail -1 | sed 's/^0*//' || true)
+          next=$(printf '%04d' $(( ${last:-0} + 1 )))
+          slug=$(printf '%s' "$title" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-//' -e 's/-$//')
+          file="{{.ADR_DIR}}/$next-$slug.mdx"
+          if [ -e "$file" ]; then
+            echo "$file already exists" >&2
+            exit 1
+          fi
+          sed -e "s/{{"{{"}}NUMBER{{"}}"}}/$next/g" \
+              -e "s/{{"{{"}}TITLE{{"}}"}}/$title/g" \
+              -e "s/{{"{{"}}DATE{{"}}"}}/$(date +%Y-%m-%d)/g" \
+              .tasks/adr.template.mdx > "$file"
+          echo "created $file"
+
+  list:
+    desc: "List the existing ADRs with their status line"
+    cmds:
+      - cmd: |
+          for f in {{.ADR_DIR}}/[0-9]*.mdx; do
+            [ -e "$f" ] || { echo "no ADR yet"; break; }
+            printf '%-52s %s\n' "$(basename "$f")" "$(grep -m1 '^Status' "$f" || true)"
+          done

@@ -1,0 +1,33 @@
+[package]
+name = "notify-client-core"
+description = "Client logic shared by the CLI, the TUI and the Tauri shell: sync, cursor, local cache."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-client-api = { workspace = true }
+
+chrono = { workspace = true }
+# The IANA database, for the "until the morning" preset (§10bis.3ter): §7.4 puts the
+# timezone on the preference, so resolving one is a client concern too.
+chrono-tz = { workspace = true }
+figment = { workspace = true }
+progenitor-client = { workspace = true }
+# SQLite in WAL mode, because §9.3bis needs several processes reading while one
+# writes — see `store`. `bundled` compiles it from C, a cost the client pays and
+# the server does not.
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+url = { workspace = true }

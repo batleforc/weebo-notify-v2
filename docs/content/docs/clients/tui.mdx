@@ -1,0 +1,122 @@
+---
+title: Terminal UI
+description: Three panes, vim-like keys, and a `:` line that speaks the CLI's own grammar.
+---
+
+`notify` with no subcommand, or `notify watch`. If stdout is not a terminal — a
+pipe, cron, CI — it prints help and exits `2` rather than trying to draw.
+
+```
+┌─ Channels ──┬─ Inbox ────────────────────────┬─ Detail ─────────────┐
+│ cluster-ovh │ ▶ etcd degraded      ✗ failure │ Timeline révisions   │
+│ ci-infra  3 │   Pipeline #4521     ⟳ working │ open → working → …   │
+└─────────────┴────────────────────────────────┴──────────────────────┘
+```
+
+## Keys
+
+The footer is contextual, lazygit-style: it always shows the keys that do
+something in whatever you're looking at right now, not a fixed list — `a`
+for actions only appears once the selected notification has some, and it
+says how many.
+
+| Key | What it does |
+| --- | --- |
+| `j` / `k` | Move within the focused pane |
+| `tab` / `shift-tab` | Move focus between panes, forward / backward |
+| `enter` | Filter on the highlighted channel (Channels pane), or open the detail panel (Inbox) |
+| `a` | Open the current notification's actions, when it has any |
+| `p` | Publish a notification, guided |
+| `m` | Channel / do-not-disturb / device menu, guided |
+| `r` | Ask the server again |
+| `:` | Open the command line |
+| `?` | Help |
+| `q` | Quit — from anywhere except the `:` line or a compose field mid-edit, where it types the letter instead |
+
+## Which channel is active
+
+The Channels pane's first row is always **Tous** — the sidebar's synthetic
+"no filter" entry. Moving the cursor with `j`/`k` never changes what the
+Inbox shows by itself; pressing `enter` on a row is what applies it. The
+channel actually filtering the Inbox carries a persistent `▸` marker, and the
+Inbox's own title repeats it (`Inbox (12) · ci-infra`) — the active filter is
+never a guess from where the cursor happens to be sitting.
+
+## Guided menu and guided publish
+
+Two keys open small guided front ends over the `:` grammar below, for the
+part of it worth a menu instead of a memorised flag:
+
+- **`m`** opens **Canaux / Ne pas déranger / Appareils** — `j`/`k` to move,
+  `enter` to open a group or run an item, `esc` to go back one level. Running
+  something that needs an argument (`channel create`, `dnd on`, `device
+  enrol`) seeds the `:` line instead of asking blind, so tab completion and
+  history still apply to what you type next.
+- **`p`** opens a form for `notify publish`: a channel picker, a title and a
+  one-line body, tags and action buttons (typed as the same `type:label:arg`
+  the CLI takes, validated as you go), and pickers for état/statut/priorité.
+  `j`/`k` move between fields, `h`/`l` step a picker's value, `enter` edits a
+  text field or sends the form from its last row. A multi-line body or an
+  attached image still need `:publish -b -` or the raw `:` line — the form
+  covers the common case, not the whole grammar.
+
+## The `:` line
+
+It accepts **exactly the CLI's grammar** — the line is split, handed to the same
+parser, and run through the same code path the shell uses. A subcommand added to
+the CLI is available here the day it lands, with no separate implementation to
+drift.
+
+```
+:publish -c ci-infra -t "rebuild ok" --status success
+:channel set-ttl ci-infra 24h
+:device enrol
+```
+
+Inside the line:
+
+- **Suggestions show live**, above the line, as you type — the same command
+  tree `tab` completes from, just visible without pressing anything. Past
+  `channel `, only `channel`'s own subcommands are offered; type a `-` and it
+  switches to that subcommand's flags.
+- **`tab` completes** from the command tree — subcommands where a subcommand can
+  go, long flags once you type a `-`. Several candidates complete as far as they
+  agree, exactly like a shell.
+- **`↑` / `↓` walk the history**, which is kept per profile in the profile's data
+  directory and survives closing the TUI. It is written `0600`, for the reason a
+  shell history is.
+- **`esc` cancels.**
+
+## Several windows, one stream
+
+The CLI, the TUI and a desktop app on the same profile share **one local store**
+and **one stream**. Whichever front end starts first holds the connection and feeds
+the store; the others read it and are woken by a local signal. The status bar says
+which role this window has.
+
+Killing the holder — crash, `kill -9`, a closed lid — frees the stream immediately:
+the lock is held by the process, not by a flag someone has to clean up. Deleting the
+store costs a full re-sync and nothing else; it is a cache.
+
+## Desktop notifications
+
+`notify watch --notify-send` also relays arrivals to your desktop notification
+daemon. Off by default.
+
+Your do-not-disturb (§7.4) is honoured **by this client**: during a quiet period
+the popup is suppressed while the inbox keeps filling — the stream is not
+interrupted, because an open client is a deliberate choice to look. Channel
+exceptions ring through, and `urgent` gets through only if you enabled that.
+
+<Callout>
+  Relaying needs a notification daemon on the machine. Over ssh, in a container or
+  on a headless host there is nothing to relay to, and the flag quietly does
+  nothing rather than reporting a failure on every arrival.
+</Callout>
+
+<Callout type="warn">
+  The relay fires whether or not the terminal has focus. There is no portable way to
+  ask a terminal whether it is focused — every windowing system answers differently
+  and a multiplexer breaks whichever answer we would pick — so the flag is the
+  switch, and it is yours.
+</Callout>

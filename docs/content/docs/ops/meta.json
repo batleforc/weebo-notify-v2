@@ -1,0 +1,11 @@
+{
+  "title": "Operations",
+  "pages": [
+    "configuration",
+    "high-availability",
+    "observability",
+    "hardening",
+    "---Advisories---",
+    "state-advisory-2026-08-10"
+  ]
+}

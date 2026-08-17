@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="96 108 320 320" role="img" aria-label="weebo-notify">
+  <title>weebo-notify — déconnecté</title>
+  <!--
+    "Variante grisée" (§10bis.3ter), expressed as **alpha** rather than as grey.
+    A macOS template icon carries no colour at all, so a grey fill would render
+    identically to the neutral mark there — the one platform where the tray is most
+    used. Reduced opacity survives the template conversion, because alpha is the
+    only channel it keeps.
+  -->
+  <g fill="#fafafa" opacity="0.45">
+    <path d="M256 116a26 26 0 0 1 26 26v10a90 90 0 0 1 64 86v54l30 46a12 12 0 0 1-10 19H146a12 12 0 0 1-10-19l30-46v-54a90 90 0 0 1 64-86v-10a26 26 0 0 1 26-26z" />
+    <path d="M212 382h88a44 44 0 0 1-88 0z" />
+  </g>
+</svg>

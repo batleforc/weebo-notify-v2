@@ -1,0 +1,89 @@
+---
+title: CLI
+description: Publishing, reading and enrolling from a terminal — what the commands are, what they answer, and what a script can rely on.
+---
+
+One binary, `notify`. Running it with no subcommand opens the [terminal
+UI](/docs/clients/tui); everything below works without one.
+
+```bash
+notify publish -c cluster-ovh-1 -t "etcd degraded" --status failure
+notify ls --output json | jq '.[] | select(.status == "failure")'
+```
+
+## Getting the binary
+
+Build it from source (`cargo build --release -p notify-cli`), or — on a
+deployment whose operator opted in with a `[cli]` section — download the exact
+binary that server is running:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://weebo.example/api/v1/cli -o notify
+chmod +x notify
+```
+
+Any authenticated caller can fetch it, a person or a service account, no extra
+scope. Linux only for now — see [configuration](/docs/ops/configuration#cli-download)
+for the operator side of this, and what an unconfigured deployment answers instead.
+
+## The commands
+
+| Command | What it does |
+| --- | --- |
+| `publish` | Publish a notification |
+| `update` | Create or revise one by **your own** identifier — the same call twice amends rather than duplicating |
+| `ls` | Show the inbox, most recent first |
+| `sync` | Catch the local store up with everything since its cursor |
+| `channel` | `list`, `create`, `join`, `set-ttl` |
+| `device` | `list`, and `enrol` this machine (`enroll` is accepted too) |
+| `dnd` | `status`, `on`, `off`, `schedule` — quiet hours and the quick toggle |
+| `token` | `exchange` — the CI federation flow |
+| `watch` | Open the terminal UI |
+| `completions` | Shell completions for bash, zsh, fish or PowerShell |
+
+`notify <command> --help` is authoritative: it is generated from the same
+definitions the commands run on.
+
+## What a script can rely on
+
+**`--output json` on every command.** Table output is for people and may be
+reflowed; the JSON is the contract.
+
+```bash
+notify ls --output json
+```
+
+**Exit codes**: `0` success, `1` the API refused or was unreachable, `2` a usage
+error. Errors go to stderr, so a pipeline reads clean JSON on stdout.
+
+**`--profile`** selects which server you are talking to. One machine can hold
+several — personal and work — and each has its own device, its own local store and
+its own tokens. It defaults to `default` and reads `WNK_PROFILE`.
+
+**Configuration layers** the same way the server's does: defaults, then
+`~/.config/weebo-notify/config.toml`, then `WNK_*` variables, then flags.
+
+## Bodies, images and actions
+
+The body can come from a file or a pipe, and the `-` is required — a CLI that read
+stdin unasked would hang in a script one day:
+
+```bash
+kubectl logs deploy/api --tail 20 | notify publish -c ci-infra -t "api logs" --body -
+```
+
+`--image ./graph.png` inlines a small image and uploads anything larger as an
+attachment. `--action "view:Runbook:https://…"` adds a button; only `http(s)` URLs
+are accepted, at publish time and again before any client opens one.
+
+## Tokens
+
+On a desktop, tokens live in the OS keyring. On a headless host — a server, a
+container, a debug pod — they fall back to a `0600` file in the profile directory.
+Neither is required: a one-off run with an API key in the environment works with no
+persistence at all.
+
+<Callout>
+  A bot that has to keep running should use a **service account** key, never a
+  person's. Offboarding someone should not take the bot down with them.
+</Callout>

@@ -1,0 +1,153 @@
+name: notify
+
+# Dogfooding: this project tells its own weebo-notify instance how its CI went
+# (design §3.2, §3.2bis, §5.3).
+#
+# It is the smallest complete demonstration of the federation model, which is why
+# it is worth having beyond the notification itself: **no secret is configured
+# here**. There is no API key in the repository, none in the forge's secret store,
+# and nothing to rotate. The runner already holds an ID token saying which
+# repository and which ref it is, and `notify token exchange` turns that into
+# fifteen minutes of publish rights on one channel.
+#
+# ── The receiving instance trusts an ISSUER, and the issuer just changed ────────
+#
+# This is the one part of the forge move that is not contained in this repository.
+# The token is minted by whichever forge runs the job, and §5.3 matches it against a
+# trust policy on the *server*. Moving the workflow here without updating that
+# policy produces a 401, correctly and unhelpfully.
+#
+# Both are listed so the transition does not have a gap — Forgejo keeps working
+# while it still runs anything, and GitHub starts working the moment this lands (§11):
+#
+#     # GitHub — the primary forge as of this change
+#     [[trust_policy]]
+#     issuer   = "https://token.actions.githubusercontent.com"
+#     subject  = "repo:batleforc/weebo-notify-v2:ref:refs/heads/main"
+#     channels = ["ci-infra"]
+#     scopes   = ["publish"]
+#
+#     # Forgejo — kept during the transition, removable once the mirror stops
+#     # running anything that publishes
+#     [[trust_policy]]
+#     issuer   = "https://forgejo.weebo.poc"
+#     subject  = "repo:weebo/weebo-notify:ref:refs/heads/main"
+#     channels = ["ci-infra"]
+#     scopes   = ["publish"]
+#
+# The `subject` is worth reading rather than pasting: a `workflow_run` job always
+# runs in the context of the default branch, so the ref in the claim is
+# `refs/heads/main` whatever branch triggered `check`. That is what makes a single
+# subject sufficient here, and it is also why this policy grants nothing to a pull
+# request from a fork.
+#
+# ── What this workflow has NOT been run against ────────────────────────────────
+#
+# Any real forge. It was written against the design's contract and the CLI it calls
+# was exercised end to end against a live server (M4.7), but the two lines only a
+# forge can answer — that `id-token: write` yields a token, and that its `aud` names
+# weebo-notify — have not been observed. Both fail loudly rather than quietly if
+# they are wrong: no token means an empty variable and a failed step, and a wrong
+# `aud` is exactly what §5.3 refuses with a 401. The first run here is the test.
+
+on:
+  workflow_run:
+    workflows: [check]
+    types: [completed]
+
+permissions:
+  # The whole mechanism. Without it the runner has no ID token to exchange, and
+  # the step below fails rather than falling back to something longer-lived.
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # An instance that is not configured is the normal state of a fork, so the
+    # whole job is skipped rather than failing somebody else's pipeline.
+    if: vars.WNK_URL != ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install libdbus headers
+        # `notify-cli` links libdbus through notify-rust's `d` feature — see
+        # `check.yaml`. This job builds exactly that crate, so it needs the headers
+        # even though it builds nothing else.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`
+        # — same reasoning as every other workflow in this directory.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the client
+        # `GITHUB_TOKEN` for the `mise install` below, not for anything this job
+        # publishes: the `aqua:` backend resolves versions through the GitHub API,
+        # and an unauthenticated runner gets 60 requests an hour shared by IP. See
+        # `check.yaml` for the failure that put this line in every workflow.
+        #
+        # Note the two tokens in this file do entirely different jobs and neither can
+        # stand in for the other: this one reads public releases, and the one the
+        # next step mints is an OIDC identity assertion (§5.3).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mise install
+          mise exec -- cargo build --quiet --release -p notify-cli
+
+      - name: Exchange the runner's identity for a short-lived token
+        id: token
+        env:
+          WNK_URL: ${{ vars.WNK_URL }}
+        run: |
+          set -euo pipefail
+
+          # The forge mints this on demand; `aud` has to name the receiving
+          # instance, which is what stops a token minted for another service from
+          # being replayed here (§5.3, scenario T11).
+          id_token=$(curl -fsSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=weebo-notify" \
+            | jq -r '.value')
+
+          # Written to the step output rather than echoed: it is a credential for
+          # the next fifteen minutes, and a `set -x` left on by somebody debugging
+          # would otherwise put it in the log.
+          echo "::add-mask::$id_token"
+          minted=$(WNK_CI_TOKEN="$id_token" \
+            ./target/release/notify token exchange)
+          echo "::add-mask::$minted"
+          echo "token=$minted" >> "$GITHUB_OUTPUT"
+
+      - name: Say how it went
+        env:
+          WNK_URL: ${{ vars.WNK_URL }}
+          WNK_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # `update` and not `publish`, keyed on the run id: the same call creates
+          # on the first invocation and revises on a re-run, so a retried pipeline
+          # amends its own notification instead of opening a second one (§2.2).
+          ./target/release/notify update \
+            --channel ci-infra \
+            --id "run-${{ github.run_id }}" \
+            --title "${{ github.repository }} · ${{ github.ref_name }}" \
+            --body "check: ${{ github.event.workflow_run.conclusion }} — ${{ github.sha }}" \
+            --state closed \
+            --status "${{ github.event.workflow_run.conclusion == 'success' && 'success' || 'failure' }}" \
+            --action "view:Voir le run:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

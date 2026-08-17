@@ -1,8 +1,56 @@
 [tools]
+# --- Inherited from weebo-base ---
 cocogitto = "latest"
 node = "24"
-rust = "latest"
+# fmt and clippy are both required (.tasks/lint.yaml) and neither is in rustup's
+# `minimal` profile, so both are named here rather than left to whatever profile
+# the host's rustup happens to default to.
+#
+# `components` and not `profile = "default"`, which is what this line said first
+# and which did not hold: a profile is an argument to the *initial* `rustup
+# toolchain install` and nothing re-checks it afterwards, whereas mise re-checks
+# `components` on every `mise install` and adds the ones that are missing. On a CI
+# runner whose cache carried a toolchain installed before this line existed, the
+# profile therefore changed nothing and `cargo fmt` still failed with "cargo-fmt is
+# not installed". The narrower set also keeps ~/.rustup small enough to cache,
+# which is the other half of that fix (.github/workflows/check.yaml) — `default`
+# would drag in rust-docs, which nothing here reads.
+rust = { version = "latest", profile = "minimal", components = ["rustfmt", "clippy"] }
 task = "latest"
 gitleaks = "latest"
-claude = "latest"
-rtk = "latest"
+
+# Developer-only tools (claude, rtk, herdr) live in `mise.dev.toml` and load only
+# under MISE_ENV=dev — see that file. CI installs what is below and nothing else.
+
+# --- weebo-notify additions (design §3.1) ---
+pnpm = "latest"                  # web/ and docs/ package manager (ADR-0011)
+cargo-binstall = "latest"        # lets the cargo: backend below fetch prebuilt binaries
+"aqua:nextest-rs/nextest/cargo-nextest" = "latest"  # test runner (task test)
+"aqua:taiki-e/cargo-llvm-cov" = "latest"            # source-based coverage (task cover, CI check)
+"aqua:EmbarkStudios/cargo-deny" = "latest"          # dependency CVE/licence audit (task audit)
+"aqua:rustsec/rustsec/cargo-audit" = "latest"       # RustSec advisories (task audit)
+trivy = "latest"                 # Containerfile/image + filesystem CVE scan (task audit)
+awscli = "latest"                # seeds the RustFS bucket in dev/seed/seed.sh
+"cargo:sqlx-cli" = "latest"      # `sqlx migrate` in dev/seed/seed.sh (not in the mise registry)
+helm = "latest"                  # lint/template/package charts/weebo-notify (task helm)
+# The Tauri CLI — `task tauri:bundle` (the .deb and the AppImage) and
+# `task android:build` (the APK). It started in `mise.android.toml`, on the reasoning
+# that mobile was its only consumer; that stopped being true the moment the desktop
+# bundles needed packaging rather than just compiling, and a tool two targets need is
+# not an Android tool.
+#
+# Here rather than in `mise.dev.toml` because CI builds both clients and CI does not
+# load `dev`. The cost is the one SEC-P2-08 names — this now installs in the release
+# job too, alongside the registry token — and it is accepted rather than overlooked:
+# the §3.2bis artefact matrix puts desktop and Android packages *in* that job, so the
+# binary has to be there anyway. `aqua:` fetches tauri-apps' own signed release rather
+# than compiling `cargo:tauri-cli` from source on every runner.
+"aqua:tauri-apps/tauri/cargo-tauri" = "2"
+# `yq` used to live here for `task gen:devfile`, which inlined the identity
+# provider's configuration into devfile.yaml. The provider reads the committed file
+# directly now (ADR-0014), so both the step and the tool are gone.
+
+[settings]
+# `cargo:` tools are fetched as prebuilt binaries via cargo-binstall instead of
+# being compiled from source — keeps `mise install` in the seconds, not minutes.
+cargo.binstall = true

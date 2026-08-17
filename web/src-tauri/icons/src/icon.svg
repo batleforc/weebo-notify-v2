@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="weebo-notify">
+  <title>weebo-notify</title>
+  <!--
+    One icon for every size: SVG scales, and a set of rasters would be five files
+    to keep in step with a mark that has not been designed yet.
+
+    Drawn for `purpose: "any maskable"`, so everything that matters sits inside the
+    central 80% an OS is allowed to crop to — the bell below spans 160-352 on a
+    512 canvas, which survives the roundest mask Android applies. The plate is the
+    full square on purpose: it is what gets cropped, and a transparent one would
+    be given a background nobody chose.
+
+    The two colours are the dark theme's `background` and `foreground` tokens
+    (§10.2) resolved to hex, which is the one place raw colour is unavoidable: an
+    OS reads this file before any stylesheet exists. They have to be updated by
+    hand if the tokens move; the manifest alongside carries the same note.
+
+    Their CSS names are written without the leading dashes on purpose, and this is
+    not pedantry: XML forbids a double hyphen anywhere inside a comment, so writing
+    the custom properties in full made this document fail to parse. Chrome answered
+    `Download error or resource isn't a valid image`, the installed PWA had no
+    icon, and nothing failed anywhere else — a manifest icon is fetched by the
+    browser, never by the suite. Found by loading the page (M4quatervicies).
+  -->
+  <rect width="512" height="512" rx="112" fill="#18181b" />
+  <g fill="#fafafa">
+    <path d="M256 116a26 26 0 0 1 26 26v10a90 90 0 0 1 64 86v54l30 46a12 12 0 0 1-10 19H146a12 12 0 0 1-10-19l30-46v-54a90 90 0 0 1 64-86v-10a26 26 0 0 1 26-26z" />
+    <path d="M212 382h88a44 44 0 0 1-88 0z" />
+  </g>
+</svg>

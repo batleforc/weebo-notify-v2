@@ -10,7 +10,19 @@ post_bump_hooks = []
 post_package_bump_hooks = []
 tag_prefix = "v"
 
-pre_bump_hooks = []
+# One version for the whole product (design §3.2bis): the sync script propagates the
+# computed version to the cargo workspace, both JS projects and — from M5 — the Tauri
+# configuration, so the bump commit already contains them all.
+#
+# The gates run here too: a tag never exempts anything from what a pull request had
+# to pass, and catching it before the tag exists is far cheaper than after.
+pre_bump_hooks = [
+    "task lint:check",
+    "task recu",
+    "git diff --exit-code",
+    "task test:critical",
+    ".hooks/sync-version.sh {{version}}",
+]
 
 
 [git_hooks]

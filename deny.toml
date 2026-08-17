@@ -1,0 +1,81 @@
+# cargo-deny policy, run by `task audit`.
+#
+# Two things it answers that `cargo audit` does not: which licences we are willing
+# to ship, and whether a dependency has quietly arrived from somewhere other than
+# crates.io.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisories. Yanked crates are an error too: a yank usually means the
+# author found something, and pinning to one is a decision, not an accident.
+yanked = "deny"
+# Mirrors `.cargo/audit.toml`, which carries the full reasoning for each.
+# In one line each: `rsa` needs an RSA PRIVATE key we do not have (verification
+# only, §5.1), and the two `quick-xml` advisories are reachable only by an object
+# store that is already inside the trust boundary (§6).
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+
+[licenses]
+# weebo-notify ships under Apache-2.0 — the licence in `LICENSE.md`, and the one
+# `Cargo.toml`, both Containerfiles, `Chart.yaml` and the OpenAPI document all
+# declare. They said three different things until 2026-08-10; the list below is
+# written against the one they agree on now.
+#
+# It is the permissive set that is compatible with distributing a binary — anything
+# copyleft-at-the-binary-level (GPL, AGPL) is deliberately absent and must be an
+# explicit, reviewed exception. `MPL-2.0` stays *on* the list: it is file-level
+# copyleft, so a dependency under it is fine to link and ship, which is a separate
+# question from what we license our own work under.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "OpenSSL",
+    # Arrived with the mail sink (§7.1bis): `quoted_printable`, through `lettre`.
+    # OSI-approved and permissive — it is ISC with the attribution clause removed,
+    # so it grants strictly more than several licences already on this list.
+    "0BSD",
+]
+# A crate whose licence cannot be determined is a decision to make, not a default
+# to accept: it lands here one line at a time, with a reason.
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
+
+# Per-crate exceptions go here, one at a time and each with its reason. There are
+# none today: rustls pulls aws-lc-rs rather than ring, so the usual suspect for a
+# non-SPDX licence is not in the tree.
+# [[licenses.exceptions]]
+# name = "..."
+# allow = ["..."]
+
+[bans]
+multiple-versions = "warn"
+# A wildcard on a crates.io dependency means "whatever version resolves today",
+# which is how a supply-chain surprise arrives without a diff. That stays denied.
+wildcards = "deny"
+# Our own crates are the exception, and only they. A workspace member is declared
+# `{ path = "crates/…" }` with no version, which cargo-deny reads as a wildcard —
+# but nothing resolves from a registry there: the code is in this repository, at
+# this commit. Denying it would push us into writing versions on eleven internal
+# crates purely to satisfy a rule aimed at somebody else's code.
+allow-wildcard-paths = true
+# Duplicate versions are noise in a young dependency tree; they become an error
+# once the tree settles, rather than training everyone to ignore warnings now.
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

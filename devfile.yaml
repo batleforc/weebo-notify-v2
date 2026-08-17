@@ -1,5 +1,305 @@
 schemaVersion: 2.3.0
 metadata:
   name: weebo-notify-v2
+# Eclipse Che workspace (design §12.4).
+#
+# Parity with dev/compose.yaml: the same services, on the same ports, with the same
+# credentials. Every component shares this pod, so everything is reachable on
+# `localhost` exactly as it is under compose — which is why one config/dev.toml
+# serves both worlds with no `if env == che` anywhere in the code.
+#
+# Two services are deliberately absent, for opposite reasons:
+#
+#   * Authentik — too heavy (~1.5 GiB with worker and Redis). Fidelity is exercised
+#     in local compose (`task dev:auth`) and in the `oidc-compat` CI matrix (§3.2);
+#     that trade is the whole point of the three-tier auth strategy (§12.1). Dex,
+#     which is one small Go binary, IS here now — see the component below: it is the
+#     leg of that matrix D7 says has never once been observed running.
+#
+#   * The identity provider — not a container at all any more. `task dev:oidc` runs
+#     the `oidc-mock` binary from this workspace inside the `tools` container, next
+#     to the server and the web dev server (ADR-0014). No image to pull, no sidecar
+#     to schedule, and the inline-YAML generator this file used to carry is gone
+#     with it.
 parent:
-  uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml
+  uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-mise-webkit/devfile.yaml
+  # `tools` is inherited wholly from the parent (`che-mise-webkit`) — nothing here
+  # redeclares its image, only endpoints, one mount and two variables. This has to
+  # live under
+  # `parent.components`, not the top-level `components:` list below: that list
+  # declares NEW components, and a `tools` entry there collides with the parent's
+  # `tools` rather than patching it. `parent.components` is what devfile actually
+  # reads for a strategic-merge-patch override onto an inherited component (see
+  # batlehub's devfile.yaml for the same shape). Che already auto-discovers any
+  # port a process binds to inside `tools` — the `run-oidc` command below says so
+  # itself, for these same two ports — so `server`/`web` are reachable either way;
+  # declaring them here gives each a fixed name in the endpoint list *before* the
+  # process starts, rather than one that only appears once `task dev:run`/
+  # `task dev:web` are already up, and pins `exposure: public` instead of trusting
+  # auto-detection's default.
+  components:
+    - name: tools
+      container:
+        endpoints:
+          - {name: server, targetPort: 8080, exposure: public, protocol: https, secure: true}
+          - {name: web, targetPort: 5173, exposure: public, protocol: https, secure: true}
+          # Declared statically, unlike the comment on `run-oidc` below assumed:
+          # auto-discovery of a freshly-bound port did not create a route within
+          # several minutes on this cluster, so `oidc-mock` gets the same fixed
+          # pre-provisioned route as `server`/`web` rather than relying on it.
+          - {name: oidc, targetPort: 9110, exposure: public, protocol: https, secure: true}
+        # Where `task android:sdk` puts the SDK components (M6). Both variable names
+        # on purpose: Gradle reads ANDROID_HOME, newer Google tooling prefers
+        # ANDROID_SDK_ROOT, and setting only one is how a build works for one tool
+        # and not the other.
+        #
+        # They point here rather than at mise's install directory — which the
+        # `vfox-android-sdk` plugin would otherwise set them to — because that
+        # directory holds the command-line tools only, and mise replaces it whole on
+        # a version bump. `sdkmanager` is always called with `--sdk_root` to match.
+        env:
+          - {name: ANDROID_HOME, value: /home/user/.android-sdk}
+          - {name: ANDROID_SDK_ROOT, value: /home/user/.android-sdk}
+        volumeMounts:
+          - {name: android-sdk, path: /home/user/.android-sdk}
+components:
+  - name: postgres
+    container:
+      image: postgres:17-alpine
+      memoryLimit: 512Mi
+      env:
+        - {name: POSTGRES_USER, value: weebo}
+        - {name: POSTGRES_PASSWORD, value: weebo}
+        - {name: POSTGRES_DB, value: weebo_notify}
+        # The mounted volume root is not empty, so PGDATA points at a subdirectory.
+        - {name: PGDATA, value: /data/pgdata}
+      volumeMounts:
+        - {name: pg-data, path: /data}
+      endpoints:
+        - {name: postgres, targetPort: 5432, exposure: internal}
+  - name: rustfs
+    container:
+      image: rustfs/rustfs:latest
+      memoryLimit: 512Mi
+      env:
+        - {name: RUSTFS_ACCESS_KEY, value: weebo-dev}
+        - {name: RUSTFS_SECRET_KEY, value: weebo-dev-secret}
+        - {name: RUSTFS_VOLUMES, value: /data}
+        - {name: RUSTFS_CONSOLE_ENABLE, value: "true"}
+      volumeMounts:
+        - {name: rustfs-data, path: /data}
+      endpoints:
+        - {name: s3, targetPort: 9000, exposure: internal}
+        - {name: rustfs-console, targetPort: 9001, exposure: public, protocol: https}
+  - name: redis
+    container:
+      image: valkey/valkey:8-alpine
+      memoryLimit: 128Mi
+      endpoints:
+        - {name: redis, targetPort: 6379, exposure: internal}
+  # The strict-minimal leg of the identity matrix (§3.2, T29, D14.4/D7): a provider
+  # that emits no `groups` claim for anybody. It exists here for the same reason it
+  # exists in compose — so a red `oidc-compat` run can be reproduced by hand, which
+  # is the only moment anybody wants Dex — and because §15 makes this matrix the
+  # only independent reading of OIDC the project ever gets.
+  #
+  # `sleep infinity` rather than `dex serve`, deliberately: the config it reads does
+  # not exist until `task dev:dex` renders it (the password is generated per run and
+  # never committed, §3.2). A container whose command needs a file the workspace has
+  # not written yet crashloops on every fresh start, and a crashlooping sidecar is
+  # how a workspace stops starting at all. It waits; `run-dex` below starts the
+  # process once the file is there.
+  - name: dex
+    container:
+      image: ghcr.io/dexidp/dex:v2.45.1
+      memoryLimit: 128Mi
+      # `${PROJECT_SOURCE}/dev/dex/config.local.yaml` has to be readable from in
+      # here, which is why this container sees the project sources at all.
+      mountSources: true
+      command: ["/bin/sh", "-c", "sleep infinity"]
+      endpoints:
+        - {name: dex, targetPort: 5556, exposure: internal}
+  # A real browser, which is the thing this project has never had (§14.4: D19, D21,
+  # D26 — all three read « écrit, jamais vu »). The web suite runs under jsdom, and
+  # jsdom answers questions about logic; it cannot say whether a command palette
+  # looks right, whether a notification image lays out without shifting the row, or
+  # whether the focus comes back where §10.1 says it should.
+  #
+  # The split is deliberate: the browser lives here, whatever drives it lives in
+  # `tools`. Everything shares the pod, so a Playwright or CDP client there reaches
+  # `127.0.0.1:9222` and the Vite dev server on `:5173` with no networking to set
+  # up.
+  #
+  # `mountSources: true`, unlike the reference devfile upstream, and it is worth
+  # saying why the obvious reading is wrong. "It only renders pages, it does not
+  # read the repository" holds for a CDP screenshot — those bytes come back over
+  # the wire. It stops holding for everything else the two sides have to hand each
+  # other: a Chrome download, a Playwright trace or video, an artefact written to a
+  # path the driver then reads, a built `dist/` opened over `file://`. Without a
+  # directory both containers can see, each of those needs its own transport.
+  #
+  # Two ways in, for two different questions:
+  #   * `cdp` (9222) / `webdriver` (9515) — internal, for a test that asserts;
+  #   * `novnc` (6080) — a public Che route, for a human to actually LOOK. That one
+  #     is the point: D21 and D26 are open because nobody could.
+  - name: browser
+    container:
+      image: ghcr.io/batleforc/weebodevimage/che-browser:main
+      memoryLimit: 3Gi
+      memoryRequest: 1Gi
+      cpuLimit: "2"
+      cpuRequest: "500m"
+      mountSources: true
+      # Chrome is parked at boot, and only Chrome: Xvfb, x11vnc and websockify
+      # still start, so the `novnc` route below answers from the first second and
+      # `task browser:start` is the whole cost of waking the browser (it toggles a
+      # flag file the sidecar's respawn loop watches, via `sidecar-app`).
+      #
+      # Why park it: a Chrome nobody is driving is several hundred megabytes of
+      # this pod's budget held for nothing, and this workspace now schedules two
+      # headed sidecars rather than one. The tasks in `.tasks/browser.yaml` start it
+      # on demand, so the only visible difference is the first `task browser:shot`
+      # of a session taking a second longer.
+      env:
+        - {name: NO_START, value: "true"}
+      endpoints:
+        - {name: novnc, targetPort: 6080, exposure: public, protocol: https, secure: true}
+        - {name: cdp, targetPort: 9222, exposure: internal, protocol: http}
+        - {name: webdriver, targetPort: 9515, exposure: internal, protocol: http}
+  # The desktop shell of §10bis.3 (M5), running where a human can see it — the other
+  # half of D13, and the half that was impossible until both of these landed:
+  #
+  #   * `tools` inherits from `che-mise-webkit` now, so `task tauri:doctor` reports
+  #     the whole GTK/WebKit stack present and `task tauri:build` produces a binary
+  #     here for the first time;
+  #   * this image carries the *runtime* half — libwebkit2gtk, appindicator (the
+  #     tray of §10bis.3ter), a session bus, Xvfb, openbox and a noVNC route.
+  #
+  # The earlier attempt is still worth recording so it is not retried in that form:
+  # a `rust:1-bookworm` sidecar that `apt-get install`ed the packages at start. That
+  # cannot work — a DevWorkspace applies its security context to the WHOLE pod, so
+  # no container in it has root and `apt-get` fails in a sidecar exactly as it fails
+  # next door. Scheduling a container is not the same capability as being root
+  # inside one. §12.4's sentence held: the fix belonged to the *images*, and both of
+  # them now ship it.
+  #
+  # Build in `tools`, run here: `mountSources` puts the same `/projects` under both,
+  # so `DESKTOP_APP_CMD` names the binary `task tauri:build` just wrote and no
+  # artefact has to travel.
+  #
+  # `NO_START: "true"`, same as the browser above and for a sharper reason: without
+  # `DESKTOP_APP_CMD` the sidecar respawns an xterm, and with it, it would respawn
+  # a shell binary that does not exist until somebody builds it — a restart loop and
+  # a noisy log on every fresh workspace. Parked, the display is up and empty until
+  # `task desktop:up` builds and starts the app.
+  #
+  # The `env` wrapper on the command is what makes the notification half testable:
+  # the app is pinned to the session bus `task desktop:bus` opens on a path both
+  # containers can see, so `task desktop:notifyd` — running in `tools` — receives
+  # what this app sends. Without it the app would talk to the private bus this
+  # image's entrypoint launches, on an abstract socket nothing else knows the name
+  # of, and D19 would stay « écrit, jamais vu » for the shell exactly as it was for
+  # the CLI.
+  - name: desktop
+    container:
+      image: ghcr.io/batleforc/weebodevimage/che-desktop:main
+      memoryLimit: 3Gi
+      memoryRequest: 1Gi
+      cpuLimit: "2"
+      cpuRequest: "500m"
+      mountSources: true
+      env:
+        - {name: NO_START, value: "true"}
+        # An absolute path and not `${PROJECT_SOURCE}`: devfile substitutes that in
+        # `exec` commands, not in a container's environment, so the variable would
+        # arrive here as six literal characters and a name. It spells out what
+        # `$PROJECT_SOURCE` resolves to — rename the project directory and this line
+        # is what has to follow, which is why `task desktop:start` checks the binary
+        # is there and says so rather than letting the sidecar respawn nothing.
+        - {name: DESKTOP_APP_CMD, value: "env DBUS_SESSION_BUS_ADDRESS=unix:path=/projects/weebo-notify-v2/dev/.dbus/session /projects/weebo-notify-v2/web/src-tauri/target/release/weebo-notify-desktop"}
+        - {name: DESKTOP_APP_CWD, value: /projects/weebo-notify-v2}
+        # WebKitGTK 2.42+ renders through a DMA-BUF path that needs a GPU it will
+        # not find here; the symptom is the failure that wastes an afternoon,
+        # because the window opens, the app logs nothing and the page is simply
+        # white. Xvfb plus Mesa's software rasteriser is the whole graphics stack in
+        # this pod, so the renderer is told up front. If a future image makes this
+        # unnecessary, dropping the line is the test — and if a white window ever
+        # comes back, `WEBKIT_DISABLE_COMPOSITING_MODE=1` is the next lever.
+        - {name: WEBKIT_DISABLE_DMABUF_RENDERER, value: "1"}
+      endpoints:
+        - {name: desktop, targetPort: 6082, exposure: public, protocol: https, secure: true}
+  - name: pg-data
+    volume: {size: 2Gi}
+  - name: rustfs-data
+    volume: {size: 2Gi}
+  # The Android SDK components `task android:sdk` installs (M6, §10bis.4): the
+  # platform, build-tools and one NDK, on the order of three gigabytes. A volume
+  # rather than a fresh download on every workspace start, and rather than an image
+  # layer — only the people building Android should pay for it, and mise's own
+  # install tree cannot hold it because mise replaces that on a version bump.
+  #
+  # Sized with room for a second NDK or platform during an upgrade, when both the
+  # old and new have to exist at once.
+  - name: android-sdk
+    volume: {size: 6Gi}
+commands:
+  # What a freshly created workspace has to create before anything runs: the
+  # Authentik bootstrap and the VAPID key `[push.webpush]` reads. Idempotent, and
+  # `dev-seed` below is the step that needs the services to be up.
+  - id: dev-setup
+    exec:
+      component: tools
+      commandLine: "task dev:setup"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: build}
+  - id: dev-seed
+    exec:
+      component: tools
+      commandLine: "task dev:seed"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: build}
+  - id: run-oidc
+    exec:
+      component: tools
+      # The `oidc` endpoint above gives this a fixed route, same as `server`
+      # (:8080) and Vite (:5173). OIDC redirects travel through the developer's
+      # browser, which cannot reach this pod's localhost, so the `:public` task
+      # resolves that route with the `url` CLI and exports WNK_OIDC_MOCK_ISSUER
+      # itself (§12.1) — `task dev:oidc` (no `:public`) is what compose uses.
+      commandLine: "task dev:oidc:public"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: run}
+  - id: run-server
+    exec:
+      component: tools
+      # Same reasoning as `run-oidc`: `:public` resolves WNK_OIDC__ISSUER and the
+      # public web origin for CORS with `url` instead of localhost (§12.1).
+      commandLine: "task dev:run:public"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: run, isDefault: true}
+  - id: run-web
+    exec:
+      component: tools
+      # `web/public/env.js` is a static file the Vite dev server just serves, not
+      # something `task dev:web` templates per run — so the route it points at has
+      # to be written first. `web:env:public` does that with `url`, same as the
+      # two commands above (§12.1).
+      commandLine: "task dev:web:env:public && task dev:web"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: run}
+  - id: run-docs
+    exec:
+      component: tools
+      commandLine: "task dev:docs"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: run}
+  # Two steps and not one, because the config is rendered by the workspace and read
+  # by the sidecar: `task dev:dex` writes it in `tools`, this starts the process in
+  # `dex`. If it stops on a permission error, the rendered file is 0600 and owned by
+  # the workspace user (dev/dex/render.sh) — the task prints the one-line fix.
+  - id: run-dex
+    exec:
+      component: dex
+      commandLine: "dex serve ${PROJECT_SOURCE}/dev/dex/config.local.yaml"
+      workingDir: "${PROJECT_SOURCE}"
+      group: {kind: run}

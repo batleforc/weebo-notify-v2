@@ -1,0 +1,382 @@
+name: release
+
+# Pushing the tag is the only human action (design §3.2bis).
+#
+# `task release` runs `cog bump --auto`: the version comes from the conventional
+# commits, the changelog is generated, and every version in the product is
+# synchronised. Pushing the resulting tag triggers everything below with no further
+# intervention.
+#
+# Two invariants:
+#   * A tag NEVER moves. A failed release means a fix and a new tag, never a re-tag.
+#   * Every job is idempotent. Re-running a failed run resumes without duplicating
+#     or corrupting what was already published.
+#
+# SCOPE: this file implements the gate, both images, their signatures and the
+# release object. The full artefact matrix — desktop packages, CLI archives, the
+# signed updater manifest, the Android APK — lands with milestone M5, when there is
+# something to package. Until then a release carries the two images, their digests
+# and their SBOMs, which is the set a deployment actually consumes.
+#
+# SIGNING: three systems, because three different verifiers exist and none of them
+# reads the others' output. They are not alternatives and no key is shared between
+# them (§3.2bis lists each as its own custody problem):
+#
+#   * cosign, keyless — images (`cosign sign`) and every published file
+#     (`cosign sign-blob`). No key exists: the identity is this workflow, attested
+#     by Fulcio and logged in Rekor. This is *provenance*, and it is the only one
+#     of the three that covers everything.
+#   * The Android keystore — `apksigner`, an X.509 key in a PKCS#12 store. Android
+#     refuses to install an APK without it, and the key IS the app's identity, so it
+#     effectively cannot be rotated. Not in this file yet; `task android:sign` is
+#     where it is applied, and the release key belongs in a secret scoped here.
+#   * minisign (Ed25519) — the Tauri updater (§837), whose verifier is in the app
+#     and understands minisign and nothing else.
+#
+# The temptation to unify them is worth naming, since it will come up again: the
+# closest possible is sharing one key between cosign and `apksigner`, which would
+# bind the most rotatable secret in the project to the least rotatable one and
+# replace a keyless setup that has no key to leak. Deliberately not done.
+#
+# FORGE: this moved from `.forgejo/workflows/` when GitHub became primary. Three
+# things got simpler and are worth knowing when reading against the old file:
+# the job runs on `ubuntu-latest` with a working Docker rather than inside
+# `act-24.04` with the socket mounted; `gh` no longer needs `GH_HOST`/`GH_REPO`
+# set, because it is now talking to the forge it was built for; and the keyless
+# signing identity below is a github.com identity, which is what
+# `--certificate-identity-regexp` already expected.
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Where the images go. A variable rather than a literal because the mirror
+  # arrangement of §3.2 means this repository lives in two forges, and whoever
+  # deploys it may publish to neither of them.
+  IMAGE_REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/batleforc/weebo-notify
+
+jobs:
+  gate:
+    # A tag never exempts anything from the gates a pull request had to pass.
+    name: Replay the pull-request gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install libdbus headers
+        # `task recu` builds `xtask` and `task test:critical` builds the workspace;
+        # both link libdbus through notify-rust's `d` feature. See `check.yaml`.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        # Not optional, and not a nicety: the `aqua:` backend resolves every version
+        # through the GitHub API, which allows 60 requests an hour to an
+        # UNAUTHENTICATED caller — counted per IP, and a GitHub-hosted runner shares
+        # its egress with everyone else on that host. The first run of this pipeline
+        # exhausted it and died on `cargo-tauri` with a 403 that reads like the
+        # release was deleted. The token every workflow already has raises the limit
+        # to 1000/hour for this repository and needs no scopes to read public
+        # releases.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes
+
+      - name: Lint
+        run: mise exec -- task lint:check
+
+      - name: Contract
+        run: |
+          mise exec -- task recu
+          git diff --exit-code
+
+      - name: Critical suite
+        run: mise exec -- task test:critical
+
+  publish:
+    name: Build and publish
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      # What cosign keyless signs with (§3.2bis). Without it the signing step fails
+      # with an OIDC error that reads like a registry problem — the same trap §5.3
+      # documents for the other direction of this token.
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Determine the release kind
+        id: kind
+        # A SemVer pre-release tag (v1.2.3-rc.1) gets the same pipeline, the same
+        # artefacts and the same signatures — an RC is a complete product, which is
+        # what makes promoting it possible without re-validating. It is marked as a
+        # pre-release and `latest` does not move.
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$tag" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install the toolchain
+        # The `gate` job installs it too, and this is not duplication to factor out:
+        # jobs do not share a filesystem, and the scan step below runs `task`.
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        # Not optional, and not a nicety: the `aqua:` backend resolves every version
+        # through the GitHub API, which allows 60 requests an hour to an
+        # UNAUTHENTICATED caller — counted per IP, and a GitHub-hosted runner shares
+        # its egress with everyone else on that host. The first run of this pipeline
+        # exhausted it and died on `cargo-tauri` with a 403 that reads like the
+        # release was deleted. The token every workflow already has raises the limit
+        # to 1000/hour for this repository and needs no scopes to read public
+        # releases.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Set up buildx
+        # Needed for the multi-arch build below: the stock builder emits one
+        # architecture, and §3.2bis asks for amd64 and arm64 from the same tag.
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up QEMU
+        # arm64 on an amd64 runner. Slow, and the alternative is a second runner
+        # nobody has yet — worth naming so the day one exists, this step goes away
+        # rather than being cargo-culted forward.
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Log in to the registry
+        # REGISTRY_TOKEN and not GITHUB_TOKEN, even though the latter can push to
+        # ghcr.io for this owner: pushing an image and editing a release are
+        # different authorities and should not share one credential (§10 A3). That
+        # reasoning did not change with the forge, so neither did this — but it does
+        # mean REGISTRY_TOKEN has to exist as a secret here, which is one of the two
+        # settings this move requires somebody to click.
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Build and push the server image
+        # THIS HAS NEVER RUN. The Containerfile it builds was written in a workspace
+        # with no container engine (§12.4), so the first execution of this step is
+        # its first test — the same state D7 and D12 are open for, and named here
+        # rather than discovered by whoever pushes the first tag.
+        id: server_image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.kind.outputs.tag }}
+            ${{ steps.kind.outputs.prerelease == 'false' && format('{0}:latest', env.IMAGE_NAME) || '' }}
+
+      - name: Build and push the web image
+        # No build args since ADR-0021 superseded ADR-0019: one image now serves
+        # every deployment, and the API origin, the issuer and the client id are
+        # read at container boot instead (`web/nginx/docker-entrypoint.d/`).
+        id: web_image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./web
+          file: ./web/Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}
+            ${{ steps.kind.outputs.prerelease == 'false' && format('{0}-web:latest', env.IMAGE_NAME) || '' }}
+
+      - name: Scan the published images
+        # After the push and not before it: what is scanned has to be what was
+        # published, and a scan of a locally-tagged image proves something about a
+        # layer stack that may not be the one that left the runner.
+        run: |
+          mise exec -- task audit:image \
+            IMAGE_REPO="${{ env.IMAGE_NAME }}" \
+            IMAGE_TAG="${{ steps.kind.outputs.tag }}"
+
+      - name: Sign the images
+        # cosign keyless: the identity is the workflow itself, and the signature
+        # lands in Rekor (§3.2bis). No private key to keep, which is the only key
+        # custody story that cannot leak — §15 lists the ones that can.
+        #
+        # BY DIGEST, NOT BY TAG. `cosign sign repo:v1.2.3` re-resolves the tag at
+        # signing time, which is a second lookup of a mutable reference: what gets
+        # signed is whatever the tag points at *now*, not necessarily what the step
+        # above pushed. It also signs the wrong object for a multi-arch build — the
+        # consumer that matters is an admission controller, and it verifies the
+        # digest it is about to run. `build-push-action` reports that digest as an
+        # output; using it closes the window and makes the signature refer to the
+        # exact bytes.
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # A build that somehow reported no digest must stop the release rather
+          # than sign `image@` and produce a signature nothing can verify.
+          test -n "$SERVER_DIGEST" && test -n "$WEB_DIGEST"
+          cosign sign --yes "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}"
+          cosign sign --yes "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
+
+      - name: Publish the release
+        # Created as a draft, filled with artefacts and the changelog notes, then
+        # published in one move — never a half-empty release visible to anyone.
+        #
+        # The digests are the point of the body rather than decoration: they are what
+        # `cosign verify` above signed, and the only way somebody pulling `:0.1.0`
+        # six months from now can check that the tag still resolves to the artefact
+        # this run produced. `--verify-tag` refuses to publish against a tag that is
+        # not the one this workflow was triggered by.
+        #
+        # NOT VERIFIED: this step has never run. What the move to GitHub removed is
+        # the part that was most likely to break — `gh` is talking to github.com now,
+        # so the explicit `GH_HOST`/`GH_REPO` targeting the Forgejo version needed,
+        # and the `curl` fallback its comment described, are both gone.
+        env:
+          # The token the runner already has for this repository.
+          # Deliberately not REGISTRY_TOKEN: pushing an image and editing a release
+          # are different authorities and should not share one credential (§10 A3).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.kind.outputs.tag }}
+          PRERELEASE: ${{ steps.kind.outputs.prerelease }}
+          SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          # cog wrote the changelog at bump time; this extracts the section for the
+          # tag being released rather than shipping the whole file.
+          notes="$(mise exec -- cog changelog --at "$TAG" 2>/dev/null || true)"
+          if [ -z "$notes" ]; then
+            echo "::warning::no changelog section for $TAG — publishing with digests only"
+          fi
+
+          {
+            printf '%s\n\n' "$notes"
+            printf '## Images\n\n'
+            printf 'Verify before you run them:\n\n'
+            printf '```\n'
+            printf 'cosign verify %s@%s \\\n' "${{ env.IMAGE_NAME }}" "$SERVER_DIGEST"
+            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \\\n'
+            printf '  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n'
+            printf '```\n\n'
+            printf '| Image | Digest |\n| --- | --- |\n'
+            printf '| `%s:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$SERVER_DIGEST"
+            printf '| `%s-web:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$WEB_DIGEST"
+            printf '\n## Files\n\n'
+            printf 'Every file below is published with a `.sig` and a `.pem` beside it,\n'
+            printf 'signed by this workflow with no key involved. To check one:\n\n'
+            printf '```\n'
+            printf 'cosign verify-blob <file> \\\n'
+            printf '  --signature <file>.sig \\\n'
+            printf '  --certificate <file>.pem \\\n'
+            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \\\n'
+            printf '  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n'
+            printf '```\n'
+          } > release-notes.md
+
+          # The SBOM buildx attached to each image, pulled back out so it is
+          # downloadable without a registry client.
+          cosign download sbom "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}" \
+            > "weebo-notify-${TAG}-server.sbom.json" 2>/dev/null || \
+            echo "::warning::no SBOM attached to the server image"
+          cosign download sbom "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}" \
+            > "weebo-notify-${TAG}-web.sbom.json" 2>/dev/null || \
+            echo "::warning::no SBOM attached to the web image"
+
+          # Idempotent, because every job in this file has to be: a re-run of a
+          # failed release edits the draft it already made rather than failing on a
+          # release that exists.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file release-notes.md --draft=false \
+              --prerelease="$PRERELEASE" --verify-tag
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md \
+              --prerelease="$PRERELEASE" --verify-tag --draft
+            gh release edit "$TAG" --draft=false
+          fi
+
+          # Every downloadable asset gets what the images already get: a keyless
+          # cosign signature, the certificate that proves which workflow made it, and
+          # a Rekor transparency entry. Same identity, same verification command, so
+          # "is this really yours?" has one answer for an image, an SBOM, a CLI
+          # archive and an APK rather than four.
+          #
+          # A loop over a list rather than three copied blocks, because this list is
+          # what grows when the artefact matrix lands (see SCOPE): adding a file here
+          # signs and publishes it, and forgetting to sign it is not one of the
+          # available mistakes.
+          #
+          # This does NOT replace the signatures those artefacts need to *function* —
+          # an APK still has to be signed with the Android keystore or no device will
+          # install it, and the updater bundles still need their minisign key. Those
+          # are different questions with different verifiers; this one is provenance.
+          for asset in "weebo-notify-${TAG}-server.sbom.json" "weebo-notify-${TAG}-web.sbom.json"; do
+            [ -s "$asset" ] || continue
+            cosign sign-blob --yes \
+              --output-signature "${asset}.sig" \
+              --output-certificate "${asset}.pem" \
+              "$asset"
+            gh release upload "$TAG" "$asset" "${asset}.sig" "${asset}.pem" --clobber
+          done

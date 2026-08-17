@@ -1,0 +1,90 @@
+---
+title: ADR-0023 — The threat model, written down
+description: Who this product defends against, who it does not, and which guarantees are the deployment's rather than the application's.
+---
+
+Status: accepted (2026-08-10) · Supersedes: — · Superseded by: —
+
+## Context
+
+A great deal of threat reasoning already exists in this repository, and all of it is
+implicit. `hardening.mdx` lists what the deployment owes. ADR-0007 declines
+encryption at rest. `.cargo/audit.toml` argues that two advisories are unreachable.
+The sealed box exists because a relay carries the payload and TLS does not.
+
+Every one of those is an answer. Nowhere states the **question** — who the adversary
+is — so each argument has to re-derive it, and two of them can quietly assume
+different adversaries without anybody noticing. The security review of 2026-08-10
+found exactly that shape twice: an advisory suppressed on a reachability argument
+that depended on a deployment fact, and a content-type check documented as existing
+in a place it did not.
+
+A threat model is cheap to write and makes the next argument checkable.
+
+## Decision
+
+### The system this defends
+
+A self-hosted weebo-notify instance, deployed by the organisation that uses it, on
+its own cluster, behind its own ingress. Not a multi-tenant SaaS: **one instance
+serves one organisation**, and every user of an instance is someone that
+organisation chose to give an account to.
+
+That single sentence decides most of what follows.
+
+### In scope — adversaries this defends against
+
+1. **An unauthenticated attacker on the network.** Can reach the ingress and nothing else. Defended by: authentication on every route, one indistinguishable `401`, bounded cost on the credential path (SEC-P2-01…04), a connection ceiling per replica, and TLS terminated in front.
+2. **A holder of a leaked API key.** Gets exactly what that key names: its scopes, in its channels. Defended by: a key carrying its own grant rather than its owner's, immediate revocation, and the boundary tests in `crates/notify-app/tests/authorisation_boundaries.rs`.
+3. **A legitimate user reaching for something they were not granted.** Another channel, another user's notifications, the admin surface. Defended by: membership as the only door to content, the platform role reserved to `/admin/*`, and refusals that do not reveal whether a channel exists.
+4. **A compromised CI pipeline holding a federated token.** Defended by: anchored subject patterns, audience checked before any policy is consulted, `jti` replay guard, and short expiry.
+5. **A third-party push relay** — Apple, a UnifiedPush distributor, a browser push service. Defended by: the sealed box (§6.2), and a poke when the payload will not fit.
+6. **Somebody who can publish to a channel, attacking its readers.** Defended by: markdown with `html: false` plus DOMPurify, an attachment allowlist bound into the upload signature, `nosniff` on everything that serves stored bytes, and a CSP that travels with the bundle.
+7. **A supply-chain attacker** — a compromised action, base image, crate or npm package. Defended by: SHA-pinned actions, digest-pinned base images, a checksum-verified toolchain installer, `--locked` builds, a build-script allowlist, `minimumReleaseAge`, and cosign signatures by digest.
+
+### Out of scope — adversaries this does **not** defend against
+
+Stated plainly, because a defence nobody claimed is a defence nobody audits.
+
+1. **The operator of the instance.** Anyone with database access, a shell in the pod, or the ability to change the deployment reads everything. There is no application-level encryption at rest (ADR-0007) and no server-blind content class. If this matters to you, the design analysis is in the security advisory's §11 — it is a feature that does not exist, not a property that was lost.
+2. **A malicious platform admin.** The role is deliberately powerful. It cannot read channel content it is not a member of, but it can administer the instance, and the audit log records rather than prevents.
+3. **A compromised identity provider.** If Authentik issues a token, this trusts it. That is what "authentication is JWKS validation" means.
+4. **An attacker with the release signing identity.** Cosign keyless means there is no key to steal, but a compromised release *workflow* publishes signed malicious images. This is why SEC-P2-01…07 exist and why admission-time verification is documented rather than assumed.
+5. **Traffic analysis and metadata.** Who published, to which channel, when, how often, how large — all visible to anyone who can see the database or the metrics. Encrypting content would not change this.
+6. **Denial of service by volume.** The application bounds what one caller costs it and sheds rather than dies; it does not pretend to absorb a flood. That is the ingress's job, and `hardening.mdx` says which limits to set.
+
+### The boundary that is not ours
+
+Six guarantees are the deployment's, by design and not by omission:
+
+encryption at rest · a private attachment bucket · TLS in front · `frame-ancestors`
+and HSTS · per-address rate and connection limits · keeping `/metrics`, `/healthz`
+and `/readyz` off the public ingress.
+
+**Every one of them fails silently.** That is the sharpest thing this model has to
+say, and it is why `notify-server doctor` and the boot-time review exist: not
+because a process can check them — mostly it cannot — but so that an operator who
+never reads this document meets the list at least once.
+
+### How to use this
+
+When adding a control, name which adversary it is for. When suppressing an
+advisory, name which adversary could reach it. If the answer is "none of the
+above", the argument is either wrong or this ADR needs updating — and both are
+better than a control nobody can evaluate.
+
+## Consequences
+
+**Good.** Every future security argument has a shared premise to appeal to. The
+out-of-scope list is now something a prospective user can read before deciding
+whether this product suits them, rather than something they discover.
+
+**Bad.** A written threat model is a commitment, and commitments age. This one will
+be wrong the day a genuinely multi-tenant deployment appears, and out of date the
+day the confidential-notification class of the advisory's §11 is built.
+
+**Accepted.** Adversary 1 is bounded but not eliminated: the connection ceiling and
+the KDF gate turn resource exhaustion into shedding, which is a better failure and
+still a failure. Out-of-scope item 1 — the operator reads everything — is the
+largest gap and the one most likely to matter to a prospective user; the path to
+closing it is Tier 1 of the advisory's §11.5, and it is not on this milestone.

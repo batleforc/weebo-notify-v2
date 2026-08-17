@@ -1,0 +1,23 @@
+apiVersion: v2
+name: weebo-notify
+description: Self-hosted, multi-channel notification platform — a notification is a lifecycle, not a message.
+type: application
+# Tracks crates/notify-server's Cargo.lock version (workspace.package.version).
+# Bumped by the same `cog bump --auto` that tags a release (Taskfile `release`),
+# never by hand.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/batleforc/weebo-notify-v2
+sources:
+  - https://github.com/batleforc/weebo-notify-v2
+keywords:
+  - notifications
+  - gotify
+  - ntfy
+  - self-hosted
+maintainers:
+  - name: Max Batleforc
+    url: https://github.com/batleforc
+annotations:
+  artifacthub.io/license: Apache-2.0

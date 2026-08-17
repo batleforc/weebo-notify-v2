@@ -1,0 +1,40 @@
+[package]
+name = "notify-domain"
+description = "weebo-notify domain: entities, invariants and the notification state machine. Zero I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Schema annotations for the OpenAPI document (ADR-0013). Off by default and
+# enabled only by the HTTP adapter: `utoipa` here is a derive that reads the serde
+# representation these types already commit to, not a framework the domain runs on.
+# Nothing in this crate calls it, and no build without the feature links it.
+openapi = ["dep:utoipa"]
+
+[dependencies]
+# Deliberately limited to pure-data crates: no async runtime, no HTTP client, no I/O.
+# Anything that reaches outside the process belongs behind a port (design §4).
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# The IANA database, compiled in. A timezone is the default quiet hours are
+# resolved in (design §7.4), so it is validated here against the real list rather
+# than against a shape — pure data, no I/O, which is what keeps it allowed in this
+# crate.
+chrono-tz = { workspace = true }
+# chrono-tz *is* that database and its interface is chrono's, so asking a zone what
+# its clocks read at an instant needs both. Confined to one function in `dnd`; every
+# timestamp this crate owns is still `time::OffsetDateTime`.
+chrono = { workspace = true }
+time = { workspace = true }
+ulid = { workspace = true }
+url = { workspace = true }
+utoipa = { workspace = true, optional = true }

@@ -1,0 +1,122 @@
+name: weebo-notify-dev
+
+# Local development environment (design §12).
+#
+# Parity rule with devfile.yaml: the SAME services, the SAME ports, the SAME
+# credentials — so one config/dev.toml serves both worlds and no `if env == che`
+# ever reaches the code.
+#
+# Three tiers of authentication (design §12.1), cheapest first:
+#   1. in-memory TokenVerifier  -> `task dev:core`  (no identity provider at all)
+#   2. the built-in OIDC mock   -> `task dev:oidc`  (the everyday default)
+#   3. Authentik                -> `task dev:auth`  (fidelity: refresh rotation, logout)
+#
+# Tier 2 is NOT a service here. It is `cargo run -p notify-oidc-mock`, a binary in
+# this workspace (ADR-0014), run like the server and the web dev server are — which
+# is what lets Compose, Eclipse Che and CI share one provider with no image to pull.
+#
+# Credentials here are deliberately committed: this environment is disposable and
+# holds no production value (dev/ is allowlisted in .gitleaks.toml). The single
+# exception is the Authentik admin bootstrap, generated into dev/.env.local by
+# `task dev:env` and never committed.
+
+x-authentik-env: &authentik-env
+  AUTHENTIK_SECRET_KEY: dev-only-not-a-secret
+  AUTHENTIK_LISTEN__HTTP: 0.0.0.0:9100
+  AUTHENTIK_POSTGRESQL__HOST: postgres
+  AUTHENTIK_POSTGRESQL__NAME: authentik
+  AUTHENTIK_POSTGRESQL__USER: authentik
+  AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+  AUTHENTIK_REDIS__HOST: redis
+  AUTHENTIK_BOOTSTRAP_EMAIL: admin@weebo.local
+  AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run `task dev:env` first}
+  AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?run `task dev:env` first}
+  AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+  AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+
+services:
+  postgres:
+    # Two databases in one instance: weebo_notify for the server, authentik for the
+    # IdP — created by postgres/init/01-databases.sql on first boot.
+    image: postgres:17-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_USER: weebo
+      POSTGRES_PASSWORD: weebo
+      POSTGRES_DB: weebo_notify
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U weebo -d weebo_notify"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rustfs:
+    # S3-compatible object store for attachments. The adapter only ever uses
+    # standard S3 operations, so this stays swappable for MinIO/Garage/S3 (§15).
+    image: rustfs/rustfs:latest
+    ports: ["9000:9000", "9001:9001"] # S3 API / console
+    environment:
+      RUSTFS_ACCESS_KEY: weebo-dev
+      RUSTFS_SECRET_KEY: weebo-dev-secret
+      RUSTFS_VOLUMES: /data
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - rustfs-data:/data
+
+  redis:
+    # Authentik's broker; on its own it also backs the eventbus-redis adapter (§11).
+    image: valkey/valkey:8-alpine
+    profiles: [authentik, eventbus]
+    ports: ["6379:6379"]
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2025.6
+    command: server
+    profiles: [authentik]
+    ports: ["9100:9100"]
+    environment: *authentik-env
+    volumes:
+      - ./authentik/blueprints:/blueprints/weebo:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2025.6
+    command: worker
+    profiles: [authentik]
+    environment: *authentik-env
+    volumes:
+      - ./authentik/blueprints:/blueprints/weebo:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  mailpit:
+    # SMTP sink for exercising the `email` channel sink (§7.1bis).
+    image: axllent/mailpit:latest
+    profiles: [sinks]
+    ports: ["8025:8025", "1025:1025"]
+
+  dex:
+    # The strict-minimal leg of the identity matrix (§3.2, T29) — a provider that
+    # emits no `groups` claim for anybody. Here as well as in CI so the leg can be
+    # reproduced by hand when it goes red there, which is the only time anybody
+    # will want it.
+    #
+    # Its config does not exist until `task dev:dex` renders it: the password is
+    # generated per run and never committed (§3.2), so the mount below points at a
+    # file the task writes just before bringing this up.
+    image: ghcr.io/dexidp/dex:v2.45.1
+    profiles: [dex]
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports: ["5556:5556"]
+    volumes:
+      - ./dex/config.local.yaml:/etc/dex/config.yaml:ro
+
+volumes:
+  pg-data:
+  rustfs-data:

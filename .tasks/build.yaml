@@ -1,0 +1,43 @@
+version: "3"
+
+# Building what gets shipped, as opposed to what gets tested.
+#
+# Three targets: the bundle, and the two images that carry it and the server (D17).
+# The image tasks need a container engine, which an Eclipse Che workspace does not
+# have (§12.4) — they exist so the release workflow and a developer with podman run
+# the same command, rather than the workflow growing its own private incantation.
+
+vars:
+  # Overridable, because who publishes this decides where. The release workflow
+  # passes its own.
+  IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
+  IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'
+  ENGINE: '{{.ENGINE | default "docker"}}'
+
+tasks:
+  web:
+    desc: "Build the deployable web bundle — the same bundle serves every deployment now (ADR-0021)"
+    # `vite build` still checks the inline-script hash against the page it actually
+    # wrote and emits `csp-template.txt` from it (`web/vite.config.ts`) — that is
+    # the gate CI holds, and it needs nothing exported to run: the API origin, the
+    # issuer and the client id moved to runtime (`web/nginx/docker-entrypoint.d/`),
+    # so this build no longer differs from one deployment to the next.
+    cmds:
+      - pnpm -C web build
+
+  image:
+    desc: "Build the server image — override IMAGE_REPO/IMAGE_TAG/ENGINE (needs a container engine)"
+    # No `--build-arg`: the server reads its configuration at runtime from a
+    # mounted file (§11), so nothing about a deployment is baked in here either —
+    # the web image below stopped being the exception once ADR-0021 superseded
+    # ADR-0019's build-time form.
+    cmds:
+      - "{{.ENGINE}} build -f Containerfile -t {{.IMAGE_REPO}}:{{.IMAGE_TAG}} ."
+
+  web:image:
+    desc: "Build the web bundle image — override IMAGE_REPO/IMAGE_TAG/ENGINE (needs a container engine)"
+    # No `--build-arg` either, since ADR-0021: the API origin, the issuer and the
+    # client id are read at container boot now
+    # (`web/nginx/docker-entrypoint.d/`), same as the server image above.
+    cmds:
+      - "{{.ENGINE}} build -f web/Containerfile -t {{.IMAGE_REPO}}-web:{{.IMAGE_TAG}} web"

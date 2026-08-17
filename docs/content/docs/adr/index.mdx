@@ -1,0 +1,47 @@
+---
+title: Architecture Decision Records
+description: The decisions that were expensive to reverse or actually debated — and the debt each one carries.
+---
+
+An ADR is written when a decision is **costly to reverse** or **was genuinely
+debated**. Not for every library pick.
+
+ADRs are **immutable**. An accepted one is never rewritten; it is superseded by a
+new one, and both stay. The value is in reading what we believed at the time,
+including where we turned out to be wrong.
+
+Each record states its **accepted debt**: what we knowingly deferred, and what would
+make us revisit it. A decision without a stated cost is usually a decision that has
+not been thought through.
+
+```bash
+task adr -- "the decision title"   # creates the next numbered record from the template
+task adr:list                      # lists them with their status
+```
+
+## The records
+
+| # | Decision | Why it is here |
+| --- | --- | --- |
+| [0001](/docs/adr/0001-sse-as-the-reference-realtime-transport) | SSE as the reference real-time transport | SSE versus WebSocket is a fork you live with for years |
+| [0002](/docs/adr/0002-rustfs-as-the-default-object-store) | RustFS as the default object store | Betting a default on a young project |
+| [0003](/docs/adr/0003-sealed-box-per-device-rather-than-mls) | Sealed box per device rather than MLS | Defines the threat model; a rewrite to change |
+| [0004](/docs/adr/0004-shadcn-vue-over-a-component-library) | shadcn-vue over a component library | Owning component code versus renting it |
+| [0005](/docs/adr/0005-receipts-are-not-signed-by-the-device) | Receipts are not signed by the device | A guarantee we deliberately do not offer |
+| [0006](/docs/adr/0006-single-tenant-in-v1) | Single tenant in v1, column already there | Cheap now, painful to retrofit later |
+| [0007](/docs/adr/0007-no-application-level-encryption-at-rest) | No application-level encryption at rest | Shifts a real duty onto whoever operates it |
+| [0008](/docs/adr/0008-postgres-listen-notify-as-the-default-eventbus) | Postgres LISTEN/NOTIFY as the default event bus | Sets the infrastructure floor for a deployment |
+| [0009](/docs/adr/0009-progenitor-and-heyapi-for-generated-clients) | progenitor and HeyApi for generated clients | Carries a conversion layer we own |
+| [0010](/docs/adr/0010-fumadocs-for-the-project-documentation) | Fumadocs for the project documentation | Adds a Node toolchain to a Rust project |
+| [0011](/docs/adr/0011-pnpm-as-the-javascript-package-manager) | pnpm as the JavaScript package manager | Amends the workflow in the design document |
+| [0012](/docs/adr/0012-single-events-table-as-the-cursor) | A single append-only events table is the cursor | The schema that makes "no gaps, no duplicates" true |
+| [0013](/docs/adr/0013-openapi-schemas-on-the-domain-types) | OpenAPI schemas are derived on the domain types | Couples the published contract to the domain model |
+| [0014](/docs/adr/0014-a-first-party-oidc-mock) | A first-party OIDC mock instead of a third-party image | Makes the compatibility matrix the only independent reading of OIDC |
+| [0015](/docs/adr/0015-the-browser-reads-the-stream-with-fetch) | The browser reads the stream with fetch, not EventSource | We own framing and reconnection, and the stream carries a bearer |
+| [0016](/docs/adr/0016-where-the-web-client-keeps-its-tokens) | Where the web client keeps its tokens | **Superseded by 0020** — its `M3 closes this` is the sentence that stopped being true |
+| [0017](/docs/adr/0017-a-hand-written-service-worker-rather-than-workbox) | A hand-written service worker rather than Workbox | The file that renders a lock-screen notification ships unbundled and is tested as itself |
+| [0018](/docs/adr/0018-a-sink-is-named-by-where-it-points-and-the-queue-never-holds-its-secret) | A sink is named by where it points, and the queue never holds its secret | Keeps a third party's credential out of every dump, at the cost of a lookup per attempt |
+| [0019](/docs/adr/0019-the-csp-travels-with-the-bundle) | The CSP travels with the bundle | **Superseded by 0021** — the origins it named at build time moved to boot, and the policy moved with them |
+| [0020](/docs/adr/0020-where-the-refresh-token-lives-after-the-service-worker-plan-died) | Where the refresh token lives, after the service worker plan died | The token stays put — an accepted risk with its mitigations and its reopening triggers named |
+| [0021](/docs/adr/0021-the-runtime-config-adr-0019-anticipated) | The runtime config ADR-0019 anticipated | One web image now serves every deployment; ADR-0019 already named the day this would be worth doing |
+| [0022](/docs/adr/0022-filesystem-attachment-store) | A filesystem attachment store, for deployments with no bucket at all | A second, named exception to §6.1's "never through the server" |

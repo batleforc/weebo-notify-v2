@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the front end is allowed to ask the shell for. Tauri v2 denies everything not listed here, so this file is the whole of the webview's authority — see the note in src/main.rs.",
+  "windows": ["main"],
+  "permissions": ["core:default", "notification:default", "deep-link:default"]
+}

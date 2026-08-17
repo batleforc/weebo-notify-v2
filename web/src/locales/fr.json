@@ -1,0 +1,418 @@
+{
+  "app": {
+    "name": "weebo-notify"
+  },
+  "login": {
+    "tagline": "Notifications d'infrastructure, en temps réel.",
+    "expired": "Ta session a expiré. Reconnecte-toi pour reprendre.",
+    "redirecting": "Redirection…",
+    "signIn": "Se connecter"
+  },
+  "callback": {
+    "failed": "La connexion a échoué.",
+    "retry": "Réessayer",
+    "inProgress": "Connexion en cours…"
+  },
+  "status": {
+    "success": "Succès",
+    "failure": "Échec",
+    "warning": "Avertissement",
+    "info": "Info",
+    "cancelled": "Annulé",
+    "ariaLabel": "{status}, {state}"
+  },
+  "state": {
+    "open": "ouverte",
+    "working": "en cours",
+    "closed": "fermée"
+  },
+  "priority": {
+    "min": "minimale",
+    "low": "basse",
+    "default": "normale",
+    "high": "haute",
+    "urgent": "urgente"
+  },
+  "sidebar": {
+    "aria": "Canaux et filtres",
+    "unreadLabel": "1 non lue | {count} non lues",
+    "connection": {
+      "live": "temps réel",
+      "reconnecting": "reconnexion…",
+      "offline": "hors ligne",
+      "tooltip": "Flux SSE — reprise par curseur à la reconnexion (§8.1)."
+    },
+    "channels": {
+      "title": "Canaux",
+      "all": "Tous les canaux",
+      "empty": "Aucun canal. L'accès vient d'un groupe de ton fournisseur d'identité ou d'une invitation (§5.1)."
+    },
+    "filters": {
+      "title": "Filtres",
+      "clearAll": "tout effacer",
+      "hasActions": "avec action",
+      "tagPlaceholder": "filtrer par tag…",
+      "tagAriaLabel": "Filtrer par tag",
+      "removeTag": "retirer le filtre de tag {tag}"
+    },
+    "nav": {
+      "settings": "Réglages",
+      "admin": "Administration",
+      "platform": "Plateforme",
+      "inbox": "Inbox"
+    },
+    "session": {
+      "toggleTheme": "Changer de thème",
+      "themeTooltip": "Thème : {theme}",
+      "logout": "Se déconnecter"
+    }
+  },
+  "layout": {
+    "closeDetail": "Fermer le détail"
+  },
+  "console": {
+    "title": "Console plateforme",
+    "description": "Métadonnées et opérations. Le contenu des canaux n'est pas lisible d'ici : rejoindre un canal est le chemin explicite, et il est tracé (§5.4).",
+    "yes": "oui",
+    "no": "non",
+    "forbidden": {
+      "title": "Cette console est réservée au rôle plateforme.",
+      "description": "Il se déclare en GitOps ([admin] oidc_groups, §11) et aucune API ne permet de se l'accorder — il n'y a donc personne à qui le demander ici : c'est une modification de configuration."
+    },
+    "reconciliation": {
+      "title": "Réconciliation",
+      "none": "Aucune passe terminée sur ce replica. La passe de démarrage tourne avant que le socket soit ouvert, donc voir ceci veut dire qu'elle a échoué.",
+      "lastPass": "Dernière passe {at} ({trigger}) · {channels} canaux · {accounts} service accounts · {removed} retirés",
+      "pending": "{count} liaison(s) en attente d'une première connexion :",
+      "perReplica": "Chiffres de ce replica : contrairement à la purge, tous réconcilient (§11), donc deux lectures peuvent différer d'un tick.",
+      "trigger": {
+        "boot": "démarrage",
+        "timer": "minuterie",
+        "sighup": "SIGHUP"
+      }
+    },
+    "channels": {
+      "title": "Canaux · {count}",
+      "managedCount": "dont {count} managés par la config",
+      "headers": {
+        "channel": "Canal",
+        "origin": "Origine",
+        "members": "Membres",
+        "groups": "Groupes",
+        "receipts": "Accusés"
+      },
+      "join": "Rejoindre",
+      "joinHint": "« Rejoindre » ajoute le lecteur au canal en subscribe seul et écrit une entrée d'audit. Sur un canal managé, la réconciliation reprendra le membership : un accès durable s'écrit dans la config (§11)."
+    },
+    "policies": {
+      "title": "Trust policies · {count}",
+      "none": "Aucune. Aucun job CI ne peut échanger de jeton sur cette instance (§5.3).",
+      "headers": {
+        "channels": "Canaux",
+        "scope": "Portée"
+      },
+      "scoped": "canal",
+      "global": "globale",
+      "readOnlyHint": "En lecture seule : la config les possède (§11), donc un bouton d'édition proposerait ce que la prochaine réconciliation reprendrait."
+    },
+    "dlq": {
+      "title": "Livraisons en souffrance · {count}",
+      "none": "Rien en souffrance. Une livraison arrive ici après 24 h d'échecs, ou immédiatement si le consommateur a répondu quelque chose qui ne changera pas — un 410, par exemple (§7.1bis).",
+      "headers": {
+        "channel": "Canal",
+        "attempts": "Tentatives",
+        "lastError": "Dernière erreur",
+        "deadAt": "Abandon"
+      },
+      "retry": "Réessayer",
+      "retryHint": "« Réessayer » remet la livraison en file avec un compteur d'échecs remis à zéro, et écrit une entrée d'audit. Le contenu de l'événement n'est pas affiché ici : le lire supposerait d'être membre du canal (§5.4)."
+    },
+    "audit": {
+      "title": "Audit · {count} dernière(s) entrée(s)",
+      "none": "Rien d'enregistré pour l'instant.",
+      "on": "sur {channel}"
+    }
+  },
+  "admin": {
+    "title": "Administration",
+    "managedByConfig": "géré par la config",
+    "mintedKey": {
+      "title": "Copie cette clé maintenant",
+      "description": "Elle ne sera plus jamais affichée : seul son hachage est conservé. La perdre veut dire la révoquer et en créer une autre.",
+      "copied": "J'ai copié"
+    },
+    "channels": {
+      "title": "Canaux",
+      "description": "Rétention et receipts, par canal. Un canal managed vient de la config : l'API le refuse, et la prochaine réconciliation annulerait la modification de toute façon.",
+      "empty": "Aucun canal visible.",
+      "receiptsOn": "Receipts activés",
+      "receiptsOff": "Receipts désactivés",
+      "defaultTtlPlaceholder": "TTL par défaut (7d)",
+      "maxTtlPlaceholder": "plafond (48h) — vide = aucun"
+    },
+    "devices": {
+      "title": "Devices",
+      "description": "Révoquer un device coupe ses push et son curseur de sync.",
+      "empty": "Aucun device. La CLI en enrôle un avec notify device enrol.",
+      "revoked": "révoqué",
+      "revoke": "Révoquer"
+    },
+    "keys": {
+      "title": "Clés d'API",
+      "accountPlaceholder": "Pour quel bot ?",
+      "channelPlaceholder": "canal (ci-infra)",
+      "labelPlaceholder": "à quoi elle sert",
+      "create": "Créer — le secret n'apparaît qu'une seule fois",
+      "unnamed": "sans nom",
+      "lastUsed": "utilisée {at}",
+      "neverUsed": "jamais utilisée",
+      "revoked": "révoquée"
+    },
+    "accounts": {
+      "title": "Service accounts",
+      "description": "Un bot d'équipe ne tourne jamais sur la clé d'un humain : partir de la société ne doit pas éteindre le déploiement.",
+      "create": "Créer",
+      "disabled": "désactivé",
+      "deactivate": "Désactiver",
+      "created": "créé {at}",
+      "owner": "créé par"
+    }
+  },
+  "inbox": {
+    "newNotifications": "{count} nouvelle notification | {count} nouvelles notifications",
+    "retry": "Réessayer",
+    "emptyFiltered": {
+      "title": "Aucune notification ne correspond à ces filtres.",
+      "hint": "Les filtres sont dans la colonne de gauche."
+    },
+    "emptyDefault": {
+      "title": "Rien à lire. C'est plutôt bon signe.",
+      "hint": "Les nouvelles notifications arrivent ici en temps réel."
+    },
+    "loading": "Chargement…",
+    "loadMore": "Charger la suite"
+  },
+  "palette": {
+    "hints": {
+      "settings": "profil thème densité dnd",
+      "admin": "canaux devices clés service accounts",
+      "console": "dlq audit réconciliation inventaire"
+    },
+    "actions": {
+      "dnd1h": "Ne pas déranger pendant 1 h",
+      "markSeen": "Marquer la sélection comme vue"
+    }
+  },
+  "commandPalette": {
+    "ariaLabel": "Rechercher et naviguer",
+    "searchPlaceholder": "Chercher une notification, un canal, un écran…",
+    "resultsAriaLabel": "Résultats",
+    "empty": "Rien ne correspond.",
+    "searching": "Recherche…",
+    "groups": {
+      "channels": "Canaux",
+      "notifications": "Notifications",
+      "screens": "Écrans",
+      "actions": "Actions"
+    }
+  },
+  "push": {
+    "refused": {
+      "unsupported": "Ce navigateur ne sait pas recevoir de push.",
+      "unavailable": "Ce déploiement ne fait pas de Web Push.",
+      "denied": "Les notifications sont refusées pour ce site.",
+      "failed": "Le service worker n'est pas disponible."
+    },
+    "prompt": {
+      "ariaLabel": "Activer les notifications",
+      "title": "Activer les notifications ?",
+      "body": "Recevez les notifications même quand l'onglet est fermé. Réglable à tout moment dans Réglages.",
+      "fallbackError": "L'abonnement a échoué. Réessayez, ou depuis Réglages plus tard.",
+      "activate": "Activer",
+      "later": "Plus tard",
+      "close": "Fermer"
+    }
+  },
+  "notification": {
+    "author": {
+      "channelKey": "clé {key} du canal {channel}",
+      "ciJob": "job CI",
+      "unknown": "inconnu"
+    },
+    "row": {
+      "revisionCount": "{count} révisions",
+      "lateBadge": "reçue en retard ({delay})",
+      "lateTooltip": "Publiée le {at}, reçue par ce client à l'instant."
+    },
+    "actionBar": {
+      "silenceUntilClose": "Jusqu'à la fermeture",
+      "silenceDurations": {
+        "1h": "1 heure",
+        "4h": "4 heures",
+        "24h": "24 heures",
+        "7d": "7 jours"
+      }
+    },
+    "image": {
+      "failed": "L'image jointe n'a pas pu être affichée."
+    },
+    "revisionTimeline": {
+      "revisionHeading": "Révision {seq}",
+      "authoredBy": "par {author}",
+      "statusChanged": "status: {from} → {to}",
+      "stateChanged": "état: {from} → {to}",
+      "priorityChanged": "priorité: {from} → {to}",
+      "titleChanged": "titre modifié",
+      "acked": "a acquitté ({key})",
+      "replied": "a répondu : « {text} »",
+      "chose": "a choisi « {option} » pour {key}",
+      "respondedGeneric": "a répondu"
+    },
+    "detail": {
+      "ariaLabel": "Détail de la notification",
+      "emptyTitle": "Sélectionne une notification pour voir sa timeline.",
+      "emptyHint": "↑ ↓ pour naviguer, Entrée pour ouvrir.",
+      "expiredTitle": "Cette notification a expiré.",
+      "deletedTitle": "Cette notification a été supprimée.",
+      "expiredBody": "Sa durée de rétention est écoulée ; le contenu n'est plus conservé (§7.2bis).",
+      "deletedBody": "Son auteur l'a retirée. Les clients l'ont retirée de leur inbox.",
+      "close": "Fermer",
+      "retry": "Réessayer",
+      "copyPermalink": "Copier le permalien",
+      "copyPermalinkTooltip": "Copier le permalien /n/…",
+      "copied": "Copié",
+      "priorityBadge": "priorité {priority}",
+      "seenByCount": "vu par {count}",
+      "seenByHeading": "Vu par {count} personne(s)",
+      "outOfAudience": "sur {audience}",
+      "noGroupTotal": "L'accès à ce canal vient d'un groupe : le total n'est pas connu du serveur (§14.2).",
+      "notOpenedYet": "Personne ne l'a encore ouverte.",
+      "deviceCount": "Le compte est en personnes, jamais en devices (§7.3) · {count} device(s) l'ont reçue.",
+      "createdAt": "Créée le {at}",
+      "closedAt": "· fermée le {at}",
+      "ttl": "· rétention {ttl}",
+      "noBody": "Pas de corps — le titre dit tout.",
+      "timelineHeading": "Timeline · {count} révision(s)"
+    }
+  },
+  "settings": {
+    "title": "Réglages",
+    "profile": {
+      "title": "Profil",
+      "description": "Un champ que tu modifies devient le tien : ton fournisseur d'identité cesse de l'écraser à chaque connexion.",
+      "noAvatar": "aucun",
+      "changeAvatar": "Changer d'avatar",
+      "avatarHint": "PNG, JPEG ou WebP, 512 KiB au plus. Redimensionné en 256×256 et débarrassé de ses métadonnées côté serveur.",
+      "displayName": "Nom affiché",
+      "timezone": "Fuseau",
+      "timezoneHint": "Sert de défaut aux heures calmes. Vérifié contre la base IANA.",
+      "claimed": "à toi",
+      "followsIdp": "suit ton IdP",
+      "releaseToIdp": "rendre à l'IdP",
+      "save": "Enregistrer",
+      "saving": "Enregistrement…"
+    },
+    "locale": {
+      "title": "Langue",
+      "fr": "Français",
+      "en": "English"
+    },
+    "appearance": {
+      "title": "Apparence",
+      "theme": "Thème : {theme}",
+      "density": "Densité : {density}",
+      "detail": "Détail : {position}",
+      "detailHint": "Où la timeline d'une notification s'ouvre à côté de la liste — sans effet sur un écran étroit, où elle prend tout l'écran quoi qu'il arrive.",
+      "detailPosition": {
+        "right": "à droite",
+        "left": "à gauche",
+        "under": "en dessous"
+      }
+    },
+    "keys": {
+      "title": "Jeton CLI",
+      "description": "Pour notify login (terminal, TUI) : choisis les canaux et ce que le jeton peut y faire, puis colle le secret dans l'invite.",
+      "mintedHint": "Copie ce jeton maintenant — colle-le à l'invite notify login. Il ne sera plus jamais affiché.",
+      "copied": "J'ai copié",
+      "labelPlaceholder": "à quoi il sert",
+      "channels": "Canaux",
+      "noChannels": "Aucun canal visible.",
+      "scope": "Portée",
+      "create": "Créer — le secret n'apparaît qu'une seule fois",
+      "unnamed": "sans nom",
+      "lastUsed": "utilisé {at}",
+      "neverUsed": "jamais utilisé",
+      "revoked": "révoqué",
+      "revoke": "Révoquer"
+    },
+    "session": {
+      "title": "Session",
+      "connectedAs": "Connecté en tant que {name}.",
+      "groups": "Groupes portés par ton jeton : {groups} — l'accès aux canaux en découle à chaque requête.",
+      "logout": "Se déconnecter"
+    },
+    "dnd": {
+      "title": "Ne pas déranger",
+      "active": "actif",
+      "description": "Les push OS sont supprimés pendant une période de calme ; le flux continue de couler et l'inbox se remplit normalement. À la sortie, un seul résumé plutôt qu'une rafale.",
+      "quickSilence": "Silence {label}",
+      "resume": "Reprendre maintenant",
+      "silentUntil": "Silence jusqu'à {at}.",
+      "recurringWindows": "Plages récurrentes",
+      "addWindow": "Ajouter",
+      "noWindows": "Aucune plage. Le silence ponctuel ci-dessus reste disponible.",
+      "removeWindow": "Supprimer la plage",
+      "everyDay": "tous les jours",
+      "midnightHint": "Traverse minuit : la plage appartient au jour où elle {emphasis} — un vendredi 22:00–08:00 est la nuit du vendredi au samedi.",
+      "midnightHintEmphasis": "commence",
+      "exceptionsTitle": "Canaux qui sonnent quand même",
+      "exceptionsHint": "Tout couper {emphasis} celui qui compte — le cas astreinte.",
+      "exceptionsHintEmphasis": "sauf",
+      "scopeRestricted": "La portée est restreinte à certains canaux ; elle se modifie depuis la CLI (notify dnd) pour l'instant.",
+      "urgentBypass": "Laisser passer les notifications {emphasis}",
+      "urgentBypassEmphasis": "urgentes",
+      "urgentBypassHint": "C'est vous qui décidez ce qui peut vous réveiller, jamais l'émetteur.",
+      "cancel": "Annuler",
+      "saveFailed": "Enregistrement impossible.",
+      "loadFailed": "Impossible de lire les préférences.",
+      "days": {
+        "mon": "L",
+        "tue": "M",
+        "wed": "M",
+        "thu": "J",
+        "fri": "V",
+        "sat": "S",
+        "sun": "D"
+      }
+    },
+    "push": {
+      "title": "Notifications push",
+      "description": "Recevoir les notifications même quand l'onglet est fermé. Ce navigateur devient un {device} : il apparaît dans Admin → Devices, et le révoquer coupe ses push et son curseur de sync.",
+      "descriptionDevice": "appareil",
+      "checking": "Vérification…",
+      "unsupported": "Ce navigateur ne sait pas recevoir de push — une fenêtre privée ou une origine non sécurisée, le plus souvent.",
+      "unavailable": "Ce déploiement ne fait pas de Web Push : aucune clé VAPID n'y est configurée. Le flux temps réel continue de fonctionner.",
+      "denied": "Les notifications sont bloquées pour ce site. Le navigateur ne redemandera pas : il faut les réautoriser dans ses réglages de site.",
+      "enable": "Activer sur ce navigateur",
+      "disable": "Désactiver sur ce navigateur",
+      "fallbackError": "L'abonnement a échoué. Réessayez."
+    }
+  },
+  "problem": {
+    "authMissing": "Session expirée — reconnecte-toi.",
+    "authInvalid": "Session expirée — reconnecte-toi.",
+    "authExpired": "Session expirée — reconnecte-toi.",
+    "scopeMissing": "Tu n'as pas les droits pour cette action sur ce canal.",
+    "channelUnknown": "Ce canal n'existe pas, ou tu n'y as pas accès.",
+    "notificationUnknown": "Cette notification n'existe plus.",
+    "notificationDeleted": "Cette notification a été supprimée.",
+    "fieldMissing": "Il manque une information dans le formulaire.",
+    "fieldEmpty": "Un champ obligatoire est vide.",
+    "fieldInvalid": "Une valeur du formulaire n'est pas valide.",
+    "rateLimited": "Trop de requêtes — réessaie dans un instant.",
+    "actionUnknown": "Cette action n'existe plus sur cette révision.",
+    "networkDown": "Le serveur est injoignable. Vérifie ta connexion, ou qu'il tourne bien.",
+    "serverResponded": "Le serveur a répondu {status}.",
+    "unexpected": "Une erreur inattendue s'est produite."
+  }
+}

@@ -1,0 +1,79 @@
+# The desktop shell (design §10bis.3, milestone M5).
+#
+# `[workspace]` is empty **on purpose**: this crate is deliberately NOT a member of
+# the repository's cargo workspace. On Linux Tauri links against GTK/WebKit, which
+# `mise` cannot install and a Che workspace cannot `apt-get` (§12.4, D13) — so a
+# member here would break `cargo build --workspace`, `task test` and every gate for
+# everybody working on the server, on a machine that has no business building a
+# desktop app.
+#
+# The cost of that choice, stated plainly: nothing in this directory is compiled by
+# any gate in this repository today. It is written and unbuilt, exactly like the two
+# Containerfiles of D17, and it stays that way until the dev image carries the stack
+# — at which point this becomes a member and the gates pick it up.
+[workspace]
+
+[package]
+name = "weebo-notify-desktop"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "weebo-notify desktop shell"
+# Spelled out rather than inherited: this crate is deliberately not a workspace
+# member (above), so `license.workspace = true` is not available to it and it
+# declared nothing at all until `task audit:cargo` started reading this manifest
+# and said so. Same licence as everything else in the repository.
+license = "Apache-2.0"
+
+# Required by Tauri's own tooling before `cargo tauri android/ios init` will do
+# anything at all — mobile links this crate as a `staticlib`/`cdylib` and calls
+# into `lib.rs::run` via `tauri::mobile_entry_point`, not `fn main` (M6, §10bis.4).
+# `rlib` keeps the desktop binary (`main.rs`) linking against it exactly as before.
+# Naming it explicitly rather than trusting the package-name default: the day a
+# mobile build reads this manifest, the name should say it wasn't a guess.
+[lib]
+name = "weebo_notify_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Tauri's production switch, and the one thing that decides what the shell shows.
+# `WebviewUrl::default()` resolves to the embedded `frontendDist` (web/dist) when
+# this is on, and to `build.devUrl` (http://localhost:5173) when it is not — so a
+# release binary built without it opens a window reading « Could not connect to
+# localhost: Connection refused » unless a Vite dev server happens to be running.
+# `cargo tauri build` passes it by itself; `cargo build`, which `task tauri:build`
+# uses, does not, and it cannot pass what the manifest never declared.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The interesting half of this shell lives here and is tested by `task test` on any
+# machine: the tray state machine (§10bis.3ter) and the deep-link parser
+# (§10bis.3quater). What is left in `main.rs` is binding, which is the part that
+# genuinely needs a webview to mean anything.
+notify-client-core = { path = "../../crates/notify-client-core" }
+
+# The deep-link payload the front end listens for — one small object, and the shell
+# has no other reason to serialise anything.
+serde_json = "1"
+# "image-png" decodes the four committed tray PNGs (icons/tray-*.png) into the
+# `tauri::image::Image` the tray icon wants — not implied by "tray-icon" or the
+# default feature set.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
+# Opens the authorization URL in the system browser (RFC 8252 wants an external
+# user-agent — see `oauth.rs`). The plugin rather than a `Command::new("xdg-open")`
+# of our own: the Windows spelling is `cmd /C start`, whose argument parsing treats
+# the `&` between every OAuth query parameter as a command separator, and getting
+# that wrong produces a login that works on two platforms out of three.
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+# Direct rather than only transitive: Tauri already runs its own tokio runtime
+# (`tauri::async_runtime`), but naming `tokio::time::interval` needs a manifest
+# entry of our own. "rt" is for the *second*, private current-thread runtime
+# `run_daemon` builds for itself — `Store` (rusqlite) is `Send` but not `Sync`, so
+# its polling loop cannot share Tauri's multi-thread one (see `run_daemon`'s doc).
+tokio = { version = "1", default-features = false, features = ["time", "rt"] }

@@ -1,0 +1,44 @@
+---
+title: ADR-0001 — SSE as the reference real-time transport
+description: Server-Sent Events carry the live stream; WebSocket stays available for clients that prefer it.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+Every client — web, desktop, CLI, TUI — needs a live stream of revisions, receipts
+and interactions, and every client can be disconnected at any time. Whatever we
+choose has to survive corporate proxies, reconnect without losing or duplicating
+events, and cost little to operate across many replicas.
+
+## Decision
+
+**SSE is the reference transport.** A WebSocket endpoint carrying the same events
+as JSON frames stays exposed for clients that prefer it.
+
+SSE's reconnect is native and, crucially, its `Last-Event-ID` header is *the same
+opaque cursor* as `GET /sync?cursor=`. That gives us one resume mechanism rather
+than two, and it is why [ADR-0012](/docs/adr/0012-single-events-table-as-the-cursor)
+makes a single table the ordering authority.
+
+## Consequences
+
+**Positive**
+
+- One resume path for live streaming and for offline catch-up: fewer ways to lose an event.
+- Plain HTTP: proxies, ingresses and `curl` all work without special handling.
+- Unidirectional by nature, which matches the domain — every write goes through the
+  REST API, never up the stream.
+
+**Negative**
+
+- No client-to-server channel on the stream itself. This is a feature here, not a
+  gap, but it does mean a client always holds two connections' worth of state.
+- Browsers cap concurrent SSE connections per origin on HTTP/1.1; HTTP/2 at the
+  ingress is effectively required.
+
+**Accepted debt**
+
+- The WebSocket endpoint is a second surface to keep in sync with the event
+  contract. It is tested against the same fixtures, but it is real maintenance.

@@ -1,0 +1,26 @@
+[package]
+name = "notify-client-api"
+description = "Rust API client generated from the committed OpenAPI spec (progenitor)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+progenitor-client.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Both are progenitor's choices, not ours: it renders `date-time` as `chrono` and
+# compiles `pattern` constraints with `regress`. The rest of the workspace is on
+# `time`, and this crate is the boundary where that difference stops — everything
+# above it consumes `notify-client-core`, which converts.
+chrono.workspace = true
+regress.workspace = true

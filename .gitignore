@@ -8,7 +8,55 @@
 node_modules/
 target/
 dist/
+.next/
+web/coverage/
 
 # Local env files
 .env
 .env.local
+
+# ...except the shared development credentials, which are committed on purpose
+# (design §12.1): the stack is disposable and this is what makes `task dev:up`
+# work with zero setup. dev/.env.local stays ignored — `task dev:env` generates
+# the Authentik admin bootstrap there, and that one is never committed.
+!dev/.env
+
+# Real key material minted by `task dev:setup` — never committed, and deliberately
+# NOT allowlisted for gitleaks: an exception written for a development key would go
+# on covering this path the day a production one lands in it (design §12.5, M3.5).
+dev/secrets/
+
+# The Dex configuration and the credentials `task dev:dex` renders into it. The
+# template beside them is committed; what carries a password never is (§3.2, D7).
+dev/dex/config.local.yaml
+dev/dex/env.local
+
+# nextest JUnit output
+junit*.xml
+
+# The session bus socket `task desktop:bus` opens in the browser sidecar (D19). A
+# socket is a live file descriptor, not a file: it belongs to the running pod and
+# means nothing anywhere else.
+dev/.dbus/
+
+# The desktop shell builds outside the cargo workspace (M5, D13). `gen/schemas` is
+# tauri-build's own output (the ACL schemas `capabilities/*.json` reference),
+# regenerated on every build like `target/` — not `Cargo.lock`, which stays
+# committed for a binary crate, same as the workspace root's.
+web/src-tauri/target/
+web/src-tauri/gen/schemas/
+
+# `gen/android` (M6) is deliberately NOT ignored, though `cargo tauri android init`
+# generates it too. The difference that matters is who edits it afterwards: the
+# schemas are output nobody touches, while the Android project is *source* — the
+# manifest carries the `weebo-notify://` intent filter and the POST_NOTIFICATIONS
+# permission this app does not work without, and `build.gradle.kts`, `MainActivity.kt`
+# and `res/` are all hand-editable. Ignoring it meant those edits lived on one
+# machine, were invisible to review, and were lost on the next clone. Tauri's own
+# documentation says to commit it, for the same reason.
+#
+# Nothing more is needed here: `init` also writes `gen/android/.gitignore` and
+# `gen/android/app/.gitignore`, which are themselves committed and already cover the
+# regenerated parts — `build`, `.gradle`, `local.properties`, the `jniLibs/**/*.so`
+# symlinks into `target/`, and `keystore.properties`. Repeating them at this level
+# would be a second source of truth that drifts the first time Tauri changes theirs.

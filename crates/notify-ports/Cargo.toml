@@ -1,0 +1,43 @@
+[package]
+name = "notify-ports"
+description = "weebo-notify ports: the async traits the domain is driven through, plus in-memory test doubles."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+# The in-memory doubles. Off by default so no production binary can link them by
+# accident; turned on as a dev-dependency by every crate that tests against ports.
+test-utils = []
+
+# Schema annotations for the types that reach the wire — pages, events, sync
+# results (ADR-0013). Same bargain as in the domain: a derive over the serde
+# representation, nothing this crate calls.
+openapi = ["dep:utoipa", "notify-domain/openapi"]
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+
+async-trait = { workspace = true }
+# Only for `BoxStream`: the event bus hands back a stream of pokes, and naming that
+# type is the whole extent of the dependency.
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+url = { workspace = true }
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The doubles are exercised by this crate's own tests — see `test_utils`, which is
+# compiled under `cfg(test)` too. A broken double would quietly pass the use-case
+# tests of every crate above this one.
+tokio = { workspace = true }

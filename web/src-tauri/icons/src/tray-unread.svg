@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="96 108 320 320" role="img" aria-label="weebo-notify">
+  <title>weebo-notify — non-lus</title>
+  <!--
+    The accent dot of §10bis.3ter. It is a *shape* and never a colour: macOS strips
+    colour from a template icon, so a mark that said "unread" in red alone would say
+    nothing at all there. The count itself goes in the menu line, never in the icon —
+    illegible at 16 px.
+
+    The bell is punched out behind the dot so the two never merge into one blob at
+    tray size, which is the failure mode of drawing a badge on top of a mark.
+  -->
+  <defs>
+    <mask id="cut">
+      <rect x="96" y="108" width="320" height="320" fill="#fff" />
+      <circle cx="372" cy="140" r="92" fill="#000" />
+    </mask>
+  </defs>
+  <g fill="#fafafa">
+    <g mask="url(#cut)">
+      <path d="M256 116a26 26 0 0 1 26 26v10a90 90 0 0 1 64 86v54l30 46a12 12 0 0 1-10 19H146a12 12 0 0 1-10-19l30-46v-54a90 90 0 0 1 64-86v-10a26 26 0 0 1 26-26z" />
+      <path d="M212 382h88a44 44 0 0 1-88 0z" />
+    </g>
+    <circle cx="372" cy="140" r="62" />
+  </g>
+</svg>

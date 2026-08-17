@@ -1,0 +1,317 @@
+---
+title: Hardening
+description: What the deployment must provide, because the application deliberately does not.
+---
+
+Some guarantees are not the application's to make. They are listed here so nobody
+discovers the gap during an incident.
+
+## The checklist
+
+Every item below is something a deployment can be missing while the application
+reports itself perfectly healthy. Each links to the section that explains why.
+
+- [ ] Postgres and the object store are on **encrypted disks**, and backups — including `pg_dump` output — are encrypted too ([Encryption at rest](#encryption-at-rest-is-your-job))
+- [ ] The attachment **bucket is private**, with presigned URLs as the only path to an object ([The bucket must be private](#the-bucket-must-be-private))
+- [ ] Whatever serves the web bundle sends **`frame-ancestors`** (or `X-Frame-Options`), a CSP **report endpoint**, and **HSTS** ([Two security headers](#two-security-headers-the-bundle-cannot-send-itself))
+- [ ] **`/metrics`, `/healthz` and `/readyz` are not reachable from outside the cluster** — check this whenever ingress routing changes ([`/metrics` is private only because of how you route](#metrics-is-private-only-because-of-how-you-route))
+- [ ] The API ingress applies **request-rate, connection and body-size limits** ([Rate limiting belongs at your ingress](#rate-limiting-belongs-at-your-ingress))
+- [ ] **NetworkPolicy is enabled** and `ingressFrom` names your ingress controller and monitoring namespaces — enabling it without them blocks the API
+- [ ] `[cli] binary_path` points **inside the image**, at nothing writable ([a code-execution surface](#cli-binary_path-is-a-code-execution-surface))
+- [ ] Release signing keys are in **CI secrets scoped to the release workflow**, with a written rotation ([Release signing keys](#release-signing-keys))
+- [ ] The **Android release keystore is backed up** somewhere a disk failure and a resignation both survive — losing it strands every existing install permanently ([Three signing systems](#three-signing-systems-and-why-they-are-not-one))
+- [ ] Somebody has read [Key rotation](#key-rotation) **before** needing it — two of those secrets break things that are already in the world
+
+## Encryption at rest is your job
+
+The application performs **no encryption at rest**
+([ADR-0007](/docs/adr/0007-no-application-level-encryption-at-rest)). Confidentiality
+of a disk, a snapshot or a dump rests **entirely** on:
+
+- **encrypted disks** for Postgres and the object store, and
+- **encrypted backups** — including logical ones such as `pg_dump`, which leave the
+  encrypted disk the moment they are written.
+
+<Callout type="warn">
+  A `pg_dump` of a weebo-notify database is plaintext notification content. If your
+  backup tooling does not encrypt, you do not have encryption at rest, regardless of
+  how the disks are configured.
+</Callout>
+
+## The cluster is the trust boundary
+
+TLS may terminate at the ingress. Inside the boundary — ingress to pod, pod to
+Postgres, pod to bucket — traffic is application-plaintext by design. Protecting it
+is network policy and, if you want it, a service mesh. It is not solved by adding
+another layer of application cryptography.
+
+## The bucket must be private
+
+Attachments are not encrypted at the application layer. The bucket must be **strictly
+private**, with a presigned URL as the only path to an object: short TTL, enforced
+content type and `content-length-range`. Any anonymous read access defeats the whole
+arrangement.
+
+## Two security headers the bundle cannot send itself
+
+The web client ships its own Content-Security-Policy, stamped into `index.html` at
+build time ([ADR-0019](/docs/adr/0019-the-csp-travels-with-the-bundle)) — so it is
+enforced however you serve the files. A `<meta>` policy cannot carry two directives,
+and whatever serves the bundle owes them:
+
+- **`frame-ancestors`** — without it, nothing stops the app being framed by another
+  origin. Send `Content-Security-Policy: frame-ancestors 'none'` (or
+  `X-Frame-Options: DENY` for older clients).
+- **`report-to` / `report-uri`** — without it, a policy violation is a console
+  message on somebody's laptop rather than a signal you receive.
+
+While you are adding headers, `Strict-Transport-Security` belongs to the same place
+and to the same class of "cannot be shipped in the page".
+
+<Callout>
+  The policy names the API and identity provider origins the bundle was **built**
+  with. Pointing a built bundle at a different API by changing a runtime setting
+  does not exist as a supported path — and if it did, the policy would block it.
+</Callout>
+
+## `/metrics` is private only because of how you route
+
+`notify-server` binds **one** socket. `/metrics`, `/healthz` and `/readyz` answer on
+it, beside the API — there is no second listener, whatever the `EXPOSE` line in an
+older build of the image suggested.
+
+What keeps the exporter off the internet in the shipped chart is therefore a routing
+decision, not a network boundary: the server `Ingress` declares `path: /api/v1` with
+`pathType: Prefix`, and nothing else is published. That holds until somebody:
+
+- fronts the Service with a catch-all path (`/`), or a second Ingress;
+- switches `server.service.type` to `LoadBalancer` or `NodePort`;
+- puts a service mesh gateway in front of it with its own routing.
+
+<Callout type="warn">
+  The exporter is unauthenticated and it is meant to be — a scrape has no
+  credential. Published, it hands out channel names, notification and delivery
+  counts, connected-device counts and per-transport failure rates: a usable map of
+  who is busy and when. Treat "is `/metrics` reachable from outside the cluster" as
+  part of your ingress review, not as a property the application guarantees.
+</Callout>
+
+## The prefix half of an API key is not a secret
+
+A key reads `wnk_<prefix>_<secret>`. Only the second half is a credential. The prefix
+is an indexed lookup handle: it is printed when the key is minted, returned by
+`GET /api/v1/keys` to its owner, and it is the half people leave visible when they
+redact a key in a ticket or a screenshot.
+
+Treat it as public, and in particular **do not build a control on it being private**.
+The server does not: an unknown prefix and a wrong secret give the same `401`, and
+the cost of checking a wrong secret is bounded on purpose, because anyone who has
+read a prefix off a screenshot can send guesses against it.
+
+## Rate limiting belongs at your ingress
+
+The application limits per principal, after authentication — that is the right place
+for "this key may publish 60 times a minute", and the wrong place for "this address
+is sending ten thousand requests a second". weebo-notify deliberately does not limit
+by client address, because behind an ingress the peer address is the ingress and the
+forwarded one is a header the client sets: trusting it without a configured proxy
+list turns a limiter into a way to frame somebody else.
+
+So the address-based limit is yours to set, where the address is a fact:
+
+- a **request rate** limit per source address on the API Ingress;
+- a **connection** limit per source address, which matters more than usual here — SSE and WebSocket connections are long-lived by design, so a client that opens thousands is not sending unusual traffic, just holding unusual resources;
+- a **body size** limit at or slightly above the 25 MiB attachment ceiling.
+
+For ingress-nginx that is `nginx.ingress.kubernetes.io/limit-rps`,
+`limit-connections` and `proxy-body-size` on the annotations in
+`server.ingress.annotations`.
+
+## `[cli] binary_path` is a code-execution surface
+
+`GET /api/v1/cli` serves the file that `[cli] binary_path` points at, to any
+authenticated caller, as an executable they will run on their workstation. Whoever
+can write to that path chooses what your developers and CI runners execute.
+
+- Keep it **inside the image**, at the path the Containerfile put it (`/usr/local/bin/notify`). It is built from the same commit as the server, which is the whole reason the endpoint can exist without a version-skew problem.
+- Never point it at a writable mount, an `emptyDir`, or anything a sidecar can reach.
+- Leave the `[cli]` section out entirely if you do not want to serve it — there is no default, and no section means `501`.
+
+The binary is currently served without a detached signature, so a recipient cannot
+verify it independently of the TLS connection they fetched it over. Treat "who can
+write into the server image" as equivalent to "who can run code on every machine
+that runs `notify`".
+
+## Key rotation
+
+Each of these has a different blast radius, and at least one has a consequence people
+discover at the wrong moment. Rotating is a configuration change plus a restart
+unless noted.
+
+| Secret | Where | What rotating costs |
+| --- | --- | --- |
+| `[database] url` | `server.database.existingSecret` | Nothing, if the new credential is created before the old is revoked. Roll the Secret, then restart. |
+| `[attachments] access_key` / `secret_key` | `server.attachments.existingSecret` | Nothing in flight — presigned S3 URLs already issued keep working until they expire, because they were signed with the old key and S3 validates the signature, not the current credential. |
+| `[attachments] token_secret` (filesystem backend) | `server.attachments.existingSecret` | **Every presigned URL in flight stops working immediately.** The token is an HMAC under this secret, so rotating it invalidates every upload and download link already handed out. Uploads in progress fail with `403`. Rotate during a quiet window, or accept a few failed uploads that clients will retry. |
+| `[push.webpush] vapid_key_file` | Secret volume | **Every Web Push subscription becomes undeliverable.** Browsers bind a subscription to the VAPID key it was created under; every subscriber has to re-enrol. Rotate only if the key is believed compromised. |
+| `[federation] signing_key_file` | Secret volume | Tokens this instance minted stop verifying. They are short-lived, so the window is minutes — a CI job holding one re-exchanges and continues. |
+| APNs `.p8` | Secret volume | Push to iOS stops until the new key is in place. The key is per-team, not per-app. |
+| Release signing (cosign, minisign, Android keystore) | CI secrets | See below — these are the ones where a leak is worse than an outage. |
+
+<Callout type="warn">
+  The two rows worth reading twice are `token_secret` and the VAPID key. Both look
+  like ordinary credentials and neither behaves like one: rotating the first breaks
+  links that are already out in the world, and rotating the second silently
+  unsubscribes every browser.
+</Callout>
+
+## Release signing keys
+
+The minisign private key for the desktop updater is equivalent to **remote code
+execution across every installed desktop client** if it leaks. Strict custody: CI
+secrets scoped to the release workflow alone, never in the repository, with a
+documented rotation. The same applies to cosign, the Android signing keystore and the
+APNs `.p8` key.
+
+### Three signing systems, and why they are not one
+
+The obvious question — *can one key sign everything?* — has a firm no, and it is
+worth writing down so it does not get re-asked and answered differently. Each
+signature exists to satisfy a **different verifier**, and no verifier reads any
+other's output:
+
+| What | Verified by | Key system | Rotatable? |
+| --- | --- | --- | --- |
+| Container images, published files | `cosign verify`, admission controller | **keyless** — no key at all | n/a |
+| APK / AAB | Android `PackageManager` | X.509 in a PKCS#12 keystore | **effectively never** |
+| Desktop updater bundles | The Tauri updater, in-app | minisign Ed25519 | yes, forcibly |
+| `.msi` / `.dmg` | Authenticode / Gatekeeper | CA-issued certificate | per CA policy |
+
+Three of those are forced. Tauri's updater understands minisign and nothing else.
+Windows and macOS require a certificate **issued by a CA they already trust**, which
+cannot be self-generated at any price. And Android's signing key *is* the
+application's identity: an update must be signed by the same key or the install is
+refused as a different app.
+
+The only pair that *could* share material is cosign and `apksigner` — `cosign
+import-key-pair` accepts an existing RSA or EC key. **It is deliberately not done**,
+for three reasons:
+
+- **Blast radius.** One key means one leak forges images, owns the desktop fleet
+  through the updater, and takes the Android identity permanently.
+- **Rotation couples to the worst case.** The Android key essentially cannot rotate.
+  Sharing it binds the most rotatable secret in the project to the least rotatable
+  one, forever.
+- **It is a downgrade.** Images are signed **keyless** today: there is no key to
+  leak, the identity is the release workflow, and Rekor logs it. Introducing a
+  shared static key adds custody where none currently exists.
+
+So the count is **two secrets, not one and not four**: the Android keystore and the
+minisign key, both unavoidable. Everything else — images, SBOMs, CLI archives,
+desktop bundles, and the APK's *provenance* — is keyless, and needs no custody at
+all.
+
+<Callout type="warn">
+  The APK is signed **twice**, and both are required. `apksigner` with the keystore is
+  what makes a device install it; `cosign sign-blob` is what proves it came from your
+  release. Neither substitutes for the other — a cosign signature does not make an
+  APK installable, and an `apksigner` signature says nothing about provenance.
+</Callout>
+
+### The development keystore is not a release key
+
+`task android:keystore` mints `dev/secrets/android-dev.keystore` so an APK can be
+installed on a device during development. Its password is published in this
+repository and its certificate says `CN=weebo-notify DEVELOPMENT ONLY`. An APK signed
+with it is trustworthy to the person who generated it and to nobody else.
+
+The release keystore is generated once, offline, and never leaves the CI secret it is
+stored in:
+
+```bash
+keytool -genkeypair -keystore weebo-notify-release.jks \
+  -alias weebo-notify -keyalg RSA -keysize 4096 -validity 10000 \
+  -dname "CN=weebo-notify, O=<your org>, C=<your country>"
+```
+
+Losing it means **no existing installation can ever be updated again** — a new key is
+a new app, with a new listing and no upgrade path for anyone who installed the old
+one. Back it up somewhere a disk failure and a resignation both survive.
+
+## Verify the signature, or it protects nobody
+
+Every released image is signed with cosign keyless, **by digest**, and the release
+notes carry the digests and the command. A signature nothing checks is a signature
+that stops an attacker who was never trying.
+
+Checking it by hand before a deploy:
+
+```bash
+cosign verify ghcr.io/batleforc/weebo-notify@sha256:<digest> \
+  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Enforcing it at admission is better, because it does not depend on anybody
+remembering. With the Sigstore policy-controller, or the equivalent Kyverno
+`verifyImages` rule:
+
+```yaml
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: weebo-notify
+spec:
+  images:
+    - glob: "ghcr.io/batleforc/weebo-notify*"
+  authorities:
+    - keyless:
+        url: https://fulcio.sigstore.dev
+        identities:
+          # Both halves matter. Without `issuer` anybody with a Fulcio
+          # certificate can satisfy this; without `subject` any workflow in any
+          # repository can.
+          - issuer: https://token.actions.githubusercontent.com
+            subjectRegExp: "^https://github.com/batleforc/weebo-notify-v2/"
+```
+
+<Callout>
+  Pin your deployment to a **digest**, not a tag. A tag is a mutable pointer, so
+  `:0.1.0` today and `:0.1.0` next month are not necessarily the same bytes — and a
+  signature verified against a tag is a statement about whatever that tag resolved
+  to at verification time.
+</Callout>
+
+## Registry credentials are a publishing right
+
+`REGISTRY_TOKEN` is the credential the release pipeline pushes with. Anyone holding
+it can publish an image under this project's name, which downstream deployments will
+pull because the name is the one they trust.
+
+- Scope it to **this package**, not to the account. A token with `write:packages` across an org is a token that can replace any image that org publishes.
+- Give it to the **release workflow alone**. It is not needed by `check`, `contract`, `e2e` or `audit`, and none of them declare it.
+- **Rotate on a schedule**, and immediately if a workflow file's permissions change or a maintainer leaves.
+- Prefer the forge's own short-lived job token where it can push, so there is no long-lived secret to rotate at all.
+
+Signing does not make this less important, it makes it recoverable: a signature
+proves an image came from the pipeline, so an image pushed with a stolen token and
+*not* signed by it fails the admission policy above. That only holds if the policy
+is enforced.
+
+## Web Push means trusting the browser
+
+On the PWA path, protection from the push service comes from RFC 8291, with keys
+managed internally by the browser. In practice that is equivalent to the mobile path
+— but the guarantee is the browser's implementation, not ours. Worth stating to
+anyone running a sensitive channel.
+
+## Avatars are the only media the server decodes
+
+Avatar upload is the sole place where the server parses user-supplied image data.
+It is handled with a memory-safe decoder, a dimension ceiling checked **before** full
+decoding (a decompression bomb is cheap to build), animated formats refused, and all
+metadata stripped on resize — a photo taken on a phone carries GPS coordinates in
+EXIF.
+
+Any future feature that makes the server decode media has to come back through this
+same analysis.

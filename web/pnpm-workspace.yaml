@@ -1,0 +1,32 @@
+# pnpm blocks dependency build scripts unless they are explicitly approved — a
+# supply-chain guard, since a postinstall script runs arbitrary code from a
+# transitive dependency (ADR-0011). The entries below are approved deliberately:
+#
+#   esbuild — downloads and links its platform binary; Vite's dependency
+#             pre-bundling does not start without it.
+#   @biomejs/biome — same shape: fetches the native binary for this platform.
+#   vue-demi      — pulled in by @vueuse/core; its postinstall picks the Vue 2 or
+#                   Vue 3 entry points. Without it the package resolves to a stub
+#                   and every composable importing from it fails at runtime.
+#
+# Anything new appearing here should be a conscious decision, not a reflex.
+allowBuilds:
+  esbuild: true
+  "@biomejs/biome": true
+  vue-demi: true
+
+# Transitive versions forced up because `task audit` flagged them. Each entry is a
+# liability: it makes us responsible for a compatibility we did not test upstream.
+# Re-run `task audit` after removing one to check whether it is still needed — they
+# should not outlive the advisory.
+overrides:
+  # GHSA-52cp-r559-cp3m — prototype pollution in js-yaml, fixed in 4.3.0. Reaches
+  # us only through HeyApi's spec parser, which runs at build time on a document
+  # this repository produces — but "only a build tool" is how a supply-chain
+  # problem gets waved through, and the fix is one line.
+  js-yaml: ^4.3.0
+  # GHSA-2v37-7h3g-55p8 — nanoid's custom alphabet generator can loop forever
+  # when size is 0, fixed in 3.3.17. Reaches us only through postcss, itself
+  # pulled in at build time by @vue/compiler-sfc — same "only a build tool"
+  # reasoning as js-yaml above, and the same one-line fix.
+  nanoid: ^3.3.17

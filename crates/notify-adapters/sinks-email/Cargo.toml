@@ -1,0 +1,38 @@
+[package]
+name = "notify-sinks-email"
+description = "SMTP sink (design §7.1bis): one notification revision rendered as a plain-text mail."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+# `rustls` rather than `native-tls`: the same TLS stack the rest of the workspace
+# already links, so a deployment does not need OpenSSL for its mail sink alone.
+# `pool` is off — a drain sends a handful of mails a minute at most, and a pooled
+# connection to somebody's relay is a connection that goes stale between passes.
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls-tls",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+notify-ports = { workspace = true, features = ["test-utils"] }
+time = { workspace = true }
+tokio = { workspace = true }

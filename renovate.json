@@ -1,0 +1,84 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "semanticCommitType": "chore",
+  "commitMessageLowerCase": "never",
+  "timezone": "Europe/Paris",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "labels": ["dependencies"],
+  "rangeStrategy": "bump",
+  "postUpdateOptions": ["pnpmDedupe"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on the first day of the month"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "labels": ["dependencies", "security"],
+    "prPriority": 10
+  },
+  "packageRules": [
+    {
+      "description": "Security updates never wait for the weekly window, and never batch with anything else.",
+      "matchUpdateTypes": ["patch", "minor", "major"],
+      "matchDatasources": ["crate", "npm", "docker", "github-tags"],
+      "isVulnerabilityAlert": true,
+      "schedule": ["at any time"],
+      "automerge": false
+    },
+    {
+      "description": "CI actions are pinned to commit SHAs on purpose (advisory SEC-P2-01). Renovate keeps the SHA current and rewrites the `# vN` comment beside it; without this the pins would rot into a security theatre of very old, very pinned actions.",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true,
+      "groupName": "ci actions"
+    },
+    {
+      "description": "Base images are pinned by digest (SEC-P2-02) for the reason the Containerfile states: a release image must not change because a base tag moved between two runs. Renovate moves the digest deliberately, as a reviewable diff.",
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true,
+      "groupName": "base images"
+    },
+    {
+      "description": "The desktop shell is a separate, unbuilt workspace (D13). Group its updates so they never arrive mixed with server changes that a gate can actually verify.",
+      "matchFileNames": ["web/src-tauri/Cargo.toml"],
+      "groupName": "desktop shell (unbuilt — verify manually)",
+      "automerge": false,
+      "prPriority": -5
+    },
+    {
+      "description": "Rust patch releases across the workspace, batched. The floor is `rust-version` in Cargo.toml, which Renovate must not raise on its own.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "rust patch"
+    },
+    {
+      "description": "Typescript majors touch the whole web build; keep them separate and unbatched.",
+      "matchPackageNames": ["typescript"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "typescript major",
+      "prPriority": -5
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Keep the mise installer's pinned checksum honest (SEC-P2-03). The workflows fetch a fixed version of install.sh rather than the floating one, so its version has to be maintained like any other dependency.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.forgejo/workflows/.+\\.yaml$/",
+        "/^\\.github/workflows/.+\\.yaml$/"
+      ],
+      "matchStrings": [
+        "MISE_VERSION:\\s*[\"']?v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)[\"']?"
+      ],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ]
+}

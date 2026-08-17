@@ -1,0 +1,28 @@
+{{- if .Values.server.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+  {{- if .Values.server.serviceMonitor.namespace }}
+  namespace: {{ .Values.server.serviceMonitor.namespace }}
+  {{- end }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+    {{- with .Values.server.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    # Same port as the API — notify-server has no separate metrics listener
+    # today (see this chart's README). One endpoint, scraping /metrics only.
+    - port: http
+      path: /metrics
+      interval: {{ .Values.server.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.server.serviceMonitor.scrapeTimeout }}
+{{- end }}

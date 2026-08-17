@@ -1,0 +1,206 @@
+# Development configuration (design §12.5).
+#
+# ONE file for both worlds. Configuration is layered defaults < this file <
+# `WNK_*` environment (§11), and every key without exception is env-overridable —
+# `[oidc] issuer` becomes `WNK_OIDC__ISSUER`, a rule a generated CI test enforces
+# across the whole schema (T23).
+#
+# That is why there is no dev.che.toml and no dev.authentik.toml:
+#   * Eclipse Che  -> the devfile exports WNK_OIDC__ISSUER pointing at the
+#                     workspace's public route, because browser redirects cannot
+#                     reach `localhost` from outside the pod (§12.1);
+#   * Authentik    -> `task dev:auth` prints the WNK_OIDC__ISSUER to export.
+# In both cases the file below stays untouched.
+
+[server]
+bind = "0.0.0.0:8080"
+# Closed by default; the dev origins are listed explicitly (§5.1).
+#
+# The last two are the desktop shell, and they are origins in the same sense the
+# others are: a packaged Tauri app serves its own bundle over a custom protocol,
+# so every request it makes to this API carries `Origin: tauri://localhost` on
+# Linux and macOS, and `http://tauri.localhost` on Windows and Android. Without
+# them the shell signs in, gets a valid token and then cannot use it — every call
+# dies in preflight, which the UI can only report as "the server is unreachable".
+# Not a development-only need: any deployment that ships the desktop app has to
+# list them too (`charts/weebo-notify`, `[server] cors_origins`).
+cors_origins = [
+  "http://localhost:5173",
+  "http://localhost:8080",
+  "tauri://localhost",
+  "http://tauri.localhost",
+]
+
+[database]
+url = "postgres://weebo:weebo@localhost:5432/weebo_notify"
+
+[oidc]
+# The built-in development provider, started by `task dev:oidc` (§12.1, ADR-0014).
+# Authentik: WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/
+issuer = "http://localhost:9110"
+client_id = "weebo-notify"
+
+[admin]
+# Platform role (§5.4) — GitOps only, no API path can grant it.
+oidc_groups = ["platform-admins"]
+
+[attachments]
+# RustFS in dev (ADR-0002). Switch to `kind = "filesystem"` plus `path`,
+# `public_base_url` and `token_secret` for a deployment with no S3-compatible
+# service at all (ADR-0022) — the s3-only keys below are then ignored.
+kind = "s3"
+endpoint = "http://localhost:9000"
+bucket = "weebo-notify-attachments"
+access_key = "weebo-dev"
+secret_key = "weebo-dev-secret"
+
+# The relay every `email` sink hands its mail to (§7.1bis). Mailpit, which
+# `task dev:sinks` starts and whose inbox is on http://localhost:8025 — nothing
+# leaves the machine, which is what makes it safe to point a real sink at it.
+[sinks.smtp]
+url = "smtp://localhost:1025"
+from = "weebo-notify <notify@weebo.local>"
+# Where the link at the bottom of the mail points (§10.4). Omit it and no link is
+# written, rather than one to a host nobody serves.
+permalink_base = "http://localhost:5173"
+
+[push.webpush]
+# Minted by `task dev:setup`, gitignored, and read at startup — a key the server
+# cannot read stops it rather than letting it run mute (§6.2, M3.5). The path is
+# relative to the repository root, which is where every dev task runs from.
+vapid_key_file = "dev/secrets/vapid.pem"
+contact = "mailto:dev@weebo.local"
+
+# CI federation (§5.3, M4.2). Same rule as the key above: minted by `task
+# dev:setup`, gitignored, and read at startup — the server refuses to start rather
+# than accept a token it cannot verify. It cannot be generated at boot because two
+# replicas would sign what each other cannot check (§11 `[ha]`).
+#
+# The forge below is not reachable from a dev machine, and that is the point of
+# having it here: it makes `POST /auth/token/exchange` answer, and it makes the
+# issuer allowlist non-empty so the SSRF guard has something to guard.
+[federation]
+signing_key_file = "dev/secrets/federation.pem"
+
+# The development identity provider standing in for a forge (§5.3, §12.1).
+#
+# There is no Forgejo in the dev stack and there does not need to be: what the
+# exchange consumes is an OIDC ID token with `aud`, `exp` and `jti`, which the mock
+# emits exactly like a forge does. So a local run can drive the whole path — sign
+# in as alice, present her ID token, receive a 15-minute weebo-notify token, publish
+# with it — against a real JWKS over a real socket.
+#
+# `subject` is an exact match on purpose. A pattern here would trust every account
+# the dev provider knows, and a dev fixture that is laxer than production teaches
+# the wrong shape.
+[[trust_policy]]
+issuer   = "http://localhost:9110"
+subject  = "alice"
+channels = ["ci-*"]
+scopes   = ["publish"]
+
+[retention]
+default_ttl = "7d"
+max_ttl = "90d"
+
+[ha]
+# Advisory lock in Postgres: zero extra infrastructure, and the dev instance is
+# always its own leader.
+leader_election = "postgres"
+
+[eventbus]
+# LISTEN/NOTIFY. Switch to redis with `task dev:up --profile eventbus` plus
+# WNK_EVENTBUS__BACKEND=redis to exercise the scale-out path (§11).
+backend = "postgres"
+
+# ---------------------------------------------------------------------------
+# Declarative channels (§11). These mirror the design's examples so the dev
+# environment exercises reconciliation, group access and per-channel policy from
+# the first boot.
+# ---------------------------------------------------------------------------
+
+[channels]
+on_removed = "archive"
+reload = "sighup"
+
+[[channels.managed]]
+id = "cluster-ovh-1"
+name = "Cluster OVH 1 — incidents"
+default_ttl = "30d"
+max_ttl = "90d"
+# An incident channel is patient on purpose: a real incident stays open for as long
+# as it takes, and the sweep must not close one out from under whoever is working on
+# it. `close_after` counts revisions AND acknowledgements as activity, so this only
+# fires on a publisher that has genuinely stopped calling (§7.2bis).
+close_after = "14d"
+default_priority = "high"
+receipts = true
+limits = { publish_per_min = 120 }
+
+  [[channels.managed.access]]
+  oidc_group = "infra-admins"
+  scopes = ["publish", "subscribe", "manage"]
+
+  [[channels.managed.access]]
+  oidc_group = "dev-team"
+  scopes = ["subscribe"]
+
+  # Individual binding: the only access path an IdP without a `groups` claim can
+  # offer, and the reason carol is group-less in the test identities (T29).
+  [[channels.managed.access]]
+  email = "carol@weebo.local"
+  scopes = ["subscribe"]
+
+  # An outbound sink (§7.1bis), pointed at the Mailpit of `task dev:sinks` — a
+  # sink nobody can run locally is a sink nobody checks. Without Mailpit up, the
+  # drain retries on the published schedule (30 s doubling to 1 h) and gives up
+  # after a day, which is the DLQ of §10.4bis with something real in it.
+  [[channels.managed.sinks]]
+  type = "email"
+  address = "oncall@weebo.local"
+
+[[channels.managed]]
+id = "ci-infra"
+name = "CI infra"
+default_ttl = "48h"
+# A build says something every few minutes or it is over. Two days of silence on a
+# CI notification means the runner died, so this is short — and until it existed,
+# a failed deploy stayed "open" forever and its 48h TTL never started.
+close_after = "2d"
+receipts = false
+
+  [[channels.managed.access]]
+  oidc_group = "dev-team"
+  scopes = ["subscribe"]
+
+  [[channels.managed.access]]
+  oidc_group = "infra-admins"
+  scopes = ["publish", "subscribe", "manage"]
+
+  [[channels.managed.access]]
+  service_account = "bot-argocd"
+  scopes = ["publish", "subscribe"]
+
+# Machine publishers: channel-scoped trust policies, which take priority over the
+# global [[trust_policy]] blocks (§11).
+  [[channels.managed.publishers]]
+  issuer = "https://forgejo.weebo.poc"
+  subject = "repo:weebo/*"
+  scopes = ["publish"]
+
+# Managed service accounts (§5.2bis) — reconciled like channels. Their API keys
+# are created through the API or the UI, where the secret is shown exactly once.
+[[service_accounts]]
+id = "bot-argocd"
+display_name = "ArgoCD"
+description = "Publishes the state of ArgoCD syncs"
+
+# Traces (§13). Commented out because nothing here collects them: the dev stack has
+# no OTLP endpoint, and a section pointing at a collector that is not running would
+# make every local run retry an export nobody asked for. Uncomment against a
+# Jaeger/Tempo/otel-collector on 4318 — or set WNK_TELEMETRY__OTLP_ENDPOINT, which
+# is what a Kubernetes deployment does with the same file (§11).
+# [telemetry]
+# otlp_endpoint = "http://localhost:4318"
+# service_name = "weebo-notify"
+# sample_ratio = 1.0

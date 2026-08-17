@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="96 108 320 320" role="img" aria-label="weebo-notify">
+  <title>weebo-notify — ne pas déranger</title>
+  <!--
+    The barred variant of §10bis.3ter: "on voit d'un coup d'œil pourquoi ça ne
+    sonne pas". A bar and not a moon, because the bar reads at 16 px and a crescent
+    does not — and because it is the same gesture every OS already uses for muted.
+
+    The bar is cut out of the bell as well as drawn over it, so there is a gap on
+    both sides. Without it the stroke merges with the mark and the icon just looks
+    heavier rather than crossed.
+  -->
+  <defs>
+    <mask id="slash">
+      <rect x="96" y="108" width="320" height="320" fill="#fff" />
+      <line x1="120" y1="392" x2="392" y2="120" stroke="#000" stroke-width="64" stroke-linecap="round" />
+    </mask>
+  </defs>
+  <g fill="#fafafa">
+    <g mask="url(#slash)">
+      <path d="M256 116a26 26 0 0 1 26 26v10a90 90 0 0 1 64 86v54l30 46a12 12 0 0 1-10 19H146a12 12 0 0 1-10-19l30-46v-54a90 90 0 0 1 64-86v-10a26 26 0 0 1 26-26z" />
+      <path d="M212 382h88a44 44 0 0 1-88 0z" />
+    </g>
+    <line x1="120" y1="392" x2="392" y2="120" stroke="#fafafa" stroke-width="34" stroke-linecap="round" />
+  </g>
+</svg>

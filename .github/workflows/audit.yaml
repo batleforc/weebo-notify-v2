@@ -1,0 +1,81 @@
+name: audit
+
+# Dependency and image vulnerability scanning.
+#
+# Scheduled rather than only on push, because this is the one check whose result
+# changes without the code changing: an advisory published tonight makes a
+# dependency vulnerable that was clean at merge time. A job that only ran on pull
+# requests would report the state of the world on the day of the merge and never
+# again.
+#
+# Moved here from `.forgejo/workflows/` when GitHub became the primary forge — see
+# `check.yaml`'s header for what the move changed.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "deny.toml"
+      - "**/pnpm-lock.yaml"
+      - "Containerfile*"
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "deny.toml"
+      - "**/pnpm-lock.yaml"
+      - "Containerfile*"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        # Not optional, and not a nicety: the `aqua:` backend resolves every version
+        # through the GitHub API, which allows 60 requests an hour to an
+        # UNAUTHENTICATED caller — counted per IP, and a GitHub-hosted runner shares
+        # its egress with everyone else on that host. The first run of this pipeline
+        # exhausted it and died on `cargo-tauri` with a 403 that reads like the
+        # release was deleted. The token every workflow already has raises the limit
+        # to 1000/hour for this repository and needs no scopes to read public
+        # releases.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes
+
+      - name: Rust dependencies
+        # RustSec advisories, plus the licence and source policy in deny.toml.
+        run: mise exec -- task audit:cargo
+
+      - name: JavaScript dependencies
+        run: mise exec -- task audit:web
+
+      - name: Repository and image scan
+        run: mise exec -- task audit:container

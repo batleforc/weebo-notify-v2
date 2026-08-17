@@ -1,0 +1,13 @@
+# deps
+/node_modules
+
+# build & test output
+/dist
+/coverage
+*.tsbuildinfo
+# Written by vite.config.ts's cspTemplate plugin, outside /dist on purpose
+# (ADR-0021) — it must not ship as a served asset in the web image.
+/csp-template.txt
+
+# misc
+.DS_Store

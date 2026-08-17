@@ -1,0 +1,157 @@
+{{/*
+`readOnlyRootFilesystem: true` (the default, values.yaml) is real work here, not
+a checkbox: nginx-unprivileged writes its rendered config into /etc/nginx/conf.d
+and, more awkwardly, `05-runtime-config.sh` writes env.js into the SAME directory
+the image bakes its static assets into (ADR-0021) — a directory a read-only root
+cannot also serve writes from. The init container below copies the baked
+`/usr/share/nginx/html` into a writable emptyDir once at pod start; the main
+container mounts that emptyDir over the same path, so the boot-time write lands
+somewhere real without the root filesystem ever being writable. Set
+web.securityContext.readOnlyRootFilesystem: false to skip all of this and let
+nginx write to its own image instead.
+*/}}
+{{- $readOnly := .Values.web.securityContext.readOnlyRootFilesystem }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 8 }}
+        {{- with .Values.web.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.web.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }}
+      securityContext:
+        {{- toYaml .Values.web.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.web.terminationGracePeriodSeconds }}
+      {{- if not (eq .Values.web.podAntiAffinity "none") }}
+      affinity:
+        {{- include "weebo-notify.podAntiAffinity" (dict "ctx" . "component" "web" "mode" .Values.web.podAntiAffinity) | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $readOnly }}
+      initContainers:
+        # Writable root filesystem on purpose (chart's .trivyignore: KSV-0014)
+        # — this container's only job is `cp -a` into the emptyDir the main
+        # container then mounts read-write; the main container itself keeps
+        # readOnlyRootFilesystem: true (see this file's header comment).
+        - name: seed-html
+          image: {{ include "weebo-notify.webImage" . }}
+          imagePullPolicy: {{ .Values.image.web.pullPolicy }}
+          securityContext:
+            {{- omit .Values.web.securityContext "readOnlyRootFilesystem" | toYaml | nindent 12 }}
+            readOnlyRootFilesystem: false
+          command: ["/bin/sh", "-c", "cp -a /usr/share/nginx/html/. /seeded-html/"]
+          volumeMounts:
+            - name: html
+              mountPath: /seeded-html
+      {{- end }}
+      containers:
+        - name: web
+          image: {{ include "weebo-notify.webImage" . }}
+          imagePullPolicy: {{ .Values.image.web.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.web.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # Rendered into /env.js at boot (ADR-0021) — bare origins, no path,
+            # no trailing slash; a value with one breaks the CSP's origin match
+            # silently (same ADR's own accepted debt: nothing here validates it).
+            - name: WNK_API_BASE_URL
+              value: {{ required "web.env.apiBaseUrl is required" .Values.web.env.apiBaseUrl | quote }}
+            - name: WNK_OIDC_ISSUER
+              value: {{ required "web.env.oidcIssuer is required" .Values.web.env.oidcIssuer | quote }}
+            - name: WNK_OIDC_CLIENT_ID
+              value: {{ .Values.web.env.oidcClientId | quote }}
+            - name: WNK_CSP_REPORT_URL
+              value: {{ .Values.web.env.cspReportUrl | default "/csp-report" | quote }}
+            {{- if .Values.web.env.attachmentOrigin }}
+            - name: WNK_ATTACHMENT_ORIGIN
+              value: {{ .Values.web.env.attachmentOrigin | quote }}
+            {{- end }}
+            {{- with .Values.web.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # `/` serves the SPA shell for every path (`try_files ... /index.html`),
+          # so it reports healthy on a bundle missing every asset it references —
+          # `/healthz` is the nginx template's own dedicated, static answer.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          {{- if $readOnly }}
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.web.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- else if .Values.web.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml .Values.web.extraVolumeMounts | nindent 12 }}
+          {{- end }}
+      {{- if $readOnly }}
+      volumes:
+        - name: html
+          emptyDir: {}
+        - name: nginx-conf
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.web.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else if .Values.web.extraVolumes }}
+      volumes:
+        {{- toYaml .Values.web.extraVolumes | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,30 @@
+[package]
+name = "notify-avatars"
+description = "Avatar decoding: the server's only media-decoding surface, with its limits enforced."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+# Default features off, formats listed one at a time: every decoder linked in is a
+# parser reachable from a user upload (design §15). PNG, JPEG and WebP are what
+# §2.4 accepts, and nothing else is compiled in — a format we do not accept cannot
+# have a vulnerability we are exposed to.
+image = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The GIF fixture proves a format we do NOT accept is refused, so the test build
+# needs a decoder the production build deliberately lacks.
+image = { workspace = true, features = ["gif"] }
+tokio = { workspace = true }

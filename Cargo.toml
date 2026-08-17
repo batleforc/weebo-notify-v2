@@ -1,0 +1,246 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/notify-domain",
+    "crates/notify-ports",
+    "crates/notify-app",
+    "crates/notify-adapters/http-actix",
+    "crates/notify-adapters/persistence-pg",
+    "crates/notify-adapters/eventbus-pg",
+    "crates/notify-adapters/eventbus-redis",
+    "crates/notify-adapters/oidc",
+    "crates/notify-adapters/attachments-s3",
+    "crates/notify-adapters/attachments-fs",
+    "crates/notify-adapters/avatars",
+    "crates/notify-adapters/push-webpush",
+    "crates/notify-adapters/sealed-box",
+    "crates/notify-adapters/sinks-webhook",
+    "crates/notify-adapters/sinks-email",
+    "crates/notify-adapters/metrics-prometheus",
+    "crates/notify-adapters/push-unifiedpush",
+    "crates/notify-adapters/push-apns",
+    "crates/notify-server",
+    "crates/notify-client-api",
+    "crates/notify-client-core",
+    "crates/notify-cli",
+    # Not product crates: development infrastructure. `oidc-mock` is the identity
+    # provider the local stack, Che and CI run against (ADR-0014); `xtask` holds the
+    # repository chores that need real code (client codegen, coverage gate).
+    "crates/oidc-mock",
+    "crates/xtask",
+]
+
+# The desktop shell is written here and built nowhere yet (M5, D13). It declares its
+# own `[workspace]`, so this is belt and braces — but the explicit line is what tells
+# a reader that the omission is a decision and not an oversight: on Linux Tauri links
+# against a GTK/WebKit stack that `mise` cannot install and a Che workspace cannot
+# `apt-get` (§12.4), so a member here would break every gate for everybody working on
+# the server. It becomes a member the day the dev image carries the stack.
+exclude = ["web/src-tauri"]
+
+[workspace.package]
+# ONE version for the whole product (design §3.2bis). Bumped by `cog bump`, which
+# propagates it to web/package.json and tauri.conf.json via .hooks/sync-version.sh.
+version = "0.1.0"
+edition = "2024"
+# 1.89 for `std::fs::File::try_lock`, which the client uses to elect the front end
+# that holds the stream (§9.3bis). The alternative was a crate wrapping the same
+# syscall; a four-release floor bump is the cheaper of the two, and this project
+# pins `rust = "latest"` in mise anyway.
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/batleforc/weebo-notify-v2"
+authors = ["Maxime Leriche <maxleriche.60@gmail.com>"]
+# Nothing here goes to crates.io. The product ships as binaries and images from a
+# tag (§3.2bis); these crates are its internals and depend on each other by path.
+# Inherited with `publish.workspace = true`, so publishing one is a deliberate line
+# in its own manifest — which is what `notify-client-api` would need the day a third
+# party is meant to build against it.
+publish = false
+
+[workspace.dependencies]
+# --- Internal crates ---
+notify-domain = { path = "crates/notify-domain" }
+notify-ports = { path = "crates/notify-ports" }
+notify-app = { path = "crates/notify-app" }
+notify-http-actix = { path = "crates/notify-adapters/http-actix" }
+notify-persistence-pg = { path = "crates/notify-adapters/persistence-pg" }
+notify-eventbus-pg = { path = "crates/notify-adapters/eventbus-pg" }
+notify-eventbus-redis = { path = "crates/notify-adapters/eventbus-redis" }
+notify-oidc = { path = "crates/notify-adapters/oidc" }
+notify-attachments-s3 = { path = "crates/notify-adapters/attachments-s3" }
+notify-attachments-fs = { path = "crates/notify-adapters/attachments-fs" }
+notify-avatars = { path = "crates/notify-adapters/avatars" }
+notify-push-webpush = { path = "crates/notify-adapters/push-webpush" }
+notify-sealed-box = { path = "crates/notify-adapters/sealed-box" }
+notify-sinks-webhook = { path = "crates/notify-adapters/sinks-webhook" }
+notify-sinks-email = { path = "crates/notify-adapters/sinks-email" }
+notify-metrics-prometheus = { path = "crates/notify-adapters/metrics-prometheus" }
+notify-push-unifiedpush = { path = "crates/notify-adapters/push-unifiedpush" }
+notify-push-apns = { path = "crates/notify-adapters/push-apns" }
+notify-client-api = { path = "crates/notify-client-api" }
+notify-client-core = { path = "crates/notify-client-core" }
+
+# --- Core (allowed in notify-domain) ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# The client profile's own serialisation, alongside figment's read path
+# (`notify-client-core::config` — `notify login`'s save half, §9.1). Already a
+# transitive dependency of `figment`; declared directly here because a writer
+# needs `toml::to_string`, which the figment `Provider` trait does not expose.
+toml = "0.8"
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+ulid = { version = "1", features = ["serde"] }
+url = { version = "2", features = ["serde"] }
+
+# --- Async plumbing (adapters and above only) ---
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# --- HTTP / API ---
+actix-web = "4.14"
+actix-cors = "0.7"
+actix-web-lab = "0.26"
+# WebSocket without the actor runtime: the SSE and WS handlers then share one plain
+# async loop instead of one loop and one actor saying the same thing (design §8.1).
+actix-ws = "0.4"
+utoipa = { version = "5.5", features = ["actix_extras", "time", "ulid", "url"] }
+utoipa-actix-web = "0.1"
+utoipa-scalar = { version = "0.3", features = ["actix-web"] }
+
+# --- Persistence ---
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+    "time",
+    "json",
+    "uuid",
+] }
+
+# --- Auth ---
+# `rust_crypto` rather than `aws_lc_rs`: a pure-Rust provider keeps the binary free
+# of a C toolchain, which is what makes the container image reproducible from a
+# plain `cargo build`.
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+# `std` is what reaches `OsRng` through password-hash: salts come from the OS.
+argon2 = { version = "0.5", features = ["std"] }
+
+# --- Config & observability ---
+figment = { version = "0.10", features = ["toml", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# OTLP over HTTP+protobuf on reqwest/rustls, and nothing else: the gRPC transport
+# would bring tonic and a second HTTP stack into a binary that already has one, and
+# the `-rustls` suffix is the same refusal as everywhere else here — no OpenSSL, so
+# the image still builds from a plain `cargo build` (design §13, D16).
+#
+# `reqwest-blocking-client` and not the async one, which is not a preference: the
+# batch span processor runs on its own dedicated thread, that thread is not a Tokio
+# runtime, and an async reqwest handed to it panics with "there is no reactor
+# running" on the first export. Found by running it against a collector.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-blocking-client",
+    "reqwest-rustls",
+] }
+tracing-opentelemetry = { version = "0.33", default-features = false, features = ["tracing-log"] }
+
+# --- CLI ---
+clap = { version = "4.6", features = ["derive", "env"] }
+clap_complete = "4.6"
+# The TUI (design §9.2): ratatui with the crossterm backend, portable across
+# Linux, macOS and Windows without a second code path.
+ratatui = "0.30"
+crossterm = "0.29"
+
+# --- Error handling (adapters, binaries — never notify-domain) ---
+anyhow = "1"
+
+# --- Client codegen (ADR-0009) ---
+progenitor = "0.14"
+progenitor-client = "0.14"
+# What progenitor's output needs: `chrono` for `date-time`, `regress` for `pattern`.
+# Confined to the generated crate.
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+regress = "0.10"
+# No default-tls: we link rustls only, so the binaries stay free of OpenSSL.
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+    "http2",
+    "charset",
+    "stream",
+] }
+
+# --- Cryptography outside the auth adapter ---
+# Real ES256 keys: the JWKS tests and the development identity provider both sign
+# with one, so they exercise the production verification path rather than a mock
+# of it. `sha2` is the PKCE S256 challenge, and the KDF below.
+p256 = { version = "0.14", features = ["ecdsa", "pem"] }
+sha2 = "0.10"
+# The bounded verdict cache in front of the API-key KDF (notify-oidc::guard).
+# Already in the graph through ratatui; named here so the version is one decision.
+lru = "0.18"
+# The OS CSPRNG behind API-key generation (notify-app::keys). Direct rather than
+# through `rand`: reading random bytes is the whole requirement.
+getrandom = "0.3"
+base64 = "0.22"
+# The sealed box of design §6.2 (M6): X25519 for the ephemeral ECDH, `sha2` (above)
+# as the HKDF hash, XChaCha20-Poly1305 for the AEAD. `x25519-dalek` builds on
+# `curve25519-dalek`, already in the graph under `ed25519-dalek` (the federation
+# signing key, notify-oidc) — one elliptic-curve implementation, two points on it.
+x25519-dalek = { version = "3", features = ["getrandom"] }
+hkdf = "0.12"
+chacha20poly1305 = "0.11"
+
+http = "1"
+rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
+
+# --- Media (design §2.4, §15) ---
+# Default features OFF and formats listed one by one: each decoder linked in is a
+# parser reachable from a user upload, and the only ones §2.4 accepts are these.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+# --- Client-side storage (design §9.3bis) ---
+# `bundled` builds SQLite from source: one fewer system dependency to document,
+# and the same bytes on every platform the CLI ships to.
+# Pinned to 0.39 rather than 0.40: `libsqlite3-sys` declares `links = "sqlite3"`,
+# so exactly one version of it may exist in the graph — and sqlx pulls one already
+# through the `migrate!` macro this workspace does use. 0.39 is the rusqlite that
+# shares sqlx's. Bumping either means bumping both.
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# --- Test-only ---
+testcontainers = "0.27"
+tempfile = "3"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Panicking is a bug in a notification server: a malformed payload must become a
+# 4xx, never a downed replica. Enforced everywhere; tests opt out per-module.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# Noise from the pedantic group that fights the domain vocabulary.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

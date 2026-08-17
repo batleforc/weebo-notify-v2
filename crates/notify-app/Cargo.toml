@@ -1,0 +1,35 @@
+[package]
+name = "notify-app"
+description = "weebo-notify use cases: the application layer wiring the domain to its ports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Schema annotations for the few use-case results that reach the wire (ADR-0013).
+openapi = ["dep:utoipa", "notify-domain/openapi", "notify-ports/openapi"]
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+getrandom = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The in-memory doubles: every use case here is tested without a container.
+notify-ports = { workspace = true, features = ["test-utils"] }
+tokio = { workspace = true }
+url = { workspace = true }

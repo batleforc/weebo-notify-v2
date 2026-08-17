@@ -1,0 +1,129 @@
+---
+title: ADR-0021 — The runtime config ADR-0019 anticipated
+description: The API origin, the OIDC issuer and the CSP that names them move from a Vite build argument to a container boot-time render — one web image now serves every deployment.
+---
+
+Status: **accepted** (2026-08-08) · Supersedes: [ADR-0019](/docs/adr/0019-the-csp-travels-with-the-bundle) · Superseded by: —
+
+## Context
+
+`src/config.ts` read `VITE_API_BASE_URL`, `VITE_OIDC_ISSUER` and
+`VITE_OIDC_CLIENT_ID` from `import.meta.env`, which Vite inlines at build time.
+ADR-0019 then built the Content-Security-Policy from the same two origins, for the
+same reason: "a deployment is a build, not a runtime file." Both records named the
+cost up front. `config.ts`, from M1: *"a runtime `/config.json` is only worth its
+extra round trip once the same bundle has to serve several installations, which
+is a question for whoever packages the container image."* ADR-0019's own
+Negative consequences: *"a future runtime `/config.json` would have to move the
+policy too."*
+
+`web/Containerfile` is that container image now, and it is that question. A build
+argument means one image per deployment — `docker/build-push-action` in
+`.github/workflows/release.yaml` already passes three `VITE_*` build args pulled
+from repository variables, and a second workflow publishing to a second registry
+(`.github/workflows/publish-main.yaml`) would need the same three configured a
+second time, in a second place, forever. Neither workflow's job is to know a
+deployment's origins — that is an operator's call, made when they start a
+container, not a maintainer's call, made when they build one.
+
+Three ways to close that:
+
+- **leave it** — correct for M1, where "who deploys this" and "who builds this"
+  were the same session. Two publishing workflows is the point where they stop
+  being the same question;
+- **a `/config.json` fetched at boot** — an extra round trip before the app can
+  do anything, and `import.meta.env` stays wired to build-time values that would
+  now lie about what the running page actually talks to;
+- **a tiny `<script src="/env.js">`, rendered by the server at container boot** —
+  no round trip beyond one static file `index.html` already blocks on, and
+  nothing left reading `import.meta.env` for a value that changes per deployment.
+
+## Decision
+
+**`src/config.ts` reads `window.__ENV__`, set by `/env.js` before the app bundle
+runs. The image renders it once at boot from `WNK_API_BASE_URL`,
+`WNK_OIDC_ISSUER` and `WNK_OIDC_CLIENT_ID` — three container environment
+variables, not three build arguments.**
+
+`web/public/env.js` is the same file, committed with the local dev stack's
+values, for `pnpm dev` — edited directly rather than copied from an example, the
+same way `config/dev.toml` already is. A real deployment never touches it; its
+image renders its own via `web/nginx/docker-entrypoint.d/05-runtime-config.sh`,
+sourced (not executed — see that file's permission bits) into nginx's own
+entrypoint so `WNK_CSP_HEADER` is still exported when the stock
+`20-envsubst-on-templates.sh` renders `default.conf.template` right after it.
+
+The Content-Security-Policy moves with it, exactly as ADR-0019 said it would have
+to. `web/src/lib/csp.ts`'s `contentSecurityPolicy()` is unchanged in shape — still
+`default-src 'none'` and named exceptions, still tested by `csp.spec.ts` — but its
+origin inputs are no longer parsed from real URLs inside the function; that
+became the caller's job, because `web/vite.config.ts` now calls it twice for two
+different reasons:
+
+- with real example origins, in `csp.spec.ts`, to pin the policy's shape;
+- with **shell placeholders** (`${WNK_API_BASE_URL}` and so on) standing in for
+  the origins, and the **real** inline-script hash standing in for itself — the
+  hash names bytes this exact build shipped, which is not a deployment's to
+  override — at build time, in the `cspTemplate` plugin. The result is written to
+  `csp-template.txt`, copied into the image, and resolved against the container's
+  actual environment by the same sourced script that renders `env.js`.
+
+`frame-ancestors` and `report-to` — the two directives ADR-0019 said a `<meta>`
+tag ignores by specification, and carried in `default.conf.template` as a second,
+separate header for that reason — are ordinary entries in
+`contentSecurityPolicy()`'s list now. One emitter, one policy; a second copy to
+keep in step with the first is the exact shape D22 spent two increments removing
+from the do-not-disturb rule.
+
+## Consequences
+
+**Positive**
+
+- One web image serves every deployment. `.github/workflows/release.yaml` and
+  `.github/workflows/publish-main.yaml` both build and push it with no
+  `--build-arg` at all; an operator's `docker run -e WNK_API_BASE_URL=…` is what
+  a deployment is now, not a rebuild.
+- The Content-Security-Policy is stronger for it in one respect: it is a real
+  `Content-Security-Policy` header now, not a `<meta>` tag plus a second header
+  for the two directives a meta tag cannot carry. One emitter for the whole
+  policy is what closes that split.
+- `task build:web` and `task build:web:image` need nothing exported to run.
+  `web/.env.example` and the `VITE_*` refusal messages it existed to explain are
+  both gone; `task build:web:smoke` collapses into `task build:web`, because
+  there is no longer a "real" build and a "smoke" build to tell apart.
+
+**Negative**
+
+- The inline-script hash still has to travel from a build that ran once to a
+  container that starts many times, and `csp-template.txt` plus the two-pass
+  `envsubst` in `05-runtime-config.sh` is the shape that costs. A build-time
+  `<meta>` tag never had this problem, because build and "serving the page" were
+  the same event.
+- `contentSecurityPolicy()`'s optional `attachmentOrigin` is no longer run
+  through `originOf()` before it reaches the policy — that was only safe when the
+  function held a real URL to parse, and the build-time caller now hands over a
+  placeholder it cannot parse at all. `WNK_ATTACHMENT_ORIGIN` (and
+  `WNK_API_BASE_URL`, `WNK_OIDC_ISSUER`) must therefore already be a bare origin
+  — no path, no trailing slash — when an operator sets it. A URL with a path
+  produces a source expression that matches nothing, quietly, exactly as
+  `csp.ts` already warned for the build-time form; the difference is *who* can
+  make that mistake now, and there is no test in this repository standing
+  between them and it.
+- `docker-entrypoint.d/05-runtime-config.sh` being sourced rather than executed
+  is load-bearing and easy to lose: `git` does not reliably preserve the missing
+  executable bit through a clone or an editor's save, so `web/Containerfile`
+  asserts it with `chmod 644` rather than trusting the file's mode as committed.
+
+**Accepted debt**
+
+- `WNK_ATTACHMENT_ORIGIN`/`WNK_API_BASE_URL`/`WNK_OIDC_ISSUER` being origins and
+  not URLs is enforced by documentation (this record, `env.js.template`'s own
+  comment) and not by code — unlike the build-time form, nothing here can fail a
+  build the way a malformed `VITE_ATTACHMENT_ORIGIN` used to. A validating
+  `docker-entrypoint.d` step that refuses to start nginx on a value carrying a
+  path is the natural follow-up, not written yet.
+- Multi-arch, trivy-scanned, cosign-signed images stay the tagged release's job
+  (`.github/workflows/release.yaml`). `publish-main.yaml`'s
+  `:main`/`:sha-*` images are amd64-only and unsigned by design — this record
+  does not change that split, only removes the build args both pipelines used to
+  need.

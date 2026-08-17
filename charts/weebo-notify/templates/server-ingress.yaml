@@ -1,0 +1,34 @@
+{{- if .Values.server.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- with .Values.server.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.server.ingress.className }}
+  ingressClassName: {{ .Values.server.ingress.className }}
+  {{- end }}
+  {{- with .Values.server.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.server.ingress.host }}
+      http:
+        paths:
+          # Only /api/v1 — never /healthz, /readyz or /metrics (hardening.mdx:
+          # publishing either is the same class of leak). A scraper or a probe
+          # reaches this Service directly, inside the cluster.
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+                port:
+                  number: {{ .Values.server.service.port }}
+{{- end }}

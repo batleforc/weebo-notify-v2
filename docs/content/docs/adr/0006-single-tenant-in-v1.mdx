@@ -1,0 +1,35 @@
+---
+title: ADR-0006 — Single tenant in v1, with the column already there
+description: No tenant concept in the API, but tenant_id ships in the schema from the first migration.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+Multi-tenancy touches every table, every uniqueness constraint and every
+authorisation check. Building it before there is a second tenant is speculative;
+retrofitting it into a live schema is a migration nightmare.
+
+## Decision
+
+**One instance is one space.** No API, configuration or UI exposes a tenant. But
+every root table carries `tenant_id NOT NULL DEFAULT 'default'` from the first
+migration, and uniqueness constraints are written so they can be re-scoped.
+
+## Consequences
+
+**Positive**
+
+- The API stays simple: no tenant in paths, tokens or policies.
+- Going multi-tenant becomes an additive migration plus an authorisation change,
+  not a schema rewrite.
+
+**Negative**
+
+- A column that does nothing yet, in every table, that reviewers will ask about.
+
+**Accepted debt**
+
+- The discipline only pays off if it is maintained: a new root table without
+  `tenant_id` silently forfeits it. Worth a check in review.

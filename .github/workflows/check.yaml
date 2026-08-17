@@ -1,0 +1,184 @@
+name: check
+
+# The gate every push and pull request has to pass: lint, tests and coverage.
+#
+# One run of the suite produces both the test results and the coverage measurement
+# (design §3.2) — running the tests twice to get a number would double CI time for
+# nothing.
+#
+# Moved here from `.forgejo/workflows/` when GitHub became the primary forge. Two
+# things changed in the move and neither is cosmetic:
+#
+#   * The job runs directly on `ubuntu-latest` rather than inside
+#     `ghcr.io/catthehacker/ubuntu:act-24.04`. That image is a Forgejo/act
+#     convention and carries a developer-ish userland; a GitHub-hosted runner is
+#     already a full Ubuntu, so the container bought nothing and cost a pull.
+#   * Because the runner is not that image, the libdbus headers have to be
+#     installed explicitly — see the step below.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # A newer push supersedes an in-flight run on the same branch.
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Debug info dominates the target directory and CI never opens a debugger.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The changed-lines coverage gate diffs against the base branch, which
+          # needs more than a shallow clone.
+          fetch-depth: 0
+
+      - name: Install libdbus headers
+        # `notify-cli` (notify-rust's `d` feature) and `xtask` (design's D19 stub
+        # daemon) are both workspace members, so `cargo clippy --workspace` and
+        # `cargo llvm-cov nextest --workspace` link against libdbus. The GitHub
+        # runner does not ship the -dev headers or the pkg-config file; the Che
+        # workspace image does, which is why this was invisible outside CI.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Restore caches
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # `~/.rustup` is listed next to `~/.local/share/mise` because they are two
+          # halves of one installation, and caching one without the other is what
+          # broke this job: mise's rust tool is the rustup *proxies*, and the
+          # toolchain those proxies execute lives in `~/.rustup`. Restoring the
+          # proxies alone left mise reporting "all tools are installed" over a
+          # toolchain that was not there, so the first `cargo fmt` made rustup
+          # install one on the spot — with rustup's own profile, i.e. no rustfmt.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup
+            ~/.local/share/mise
+            target
+            docs/node_modules
+            web/node_modules
+          key: check-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock', 'docs/pnpm-lock.yaml', 'web/pnpm-lock.yaml') }}
+          restore-keys: check-${{ runner.os }}-
+
+      - name: Install pinned tools
+        # Not optional, and not a nicety: the `aqua:` backend resolves every version
+        # through the GitHub API, which allows 60 requests an hour to an
+        # UNAUTHENTICATED caller — counted per IP, and a GitHub-hosted runner shares
+        # its egress with everyone else on that host. The first run of this pipeline
+        # exhausted it and died on `cargo-tauri` with a 403 that reads like the
+        # release was deleted. The token every workflow already has raises the limit
+        # to 1000/hour for this repository and needs no scopes to read public
+        # releases.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes
+
+      - name: Complete the Rust toolchain
+        # `mise install` skips a tool it already sees, and `restore-keys` means the
+        # cache it sees may predate the `components` line in mise.toml — proxies
+        # from one run, a toolchain from an older one. This job is the only one that
+        # needs rustfmt and clippy, and it needs them three steps from here, where
+        # the symptom ("error: 'cargo-fmt' is not installed") explains nothing about
+        # the cache that caused it. Asking rustup directly costs nothing when the
+        # components are already there and states the requirement where it fails.
+        run: |
+          mise exec -- rustup toolchain install "$(mise current rust)" \
+            --profile minimal --component rustfmt --component clippy --no-self-update
+
+      - name: Install the JavaScript dependencies
+        # `task lint:check` and `task cover` both reach into web/ and docs/, and
+        # neither pnpm nor a restored cache guarantees a complete tree — a cache
+        # restored across a lockfile change is stale by definition.
+        run: |
+          mise exec -- pnpm -C docs install --frozen-lockfile
+          mise exec -- pnpm -C web install --frozen-lockfile
+
+      - name: Lint
+        # The read-only flavour: a pull request must not be green on code that was
+        # never formatted.
+        run: mise exec -- task lint:check
+
+      - name: Chart
+        # Renders the production example and asserts the properties an operator
+        # inherits by copying it. Not folded into `lint:check`: that task is about
+        # code somebody wrote, and this is about a deployment somebody will get —
+        # the example rendered perfectly well while shipping a NetworkPolicy that
+        # blocked the API it was meant to publish.
+        run: mise exec -- task helm:check
+
+      - name: Web production build
+        # The unit suite never runs `vite build`, and the build is where the
+        # inline-script hash is checked against the page actually written and
+        # `csp-template.txt` emitted from it (ADR-0021). Without this step that
+        # check happens on somebody's laptop or nowhere.
+        run: mise exec -- task build:web
+
+      - name: Tests and coverage
+        run: mise exec -- task cover
+
+      - name: Coverage gates
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            mise exec -- task test:cover:gate -- "origin/${{ github.base_ref }}" | tee coverage.md
+          else
+            # On a push to main there is no "lines this change touched"; only the
+            # domain floor applies.
+            mise exec -- task test:cover:gate | tee coverage.md
+          fi
+
+      - name: Publish the coverage summary
+        # Runs even when the gate failed — the number is most useful precisely then.
+        # But `always()` also covers the runs that never reached the gate: a lint
+        # failure used to be reported twice, once truthfully and once as
+        # "cat: coverage.md: No such file or directory", and the second one is the
+        # one that lands at the bottom of the log where people look first.
+        if: always()
+        run: |
+          if [ -f coverage.md ]; then
+            cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The run failed before the coverage gate — no summary to publish." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage
+          path: |
+            target/coverage/html
+            target/coverage/rust.lcov
+          retention-days: 14

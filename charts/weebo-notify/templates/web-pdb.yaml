@@ -1,0 +1,13 @@
+{{- if .Values.web.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.web.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+{{- end }}

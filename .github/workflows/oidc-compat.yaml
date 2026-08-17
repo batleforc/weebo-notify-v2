@@ -1,0 +1,249 @@
+name: oidc-compat
+
+# Identity-provider compatibility is a tested contract, not a promise (design §3.2).
+#
+# This is a self-hosted product: people will arrive with Keycloak, Authelia, Dex,
+# Authentik. Day-to-day development runs against a provider we wrote ourselves
+# (ADR-0014), which makes this job *more* load-bearing, not less: our own mock
+# cannot surprise us, and a provider that never surprises you is a provider that
+# never tells you what real ones do.
+#
+# The suite is one body of tests parameterised by `WNK_TEST_OIDC_PROVIDER`
+# (crates/notify-adapters/oidc/tests/oidc_compat.rs). It takes a token from a LIVE
+# provider and puts it through the production verifier — discovery, JWKS, `kid`,
+# signature, audience, issuer, expiry and the claim mapping channel access derives
+# from (§14.2).
+#
+# ## What has run, and what has not — read this before trusting a green tick
+#
+# The `mock` leg runs, and has run since M1. The `dex` and `authentik` legs are
+# wired here (D7) and have **never executed**: the workspace this was written in has
+# no container engine at all (§12.4), so neither provider could be started to watch
+# it. The first run on a real runner is their test, exactly as it was for the
+# dogfooding workflow (D12). Moving forge does not change that — it just means the
+# first run happens here.
+#
+# What makes that acceptable rather than reckless is a property of the suite and not
+# of this file: naming a provider it cannot reach **panics** rather than skipping. A
+# leg that is misconfigured turns red and says which variable it wanted; none of
+# these steps can produce the failure this job exists to prevent — a green tick
+# meaning "nothing ran".
+#
+# ## Why the providers are started in a step
+#
+# `services:` containers start *before* the checkout, so a configuration rendered
+# from this repository cannot be mounted into one. Dex's password is generated per
+# run (§3.2 — it is CI-only, so no local ergonomics argue for a fixed one), which
+# means the config only exists after `dev/dex/render.sh` has run. Hence a step.
+#
+# On Forgejo that step needed the docker socket mounted into the job's container and
+# `--network host` to reach what it started. Here the job *is* the host: the runner
+# ships a working Docker, so `docker run` needs no socket plumbing and 127.0.0.1 is
+# simply 127.0.0.1. The job got smaller in the move rather than larger.
+#
+# NEVER merge a change to the auth flow without this job green.
+
+on:
+  pull_request:
+    paths:
+      - "crates/notify-adapters/oidc/**"
+      - "crates/notify-app/src/auth.rs"
+      - "crates/notify-app/src/authz.rs"
+      - "crates/notify-adapters/http-actix/src/extract.rs"
+      - "crates/oidc-mock/**"
+      - "dev/oidc-mock/**"
+      - "dev/authentik/**"
+      - "dev/dex/**"
+      - ".github/workflows/oidc-compat.yaml"
+  schedule:
+    # Nightly, so a provider's own update cannot break us silently.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: oidc-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Every provider reports independently: knowing it passes on two of three is
+      # far more useful than a single red cross.
+      fail-fast: false
+      matrix:
+        provider: [mock, dex, authentik]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install libdbus headers
+        # Workspace members link libdbus — see `check.yaml`.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install the toolchain
+        # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`.
+        # That pipeline fetched an unpinned script over the network and ran it as
+        # shell — in jobs that also hold the registry token and the signing identity,
+        # which makes whoever controls that host a publisher of this project's
+        # images. The version moves when Renovate proposes it, as a reviewable diff.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Restore caches
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # `~/.rustup` alongside `~/.local/share/mise`: the mise install is the
+          # rustup proxies, the toolchain they run is in `~/.rustup`, and caching
+          # one without the other leaves mise sure a toolchain is installed that
+          # rustup then re-downloads on first use — see check.yaml.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup
+            ~/.local/share/mise
+            target
+          key: oidc-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'mise.lock') }}
+          restore-keys: oidc-${{ runner.os }}-
+
+      - name: Install pinned tools
+        # Not optional, and not a nicety: the `aqua:` backend resolves every version
+        # through the GitHub API, which allows 60 requests an hour to an
+        # UNAUTHENTICATED caller — counted per IP, and a GitHub-hosted runner shares
+        # its egress with everyone else on that host. The first run of this pipeline
+        # exhausted it and died on `cargo-tauri` with a 403 that reads like the
+        # release was deleted. The token every workflow already has raises the limit
+        # to 1000/hour for this repository and needs no scopes to read public
+        # releases.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes
+
+      # --- Dex ------------------------------------------------------------
+      #
+      # The leg that carries T29: a provider that emits no `groups` claim at all,
+      # so the degradation path is exercised by something that really behaves that
+      # way rather than by a fixture we wrote to behave that way.
+      - name: Start Dex
+        if: matrix.provider == 'dex'
+        run: |
+          set -euo pipefail
+          # bcrypt, which is the only hash Dex takes. apache2-utils is two hundred
+          # kilobytes; the alternative is pulling a web server for one subcommand.
+          # `sudo` because this job is no longer root in a container.
+          sudo apt-get update -qq && sudo apt-get install -y -qq apache2-utils
+
+          # Passwords generated now, never committed: Dex is CI-only, and nothing
+          # about local ergonomics argues for a fixed one (§3.2).
+          dev/dex/render.sh "$RUNNER_TEMP/dex-config.yaml" > "$RUNNER_TEMP/dex.env"
+          . "$RUNNER_TEMP/dex.env"
+          {
+            echo "WNK_TEST_OIDC_ISSUER=$WNK_TEST_OIDC_ISSUER"
+            echo "WNK_TEST_OIDC_CLIENT_ID=$WNK_TEST_OIDC_CLIENT_ID"
+            echo "WNK_TEST_OIDC_CLIENT_SECRET=$WNK_TEST_OIDC_CLIENT_SECRET"
+            echo "WNK_TEST_OIDC_USERNAME=$WNK_TEST_OIDC_USERNAME"
+            echo "WNK_TEST_OIDC_PASSWORD=$WNK_TEST_OIDC_PASSWORD"
+          } >> "$GITHUB_ENV"
+          # Masked before anything can echo them into a log.
+          echo "::add-mask::$WNK_TEST_OIDC_PASSWORD"
+          echo "::add-mask::$WNK_TEST_OIDC_CLIENT_SECRET"
+
+          docker run -d --name dex --network host \
+            -v "$RUNNER_TEMP/dex-config.yaml:/etc/dex/config.yaml:ro" \
+            ghcr.io/dexidp/dex:v2.45.1 dex serve /etc/dex/config.yaml
+
+          # Waited on rather than slept through: a fixed sleep is either too short
+          # on a loaded runner or wasted on an idle one.
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:5556/dex/.well-known/openid-configuration >/dev/null && exit 0
+            sleep 1
+          done
+          echo "Dex did not answer its discovery document in 60s" >&2
+          docker logs dex >&2
+          exit 1
+
+      # --- Authentik -------------------------------------------------------
+      #
+      # The one provider in the matrix that neither we nor a minimal-OIDC project
+      # wrote: refresh-token rotation, logout, real group mapping (§12.5).
+      - name: Start Authentik
+        if: matrix.provider == 'authentik'
+        run: |
+          set -euo pipefail
+          # The compose stack the developer environment already describes (§12.3),
+          # so CI and a laptop run the same Authentik with the same blueprint.
+          #
+          # `task dev:auth` and not a hand-written `docker compose` line. That line
+          # was written here once and it was wrong: the invocation needs
+          # `--env-file dev/.env --env-file dev/.env.local`, because the bootstrap
+          # password `dev:env` generates lives in the second file and Compose only
+          # auto-loads the first. The first execution this job ever had died on
+          # "required variable AUTHENTIK_BOOTSTRAP_PASSWORD is missing a value" —
+          # having just printed the password it could not find. `.tasks/dev.yaml`
+          # owns that command; this asks for it instead of restating it.
+          #
+          # `dev:auth` depends on `dev:setup`, which generates those credentials, so
+          # the separate `task dev:env` this step used to run is now redundant rather
+          # than missing.
+          task dev:auth
+          task dev:seed
+
+          . dev/.env.local
+          {
+            echo "WNK_TEST_OIDC_ISSUER=http://127.0.0.1:9100/application/o/weebo-notify/"
+            echo "WNK_TEST_OIDC_CLIENT_ID=weebo-notify"
+            # No WNK_TEST_OIDC_USERNAME. It overrides the *account* the fixture
+            # picks, not just its spelling, so pinning it to alice sent the
+            # group-less test (T29) to sign in as somebody in two groups and assert
+            # they were in none. Dex needs the override because its local connector
+            # authenticates on an email; Authentik knows alice and carol by exactly
+            # the names the blueprint declares, so it needs nothing.
+            #
+            # These are app-password token keys, not passwords —
+            # dev/authentik/blueprints/weebo-notify.yaml says why, and why there
+            # have to be one per account rather than one shared. No plain
+            # WNK_TEST_OIDC_PASSWORD for the same reason: a shared fallback would
+            # send alice's token for an account it does not belong to, and
+            # Authentik would answer `invalid_grant` — a variable nobody set,
+            # wearing the costume of a broken blueprint.
+            echo "WNK_TEST_OIDC_PASSWORD_ALICE=weebo-dev-app-password-alice"
+            echo "WNK_TEST_OIDC_PASSWORD_CAROL=weebo-dev-app-password-carol"
+          } >> "$GITHUB_ENV"
+
+      - name: Run the auth suite against ${{ matrix.provider }}
+        env:
+          WNK_TEST_OIDC_PROVIDER: ${{ matrix.provider }}
+        # The fixture selects the issuer, the credentials and the expected claims.
+        # That is what makes "it behaves the same everywhere" a fact rather than a
+        # hope — and why naming a provider it cannot reach fails the job.
+        run: mise exec -- task test:oidc-compat
+
+      - name: What the provider said, when it said no
+        if: failure() && matrix.provider != 'mock'
+        # The suite's own message names the variable it wanted; this is for the half
+        # of the failures where the provider refused to start at all.
+        run: |
+          docker ps -a
+          docker logs dex 2>&1 | tail -50 || true
+          # `task dev:logs:tail` rather than a second hand-written compose line, for
+          # the reason the step above now carries: without the `--env-file` flags
+          # this prints an interpolation error instead of the logs — failing to
+          # explain the failure, at the one moment it exists to explain it.
+          task dev:logs:tail || true

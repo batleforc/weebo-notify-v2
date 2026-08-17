@@ -1,0 +1,108 @@
+---
+title: Configuration
+description: Layered defaults, TOML and WNK_ environment variables — with every key overridable, provably.
+---
+
+Configuration is layered, lowest priority first:
+
+1. Built-in defaults
+2. The TOML file (`--config`, default `config/dev.toml`)
+3. `WNK_`-prefixed environment variables
+
+## Every key is overridable, and that is tested
+
+The mapping is mechanical: a path becomes `WNK_` plus the path joined by `__`.
+
+```toml
+[oidc]
+issuer = "https://auth.weebo.poc"    # WNK_OIDC__ISSUER
+```
+
+This is not a convention we hope holds. **A generated test walks the entire
+configuration schema and asserts that every key, without exception, is overridable
+this way.** Adding a key that is not reachable from the environment fails CI.
+
+That property is what makes a single `config/dev.toml` work under Docker Compose and
+inside an Eclipse Che workspace, where browser-facing endpoints must be public routes
+rather than `localhost`. No second file, no `if env == che`.
+
+## GitOps: managed versus dynamic
+
+Channels and service accounts can be **declared in the configuration**, and then the
+file is their source of truth. At boot and on `SIGHUP` the server reconciles: it
+creates what is missing, corrects drift in access, TTL and receipts, and archives or
+deletes what has disappeared from the configuration according to `on_removed`.
+
+Anything created through the API or the UI is marked **dynamic** and is never touched
+by reconciliation. The UI shows a `managed` badge and makes GitOps-driven fields
+read-only — so it is always obvious which of the two you are looking at.
+
+A channel's `publishers` block is a trust policy **scoped to that channel**, and it
+takes priority over the global `[[trust_policy]]` entries.
+
+<Callout type="warn">
+  The platform-admin role is declared **only** in configuration, under `[admin]
+  oidc_groups`. No API path grants it. That is deliberate: a role that administers
+  the instance should not be reachable by a request to the instance.
+</Callout>
+
+## Web Push
+
+```toml
+[push.webpush]
+vapid_key_file = "/secrets/vapid.pem"   # a path, not the key
+contact        = "mailto:ops@weebo.poc" # RFC 8292 `sub`
+```
+
+A **path** rather than the key itself, so it can be mounted from whatever the cluster
+keeps secrets in without the key passing through a configuration file that gets
+committed by accident. `contact` is not optional: push services refuse a VAPID
+assertion without one, since it is how a relay reaches the operator of a server that
+has started misbehaving.
+
+Both are validated at startup. A key that is not P-256, a file that cannot be read,
+or a contact that is neither `mailto:` nor `https://` stops the process — the
+alternative is finding out because somebody's phone stayed silent.
+
+Omitting the section entirely is a supported deployment, not a broken one: no
+transport is registered, `GET /api/v1/push/webpush` answers `501`, and every push
+degrades to a poke the client fetches over TLS. `[push.apns]` and
+`[push.unifiedpush]` are parsed but not yet honoured — the server says so at startup
+rather than dropping them silently.
+
+<Callout type="info">
+  Rotating the VAPID key invalidates every existing subscription, silently: the
+  server starts, relays accept the new assertion, and pushes stop arriving on devices
+  that subscribed under the old one. Plan a rotation as a re-subscription.
+</Callout>
+
+## CLI download
+
+```toml
+[cli]
+binary_path = "/usr/local/bin/notify"  # where the Containerfile puts it
+```
+
+The shipped image already contains the `notify` binary, built from the same
+commit as `notify-server` in the same build — so the two can never disagree on
+version. Nothing serves it until this section names where it is: opt in, the
+same "no default configuration is baked in" rule every other section here
+follows.
+
+Once configured, any authenticated caller (a user or a service account — no
+extra scope) can fetch it:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://weebo.example/api/v1/cli -o notify
+```
+
+Omitting the section is a supported deployment: `GET /api/v1/cli` answers
+`501`, same as any other unconfigured capability (`[push.webpush]` above,
+`[federation]`). A path that is present but cannot be read stops the process at
+startup rather than answering `501` for a reason nobody configured.
+
+<Callout type="warn">
+  Linux only, for now — the cross-platform artefact matrix (macOS, Windows,
+  other architectures) is a later milestone. This route hands out whatever this
+  server's own container platform is.
+</Callout>

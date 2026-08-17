@@ -1,0 +1,250 @@
+---
+title: Development environment
+description: One command to a full stack, identical under Docker Compose and Eclipse Che.
+---
+
+The goal is a complete environment in **one command**, behaving the same whether you
+work locally with a container engine or in an Eclipse Che workspace. Both worlds
+expose **the same services, on the same ports, with the same credentials** — which is
+why a single `config/dev.toml` serves both and no `if env == che` ever reaches the
+code.
+
+## Getting started
+
+```bash
+task init                     # toolchain (mise) + git hooks (cocogitto) + local secrets
+task dev:up                   # Postgres + RustFS, ~20 s
+task dev:seed                 # migrations, attachment bucket, IdP identities
+task dev:oidc                 # the identity provider, on :9110
+task dev:run                  # the server, on :8080
+task dev:web                  # the frontend, on :5173
+```
+
+Log in as `alice`, `bob` or `carol`, password `weebo-dev`.
+
+The last three are long-running processes, so they each want their own terminal.
+The identity provider is one of them: it is a binary in this workspace
+([ADR-0014](/docs/adr/0014-a-first-party-oidc-mock)), not a container, which is why
+`task dev:up` no longer starts it for you.
+
+## Three tiers of authentication
+
+Running a full identity provider all day to write domain logic is a poor trade. There
+are three tiers, and you pick the cheapest one that still tests what you are changing.
+
+| Tier | Command | Cost | Use it when |
+| --- | --- | --- | --- |
+| In-memory `TokenVerifier` | `task dev:core` | no provider at all | Working on the domain or use cases |
+| The built-in mock | `task dev:oidc` | a `cargo run`, no image | Everyday work — the default |
+| Authentik | `task dev:auth` | ~1.5 GiB with worker and Redis | Touching the OIDC flow itself |
+
+The mock and Authentik describe the **same identities** — `alice` in `infra-admins`,
+`bob` in `dev-team`, `carol` in no group at all. That is what lets the `oidc-compat`
+CI matrix replay one auth suite against mock, Dex and Authentik, and what lets you
+switch provider with a single environment override:
+
+```bash
+task dev:auth
+WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/ task dev:run
+```
+
+Never a second configuration file. Every configuration key is overridable through a
+`WNK_` variable, and [a CI test walks the whole schema to prove it](/docs/ops/configuration).
+
+<Callout type="info">
+  `carol` has no `groups` claim on purpose. She exercises the degradation path for an
+  identity provider that does not emit groups — she must reach her individual
+  bindings and nothing else, never a default grant.
+</Callout>
+
+## The development identity provider
+
+`crates/oidc-mock` is ours. It implements discovery, a JWKS, Authorization Code with
+PKCE, refresh with rotation, userinfo and logout, and it signs with a real ES256 key —
+so the server verifies its tokens through exactly the code path it uses against
+Authentik. A test in `notify-oidc` boots it on a real socket and walks a real flow
+through the real verifier, which means a broken provider fails `task test` rather
+than your morning.
+
+Its accounts live in `dev/oidc-mock/identities.toml`, read directly under Compose, in
+Che and in CI. There is nothing to generate and nothing to keep in sync.
+
+It also answers `POST /admin/rotate-keys`, which retires the signing key and publishes
+a new one alongside it. That is not part of OIDC; it exists so the auth suite can test
+key rotation on demand instead of waiting for a provider to feel like rotating.
+
+<Callout type="warn">
+  Because the provider is ours, it cannot surprise us — and that is its one real
+  weakness. Dex and Authentik in the `oidc-compat` matrix are now the only
+  independent readings of OIDC this project meets before a user does. Never merge a
+  change to the auth flow without that matrix green.
+</Callout>
+
+## Services
+
+| Service | Role | Endpoint |
+| --- | --- | --- |
+| PostgreSQL 17 | Server database, plus Authentik's | `localhost:5432` |
+| RustFS | S3-compatible attachment store | S3 `:9000`, console `:9001` |
+| `oidc-mock` | Everyday identity provider (a process, not a container) | `http://localhost:9110` |
+| Authentik | Fidelity identity provider (profile `authentik`) | `http://localhost:9100` |
+| Valkey | Authentik's broker; also exercises `eventbus-redis` | `localhost:6379` |
+| Mailpit | SMTP sink for the email channel sink (profile `sinks`) | UI `:8025`, SMTP `:1025` |
+
+## Eclipse Che
+
+The workspace starts the same services as pod sidecars, so everything is reachable on
+`localhost` exactly as under Compose. `task dev:up` and `task dev:down` detect
+`$DEVWORKSPACE_ID` and no-op cleanly — there is no container engine inside the
+workspace, and none is needed.
+
+Two deliberate differences:
+
+- **Authentik is not in the devfile.** The workspace runs on the mock; fidelity is
+  covered by local Compose and by CI. That trade is the point of the three tiers.
+- **Anything the browser touches gets a public route.** OIDC redirects travel through
+  *your* browser, which cannot reach the pod's `localhost`. The provider runs in the
+  `tools` container like the server and Vite do, so Che routes it the same way — take
+  the route it offers for `:9110` and export it before starting either process:
+
+```bash
+export WNK_OIDC_MOCK_ISSUER=https://<the-route-che-gave-you>   # what the provider calls itself
+export WNK_OIDC__ISSUER=$WNK_OIDC_MOCK_ISSUER                  # what the server expects
+```
+
+Every configuration key is env-overridable, so this needs no second file — the
+`WNK_OIDC__ISSUER` above simply beats `config/dev.toml`.
+
+## Looking at things: the two headed sidecars
+
+The workspace schedules two containers whose only job is to be *seen*. Both publish a
+noVNC route, and both start their app **parked** (`NO_START`) — the display comes up
+in a second, the heavy process only when a task asks for it.
+
+| Sidecar | What runs in it | Tasks |
+| --- | --- | --- |
+| `browser` | Chrome, with CDP on `:9222` and WebDriver on `:9515` | `task browser:start`, `:open`, `:shot`, `:eval`, `:logs`, `:pwd` |
+| `desktop` | The Tauri shell, on Xvfb + openbox with a session bus | `task desktop:up`, `:start`, `:stop`, `:status`, `:shot`, `:logs`, `:pwd` |
+
+`task browser:*` wakes Chrome by itself when it needs it, so parking costs nothing but
+the first second of a session. `task browser:pwd` and `task desktop:pwd` print the
+route and the VNC password when you want to look rather than assert.
+
+### The desktop shell, end to end
+
+The split is: **build in `tools`, run in `desktop`**. The `tools` container carries the
+GTK/WebKit stack (`task tauri:doctor` says so), the sidecar carries the runtime, and
+both see the same `/projects` — so nothing has to travel.
+
+```bash
+task desktop:up                  # web bundle + shell + launch, then prints the route
+task desktop:pwd                 # the noVNC route and its password
+task desktop:notifyd             # watch the notifications the shell emits (D19)
+task desktop:shot OUT=target/desktop.png
+```
+
+`task desktop:up` rebuilds everything; the loop you actually live in is
+`task tauri:build && task desktop:start`, which reuses the bundle. Closing the window
+inside noVNC is enough to pick up a rebuilt binary — the sidecar respawns it.
+
+Notifications are the reason the shell is pinned to a session bus on a shared path
+(`dev/.dbus/session`, opened by `task desktop:bus`, which the tasks above depend on):
+`xtask notifyd` runs in `tools` and answers `org.freedesktop.Notifications`, so what
+the shell sends is visible from this side. Neither sidecar image ships a real
+notification daemon, and no rootless workspace can install one.
+
+Two things about that window are worth knowing before they cost you an afternoon. It
+**starts hidden**: on desktop the shell's normal home is the tray, and openbox has no
+panel to render a tray icon into — so a freshly launched shell is a black display
+rather than a broken one. Launching the binary a second time is what brings it up,
+because the single-instance plugin routes that into a `show()`:
+
+```bash
+kubectl exec "$HOSTNAME" -c desktop -- sh -c \
+  'DISPLAY=${XVFB_DISPLAY:-:97} \
+   DBUS_SESSION_BUS_ADDRESS=unix:path=$PWD/dev/.dbus/session \
+   /projects/weebo-notify-v2/web/src-tauri/target/release/weebo-notify-desktop'
+```
+
+And the same applies after the sidecar respawns a rebuilt binary: closing the window
+picks the new one up, but you have to ask for the window back.
+
+### Signing in from the shell
+
+The shell does not sign in the way the web app does. Its origin is `tauri://localhost`,
+which no identity provider will register, so it uses the loopback redirect of RFC 8252
+(§10bis.2): the authorization request goes to the **system browser**, and the shell
+listens on `http://127.0.0.1:1420/auth/callback` for the code. Only the code comes
+back — the window, the PKCE verifier and the `state` value never leave the app.
+
+The `desktop` sidecar has no browser for it to open, so in Che the shell says so and
+prints the URL instead:
+
+```bash
+task desktop:logs | grep -A1 'open this URL'
+```
+
+Every container in the pod shares one network namespace, which is what makes the rest
+work: Chrome in the `browser` sidecar reaches both the identity provider on
+`localhost:9110` and the listener on `127.0.0.1:1420`.
+
+```bash
+task browser:open URL='<the URL from the log>'   # log in as alice / weebo-dev
+task browser:pwd                                 # to watch it happen
+```
+
+The browser lands on "Connexion terminée", the shell redeems the code and the window
+is signed in. Logging out opens the provider's end-session URL the same way — the
+session cookie belongs to that browser, not to the shell.
+
+<Callout type="info">
+  Both sidecars are Eclipse Che only. On a laptop these tasks no-op and point at the
+  local equivalent: your own browser, and `task tauri:dev` against your real desktop
+  session — which has a real notification daemon, a real tray and a real browser for
+  the login to open, and therefore means more.
+</Callout>
+
+## Credentials
+
+Everything under `dev/` is committed on purpose: the stack is disposable, holds no
+production value, and `dev/` is allowlisted in the gitleaks configuration. That is
+what makes "clone and log in" work with no setup step.
+
+Two things cannot be, and `task dev:setup` creates both:
+
+| File | What it holds | Created by |
+| --- | --- | --- |
+| `dev/.env.local` | Authentik admin bootstrap, printed exactly once | `task dev:env` |
+| `dev/secrets/vapid.pem` | The P-256 VAPID key `[push.webpush]` reads | `task dev:vapid` |
+
+`task init` finishes with `dev:setup`, and `dev:up`, `dev:core`, `dev:auth`,
+`dev:sinks` and `dev:run` all depend on it — so there is no order to remember and no
+step to forget. Each part is guarded by its own `status:`, so re-running it costs
+nothing and never replaces what is already there.
+
+<Callout type="warn">
+  `dev/secrets/` is gitignored and deliberately **not** allowlisted for gitleaks. It
+  holds real key material rather than a disposable value, and an allowlist written
+  for a development key would go on covering that path the day a production one
+  lands in it.
+</Callout>
+
+## Web Push in development
+
+`task dev:vapid` mints the key and prints the `applicationServerKey` — the value a
+browser passes to `pushManager.subscribe()`. You rarely need to keep it: the server
+serves it at `GET /api/v1/push/webpush`, so the frontend asks rather than hardcodes,
+and rotating the key needs no rebuild.
+
+```bash
+cargo run -p xtask -- vapid-key --output dev/secrets/vapid.pem   # what dev:vapid runs
+```
+
+It refuses to overwrite an existing key without `--force`, and that refusal is the
+point: regenerating one fails silently. The server starts, the relay accepts the
+assertion, and every subscription taken out under the old key simply stops being
+delivered.
+
+A deployment with no `[push.webpush]` at all is a valid one — `GET /push/webpush`
+answers `501`, the transport registry stays empty, and every push degrades to a poke
+the client fetches over TLS.

@@ -1,0 +1,202 @@
+version: 1
+metadata:
+  name: weebo-notify
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+# Authentik blueprint (design §12.5) — the fidelity reference.
+#
+# It must describe the SAME identities as dev/oidc-mock/*.yaml: alice in
+# infra-admins, bob in dev-team, carol in no group at all. That is what lets the
+# `oidc-compat` matrix replay one auth suite against mock, Dex and Authentik (T29),
+# and what lets a developer switch IdP with a single WNK_OIDC__ISSUER override
+# instead of a second config file.
+#
+# Applied by Authentik itself: the /blueprints mount in compose plus the
+# `instantiate` label above are what create and apply it, on startup and on every
+# scan afterwards. `task dev:seed` asks for that to happen immediately — using
+# AUTHENTIK_BOOTSTRAP_TOKEN — and then waits for the OIDC provider to answer, so a
+# blueprint that cannot be applied fails the seed instead of the next thing to run.
+# That is the wrong way round from how this comment read until the oidc-compat job
+# proved it: the API call was aimed at a route that does not exist, so the mount had
+# been doing all the work all along.
+
+entries:
+  # --- Groups, mirroring the channel access rules in config/dev.toml (§11) ---
+  - model: authentik_core.group
+    id: group-infra-admins
+    identifiers:
+      name: infra-admins
+    attrs:
+      name: infra-admins
+
+  - model: authentik_core.group
+    id: group-dev-team
+    identifiers:
+      name: dev-team
+    attrs:
+      name: dev-team
+
+  # Platform role (§5.4). Declared here so the GitOps-only rule can be exercised
+  # locally: membership grants /admin/*, and no API path can grant it.
+  - model: authentik_core.group
+    id: group-platform-admins
+    identifiers:
+      name: platform-admins
+    attrs:
+      name: platform-admins
+
+  # --- Test users. Fixed password, no IdP privileges, disposable (§12.5) ---
+  - model: authentik_core.user
+    id: user-alice
+    identifiers:
+      username: alice
+    attrs:
+      username: alice
+      name: Alice Martin
+      email: alice@weebo.local
+      password: weebo-dev
+      is_active: true
+      groups:
+        - !KeyOf group-infra-admins
+        - !KeyOf group-platform-admins
+
+  - model: authentik_core.user
+    id: user-bob
+    identifiers:
+      username: bob
+    attrs:
+      username: bob
+      name: Bob Dupont
+      email: bob@weebo.local
+      password: weebo-dev
+      is_active: true
+      groups:
+        - !KeyOf group-dev-team
+
+  # No group: the "IdP without a groups claim" degradation path (T29).
+  - model: authentik_core.user
+    id: user-carol
+    identifiers:
+      username: carol
+    attrs:
+      username: carol
+      name: Carol Nguyen
+      email: carol@weebo.local
+      password: weebo-dev
+      is_active: true
+
+  # --- App passwords, so a test can get a token without driving a login form ---
+  #
+  # Authentik's `grant_type=password` is NOT RFC 6749's password grant. It lands in
+  # the same handler as `client_credentials`, and the `password` it authenticates is
+  # an app-password *token* belonging to the user — never the user's own password
+  # (authentik/providers/oauth2/views/token.py, 2025.6). Posting alice/weebo-dev
+  # there returns `invalid_grant` however correct the password is, which is what the
+  # oidc-compat leg spent its first green seed discovering.
+  #
+  # One per account and not one shared: a token is looked up by key and then checked
+  # against the user, so two accounts cannot share one. `expiring: false` because a
+  # fixture that starts failing on a date is worse than no fixture (see the seven-day
+  # fuse in `InMemory`).
+  #
+  # These are dev credentials of the same kind as the passwords above — a disposable
+  # environment holding no production value, and dev/ is allowlisted in
+  # .gitleaks.toml for exactly this.
+  - model: authentik_core.token
+    identifiers:
+      identifier: weebo-compat-alice
+    attrs:
+      identifier: weebo-compat-alice
+      intent: app_password
+      user: !KeyOf user-alice
+      key: weebo-dev-app-password-alice
+      expiring: false
+      description: oidc-compat, the in-groups account
+
+  - model: authentik_core.token
+    identifiers:
+      identifier: weebo-compat-bob
+    attrs:
+      identifier: weebo-compat-bob
+      intent: app_password
+      user: !KeyOf user-bob
+      key: weebo-dev-app-password-bob
+      expiring: false
+      description: oidc-compat spare; bob exists in every other fixture, so he has one here too
+
+  - model: authentik_core.token
+    identifiers:
+      identifier: weebo-compat-carol
+    attrs:
+      identifier: weebo-compat-carol
+      intent: app_password
+      user: !KeyOf user-carol
+      key: weebo-dev-app-password-carol
+      expiring: false
+      description: oidc-compat, the group-less account (T29)
+
+  # --- Scope mapping so `groups` reaches the ACCESS token, not just the id token.
+  # The API authorises on the access token alone (§5.1), so this mapping is what
+  # makes group-based channel access work at all.
+  - model: authentik_providers_oauth2.scopemapping
+    id: scope-groups
+    identifiers:
+      scope_name: groups
+      name: "weebo-notify: groups"
+    attrs:
+      scope_name: groups
+      name: "weebo-notify: groups"
+      description: Group membership, mapped to channel access
+      expression: |
+        return [group.name for group in request.user.ak_groups.all()]
+
+  # --- OAuth2/OIDC provider: public client, Authorization Code + PKCE ---
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider-weebo-notify
+    identifiers:
+      name: weebo-notify
+    attrs:
+      name: weebo-notify
+      client_type: public
+      client_id: weebo-notify
+      # `user_username` and not Authentik's `hashed_user_id` default, because the
+      # compat suite asserts `sub == username` on this provider and says in so many
+      # words that it holds "where this suite arranged it — the mock, whose
+      # identities file sets it, and the Authentik blueprint, which maps it"
+      # (crates/notify-adapters/oidc/tests/oidc_compat.rs). It did not map it. The
+      # property the code depends on is stability (§5.1), which every sub_mode has;
+      # the equality is a fixture convenience, and this is where it gets arranged.
+      sub_mode: user_username
+      include_claims_in_id_token: true
+      access_code_validity: minutes=1
+      access_token_validity: minutes=15
+      refresh_token_validity: days=30
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !KeyOf scope-groups
+      redirect_uris:
+        - matching_mode: strict
+          url: http://localhost:5173/auth/callback
+        - matching_mode: strict
+          url: http://localhost:8080/auth/callback
+        # Tauri desktop from M5 (§10bis.2): loopback on an ephemeral port, hence
+        # the regex; the custom scheme is the fallback path.
+        - matching_mode: regex
+          url: "http://127.0.0.1:[0-9]+/auth/callback"
+        - matching_mode: strict
+          url: weebo-notify://oauth/callback
+
+  - model: authentik_core.application
+    identifiers:
+      slug: weebo-notify
+    attrs:
+      name: weebo-notify
+      slug: weebo-notify
+      provider: !KeyOf provider-weebo-notify
+      meta_description: Rich, multi-channel, multi-device notifications

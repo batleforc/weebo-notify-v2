@@ -1,0 +1,32 @@
+[package]
+name = "notify-attachments-s3"
+description = "Attachment store over any S3-compatible object store (RustFS in dev and self-hosted)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+# rustls only, no `native-tls`: the binaries stay free of OpenSSL like every other
+# HTTP client here. `tags` goes with the default features because object tagging is
+# an operation we never issue — §15 says standard S3 operations only, so anything we
+# cannot use is a dependency not worth carrying.
+http = { workspace = true }
+rust-s3 = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

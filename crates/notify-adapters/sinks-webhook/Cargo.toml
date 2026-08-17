@@ -1,0 +1,32 @@
+[package]
+name = "notify-sinks-webhook"
+description = "Signed JSON webhook sink (design §7.1bis): HMAC-SHA256 over a timestamped body, plus the reference verifier a consumer can copy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+# RustCrypto, like everything else this workspace signs or hashes with: no C
+# toolchain, so the image still builds from a plain `cargo build` (M1 audit).
+hmac = "0.12"
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+notify-ports = { workspace = true, features = ["test-utils"] }
+tokio = { workspace = true }
+url = { workspace = true }

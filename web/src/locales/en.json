@@ -1,0 +1,418 @@
+{
+  "app": {
+    "name": "weebo-notify"
+  },
+  "login": {
+    "tagline": "Infrastructure notifications, in real time.",
+    "expired": "Your session has expired. Sign in again to continue.",
+    "redirecting": "Redirecting…",
+    "signIn": "Sign in"
+  },
+  "callback": {
+    "failed": "Sign-in failed.",
+    "retry": "Retry",
+    "inProgress": "Signing in…"
+  },
+  "status": {
+    "success": "Success",
+    "failure": "Failure",
+    "warning": "Warning",
+    "info": "Info",
+    "cancelled": "Cancelled",
+    "ariaLabel": "{status}, {state}"
+  },
+  "state": {
+    "open": "open",
+    "working": "working",
+    "closed": "closed"
+  },
+  "priority": {
+    "min": "minimal",
+    "low": "low",
+    "default": "normal",
+    "high": "high",
+    "urgent": "urgent"
+  },
+  "sidebar": {
+    "aria": "Channels and filters",
+    "unreadLabel": "1 unread | {count} unread",
+    "connection": {
+      "live": "live",
+      "reconnecting": "reconnecting…",
+      "offline": "offline",
+      "tooltip": "SSE stream — resumed by cursor on reconnect (§8.1)."
+    },
+    "channels": {
+      "title": "Channels",
+      "all": "All channels",
+      "empty": "No channels. Access comes from a group in your identity provider or an invitation (§5.1)."
+    },
+    "filters": {
+      "title": "Filters",
+      "clearAll": "clear all",
+      "hasActions": "with action",
+      "tagPlaceholder": "filter by tag…",
+      "tagAriaLabel": "Filter by tag",
+      "removeTag": "remove tag filter {tag}"
+    },
+    "nav": {
+      "settings": "Settings",
+      "admin": "Admin",
+      "platform": "Platform",
+      "inbox": "Inbox"
+    },
+    "session": {
+      "toggleTheme": "Switch theme",
+      "themeTooltip": "Theme: {theme}",
+      "logout": "Sign out"
+    }
+  },
+  "layout": {
+    "closeDetail": "Close detail"
+  },
+  "console": {
+    "title": "Platform console",
+    "description": "Metadata and operations. Channel content isn't readable from here: joining a channel is the explicit path, and it's audited (§5.4).",
+    "yes": "yes",
+    "no": "no",
+    "forbidden": {
+      "title": "This console is reserved for the platform role.",
+      "description": "It's declared in GitOps ([admin] oidc_groups, §11) and no API can grant it — so there's nobody to ask here: it's a configuration change."
+    },
+    "reconciliation": {
+      "title": "Reconciliation",
+      "none": "No pass completed on this replica yet. The boot pass runs before the socket opens, so seeing this means it failed.",
+      "lastPass": "Last pass {at} ({trigger}) · {channels} channels · {accounts} service accounts · {removed} removed",
+      "pending": "{count} binding(s) waiting on a first sign-in:",
+      "perReplica": "Figures for this replica: unlike the purge, all of them reconcile (§11), so two reads can differ by a tick.",
+      "trigger": {
+        "boot": "boot",
+        "timer": "timer",
+        "sighup": "SIGHUP"
+      }
+    },
+    "channels": {
+      "title": "Channels · {count}",
+      "managedCount": "{count} of them managed by config",
+      "headers": {
+        "channel": "Channel",
+        "origin": "Origin",
+        "members": "Members",
+        "groups": "Groups",
+        "receipts": "Receipts"
+      },
+      "join": "Join",
+      "joinHint": "\"Join\" adds the reader to the channel with subscribe only and writes an audit entry. On a managed channel, reconciliation will take membership back over: durable access is written in config (§11)."
+    },
+    "policies": {
+      "title": "Trust policies · {count}",
+      "none": "None. No CI job can exchange a token on this instance (§5.3).",
+      "headers": {
+        "channels": "Channels",
+        "scope": "Scope"
+      },
+      "scoped": "channel",
+      "global": "global",
+      "readOnlyHint": "Read-only: config owns them (§11), so an edit button would offer what the next reconciliation would take back."
+    },
+    "dlq": {
+      "title": "Stuck deliveries · {count}",
+      "none": "Nothing stuck. A delivery lands here after 24 h of failures, or immediately if the consumer answered something that won't change — a 410, for instance (§7.1bis).",
+      "headers": {
+        "channel": "Channel",
+        "attempts": "Attempts",
+        "lastError": "Last error",
+        "deadAt": "Given up"
+      },
+      "retry": "Retry",
+      "retryHint": "\"Retry\" requeues the delivery with its failure count reset, and writes an audit entry. The event's content isn't shown here: reading it would require being a member of the channel (§5.4)."
+    },
+    "audit": {
+      "title": "Audit · {count} recent entries",
+      "none": "Nothing recorded yet.",
+      "on": "on {channel}"
+    }
+  },
+  "admin": {
+    "title": "Admin",
+    "managedByConfig": "managed by config",
+    "mintedKey": {
+      "title": "Copy this key now",
+      "description": "It will never be shown again: only its hash is stored. Losing it means revoking it and creating another.",
+      "copied": "I copied it"
+    },
+    "channels": {
+      "title": "Channels",
+      "description": "Retention and receipts, per channel. A managed channel comes from config: the API refuses it, and the next reconciliation would undo the change anyway.",
+      "empty": "No visible channel.",
+      "receiptsOn": "Receipts enabled",
+      "receiptsOff": "Receipts disabled",
+      "defaultTtlPlaceholder": "default TTL (7d)",
+      "maxTtlPlaceholder": "ceiling (48h) — empty = none"
+    },
+    "devices": {
+      "title": "Devices",
+      "description": "Revoking a device cuts its push and its sync cursor.",
+      "empty": "No device. The CLI enrols one with notify device enrol.",
+      "revoked": "revoked",
+      "revoke": "Revoke"
+    },
+    "keys": {
+      "title": "API keys",
+      "accountPlaceholder": "For which bot?",
+      "channelPlaceholder": "channel (ci-infra)",
+      "labelPlaceholder": "what it's for",
+      "create": "Create — the secret only ever appears once",
+      "unnamed": "unnamed",
+      "lastUsed": "used {at}",
+      "neverUsed": "never used",
+      "revoked": "revoked"
+    },
+    "accounts": {
+      "title": "Service accounts",
+      "description": "A team bot never runs on a human's key: someone leaving the company must not turn off the deployment.",
+      "create": "Create",
+      "disabled": "disabled",
+      "deactivate": "Deactivate",
+      "created": "created {at}",
+      "owner": "created by"
+    }
+  },
+  "inbox": {
+    "newNotifications": "{count} new notification | {count} new notifications",
+    "retry": "Retry",
+    "emptyFiltered": {
+      "title": "No notification matches these filters.",
+      "hint": "Filters are in the left column."
+    },
+    "emptyDefault": {
+      "title": "Nothing to read. That's a good sign.",
+      "hint": "New notifications arrive here in real time."
+    },
+    "loading": "Loading…",
+    "loadMore": "Load more"
+  },
+  "palette": {
+    "hints": {
+      "settings": "profile theme density dnd",
+      "admin": "channels devices keys service accounts",
+      "console": "dlq audit reconciliation inventory"
+    },
+    "actions": {
+      "dnd1h": "Do not disturb for 1 h",
+      "markSeen": "Mark selection as seen"
+    }
+  },
+  "commandPalette": {
+    "ariaLabel": "Search and navigate",
+    "searchPlaceholder": "Search for a notification, channel, screen…",
+    "resultsAriaLabel": "Results",
+    "empty": "Nothing matches.",
+    "searching": "Searching…",
+    "groups": {
+      "channels": "Channels",
+      "notifications": "Notifications",
+      "screens": "Screens",
+      "actions": "Actions"
+    }
+  },
+  "push": {
+    "refused": {
+      "unsupported": "This browser cannot receive push.",
+      "unavailable": "This deployment doesn't do Web Push.",
+      "denied": "Notifications are refused for this site.",
+      "failed": "The service worker isn't available."
+    },
+    "prompt": {
+      "ariaLabel": "Enable notifications",
+      "title": "Enable notifications?",
+      "body": "Get notifications even when the tab is closed. Adjustable anytime in Settings.",
+      "fallbackError": "Subscription failed. Try again, or later from Settings.",
+      "activate": "Enable",
+      "later": "Later",
+      "close": "Close"
+    }
+  },
+  "notification": {
+    "author": {
+      "channelKey": "key {key} on channel {channel}",
+      "ciJob": "CI job",
+      "unknown": "unknown"
+    },
+    "row": {
+      "revisionCount": "{count} revisions",
+      "lateBadge": "received late ({delay})",
+      "lateTooltip": "Published {at}, received by this client just now."
+    },
+    "actionBar": {
+      "silenceUntilClose": "Until it closes",
+      "silenceDurations": {
+        "1h": "1 hour",
+        "4h": "4 hours",
+        "24h": "24 hours",
+        "7d": "7 days"
+      }
+    },
+    "image": {
+      "failed": "The attached image could not be displayed."
+    },
+    "revisionTimeline": {
+      "revisionHeading": "Revision {seq}",
+      "authoredBy": "by {author}",
+      "statusChanged": "status: {from} → {to}",
+      "stateChanged": "state: {from} → {to}",
+      "priorityChanged": "priority: {from} → {to}",
+      "titleChanged": "title changed",
+      "acked": "acknowledged ({key})",
+      "replied": "replied: “{text}”",
+      "chose": "chose “{option}” for {key}",
+      "respondedGeneric": "responded"
+    },
+    "detail": {
+      "ariaLabel": "Notification detail",
+      "emptyTitle": "Select a notification to see its timeline.",
+      "emptyHint": "↑ ↓ to navigate, Enter to open.",
+      "expiredTitle": "This notification has expired.",
+      "deletedTitle": "This notification has been deleted.",
+      "expiredBody": "Its retention period has elapsed; the content is no longer kept (§7.2bis).",
+      "deletedBody": "Its author withdrew it. Clients have removed it from their inbox.",
+      "close": "Close",
+      "retry": "Retry",
+      "copyPermalink": "Copy permalink",
+      "copyPermalinkTooltip": "Copy permalink /n/…",
+      "copied": "Copied",
+      "priorityBadge": "priority {priority}",
+      "seenByCount": "seen by {count}",
+      "seenByHeading": "Seen by {count} people",
+      "outOfAudience": "out of {audience}",
+      "noGroupTotal": "Access to this channel comes from a group: the total is not known to the server (§14.2).",
+      "notOpenedYet": "Nobody has opened it yet.",
+      "deviceCount": "The count is in people, never in devices (§7.3) · {count} device(s) received it.",
+      "createdAt": "Created {at}",
+      "closedAt": "· closed {at}",
+      "ttl": "· retention {ttl}",
+      "noBody": "No body — the title says it all.",
+      "timelineHeading": "Timeline · {count} revision(s)"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "profile": {
+      "title": "Profile",
+      "description": "A field you edit becomes yours: your identity provider stops overwriting it at every sign-in.",
+      "noAvatar": "none",
+      "changeAvatar": "Change avatar",
+      "avatarHint": "PNG, JPEG or WebP, 512 KiB max. Resized to 256×256 and stripped of its metadata server-side.",
+      "displayName": "Display name",
+      "timezone": "Timezone",
+      "timezoneHint": "Used as the default for quiet hours. Checked against the IANA database.",
+      "claimed": "yours",
+      "followsIdp": "follows your IdP",
+      "releaseToIdp": "hand back to IdP",
+      "save": "Save",
+      "saving": "Saving…"
+    },
+    "locale": {
+      "title": "Language",
+      "fr": "Français",
+      "en": "English"
+    },
+    "appearance": {
+      "title": "Appearance",
+      "theme": "Theme: {theme}",
+      "density": "Density: {density}",
+      "detail": "Detail: {position}",
+      "detailHint": "Where a notification's timeline opens next to the list — no effect on a narrow screen, where it always takes the whole screen.",
+      "detailPosition": {
+        "right": "on the right",
+        "left": "on the left",
+        "under": "underneath"
+      }
+    },
+    "keys": {
+      "title": "CLI token",
+      "description": "For notify login (terminal, TUI): pick the channels and what the token may do there, then paste the secret at the prompt.",
+      "mintedHint": "Copy this token now — paste it at the notify login prompt. It will never be shown again.",
+      "copied": "I copied it",
+      "labelPlaceholder": "what it's for",
+      "channels": "Channels",
+      "noChannels": "No visible channel.",
+      "scope": "Scope",
+      "create": "Create — the secret only ever appears once",
+      "unnamed": "unnamed",
+      "lastUsed": "used {at}",
+      "neverUsed": "never used",
+      "revoked": "revoked",
+      "revoke": "Revoke"
+    },
+    "session": {
+      "title": "Session",
+      "connectedAs": "Signed in as {name}.",
+      "groups": "Groups carried by your token: {groups} — channel access follows from them on every request.",
+      "logout": "Sign out"
+    },
+    "dnd": {
+      "title": "Do not disturb",
+      "active": "active",
+      "description": "OS push is suppressed during a quiet period; the stream keeps flowing and the inbox fills up normally. On the way out, a single summary rather than a burst.",
+      "quickSilence": "Silence {label}",
+      "resume": "Resume now",
+      "silentUntil": "Silent until {at}.",
+      "recurringWindows": "Recurring windows",
+      "addWindow": "Add",
+      "noWindows": "No window yet. The one-off silence above is still available.",
+      "removeWindow": "Remove window",
+      "everyDay": "every day",
+      "midnightHint": "Crosses midnight: the window belongs to the day it {emphasis} — a Friday 22:00–08:00 is Friday night into Saturday.",
+      "midnightHintEmphasis": "starts",
+      "exceptionsTitle": "Channels that ring anyway",
+      "exceptionsHint": "Silence everything {emphasis} the one that matters — the on-call case.",
+      "exceptionsHintEmphasis": "except",
+      "scopeRestricted": "Scope is restricted to specific channels; for now it's changed from the CLI (notify dnd).",
+      "urgentBypass": "Let {emphasis} notifications through",
+      "urgentBypassEmphasis": "urgent",
+      "urgentBypassHint": "You decide what can wake you, never the sender.",
+      "cancel": "Cancel",
+      "saveFailed": "Could not save.",
+      "loadFailed": "Could not read preferences.",
+      "days": {
+        "mon": "M",
+        "tue": "T",
+        "wed": "W",
+        "thu": "T",
+        "fri": "F",
+        "sat": "S",
+        "sun": "S"
+      }
+    },
+    "push": {
+      "title": "Push notifications",
+      "description": "Receive notifications even when the tab is closed. This browser becomes a {device}: it appears in Admin → Devices, and revoking it there cuts its push and its sync cursor.",
+      "descriptionDevice": "device",
+      "checking": "Checking…",
+      "unsupported": "This browser cannot receive push — usually a private window or an insecure origin.",
+      "unavailable": "This deployment doesn't do Web Push: no VAPID key is configured. The real-time stream keeps working.",
+      "denied": "Notifications are blocked for this site. The browser won't ask again: you need to re-allow them in the site's settings.",
+      "enable": "Enable on this browser",
+      "disable": "Disable on this browser",
+      "fallbackError": "Subscription failed. Try again."
+    }
+  },
+  "problem": {
+    "authMissing": "Session expired — sign in again.",
+    "authInvalid": "Session expired — sign in again.",
+    "authExpired": "Session expired — sign in again.",
+    "scopeMissing": "You don't have the rights for this action on this channel.",
+    "channelUnknown": "This channel doesn't exist, or you don't have access to it.",
+    "notificationUnknown": "This notification no longer exists.",
+    "notificationDeleted": "This notification has been deleted.",
+    "fieldMissing": "The form is missing a piece of information.",
+    "fieldEmpty": "A required field is empty.",
+    "fieldInvalid": "A value in the form isn't valid.",
+    "rateLimited": "Too many requests — try again in a moment.",
+    "actionUnknown": "This action no longer exists on this revision.",
+    "networkDown": "The server is unreachable. Check your connection, or that it's running.",
+    "serverResponded": "The server responded {status}.",
+    "unexpected": "An unexpected error occurred."
+  }
+}

@@ -1,0 +1,85 @@
+---
+title: ADR-0014 — A first-party OIDC mock instead of a third-party image
+description: The everyday identity provider becomes a crate in this workspace, and IdP fidelity moves entirely onto the compatibility matrix.
+---
+
+Status: accepted (2026-08-03) · Supersedes: — · Superseded by: —
+
+## Context
+
+The development environment ran on `ghcr.io/soluto/oidc-server-mock`, chosen in
+§12.1 as the middle tier of the three-tier auth strategy: cheaper than Authentik,
+more realistic than the in-memory `TokenVerifier`.
+
+It was not dependable enough for that position. It sits on the critical path of
+every developer's morning and of the `e2e` and `oidc-compat` CI jobs, and a
+provider that has to be restarted before anyone can log in is a provider that costs
+more than it saves. The trigger was operational, not architectural: nothing about
+its OIDC behaviour was wrong.
+
+Its configuration also carried a cost of its own. It wants provider-specific YAML
+(`SubjectId`, `Claims: [{Type, Value, ValueType}]`), and Eclipse Che cannot mount
+host files — so `task gen:devfile` inlined that YAML into `devfile.yaml` as an
+environment variable, the `contract` CI job regenerated and diffed it, and a
+hand-edit of a generated blob failed the build. Machinery whose only purpose was to
+feed a container its configuration twice.
+
+Meanwhile the pieces of a provider were already in the repository: `notify-oidc`
+signs and verifies real ES256 tokens in its own tests, and the workspace has actix,
+jsonwebtoken and p256.
+
+## Decision
+
+**The everyday identity provider is `crates/oidc-mock`, a binary in this
+workspace.** It implements discovery, JWKS, Authorization Code with PKCE, refresh
+with rotation, userinfo and logout, signs with a real ES256 key, and reads its
+accounts from `dev/oidc-mock/identities.toml`.
+
+It runs as a process — `task dev:oidc` — not as a container. That is what removes
+the sidecar from `devfile.yaml`, the service from `dev/compose.yaml`, the image pull
+from the `e2e` job and the whole `gen:devfile` step: in every world it reads the same
+committed file from the project source.
+
+`notify-oidc` keeps a test that boots it on a real socket, walks a real flow and
+verifies the resulting token through the production path. The provider and the
+verifier are checked against each other on every run.
+
+## Consequences
+
+**Positive**
+
+- Nothing to pull and no registry to depend on. The provider builds from the same
+  `cargo build` as everything else, and CI cannot fail because a third party's tag
+  moved.
+- One configuration file, in the project's own format, read identically under
+  Compose, in Che and in CI. The generator and the drift check it needed are gone.
+- Behaviour we can extend when a test needs it. `POST /admin/rotate-keys` exists so
+  the auth suite can exercise key rotation on demand (T29) — something no
+  third-party mock was going to offer.
+- Refusals we chose: PKCE is mandatory, an unregistered `redirect_uri` is a page
+  and never a redirect, and an account with no groups gets no `groups` claim rather
+  than an empty array.
+
+**Negative**
+
+- A provider we wrote cannot surprise us, and that is precisely its weakness. The
+  third-party mock at least came from someone else's reading of the specification;
+  ours reproduces our own assumptions, including any that are wrong.
+- The mitigation is that `oidc-compat` (§3.2) becomes strictly more load-bearing.
+  Dex and Authentik are now the *only* independent readings of OIDC this project
+  meets before a user does. **Never merge a change to the auth flow without that
+  matrix green** — that instruction was already in §15, and it is no longer
+  advisory.
+
+**Accepted debt**
+
+- The mock implements what this product's clients use and nothing else: no client
+  secrets, no `plain` PKCE, no implicit or hybrid flows, no front-channel logout, no
+  consent screen, no dynamic registration. Adding one is cheap; the point is that
+  none is there speculatively.
+- Sessions are in memory, so restarting it logs everyone out. Signing keys are
+  derived from their key id rather than generated, so a restart at least does not
+  invalidate a token the browser is still holding.
+- If it ever grows past "enough OIDC to log in", that is the signal to reconsider —
+  the goal was to stop maintaining someone else's provider, not to start
+  maintaining our own.

@@ -1,0 +1,80 @@
+weebo-notify is deployed.
+
+{{- if .Values.server.ingress.enabled }}
+API:  https://{{ .Values.server.ingress.host }}/api/v1
+{{- else }}
+API:  not exposed — set server.ingress.enabled=true, or port-forward:
+      kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }} 8080:{{ .Values.server.service.port }}
+{{- end }}
+{{- if .Values.web.ingress.enabled }}
+Web:  https://{{ .Values.web.ingress.host }}
+{{- else }}
+Web:  not exposed — set web.ingress.enabled=true, or port-forward:
+      kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "web") }} 8080:{{ .Values.web.service.port }}
+{{- end }}
+
+Before this is a production deployment, walk the hardening checklist — it lists the
+guarantees this chart cannot make for you (encryption at rest, a private bucket,
+frame-ancestors and HSTS, keeping /metrics off your ingress, per-address limits):
+
+      docs/content/docs/ops/hardening.mdx
+
+{{- if eq .Values.server.attachments.kind "filesystem" }}
+
+WARNING: attachments.kind=filesystem is a SINGLE-REPLICA deployment (ADR-0022).
+This release therefore runs server.replicaCount=1 whatever you set, disables the
+server PodDisruptionBudget, disables its HorizontalPodAutoscaler, and uses the
+Recreate rollout strategy — because the attachment PVC is ReadWriteOnce and two
+pods writing to it would corrupt it.
+
+What that costs, plainly: every upgrade is a full outage for the API and every
+live stream, and so is any node drain. There is no high-availability story on
+this backend.
+
+Use attachments.kind=s3 for any deployment with an availability target. Any
+S3-compatible bucket will do (ADR-0002) — it does not have to be AWS.
+{{- end }}
+
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.ingressFrom) }}
+
+WARNING: networkPolicy.enabled=true with an empty networkPolicy.ingressFrom.
+The server policy admits the web pods and nothing else — so the server's own
+Ingress (/api/v1) and any Prometheus scrape are both blocked, and the API will
+look unreachable from outside this namespace.
+
+Set networkPolicy.ingressFrom to namespace selectors for your ingress controller
+and your monitoring stack. charts/weebo-notify/examples/values-production.yaml
+has the shape.
+{{- end }}
+
+{{- if not .Values.server.database.existingSecret }}
+
+WARNING: server.database.existingSecret is unset. notify-server will start with
+no WNK_DATABASE__URL and refuse to connect. Create a Secret carrying the
+Postgres DSN and point server.database.existingSecret at it.
+{{- end }}
+
+{{- if not .Values.web.env.apiBaseUrl }}
+
+WARNING: web.env.apiBaseUrl is unset. The web bundle needs the server's own
+public origin (e.g. https://{{ .Values.server.ingress.host }}) to know where to
+call — set it explicitly, it is never guessed from server.ingress.host.
+{{- end }}
+
+{{- if eq .Values.server.attachments.kind "filesystem" }}
+
+NOTE: attachments are filesystem-backed (ADR-0022) — accepted debt, single-node
+only. This release runs server.replicaCount=1 regardless of the configured
+value, and its PodDisruptionBudget/HorizontalPodAutoscaler are skipped.
+{{- end }}
+
+{{- if and .Values.server.autoscaling.enabled (not .Values.server.autoscaling.customMetrics) }}
+
+NOTE: server.autoscaling is CPU-only. The design's SSE-connection-gauge target
+needs a custom-metrics adapter (Prometheus Adapter, KEDA) reading
+sse_connections off /metrics — not bundled here. Add entries under
+server.autoscaling.customMetrics once one is wired up.
+{{- end }}
+
+See charts/weebo-notify/README.md for the full secret/values checklist before
+a first install.

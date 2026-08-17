@@ -1,0 +1,11 @@
+-- Who created a service account (design §5.2bis, M2.3).
+--
+-- NULL for a managed one: the configuration administers those, and whoever
+-- happened to apply it is not their owner (§11). For a dynamic one it is who may
+-- deactivate it — the same reason a channel's creator becomes its manager, since
+-- an object nobody can administer needs database access to fix.
+--
+-- No foreign key to `users`, deliberately: deleting a person must not cascade into
+-- the bots they created, and an account whose owner is gone is exactly the state
+-- the platform role (§5.4, M4) exists to resolve.
+ALTER TABLE service_accounts ADD COLUMN created_by TEXT;

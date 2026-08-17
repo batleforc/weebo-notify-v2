@@ -1,0 +1,49 @@
+---
+title: ADR-0009 — progenitor and HeyApi for the generated clients
+description: Rust and TypeScript clients are generated from the committed spec; a small shim bridges OpenAPI 3.1 to 3.0.
+---
+
+Status: accepted (2026-08-01) · Supersedes: — · Superseded by: —
+
+## Context
+
+The OpenAPI document is produced from the utoipa annotations on the handlers, so
+the specification is written as the API is written. Both derived clients — Rust for
+the CLI/TUI/Tauri shell, TypeScript for the web frontend — must be generated from
+it and committed, so the `contract` CI job can prove they never drift.
+
+`openapi-generator` handles anything but requires a JVM in the toolchain and in CI.
+
+## Decision
+
+**progenitor for Rust, HeyApi (axios plugin) for TypeScript.** No JVM anywhere.
+
+utoipa 5 can only emit **OpenAPI 3.1** — its `OpenApiVersion` type has a single
+variant — while progenitor parses through `openapiv3`, which is **3.0**. Rather
+than change generator, `xtask` lowers the handful of constructs that differ
+(`type: [T, "null"]` → `type: T` + `nullable`, `const` → single-valued `enum`,
+numeric exclusive bounds → the boolean form) immediately before handing the
+document to progenitor.
+
+**The committed spec stays 3.1.** Only the generator ever sees 3.0.
+
+## Consequences
+
+**Positive**
+
+- Pure-Rust toolchain: `task recu` needs nothing but cargo, pnpm and the repository.
+- Third parties and the TypeScript client get the modern 3.1 document.
+- The shim is deliberately narrow and unit-tested; an unsupported construct fails
+  loudly in progenitor rather than being silently mangled.
+
+**Negative**
+
+- A conversion layer we own. Every 3.1 construct utoipa starts emitting can require
+  a new case.
+
+**Accepted debt**
+
+- The failure mode is a red build (`contract`, or the client failing to compile),
+  never wrong generated code — which is what makes the cost acceptable. If the shim
+  starts growing case by case, switching to `openapi-generator` becomes the cheaper
+  option and this ADR gets superseded.

@@ -1,0 +1,152 @@
+{{/*
+config.toml for notify-server, layered as design §11 describes: this file is the
+middle layer, WNK_-prefixed env (rendered by server-deployment.yaml, sourced from
+Secrets) is the top one, and the two never carry the same field — a credential
+lives in exactly one of them, never both, so there is never a question of which
+value actually applied.
+*/}}
+{{- $corsOrigins := .Values.server.corsOrigins }}
+{{- if and (not $corsOrigins) .Values.web.ingress.enabled }}
+{{- $corsOrigins = list (printf "https://%s" .Values.web.ingress.host) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+data:
+  config.toml: |
+    # Rendered by the weebo-notify Helm chart — edits belong in the release's
+    # values (server.extraConfig for anything not already a value), not here.
+
+    [server]
+    # Matches every containerPort/probe/Service targetPort this chart writes —
+    # not a value on purpose, so nothing here can drift from those.
+    bind = "0.0.0.0:8080"
+    cors_origins = {{ $corsOrigins | toJson }}
+
+    [database]
+    # Intentionally blank: WNK_DATABASE__URL (server.database.existingSecret)
+    # supplies the real value, which the env layer applies after this file.
+    url = ""
+    {{- if .Values.server.database.maxConnections }}
+    max_connections = {{ .Values.server.database.maxConnections }}
+    {{- end }}
+
+    [oidc]
+    issuer = {{ .Values.server.oidc.issuer | quote }}
+    client_id = {{ .Values.server.oidc.clientId | quote }}
+    audiences = {{ .Values.server.oidc.audiences | toJson }}
+    groups_claim = {{ .Values.server.oidc.groupsClaim | quote }}
+
+    [admin]
+    # Platform-admin (§5.4) is GitOps-only — no API path grants it, only this list.
+    oidc_groups = {{ .Values.server.admin.oidcGroups | toJson }}
+
+    [retention]
+    default_ttl = {{ .Values.server.retention.defaultTtl | quote }}
+    max_ttl = {{ .Values.server.retention.maxTtl | quote }}
+    allow_forever = {{ .Values.server.retention.allowForever }}
+
+    [ha]
+    # The only implemented backend (§14.4) — see this chart's README for why
+    # there is no Lease RBAC here.
+    leader_election = "postgres"
+
+    [eventbus]
+    backend = {{ .Values.server.eventbus.backend | quote }}
+    {{- if eq .Values.server.eventbus.backend "redis" }}
+    # Blank for the same reason `[database] url` is: WNK_EVENTBUS__REDIS_URL
+    # (server.eventbus.redis.existingSecret) supplies it.
+    redis_url = ""
+    {{- end }}
+
+    {{- if .Values.server.attachments }}
+    [attachments]
+    kind = {{ .Values.server.attachments.kind | quote }}
+    {{- if eq .Values.server.attachments.kind "s3" }}
+    endpoint = {{ .Values.server.attachments.endpoint | quote }}
+    bucket = {{ .Values.server.attachments.bucket | quote }}
+    region = {{ .Values.server.attachments.region | quote }}
+    # Blank: WNK_ATTACHMENTS__ACCESS_KEY / WNK_ATTACHMENTS__SECRET_KEY
+    # (server.attachments.existingSecret) supply these.
+    access_key = ""
+    secret_key = ""
+    {{- else if eq .Values.server.attachments.kind "filesystem" }}
+    path = {{ .Values.server.attachments.persistence.path | quote }}
+    public_base_url = {{ .Values.server.attachments.publicBaseUrl | default (printf "https://%s" .Values.server.ingress.host) | quote }}
+    # Blank: WNK_ATTACHMENTS__TOKEN_SECRET (server.attachments.existingSecret)
+    # supplies it — an empty one is an unsigned, open directory.
+    token_secret = ""
+    {{- end }}
+    {{- end }}
+
+    [channels]
+    on_removed = {{ .Values.server.channels.onRemoved | quote }}
+    reload = {{ .Values.server.channels.reload | quote }}
+
+    {{- if .Values.server.push.webpush.enabled }}
+
+    [push.webpush]
+    vapid_key_file = "/etc/weebo-notify/secrets/webpush/{{ .Values.server.push.webpush.keyName }}"
+    contact = {{ .Values.server.push.webpush.contact | quote }}
+    {{- end }}
+
+    {{- if .Values.server.push.apns.enabled }}
+
+    [push.apns]
+    key_file = "/etc/weebo-notify/secrets/apns/{{ .Values.server.push.apns.keyName }}"
+    key_id = {{ .Values.server.push.apns.keyId | quote }}
+    team_id = {{ .Values.server.push.apns.teamId | quote }}
+    topic = {{ .Values.server.push.apns.topic | quote }}
+    sandbox = {{ .Values.server.push.apns.sandbox }}
+    {{- end }}
+
+    {{- if .Values.server.federation.enabled }}
+
+    [federation]
+    signing_key_file = "/etc/weebo-notify/secrets/federation/{{ .Values.server.federation.keyName }}"
+    {{- if .Values.server.federation.audience }}
+    audience = {{ .Values.server.federation.audience | quote }}
+    {{- end }}
+    {{- end }}
+
+    {{- if .Values.server.sinks.smtp.enabled }}
+
+    [sinks.smtp]
+    url = {{ .Values.server.sinks.smtp.url | quote }}
+    from = {{ .Values.server.sinks.smtp.from | quote }}
+    {{- if .Values.server.sinks.smtp.username }}
+    username = {{ .Values.server.sinks.smtp.username | quote }}
+    {{- end }}
+    {{- if .Values.server.sinks.smtp.existingSecret }}
+    # `env:NAME`, resolved against the env var server-deployment.yaml injects
+    # under this exact name from server.sinks.smtp.existingSecret.
+    password_ref = "env:{{ .Values.server.sinks.smtp.passwordEnvName }}"
+    {{- end }}
+    {{- if .Values.server.sinks.smtp.permalinkBase }}
+    permalink_base = {{ .Values.server.sinks.smtp.permalinkBase | quote }}
+    {{- end }}
+    {{- end }}
+
+    {{- if .Values.server.cli.enabled }}
+
+    [cli]
+    binary_path = "/usr/local/bin/notify"
+    {{- end }}
+
+    {{- if .Values.server.telemetry.enabled }}
+
+    [telemetry]
+    otlp_endpoint = {{ .Values.server.telemetry.otlpEndpoint | quote }}
+    service_name = {{ .Values.server.telemetry.serviceName | quote }}
+    sample_ratio = {{ .Values.server.telemetry.sampleRatio }}
+    {{- end }}
+
+    # ── The GitOps-declarative part: channels, service accounts, trust
+    # policies. This file is their source of truth (design §11) — extend it
+    # with server.extraConfig rather than typed values re-inventing the schema.
+    {{- with (tpl .Values.server.extraConfig .) }}
+    {{ . | nindent 4 }}
+    {{- end }}
