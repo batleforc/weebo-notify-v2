@@ -12,7 +12,17 @@ vars:
   # passes its own.
   IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
   IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'
-  ENGINE: '{{.ENGINE | default "docker"}}'
+  # Same detection as dev.yaml, and for the same reason: the default was the string
+  # "docker", which is not a default so much as a bet on which engine the machine
+  # has. An explicit `ENGINE=` still wins, for a machine with both and a preference
+  # — nothing in `.github/` passes one today, so CI takes the detected answer, which
+  # on a GitHub runner is `docker` exactly as before.
+  ENGINE:
+    sh: |
+      if [ -n "${ENGINE:-}" ]; then echo "$ENGINE"
+      elif command -v docker >/dev/null 2>&1; then echo docker
+      else echo podman
+      fi
 
 tasks:
   web:

@@ -79,6 +79,24 @@ tasks:
               librsvg2-dev                   # icon rendering
               patchelf                       # what the AppImage bundler calls
 
+          On Fedora — including a toolbox on an rpm-ostree host, which is how a
+          Silverblue workstation builds this without layering anything:
+
+              webkit2gtk4.1-devel
+              javascriptcoregtk4.1-devel
+              libsoup3-devel
+              gtk3-devel
+              libayatana-appindicator-gtk3-devel   # the tray (§10bis.3ter)
+              librsvg2-devel                       # icon rendering
+              patchelf                             # what the AppImage bundler calls
+
+          Read that tray line twice. Fedora also ships `libappindicator-gtk3-devel`,
+          which is a different library rather than an alias — the pre-Ayatana one —
+          so it installs without complaint, and leaves `ayatana-appindicator3-0.1`
+          exactly as missing as it was. The four names this task checks above all
+          come out `ok` at that point, because none of them is the tray; the failure
+          surfaces later, in the link.
+
           Once the image ships them, `devfile.yaml` needs no change: the `tools`
           container inherits from the parent, so a rebuilt tag is the whole fix.
 

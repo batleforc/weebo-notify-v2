@@ -280,11 +280,13 @@ commands:
   - id: run-web
     exec:
       component: tools
-      # `web/public/env.js` is a static file the Vite dev server just serves, not
-      # something `task dev:web` templates per run — so the route it points at has
-      # to be written first. `web:env:public` does that with `url`, same as the
-      # two commands above (§12.1).
-      commandLine: "task dev:web:env:public && task dev:web"
+      # No `web:env:public &&` prefix any more, and nothing lost: `task dev:web`
+      # depends on `task dev:web:env`, which detects this workspace from
+      # DEVWORKSPACE_ID and resolves the routes with `url` on its own (§12.1). The
+      # two commands above still say `:public` because theirs is a different
+      # question — which issuer to *serve* and which origins to allow — and only
+      # this one was a fact about the machine.
+      commandLine: "task dev:web"
       workingDir: "${PROJECT_SOURCE}"
       group: {kind: run}
   - id: run-docs

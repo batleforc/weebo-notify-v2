@@ -1,7 +1,8 @@
 // Read by `src/config.ts` at startup, before the app bundle runs (design §11,
-// ADR-0021). Committed with the values the local dev stack serves — `task dev:run`
-// and `task dev:oidc` need no change to work with them — the same way
-// `config/dev.toml` is committed rather than copied from an example.
+// ADR-0021). WRITTEN BY `task dev:web:env`, which `task dev:web` depends on —
+// so edits here last until the next `task dev:web` and no longer. Committed
+// with the values the local dev stack serves, which is what that task writes on
+// any machine that is not an Eclipse Che workspace (§12.1).
 //
 // A real deployment does not edit this file: its image renders one just like it,
 // at container boot, from WNK_API_BASE_URL/WNK_OIDC_ISSUER/WNK_OIDC_CLIENT_ID/
@@ -11,7 +12,7 @@
 // There is no secret in this file, by construction: the OIDC client is public and
 // uses Authorization Code + PKCE (§5.1).
 window.__ENV__ = {
-  apiBaseUrl: "https://max-weebo-notify-v2-server.cde.batleforc.fr",
-  oidcIssuer: "https://max-weebo-notify-v2-oidc.cde.batleforc.fr",
+  apiBaseUrl: "http://localhost:8080",
+  oidcIssuer: "http://localhost:9110",
   oidcClientId: "weebo-notify",
 };

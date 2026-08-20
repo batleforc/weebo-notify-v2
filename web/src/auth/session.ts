@@ -38,6 +38,27 @@
  * and refresh rotation with reuse detection at the provider. **Weakening any of
  * those reopens the decision**, and so does a deployment whose channels carry
  * something worse to disclose than the API access an XSS already has.
+ *
+ * # Everything above is about the browser
+ *
+ * The desktop shell keeps its refresh token in the **OS vault** instead — §10bis.2,
+ * "jamais en localStorage ni dans la webview" — through `./credential`. None of
+ * ADR-0020's reasoning transfers: the shell's threat model is not a shared origin
+ * (ADR-0023), and `sessionStorage` there is not a considered trade but a store that
+ * dies with the process, which is what left the app unable to resume a session and
+ * therefore unable to start in the tray the way §10bis.3 describes.
+ *
+ * The split is deliberate and lives in four functions below — `storedRefreshToken`,
+ * `persistRefreshToken`, `shareWithShell`, `forget`. Everything else, including
+ * rotation and the single-flight refresh, is shared: the two platforms differ in
+ * where the token rests, not in how it is used.
+ *
+ * `shareWithShell` is the one that is not about *storage* at all: the Rust half of
+ * the shell — tray, poll loop, store-warming daemon — needs a credential of its own,
+ * and reads `Profile.token`, which only `notify login` writes. Signing in through
+ * the window therefore left the tray on `auth.invalid_credential` for the whole run.
+ * The access token is handed down on every rotation to close that (see
+ * `./credential`).
  */
 
 import { defineStore } from "pinia";
@@ -45,6 +66,12 @@ import { computed, ref } from "vue";
 
 import { oidcClientId, oidcScopes } from "@/config";
 import { isDesktop } from "@/lib/desktop";
+import {
+  clearCredential,
+  loadCredential,
+  saveCredential,
+  shareSessionToken,
+} from "./credential";
 import { discover } from "./discovery";
 import {
   awaitLoopbackCallback,
@@ -92,6 +119,21 @@ export const useSession = defineStore("session", () => {
   /** Set when a refresh failed for good: the UI shows "signed out", not a spinner. */
   const expired = ref(false);
 
+  /**
+   * The authorization URL a desktop sign-in is currently waiting on, or `null`.
+   *
+   * Exposed because on desktop `login()` does not return until the provider comes
+   * back over loopback — up to five minutes (`DEADLINE` in `oauth.rs`) — and the
+   * one failure that strands it there is invisible from in here: the shell asks
+   * the OS to open a browser, and a launcher that opens nothing still reports
+   * success (`oauth.rs` says so at length). The window is then a disabled button
+   * and a spinner, with the way out sitting in a log nobody has open.
+   *
+   * A browser never sets this: that branch navigates away, so there is no view
+   * left to offer anything.
+   */
+  const pendingAuthorizeUrl = ref<string | null>(null);
+
   /** One in-flight refresh at most — twenty concurrent 401s must not mint twenty. */
   let refreshing: Promise<string | null> | null = null;
 
@@ -102,8 +144,46 @@ export const useSession = defineStore("session", () => {
   /** Groups as the token carries them — used to show, never to allow (§14.2). */
   const groups = computed(() => claims.value?.groups ?? []);
 
+  /**
+   * The refresh token, held in memory on both platforms and *durably* on only one.
+   *
+   * A browser reads `sessionStorage` on demand, exactly as before (ADR-0020). The
+   * shell mirrors the OS vault here instead, because the vault is behind an `invoke`
+   * and therefore async, while `remember`/`forget` are called from places that are
+   * not — and hydrating this once at startup (`restore`) is cheaper than making the
+   * whole chain await a round trip it almost never needs.
+   *
+   * Memory is the mirror, never the record: every write below reaches the durable
+   * store too, so a crash between the two loses at most the current session and
+   * never leaves the vault holding a token the app has already replaced.
+   */
+  const refreshToken = ref<string | null>(null);
+
   function storedRefreshToken(): string | null {
-    return sessionStorage.getItem(REFRESH_KEY);
+    return isDesktop()
+      ? refreshToken.value
+      : sessionStorage.getItem(REFRESH_KEY);
+  }
+
+  /**
+   * Persist the refresh token where this platform keeps it.
+   *
+   * Not awaited by `remember`: the caller has already got what it needs from the
+   * token response, and blocking a sign-in on a keyring round trip would make the
+   * vault's availability a precondition of using the app — which §9.3bis explicitly
+   * refuses (that is what the fallback file is for). A failure is reported and
+   * dropped: the session in memory is intact and works, it simply will not outlive
+   * the process, which is what the app did on every launch before this existed.
+   */
+  function persistRefreshToken(token: string): void {
+    refreshToken.value = token;
+    if (!isDesktop()) {
+      sessionStorage.setItem(REFRESH_KEY, token);
+      return;
+    }
+    void saveCredential(token).catch((error: unknown) => {
+      console.error("weebo-notify: could not persist the credential", error);
+    });
   }
 
   function remember(tokens: TokenResponse): void {
@@ -114,16 +194,56 @@ export const useSession = defineStore("session", () => {
       claims.value = readClaims(tokens.id_token);
     }
     if (tokens.refresh_token) {
-      sessionStorage.setItem(REFRESH_KEY, tokens.refresh_token);
+      persistRefreshToken(tokens.refresh_token);
     }
+    shareWithShell(accessToken.value);
+  }
+
+  /**
+   * Tell the Rust half which credential to run on — every rotation, not just the
+   * first, because the token it was given fifteen minutes ago has expired.
+   *
+   * Fire-and-forget like the vault writes, and for a stronger reason: the window is
+   * fully usable without it. What fails when this fails is the *tray*, which then
+   * keeps showing its last good reading — the behaviour `poll_loop` already has for
+   * a failed tick, rather than a new failure mode.
+   */
+  function shareWithShell(token: string | null): void {
+    if (!isDesktop()) {
+      return;
+    }
+    // `displayName` already falls back name → email → sub, so the tray names a
+    // person exactly the way the window's own header does — naming them differently
+    // in two places would be its own small bug. An empty string means the claims
+    // carried nothing usable, and the Rust side reads that as "no name" rather than
+    // printing a header trailing into an em-dash.
+    const who = token ? displayName.value || null : null;
+    void shareSessionToken(token, who).catch((error: unknown) => {
+      console.error(
+        "weebo-notify: could not hand the token to the shell",
+        error,
+      );
+    });
   }
 
   function forget(): void {
     accessToken.value = null;
     expiresAt.value = 0;
     claims.value = null;
+    refreshToken.value = null;
     sessionStorage.removeItem(REFRESH_KEY);
     sessionStorage.removeItem(PENDING_KEY);
+    shareWithShell(null);
+    if (isDesktop()) {
+      // Fire-and-forget for the same reason the save is, with one asymmetry worth
+      // naming: this one is also the security-relevant direction. It is called on
+      // sign-out and on a refresh that failed for good, and a vault entry that
+      // survives either is a credential nobody expects to still be there — so the
+      // failure is logged rather than swallowed silently.
+      void clearCredential().catch((error: unknown) => {
+        console.error("weebo-notify: could not clear the credential", error);
+      });
+    }
   }
 
   /**
@@ -154,7 +274,21 @@ export const useSession = defineStore("session", () => {
     // `state` check and the token exchange are the parts that must not have two
     // implementations.
     if (isDesktop()) {
-      return completeLogin(await awaitLoopbackCallback(url.toString()));
+      // Around `awaitLoopbackCallback` alone, and not around the whole expression:
+      // the listener is dropped the moment it has the code, so by the time
+      // `completeLogin` is exchanging it the port is closed again. Held any longer,
+      // "reopen the browser" would send someone to an authorize URL whose redirect
+      // target no longer answers — a connection-refused page in the middle of a
+      // sign-in that was in fact working. Cleared on the failure path too: that is
+      // when the view stops offering to reopen a flow that has already given up.
+      pendingAuthorizeUrl.value = url.toString();
+      let callback: URLSearchParams;
+      try {
+        callback = await awaitLoopbackCallback(url.toString());
+      } finally {
+        pendingAuthorizeUrl.value = null;
+      }
+      return completeLogin(callback);
     }
 
     window.location.assign(url.toString());
@@ -268,15 +402,31 @@ export const useSession = defineStore("session", () => {
   }
 
   /**
-   * Restore a session across a reload, using the refresh token from this tab.
+   * Restore a session across a reload — and, on desktop, across a *restart*.
    *
    * Returns whether there is a session to work with, so the router can decide
    * between the app and the login screen without a flash of the wrong one.
+   *
+   * The hydration below is the one place the vault is read, and it belongs here
+   * rather than at module scope: this is already the async gate the router awaits,
+   * and reading the credential anywhere earlier would mean a keyring round trip on
+   * every import, including in the browser build that has no keyring at all.
    */
   async function restore(): Promise<boolean> {
     if (accessToken.value) {
       return true;
     }
+
+    if (isDesktop() && refreshToken.value === null) {
+      // A vault that is unreachable is not a reason to refuse to start: the answer
+      // is the same as having no credential — show the login screen — and that is
+      // one round trip, not a loop, so a failure here costs nothing beyond a line.
+      refreshToken.value = await loadCredential().catch((error: unknown) => {
+        console.error("weebo-notify: could not read the credential", error);
+        return null;
+      });
+    }
+
     return storedRefreshToken() ? (await refresh()) !== null : false;
   }
 
@@ -327,6 +477,7 @@ export const useSession = defineStore("session", () => {
     expired,
     expiresAt,
     groups,
+    pendingAuthorizeUrl,
     bearer,
     completeLogin,
     login,

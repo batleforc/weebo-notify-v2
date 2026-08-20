@@ -21,6 +21,7 @@ import { onDeepLink } from "@/lib/deeplink";
 import { opensPalette } from "@/lib/palette";
 import { resubscribe } from "@/lib/push";
 import { register } from "@/lib/service-worker";
+import { cn } from "@/lib/utils";
 import { useChannels } from "@/stores/channels";
 import { useDetail } from "@/stores/detail";
 import { useInbox } from "@/stores/inbox";
@@ -90,6 +91,20 @@ const showDetailPane = computed(() =>
  * top-to-bottom. `order-*` moves them without touching the router or the
  * detail panel's own mount/unmount timing.
  */
+/**
+ * Whether the detail panel is a *pane under the list* rather than a layer over it.
+ *
+ * Side-by-side needs width, which is why `left` and `right` stay gated on `xl` and
+ * fall back to the full-screen layer below it. Stacking needs none: two rows fit a
+ * phone exactly as well as a monitor. Gating it on `xl` anyway is what made a
+ * window narrower than 1280px answer "detail under the list" with a layer covering
+ * the list — the one arrangement where the person asked to see both at once was
+ * the one where they saw one.
+ */
+const detailStacked = computed(
+  () => showDetailPane.value && ui.detailPosition === "under",
+);
+
 const contentGridClass = computed(() => {
   if (!showDetailPane.value) {
     return "";
@@ -98,7 +113,13 @@ const contentGridClass = computed(() => {
     case "left":
       return "xl:grid-cols-[26rem_minmax(0,1fr)]";
     case "under":
-      return "xl:grid-rows-[minmax(0,1fr)_22rem]";
+      // The second track only exists when something is in it. Unprefixed at every
+      // width otherwise, an inbox with nothing selected would reserve 22rem of
+      // blank below the list on a small window — the placeholder that fills it
+      // above `xl` is `hidden` there.
+      return detail.id
+        ? "grid-rows-[minmax(0,1fr)_22rem]"
+        : "xl:grid-rows-[minmax(0,1fr)_22rem]";
     default:
       return "xl:grid-cols-[minmax(0,1fr)_26rem]";
   }
@@ -115,6 +136,11 @@ const detailPositionClass = computed(() => {
     case "left":
       return "xl:order-1 xl:border-l-0 xl:border-r";
     case "under":
+      // Kept, and not folded into the `detailStacked` branch below: this class also
+      // dresses the *empty* placeholder, which is a plain `border-l` element that
+      // has always relied on these `xl:` overrides to move its divider to the top
+      // edge. Dropping them left the placeholder drawing a left border under the
+      // list, where there is nothing to its left.
       return "xl:border-l-0 xl:border-t";
     default:
       return "";
@@ -282,14 +308,48 @@ function closeDetail(): void {
       <span class="text-sm font-semibold">{{ t("app.name") }}</span>
     </header>
 
+    <!--
+      The way out of the drawer, and the reason it is an element rather than a
+      document-level click handler: a listener on `document` has to decide whether
+      each click landed inside the panel, which means knowing the panel's bounds and
+      getting it wrong for anything that teleports out of it (a native menu, a
+      tooltip). A scrim answers by construction — the only clicks it receives are
+      the ones that missed.
+
+      `z-30`, one below the drawer's `z-40`, so it covers the content and not the
+      panel. It also covers the header, which puts it over the burger button: a
+      click there closes rather than toggles, which is the same outcome by a
+      shorter path.
+
+      `lg:hidden` because above `lg` the sidebar is `lg:static` — part of the grid,
+      covering nothing, with nothing to dismiss.
+    -->
+    <div
+      v-if="sidebarOpen"
+      class="fixed inset-0 z-30 bg-black/50 lg:hidden"
+      aria-hidden="true"
+      @click="sidebarOpen = false"
+    />
+
     <div class="grid min-h-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
+      <!--
+        `cn` and not a plain array, and that is the whole fix rather than a tidy-up.
+        Both `bg-card/40` and `bg-card` used to land on this element at once, and an
+        array decides nothing: the winner is whichever rule Tailwind emitted last,
+        which is `.bg-card\/40` (it carries an opacity modifier, so it sorts after
+        the bare utility). The open drawer therefore rendered at 40% opacity with
+        the inbox showing straight through it — which reads as a stacking bug and is
+        not one. `cn` runs tailwind-merge, so the later argument wins for real.
+      -->
       <div
-        :class="[
-          'min-h-0 border-r border-border bg-card/40',
-          sidebarOpen
-            ? 'absolute inset-y-0 left-0 z-40 w-64 bg-card shadow-lg lg:static lg:shadow-none'
-            : 'hidden lg:block',
-        ]"
+        :class="
+          cn(
+            'min-h-0 border-r border-border bg-card/40',
+            sidebarOpen
+              ? 'absolute inset-y-0 left-0 z-40 w-64 bg-card shadow-lg lg:static lg:shadow-none'
+              : 'hidden lg:block',
+          )
+        "
       >
         <AppSidebar @click="sidebarOpen = false" />
       </div>
@@ -312,9 +372,24 @@ function closeDetail(): void {
                the preference puts it. -->
           <div
             v-if="detail.id"
-            class="fixed inset-0 z-30 min-h-0 border-l border-border bg-background xl:static xl:z-auto"
-            :class="detailPositionClass"
+            :class="
+              cn(
+                'min-h-0 border-border bg-background',
+                detailStacked
+                  ? 'border-t'
+                  : 'fixed inset-0 z-30 border-l xl:static xl:z-auto',
+                detailPositionClass,
+              )
+            "
           >
+            <!--
+              `xl:hidden` and nothing more. This briefly also hid on `detailStacked`,
+              on the reasoning that a pane covers nothing and `NotificationDetail`
+              carries its own close — and that second half is false: that button
+              lives in the `detail.gone` branch, so a *loaded* notification has only
+              the copy-permalink one. Removing this left `Escape` as the sole way to
+              dismiss the pane, which on a touch device is no way at all.
+            -->
             <Button
               variant="ghost"
               size="icon"

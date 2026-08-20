@@ -12,7 +12,21 @@ silent: true
 # and no-op cleanly instead of failing on a missing container engine.
 
 vars:
-  COMPOSE: docker compose -f dev/compose.yaml --env-file dev/.env --env-file dev/.env.local
+  # Detected, not hardcoded. `docker compose` was spelled out here, and on a machine
+  # with podman and no docker — a Fedora Silverblue workstation, say, where the
+  # engine is the one the base image ships — every compose task failed on `docker:
+  # command not found` before it ever read dev/compose.yaml. Podman's `compose`
+  # subcommand delegates to the same external provider docker uses, so the only
+  # thing that differs is the word in front. `ENGINE=… task dev:up` still wins, for
+  # a machine that has both and a preference; the same variable name and the same
+  # precedence as build.yaml, which had the override and not the detection.
+  ENGINE:
+    sh: |
+      if [ -n "${ENGINE:-}" ]; then echo "$ENGINE"
+      elif command -v docker >/dev/null 2>&1; then echo docker
+      else echo podman
+      fi
+  COMPOSE: '{{.ENGINE}} compose -f dev/compose.yaml --env-file dev/.env --env-file dev/.env.local'
   CHE_GUARD: |
     if [ -n "$DEVWORKSPACE_ID" ]; then
       echo "Eclipse Che workspace detected — the sidecars come from devfile.yaml, nothing to do."
@@ -258,6 +272,10 @@ tasks:
 
   web:
     desc: "Run the Vite dev server for the web frontend (http://localhost:5173)"
+    # `web:env` first, always: the backend this page talks to is a file Vite serves,
+    # not something it computes, so starting without rendering it means serving
+    # whatever the last run left — see that task for why it is one task and not two.
+    deps: [web:env]
     cmds:
       - pnpm -C web dev
 
@@ -293,48 +311,45 @@ tasks:
           echo "watching as $user"
           WNK_TOKEN="$token" cargo run -p notify-cli -- watch
 
-  # `web/public/env.js` is committed with the compose/localhost values (§12.5) and
-  # is meant to be edited directly for a different backend — these two tasks do
-  # that edit instead of by hand, so a Che session and a plain `pnpm dev` don't
-  # fight over it. Either leaves the file modified against git; `git checkout --
-  # web/public/env.js` (or `task dev:web:env:local`) puts it back.
-  web:env:local:
-    desc: "Point web/public/env.js at localhost:8080/localhost:9110 — the compose defaults"
+  # `web/public/env.js` is a static file the Vite dev server just serves — nothing
+  # templates it per request — so it has to say the right thing *before* `web`
+  # above starts, which is why that task depends on this one.
+  #
+  # One task and not the `:local`/`:public` pair this replaced. That pair asked the
+  # developer to know which world they were in and to remember to say so, and the
+  # cost of forgetting was not an error: it was a dev server that came up pointing
+  # at the other world's backend and failed later, in the browser, as CORS or a
+  # refused token. The machine already knows the answer — DEVWORKSPACE_ID is set in
+  # a Che workspace and unset everywhere else, which is the same test CHE_GUARD
+  # makes at the top of this file — so it answers instead of asking.
+  #
+  # In Che the routes come from `url`, never from a pattern guessed here: the
+  # hostname template belongs to the Che installation, not to this repository, and
+  # a convention this file assumed would break silently the day it changed.
+  #
+  # On a plain machine the values written are the ones committed, so `task dev:web`
+  # leaves a clean tree. In Che it does not, and cannot: `git checkout --
+  # web/public/env.js` puts it back.
+  web:env:
+    desc: "Render web/public/env.js for wherever this runs — the Che routes via `url`, the compose defaults otherwise"
     cmds:
       - cmd: |
-          cat > web/public/env.js <<'JS'
-          // Read by `src/config.ts` at startup, before the app bundle runs (design §11,
-          // ADR-0021). Committed with the values the local dev stack serves — `task dev:run`
-          // and `task dev:oidc` need no change to work with them — the same way
-          // `config/dev.toml` is committed rather than copied from an example.
-          //
-          // A real deployment does not edit this file: its image renders one just like it,
-          // at container boot, from WNK_API_BASE_URL/WNK_OIDC_ISSUER/WNK_OIDC_CLIENT_ID/
-          // WNK_ATTACHMENT_ORIGIN (`web/nginx/docker-entrypoint.d/05-runtime-config.sh`).
-          // This one only ever ships inside a `pnpm dev`/`pnpm build && pnpm preview` run.
-          //
-          // There is no secret in this file, by construction: the OIDC client is public and
-          // uses Authorization Code + PKCE (§5.1).
-          window.__ENV__ = {
-            apiBaseUrl: "http://localhost:8080",
-            oidcIssuer: "http://localhost:9110",
-            oidcClientId: "weebo-notify",
-          };
-          JS
-          echo "web/public/env.js -> localhost:8080 / localhost:9110"
-
-  web:env:public:
-    desc: "Point web/public/env.js at this Che workspace's public server/oidc routes, computed with `url` (§12.1)"
-    cmds:
-      - cmd: |
-          {{.REQUIRE_CHE}}
-          api=$(url server); api=${api%/}
-          issuer=$(url oidc); issuer=${issuer%/}
+          set -eu
+          if [ -n "${DEVWORKSPACE_ID:-}" ]; then
+            api=$(url server); api=${api%/}
+            issuer=$(url oidc); issuer=${issuer%/}
+            where="Eclipse Che"
+          else
+            api="http://localhost:8080"
+            issuer="http://localhost:9110"
+            where="localhost"
+          fi
           cat > web/public/env.js <<JS
           // Read by \`src/config.ts\` at startup, before the app bundle runs (design §11,
-          // ADR-0021). Committed with the values the local dev stack serves — \`task dev:run\`
-          // and \`task dev:oidc\` need no change to work with them — the same way
-          // \`config/dev.toml\` is committed rather than copied from an example.
+          // ADR-0021). WRITTEN BY \`task dev:web:env\`, which \`task dev:web\` depends on —
+          // so edits here last until the next \`task dev:web\` and no longer. Committed
+          // with the values the local dev stack serves, which is what that task writes on
+          // any machine that is not an Eclipse Che workspace (§12.1).
           //
           // A real deployment does not edit this file: its image renders one just like it,
           // at container boot, from WNK_API_BASE_URL/WNK_OIDC_ISSUER/WNK_OIDC_CLIENT_ID/
@@ -349,7 +364,7 @@ tasks:
             oidcClientId: "weebo-notify",
           };
           JS
-          echo "web/public/env.js -> $api / $issuer"
+          echo "web/public/env.js -> $api / $issuer  ($where)"
 
   docs:
     desc: "Run the Fumadocs documentation site in dev mode (http://localhost:3000)"
