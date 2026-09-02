@@ -49,8 +49,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install libdbus headers
-        # `notify-cli` (notify-rust's `d` feature) and `xtask` (design's D19 stub
-        # daemon) are both workspace members. See `check.yaml`.
+        # `xtask` (design's D19 stub daemon) is a workspace member, and this job
+        # builds the workspace. See `check.yaml`.
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Install the toolchain
@@ -120,10 +120,11 @@ jobs:
         id: sha
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Install libdbus headers
-        # `notify-cli` links it through notify-rust's `d` feature. See `check.yaml`.
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-
+      # No libdbus step, unlike the `gate` job above. This job builds `notify-cli` and
+      # the two shells, and none of the three links it any more: the client moved to
+      # zbus (`crates/notify-cli/Cargo.toml`), and `web/src-tauri` reaches the
+      # workspace through `notify-client-core`, which never did. `xtask` is the one
+      # crate that still links libdbus and nothing here builds it.
       - name: Install the toolchain
         env:
           MISE_VERSION: "v2026.8.3"
@@ -255,6 +256,26 @@ jobs:
         # and running it here means `task android:sdk` cannot rot unnoticed.
         run: mise exec -- task android:sdk
 
+      - name: Restore the Gradle cache
+        # The third download this job used to repeat on every commit to main, after
+        # the cargo registry and the NDK — and the only one that could fail the build
+        # rather than just slow it down. `~/.gradle/caches` is the resolved Maven
+        # artefacts, `~/.gradle/wrapper` the Gradle distribution itself, which the
+        # wrapper otherwise fetches from services.gradle.org each run.
+        #
+        # Keyed on the Gradle files `cargo tauri android init` wrote and this
+        # repository commits (see `.gitignore`), so a version bump in any of them
+        # correctly misses. `restore-keys` matters more than the exact hit: a stale
+        # cache still holds most of what the build resolves, and every artefact it
+        # already has is one request not made.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('web/src-tauri/gen/android/**/*.gradle.kts', 'web/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties', 'web/src-tauri/gen/android/gradle.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
       - name: Build the Android app
         # `--debug`, and that is the difference between an artefact somebody can use
         # and one they cannot: Gradle signs a debug build with the auto-generated
@@ -265,7 +286,37 @@ jobs:
         # `--target aarch64` only. arm64-v8a covers essentially every device made
         # this decade, and building all four ABIs would quadruple the slowest step in
         # this workflow for architectures nobody is going to install this on.
-        run: mise exec -- task android:build -- --debug --target aarch64
+        #
+        # Retried, and only for one reason. Maven Central answered `429 Too Many
+        # Requests` to every Kotlin coordinate `:buildSrc` needs and Gradle failed the
+        # configuration phase — the same shape as the `aqua:` rate limit two steps up,
+        # and with the same cause: a GitHub-hosted runner shares its egress IP with
+        # everyone else on that host, so this job can exhaust a quota it never used.
+        # Unlike that one there is no token to raise it with; waiting is the remedy.
+        #
+        # The grep is the point. A blind retry would run a genuine compile error three
+        # times and report it four minutes late, so anything that is not a rate limit
+        # fails on the first attempt. The retries themselves are cheap: cargo and
+        # Gradle are both incremental and warm by then, so a second attempt is the
+        # resolution step and nothing else.
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/android-build.log"
+          for attempt in 1 2 3; do
+            if mise exec -- task android:build -- --debug --target aarch64 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if ! grep -qE '429|Too Many Requests' "$log"; then
+              echo "::error::The Android build failed for a reason that is not a rate limit."
+              exit 1
+            fi
+            if [ "$attempt" = 3 ]; then break; fi
+            delay=$((attempt * 60))
+            echo "::warning::Rate-limited resolving Gradle dependencies (attempt ${attempt}/3) — retrying in ${delay}s."
+            sleep "$delay"
+          done
+          echo "::error::Still rate-limited after three attempts."
+          exit 1
 
       - name: Upload the Android app
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

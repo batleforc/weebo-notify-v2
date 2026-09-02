@@ -69,8 +69,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install libdbus headers
-        # `task recu` builds `xtask` and `task test:critical` builds the workspace;
-        # both link libdbus through notify-rust's `d` feature. See `check.yaml`.
+        # `task recu` builds `xtask`, which links libdbus for the D19 stub daemon,
+        # and `task test:critical` builds the workspace that contains it. See
+        # `check.yaml`. Not for `notify-cli` — that one is pure Rust (zbus), which is
+        # what lets `Containerfile` build it on a base image with no pkg-config.
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Install the toolchain
