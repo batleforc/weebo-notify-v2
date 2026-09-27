@@ -72,6 +72,7 @@
 // webview and a deep link, and that is the whole list — see the module doc's
 // "What mobile does not do yet".
 use notify_client_core::{DeepLink, parse_deep_link};
+use tauri::window::Color;
 use tauri::{Emitter as _, Manager as _, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt as _;
 
@@ -80,9 +81,18 @@ use tauri_plugin_deep_link::DeepLinkExt as _;
 // answers that with its own registered scheme through the deep link above —
 // Android and iOS both hand `weebo-notify://oauth/callback` back to the app the
 // system browser was launched from, so there is nothing to listen on.
+// Desktop-only for the same reason `oauth` is, and one more: the vault this wraps
+// is the desktop trio (Secret Service / Keychain / Credential Manager). Mobile has
+// its own — Keystore and the iOS Keychain (§10bis.2) — and reaching them is not the
+// same call, so a shared module here would be a lie about what is implemented.
+#[cfg(desktop)]
+mod credential;
+
 #[cfg(desktop)]
 mod oauth;
 
+#[cfg(desktop)]
+use std::sync::{Arc, Mutex};
 #[cfg(desktop)]
 use std::time::Duration;
 
@@ -101,6 +111,124 @@ use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder, SubmenuBuilder};
 #[cfg(desktop)]
 use tauri::tray::{TrayIcon, TrayIconBuilder};
+
+/// The credential the Rust half of the shell runs on, swappable while it runs.
+///
+/// It used to be a `Session` built once in `setup` from `Profile::load` and moved
+/// into the tray loop, which made the tray's authentication a fact about *startup*.
+/// That is why signing in through the window left the tray saying
+/// `auth.invalid_credential` forever: `Profile.token` is written by `notify login`
+/// and by nothing else, so the webview's own session — the one the person just
+/// completed — was invisible to this half of the process.
+///
+/// # Why not mint an API key instead
+///
+/// The obvious repair is for the shell to mint a personal API key after signing in,
+/// the way `notify login` has a person do by hand (§9.1). It does not work here, and
+/// the reason is in the domain rather than in the plumbing: `NewApiKey.channels`
+/// cannot be empty (`notify_app::keys`), so every key names a fixed list of channels
+/// — while the tray counts unread across *all* of them. A key minted at sign-in
+/// would under-report the day its owner joins a channel, and silently.
+///
+/// `Profile.token`'s own documentation allows the alternative: "an OIDC access token
+/// **or** an API key". So the webview hands its access token down instead, on the
+/// same two seams that persist the refresh token (`web/src/auth/session.ts`), and
+/// this slot is what makes a token arriving at any moment reach a loop that started
+/// without one.
+///
+/// **In memory only, deliberately.** Nothing here writes to `config.toml`: the
+/// access token lives fifteen minutes, and persisting it would hand the CLI a
+/// credential that works until lunchtime and then does not.
+#[cfg(desktop)]
+#[derive(Clone, Default)]
+struct Credential(Arc<Mutex<SignedIn>>);
+
+/// What the window last told the Rust half about who is using it.
+///
+/// The name rides along with the token rather than arriving on a wire of its own,
+/// because it answers the same question at the same moment: this is who signed in,
+/// and this is what to run as. Two calls would let them disagree.
+#[cfg(desktop)]
+#[derive(Default)]
+struct SignedIn {
+    session: Option<Session>,
+    /// For the tray's header line. Presentation only — never used to authorize.
+    user: Option<String>,
+}
+
+#[cfg(desktop)]
+impl Credential {
+    /// The current session, if there is one.
+    ///
+    /// A clone rather than a guard: the callers hold it across `.await` points, and
+    /// a `MutexGuard` there would either not compile or deadlock the next writer.
+    /// A poisoned lock reads as "no session" — the tray then shows `Disconnected`,
+    /// which is true and is the one state this icon is never wrong to be in.
+    fn session(&self) -> Option<Session> {
+        self.0.lock().ok().and_then(|slot| slot.session.clone())
+    }
+
+    fn user(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|slot| slot.user.clone())
+    }
+
+    fn set(&self, session: Option<Session>, user: Option<String>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = SignedIn { session, user };
+        }
+    }
+}
+
+/// The tray's header line: the app, and who it is signed in as.
+///
+/// The app name alone when nobody is — not "weebo-notify — déconnecté", which would
+/// spell in the header what the status line right below already says, and say it in
+/// a place that is meant to be stable.
+///
+/// This is a menu item and not the tray tooltip on purpose: `tray-icon` documents
+/// `set_tooltip` as **unsupported on Linux**, which is the platform this shell is
+/// built and run on today, so a tooltip would be invisible exactly where it is
+/// wanted. `set_title` does show there, but it prints into the panel permanently
+/// and is unsupported on Windows. The menu is the one surface all three platforms
+/// render.
+#[cfg(desktop)]
+fn identity_line(app_name: &str, user: Option<&str>) -> String {
+    match user {
+        Some(user) if !user.is_empty() => format!("{app_name} — {user}"),
+        _ => app_name.to_owned(),
+    }
+}
+
+/// Take the credential the webview just obtained, or drop it on sign-out.
+///
+/// Called from `session.ts`'s `remember`/`forget`, so the tray follows the window
+/// within one poll rather than at the next launch.
+#[cfg(desktop)]
+#[tauri::command]
+fn credential_session(
+    app: AppHandle,
+    token: Option<String>,
+    name: Option<String>,
+) -> Result<(), String> {
+    let Some(credential) = app.try_state::<Credential>() else {
+        return Err("the shell has no credential slot".to_owned());
+    };
+
+    let Some(token) = token else {
+        credential.set(None, None);
+        return Ok(());
+    };
+
+    // The profile is reloaded rather than captured: it carries the server URL, and
+    // a token must never be paired with a stale one — that is the same reasoning
+    // `notify login` states when it keeps the existing `url` and changes only the
+    // credential.
+    let mut profile = Profile::load(DEFAULT_PROFILE).map_err(|error| error.to_string())?;
+    profile.token = Some(token);
+    let session = Session::open(&profile).map_err(|error| error.to_string())?;
+    credential.set(Some(session), name);
+    Ok(())
+}
 
 /// How often the tray re-reads the server. See the module doc: this stands in for
 /// real push until `notify-client-core` grows a stream consumer, and is a plain
@@ -136,12 +264,17 @@ pub fn run() {
         }
     }));
 
-    // The two commands the login needs (`oauth`), registered on the same
-    // `#[cfg(desktop)]` terms as the module they come from.
+    // What the login needs (`oauth`) and what makes it outlive the process
+    // (`credential`), registered on the same `#[cfg(desktop)]` terms as the modules
+    // they come from.
     #[cfg(desktop)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         oauth::loopback_authorize,
-        oauth::open_external
+        oauth::open_external,
+        credential::credential_save,
+        credential::credential_load,
+        credential::credential_clear,
+        credential_session
     ]);
 
     builder
@@ -167,17 +300,40 @@ pub fn run() {
                 }
             });
 
-            // Shown only after the first paint, with the background token as the
-            // window colour, so there is no white flash (§10bis.3bis).
+            // Visible from the start, on every platform.
             //
-            // `cfg!(mobile)` rather than a flat `false`: on desktop the app's normal
-            // mode of life is the tray, and the window is brought up from there or
-            // by a deep link. A phone has no tray and no second road back, so a
-            // window that starts hidden there is an app that starts as a black
-            // screen and stays one.
+            // This said `.visible(cfg!(mobile))` — hidden on desktop, because the
+            // app's normal mode of life is the tray — and then, briefly, that the
+            // window should appear when `profile.token` was absent. That second
+            // version was wrong in a way worth recording rather than quietly
+            // deleting: `Profile.token` is the *CLI's* credential, written by
+            // `notify login` or read from `WNK_TOKEN` (`notify-client-core`'s
+            // `config.rs`), and nothing in this crate ever writes it. The webview
+            // signs in on its own and keeps its refresh token in `sessionStorage`
+            // (`web/src/auth/session.ts`), which does not outlive the process.
+            //
+            // So the two states were inverted for the people who have either one:
+            // sign in through the shell and the next launch still has no
+            // `Profile.token`, so the window came up anyway; run `notify login` and
+            // the window stayed hidden while the webview behind it had no session
+            // at all — landing invisibly on the login screen, which is the exact
+            // failure this was meant to remove.
+            //
+            // With no session that survives the process, the shell always starts on
+            // the login screen, so the honest test is a constant. Making it
+            // conditional again is a real option and a worthwhile one — it needs the
+            // shell to persist its own credential first, the way `notify login`
+            // does through `Profile::save_token`. That is a feature, not a flag.
+            //
+            // `background_color` is what keeps §10bis.3bis's "no white flash" true.
+            // The window used to be shown only after the first paint; now that it is
+            // up before it on every launch rather than never, the colour underneath
+            // stopped being theoretical. This is `index.html`'s `theme-color` — the
+            // dark theme's `--background` — and has to be updated with it.
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("weebo-notify")
-                .visible(cfg!(mobile))
+                .visible(true)
+                .background_color(Color(3, 0, 1, 255))
                 .build()?;
 
             // Close hides rather than quits (§10bis.3ter): the app's normal mode of
@@ -221,7 +377,15 @@ pub fn run() {
                 // and a session that fails to open just leaves the tray static.
                 let profile = Profile::load(DEFAULT_PROFILE);
                 let session = match &profile {
-                    Ok(profile) => Session::open(profile).ok(),
+                    // Guarded on the token, and not merely on `open` succeeding:
+                    // `Session::open` is happy without a credential — it just sends
+                    // no `Authorization` header — so seeding the slot from a
+                    // tokenless profile means handing the daemon a session certain
+                    // to be refused. It reported exactly that, once, on every start
+                    // before the window's own token arrived. Nothing was wrong; the
+                    // line was just noise about a request nobody had asked for.
+                    Ok(profile) if profile.token.is_some() => Session::open(profile).ok(),
+                    Ok(_) => None,
                     Err(error) => {
                         eprintln!("weebo-notify: no usable profile: {error}");
                         None
@@ -231,27 +395,40 @@ pub fn run() {
                 let icons = TrayIcons::load();
                 let initial = tray_now(0, false, false);
 
+                // `package_info().name` rather than the string "weebo-notify":
+                // `tauri.conf.json`'s `productName` is where that is decided, and a
+                // second spelling here would be one to keep in step for no gain.
+                let app_name = handle.package_info().name.clone();
+
+                let identity_item =
+                    MenuItemBuilder::with_id("identity", identity_line(&app_name, None))
+                        .enabled(false)
+                        .build(&handle)?;
+
                 let status_item = MenuItemBuilder::with_id("status", &initial.status)
                     .enabled(false)
                     .build(&handle)?;
 
                 let mut menu_builder = MenuBuilder::new(&handle)
+                    .item(&identity_item)
                     .item(&status_item)
                     .separator()
                     .text("open-inbox", "Ouvrir l'inbox");
 
-                // Present only when there is a session to write through — omitted
-                // rather than disabled, the same "no dead affordance" reasoning that
-                // keeps an inert "Rechercher les mises à jour" off this menu entirely
-                // (no updater exists yet to check against).
-                if session.is_some() {
-                    let dnd_menu = SubmenuBuilder::new(&handle, "Ne pas déranger")
-                        .text("dnd-1h", "1h")
-                        .text("dnd-until-morning", "jusqu'à demain 8h")
-                        .text("dnd-off", "désactiver")
-                        .build()?;
-                    menu_builder = menu_builder.separator().item(&dnd_menu);
-                }
+                // Unconditional now, where it used to be built only when startup
+                // already had a session. That condition was right when the answer
+                // could not change — a menu is built once, so omitting the submenu
+                // was the only way to avoid a dead affordance. It stopped being
+                // right when the credential became something that arrives later:
+                // the alternative is a menu that never grows the entry for the rest
+                // of the run, which is a *permanently* dead affordance rather than a
+                // briefly inert one.
+                let dnd_menu = SubmenuBuilder::new(&handle, "Ne pas déranger")
+                    .text("dnd-1h", "1h")
+                    .text("dnd-until-morning", "jusqu'à demain 8h")
+                    .text("dnd-off", "désactiver")
+                    .build()?;
+                menu_builder = menu_builder.separator().item(&dnd_menu);
 
                 // A manual item rather than `PredefinedMenuItem::quit`: muda documents
                 // that predefined item as "Linux: Unsupported" — exactly the platform
@@ -267,15 +444,25 @@ pub fn run() {
                     .on_menu_event(on_menu_event)
                     .build(&handle);
 
-                match (tray_result, session) {
-                    (Ok(tray_icon), Some(session)) => {
+                // The slot starts holding whatever `notify login` left on this
+                // machine, which may well be nothing — that is no longer a reason
+                // not to start the loops below.
+                let credential = Credential::default();
+                // No name to go with it: a token from `notify login` says what to
+                // run as, never who. The header stays at the app name until the
+                // window signs in and tells us.
+                credential.set(session, None);
+
+                match tray_result {
+                    Ok(tray_icon) => {
                         // Managed so `on_menu_event` — which only ever sees an
                         // `AppHandle`, never this closure's locals — can reach it for
-                        // the DND quick actions.
-                        app.manage(session.clone());
+                        // the DND quick actions, and so `credential_session` can put
+                        // the window's own token into it.
+                        app.manage(credential.clone());
 
                         if let Some(daemon) = open_daemon() {
-                            let daemon_session = session.clone();
+                            let daemon_session = credential.clone();
                             // Its own OS thread with its own current-thread runtime,
                             // not `tauri::async_runtime::spawn` — `Store` wraps a
                             // `rusqlite::Connection`, which is `Send` but not `Sync`
@@ -291,24 +478,21 @@ pub fn run() {
                         }
 
                         tauri::async_runtime::spawn(poll_loop(
-                            session,
+                            credential,
                             icons,
                             tray_icon,
                             status_item,
+                            identity_item,
+                            app_name,
                             initial,
                         ));
                     }
-                    // No usable profile/session: nothing to poll, so the tray stays at
-                    // its initial `Disconnected` frame — the "no popup error loop"
-                    // rule §10bis.3ter states for this icon, extended to the whole
-                    // startup path rather than just the network calls.
-                    (Ok(_), None) => {}
                     // No tray host on this machine — real on Linux even after
                     // `task tauri:doctor` is clean: the appindicator backend `dlopen`s
                     // its library at *runtime*, with no build-time probe. The window
                     // still works; this run is then an ordinary windowed app, minus
                     // the close-to-hide affordance's way back in (see above).
-                    (Err(error), _) => {
+                    Err(error) => {
                         eprintln!("weebo-notify: tray unavailable: {error}");
                     }
                 }
@@ -432,22 +616,42 @@ fn open_daemon() -> Option<Daemon> {
 /// that does, and why it runs somewhere else entirely.
 #[cfg(desktop)]
 async fn poll_loop(
-    session: Session,
+    credential: Credential,
     icons: TrayIcons,
     tray_icon: TrayIcon,
     status_item: MenuItem<tauri::Wry>,
+    identity_item: MenuItem<tauri::Wry>,
+    app_name: String,
     initial: Tray,
 ) {
     let mut interval = tokio::time::interval(POLL);
     let mut last_state = initial;
     let mut last_unread = 0u64;
     let mut last_quiet = false;
+    let mut last_identity = identity_line(&app_name, None);
 
     loop {
         // Tokio's default `MissedTickBehavior` fires the first tick immediately,
         // so the tray's very first live read happens right after the static
         // `Disconnected` frame built in `setup`, not up to `POLL` later.
         interval.tick().await;
+
+        // The header first, and *before* the early return below: signing out has to
+        // take the name off the menu, and that is exactly the tick on which there is
+        // no session left to poll.
+        let identity = identity_line(&app_name, credential.user().as_deref());
+        if identity != last_identity {
+            let _ = identity_item.set_text(&identity);
+            last_identity = identity;
+        }
+
+        // Read per tick rather than once before the loop: the whole point of the
+        // slot is that a sign-in in the window reaches this loop without a restart.
+        // No credential is not an error state to report, it is `Disconnected` —
+        // which is what the icon already shows, so there is nothing to redraw.
+        let Some(session) = credential.session() else {
+            continue;
+        };
 
         let unread = session.unread().await;
         let dnd = session.dnd().await;
@@ -485,8 +689,15 @@ async fn poll_loop(
 /// `Session::sync_into` does) cannot run on a multi-thread runtime. Nothing here
 /// touches the tray — that is [`poll_loop`]'s job, running concurrently on Tauri's
 /// own runtime.
+///
+/// Takes the slot rather than a `Session` for the same reason [`poll_loop`] does —
+/// and with one failure of its own to name: before this, a shell started without a
+/// credential printed `sync: the credential presented is not valid` every `POLL`,
+/// forever, because it had opened a session against a profile with no token and
+/// kept using it. Reading the slot per tick means "not signed in yet" is silence,
+/// which is what it should always have been.
 #[cfg(desktop)]
-fn run_daemon(session: Session, mut daemon: Daemon) {
+fn run_daemon(credential: Credential, mut daemon: Daemon) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -502,6 +713,10 @@ fn run_daemon(session: Session, mut daemon: Daemon) {
         let mut interval = tokio::time::interval(POLL);
         loop {
             interval.tick().await;
+
+            let Some(session) = credential.session() else {
+                continue;
+            };
 
             let device = daemon.store.device().unwrap_or(None);
             match session
@@ -524,10 +739,17 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         "open-inbox" => focus_main(app),
         "quit" => app.exit(0),
         id @ ("dnd-1h" | "dnd-until-morning" | "dnd-off") => {
-            let Some(session) = app.try_state::<Session>() else {
+            // Through the slot, so this follows a sign-in that happened after
+            // startup. Returning on absence is unchanged and still right: the menu
+            // entry now exists before there is a session to write through, and a
+            // click in that window has nowhere to go — silently, because §10bis.3ter
+            // rules out an error popup from this icon.
+            let Some(session) = app
+                .try_state::<Credential>()
+                .and_then(|credential| credential.session())
+            else {
                 return;
             };
-            let session = session.inner().clone();
             let preset = match id {
                 "dnd-1h" => DndPreset::OneHour,
                 "dnd-until-morning" => DndPreset::UntilMorning,
@@ -630,4 +852,29 @@ fn tray_now(unread: u64, quiet: bool, connected: bool) -> Tray {
             Link::Disconnected
         },
     )
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::identity_line;
+
+    /// The header says who, and stays useful when nobody has said so yet.
+    #[test]
+    fn the_header_names_the_app_alone_until_somebody_signs_in() {
+        assert_eq!(identity_line("weebo-notify", None), "weebo-notify");
+        assert_eq!(
+            identity_line("weebo-notify", Some("Alice Martin")),
+            "weebo-notify — Alice Martin",
+        );
+    }
+
+    /// A provider that returns a blank `name` is not a person called "".
+    ///
+    /// `displayName` on the web side falls back through name → email → sub and ends
+    /// at the empty string, so this is the shape that actually arrives — and an
+    /// em-dash trailing into nothing is worse than no dash at all.
+    #[test]
+    fn an_empty_name_reads_as_no_name() {
+        assert_eq!(identity_line("weebo-notify", Some("")), "weebo-notify");
+    }
 }

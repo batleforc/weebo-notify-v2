@@ -72,12 +72,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install libdbus headers
-        # `notify-cli` links libdbus through notify-rust's `d` feature — see
-        # `check.yaml`. This job builds exactly that crate, so it needs the headers
-        # even though it builds nothing else.
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-
+      # No libdbus step here, unlike the workflows that build `--workspace`: this job
+      # builds `notify-cli` and nothing else, and that crate reaches the session bus
+      # through zbus — pure Rust, nothing to link. See `crates/notify-cli/Cargo.toml`.
       - name: Install the toolchain
         # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`
         # — same reasoning as every other workflow in this directory.

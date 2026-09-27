@@ -6,7 +6,9 @@
     "tagline": "Notifications d'infrastructure, en temps réel.",
     "expired": "Ta session a expiré. Reconnecte-toi pour reprendre.",
     "redirecting": "Redirection…",
-    "signIn": "Se connecter"
+    "signIn": "Se connecter",
+    "retry": "Réessayer",
+    "reopen": "Rouvrir le navigateur"
   },
   "callback": {
     "failed": "La connexion a échoué.",

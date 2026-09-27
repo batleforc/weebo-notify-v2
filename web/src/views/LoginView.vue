@@ -6,11 +6,12 @@
  * to the identity provider and comes back holding a token, which is what makes the
  * server able to keep zero sessions.
  */
-import { LogIn } from "@lucide/vue";
+import { LogIn, RotateCcw } from "@lucide/vue";
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
+import { openExternal } from "@/auth/loopback";
 import { useSession } from "@/auth/session";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,6 +51,36 @@ async function signIn(): Promise<void> {
     going.value = false;
   }
 }
+
+/**
+ * What "retry" means depends on whether there is still something listening.
+ *
+ * While a desktop sign-in is pending, the flow is fine and only the browser is
+ * missing — the loopback listener is up and holding port 1420, so re-running
+ * `signIn` would not retry anything, it would fail on `EADDRINUSE` against our own
+ * first attempt. Reopening the same URL is the actual repair, and it costs nothing
+ * if a browser did open: the provider sees one more request for a page it is
+ * already showing.
+ *
+ * Once that attempt is over — provider down, listener timed out — there is nothing
+ * left to reopen, and asking again is the whole of what retry can mean.
+ */
+async function retry(): Promise<void> {
+  const pending = session.pendingAuthorizeUrl;
+  if (!pending) {
+    await signIn();
+    return;
+  }
+
+  failure.value = null;
+  try {
+    await openExternal(pending);
+  } catch (error) {
+    // The shell could not reach a launcher at all. Say so, and leave the URL on
+    // screen: copying it into a browser by hand finishes the same flow.
+    failure.value = error instanceof Error ? error.message : String(error);
+  }
+}
 </script>
 
 <template>
@@ -69,11 +100,52 @@ async function signIn(): Promise<void> {
         <p v-if="failure" class="text-sm text-destructive">{{ failure }}</p>
       </CardContent>
 
-      <CardFooter>
+      <!--
+        `flex-col`: the footer stacks these rather than sitting them side by side,
+        so the second button reads as the smaller thing to do after the first one
+        failed, not as an equal alternative to it.
+      -->
+      <CardFooter class="flex-col items-stretch">
         <Button class="w-full" :disabled="going" @click="signIn">
           <LogIn />
           {{ going ? t("login.redirecting") : t("login.signIn") }}
         </Button>
+
+        <!--
+          Shown while a desktop sign-in is *pending* as well as after a failure, and
+          the pending half is the one that matters: that is the state with no way
+          out. `going` disables the button above, nothing has failed yet, and the
+          shell sits on a spinner for the five minutes `oauth.rs` gives the listener
+          — which is exactly how long a browser that never opened takes to look like
+          a broken app.
+
+          Never disabled by `going`, for the same reason: the whole point is to be
+          clickable while an attempt is in flight.
+        -->
+        <Button
+          v-if="failure || session.pendingAuthorizeUrl"
+          variant="outline"
+          class="w-full"
+          @click="retry"
+        >
+          <RotateCcw />
+          {{
+            session.pendingAuthorizeUrl ? t("login.reopen") : t("login.retry")
+          }}
+        </Button>
+
+        <!--
+          The last resort, and deliberately selectable text rather than a link: if
+          no launcher works, this is the only way through, and the shell must not be
+          the thing that navigates to it (its own window is the app, not a tab to
+          spend on somebody else's login page — `auth/loopback.ts`).
+        -->
+        <p
+          v-if="session.pendingAuthorizeUrl"
+          class="w-full select-all break-all text-xs text-muted-foreground"
+        >
+          {{ session.pendingAuthorizeUrl }}
+        </p>
       </CardFooter>
     </Card>
   </main>

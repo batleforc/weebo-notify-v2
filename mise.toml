@@ -46,6 +46,7 @@ helm = "latest"                  # lint/template/package charts/weebo-notify (ta
 # binary has to be there anyway. `aqua:` fetches tauri-apps' own signed release rather
 # than compiling `cargo:tauri-cli` from source on every runner.
 "aqua:tauri-apps/tauri/cargo-tauri" = "2"
+claude = "latest"
 # `yq` used to live here for `task gen:devfile`, which inlined the identity
 # provider's configuration into devfile.yaml. The provider reads the committed file
 # directly now (ADR-0014), so both the step and the tool are gone.

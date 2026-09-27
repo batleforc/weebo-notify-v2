@@ -45,11 +45,14 @@ jobs:
           fetch-depth: 0
 
       - name: Install libdbus headers
-        # `notify-cli` (notify-rust's `d` feature) and `xtask` (design's D19 stub
-        # daemon) are both workspace members, so `cargo clippy --workspace` and
-        # `cargo llvm-cov nextest --workspace` link against libdbus. The GitHub
-        # runner does not ship the -dev headers or the pkg-config file; the Che
-        # workspace image does, which is why this was invisible outside CI.
+        # `xtask` (design's D19 stub daemon) is a workspace member, so
+        # `cargo clippy --workspace` and `cargo llvm-cov nextest --workspace` link
+        # against libdbus. The GitHub runner does not ship the -dev headers or the
+        # pkg-config file; the Che workspace image does, which is why this was
+        # invisible outside CI.
+        #
+        # `notify-cli` was the other reason until it moved to zbus. Jobs that build
+        # only the client no longer install this — see `notify.yaml`.
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Install the toolchain

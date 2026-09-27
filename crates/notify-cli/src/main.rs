@@ -360,8 +360,6 @@ impl std::error::Error for CliError {}
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
-    use clap::{CommandFactory as _, Parser as _};
-
     use super::*;
 
     #[test]

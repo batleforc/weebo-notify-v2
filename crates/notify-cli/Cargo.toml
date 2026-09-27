@@ -27,7 +27,16 @@ chrono-tz.workspace = true
 # The desktop relay of §9.2. Pure Rust on every platform this ships to: zbus on
 # Linux, the OS APIs elsewhere — no C toolchain, the rule this workspace has kept
 # since M1.
-notify-rust = { version = "4", default-features = false, features = ["d"] }
+#
+# `z` and not `d`, and the difference is not cosmetic: upstream's `d` is the
+# *libdbus C bindings* (`d = ["dbus"]`), `z` is the zbus client the paragraph above
+# describes (`default = ["z"]`). The manifest said one thing and selected the other
+# until the first real image build failed on it — `libdbus-sys`'s build script wants
+# `pkg-config` and `libdbus-1-dev`, and `rust:slim` has neither. Vendoring (`d_vendored`)
+# would have traded that for a C compiler and cmake in the builder, and left the
+# published `notify` binary linking `libdbus.so.3` on whatever desktop downloads it
+# from `GET /api/v1/cli`. `z` leaves nothing to link.
+notify-rust = { version = "4", default-features = false, features = ["z"] }
 base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true

@@ -6,7 +6,9 @@
     "tagline": "Infrastructure notifications, in real time.",
     "expired": "Your session has expired. Sign in again to continue.",
     "redirecting": "Redirecting…",
-    "signIn": "Sign in"
+    "signIn": "Sign in",
+    "retry": "Retry",
+    "reopen": "Reopen the browser"
   },
   "callback": {
     "failed": "Sign-in failed.",

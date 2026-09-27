@@ -49,6 +49,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+keyring = "4.1.6"
 # The interesting half of this shell lives here and is tested by `task test` on any
 # machine: the tray state machine (§10bis.3ter) and the deep-link parser
 # (§10bis.3quater). What is left in `main.rs` is binding, which is the part that
@@ -77,3 +78,6 @@ tauri-plugin-single-instance = "2"
 # `run_daemon` builds for itself — `Store` (rusqlite) is `Send` but not `Sync`, so
 # its polling loop cannot share Tauri's multi-thread one (see `run_daemon`'s doc).
 tokio = { version = "1", default-features = false, features = ["time", "rt"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

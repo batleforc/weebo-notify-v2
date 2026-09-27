@@ -1,0 +1,126 @@
+---
+title: ADR-0024 — The desktop shell keeps its refresh token in the OS vault
+description: ADR-0020 decides where the browser's refresh token lives. The shell is not a browser, and sessionStorage there is not a trade-off but a store that dies with the process — so the shell moves to the OS vault, with a 0600 file where there is none.
+---
+
+Status: **accepted** (2026-08-20) · Supersedes: — · Superseded by: —
+
+<Callout>
+  **ADR-0020 is not overturned; it is scoped.** The browser keeps its refresh token
+  in `sessionStorage` for exactly the reasons recorded there. This record says that
+  the desktop shell never shared those reasons, and moves it to the OS vault the
+  design asked for from the start (§10bis.2).
+</Callout>
+
+## Context
+
+[ADR-0020](/docs/adr/0020-where-the-refresh-token-lives-after-the-service-worker-plan-died)
+weighs `sessionStorage` against worker memory and an `httpOnly` cookie, and keeps
+`sessionStorage` — with its exposure named, its mitigations listed, and a trigger
+for revisiting. Every one of those arguments is about a page on a shared origin:
+the threat is an XSS able to read storage, the floor is the CSP that ships with the
+bundle ([ADR-0019](/docs/adr/0019-the-csp-travels-with-the-bundle)), and the comfort
+is that a closing tab ends the session.
+
+The desktop shell inherited that code and none of that reasoning. Two things are
+different, and they point the same way:
+
+- **The design already said so.** §10bis.2: "Tokens stockés dans le **coffre de
+  l'OS** (Secret Service / Keychain / Credential Manager sur desktop […] — plugin
+  keyring) — jamais en localStorage ni dans la webview." The shell was not
+  implementing a considered trade-off; it was running the browser's code path
+  because that is the code it was built from.
+- **`sessionStorage` there is not a compromise, it is a bug with a nice name.** It
+  is scoped to the browsing session, so it dies with the process. The shell
+  therefore had *no* session to resume at any launch. Every start landed on the
+  login screen — and because §10bis.3 has the app start hidden in the tray, that
+  login screen was one nobody could see. The window came up invisible, failed to
+  sync every poll against a server rightly refusing it, and offered no way in that
+  did not begin with knowing the tray was there.
+
+That second point is what forced the decision now rather than later. It is not a
+hardening task; it is what makes "démarre alors directement en tray, fenêtre
+cachée" (§10bis.3, autostart opt-in) a thing the app can honestly do.
+
+## Decision
+
+**The shell persists its refresh token through the OS vault, and only its refresh
+token.**
+
+- `web/src-tauri/src/credential.rs` wraps the `keyring` crate behind three Tauri
+  commands — `credential_save`, `credential_load`, `credential_clear` — filed under
+  service `weebo-notify` and the **profile name** as the account, so two profiles
+  (§9.1) never share an entry.
+- `web/src/auth/credential.ts` is the webview's side of that, imported dynamically
+  like `loopback.ts` so the browser bundle carries no desktop package.
+- `session.ts` diverges in exactly three functions — `storedRefreshToken`,
+  `persistRefreshToken`, `forget`. Rotation, the single-flight refresh and every
+  other behaviour stay shared: the platforms differ in where the token *rests*, not
+  in how it is used.
+- **The access token does not move.** It stays in webview memory, where §5.1 puts
+  it. It is the short-lived half; persisting it would widen what sits on disk
+  without shortening any path back in.
+- **Where there is no vault, a `0600` file next to that profile's store.** §9.3bis
+  names this fallback for headless hosts — a server, a container, the `desktop`
+  sidecar of `devfile.yaml` — and it is a supported configuration rather than a
+  degraded one: a sign-in must not fail because a machine has no keyring daemon.
+  The two stores are never both authoritative; a save that reaches the vault clears
+  the file, so a host that grows a vault later stops answering from a secret written
+  before it had one.
+
+## Consequences
+
+**Positive**
+
+- The shell survives a restart, which is the precondition for everything §10bis.3
+  says about living in the tray.
+- The token leaves webview-readable storage entirely on desktop, which is what
+  §10bis.2 asked for and closes ADR-0020's named exposure *for this platform* — an
+  XSS in the shell can still use the in-memory access token for its lifetime, but no
+  longer walks away with the long-lived half.
+- The vault is the OS's problem: locking, per-user separation and at-rest encryption
+  are inherited rather than reimplemented.
+
+**Negative**
+
+- A third store to reason about. "Where is the token" now has three answers
+  (`sessionStorage`, vault, fallback file) and the tests have to hold all three
+  apart — `session.spec.ts` asserts both halves of every case, that the right store
+  was written *and* that the others were not.
+- `keyring` pulls a `secret-service`/zbus dependency tree into `web/src-tauri`,
+  which is outside the cargo workspace and has its own `Cargo.lock`. `task audit`
+  does read that lockfile, so it is covered — but it is a second tree to keep
+  current.
+- The fallback file is a real secret at rest with only file permissions in front of
+  it. On a headless host that is the best available answer; it is not as good as a
+  vault, and this is the sentence that says so out loud.
+
+**Accepted debt**
+
+- **The silent refresh still runs in TypeScript.** §10bis.2 puts it "côté Rust dans
+  `notify-client-core`", and that belongs with the §10bis.1 façade — the webview
+  reduced to presentation, talking to the core over IPC. Until that exists, the
+  webview holds an access token in memory and drives its own rotation. What this
+  record buys is the *durable* half; the rest of §10bis.2 is unstarted, and moving
+  it is what would supersede this ADR rather than amend it.
+- ~~**The Rust side of the shell still has no credential of its own.**~~ **Closed on
+  the same day, and not the way this record first guessed.** The suggestion here was
+  to have the shell mint a personal API key the way `notify login` does (§9.1,
+  §5.2). That does not work, and the reason is in the domain rather than the
+  plumbing: `NewApiKey.channels` cannot be empty (`notify_app::keys` rejects it), so
+  every key names a fixed list of channels — while the tray counts unread across all
+  of them. A key minted at sign-in would under-report the day its owner joins a
+  channel, silently.
+
+  What ships instead is what `Profile.token`'s own documentation already allowed
+  ("an OIDC access token **or** an API key"): the webview hands its **access token**
+  down to the Rust half on every rotation, through `credential_session`, and the
+  shell holds it in a swappable slot the tray loop and the daemon read per tick
+  rather than once at startup. In memory only — persisting a fifteen-minute token to
+  `config.toml` would hand the CLI a credential that works until lunchtime.
+
+  What remains open is narrower: the shell still cannot authenticate its Rust half
+  **before** someone signs in through the window, so a launch that is never
+  interacted with has a silent tray. That is the correct behaviour, not a gap — but
+  it does mean autostart-into-tray (§10bis.3) will want the Rust side to refresh on
+  its own, which is the §10bis.2 work named above.
