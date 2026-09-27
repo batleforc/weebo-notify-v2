@@ -281,9 +281,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
         // Opens URLs in the *system* browser. Used from Rust only (`oauth`), so it
-        // needs no entry in `capabilities/` — the ACL gates what the webview may
-        // ask for, and the webview asks for `loopback_authorize`, not for an
-        // arbitrary URL to be opened.
+        // needs no entry in `capabilities/`. The webview reaches it indirectly,
+        // through `loopback_authorize` and `open_external`, which is why both of
+        // those refuse anything but an http(s) URL (`oauth::web_url`).
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();

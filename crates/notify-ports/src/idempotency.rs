@@ -44,17 +44,29 @@ pub trait IdempotencyStore: Send + Sync {
     -> PortResult<Claim>;
 
     /// Store the response for a claimed key, so retries within the window replay it.
+    ///
+    /// `claimed_at` is the `now` the claim was made with, and it is what proves the
+    /// claim is still this caller's: a publish slow enough that its claim lapsed and
+    /// was taken over must not overwrite the response of the request that took it.
+    /// A claim that is no longer ours is left alone, silently.
     async fn complete(
         &self,
         principal_ref: &str,
         key: &str,
+        claimed_at: OffsetDateTime,
         response: &str,
         expires_at: OffsetDateTime,
     ) -> PortResult<()>;
 
     /// Release a claim whose work failed, so the client's retry is not answered
-    /// with a permanent [`Claim::InFlight`] for the rest of the window.
-    async fn release(&self, principal_ref: &str, key: &str) -> PortResult<()>;
+    /// with a permanent [`Claim::InFlight`] for the rest of the window. Only the
+    /// claim made at `claimed_at`, for the same reason as [`Self::complete`].
+    async fn release(
+        &self,
+        principal_ref: &str,
+        key: &str,
+        claimed_at: OffsetDateTime,
+    ) -> PortResult<()>;
 
     /// Drop expired reservations. Leader-only (design §11).
     async fn prune(&self, now: OffsetDateTime) -> PortResult<u64>;

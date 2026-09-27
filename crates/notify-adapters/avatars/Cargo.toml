@@ -14,6 +14,8 @@ workspace = true
 
 [dependencies]
 notify-ports = { workspace = true }
+# `spawn_blocking`: a decode is seconds of CPU that must not stall a worker.
+tokio = { workspace = true, features = ["rt"] }
 
 async-trait = { workspace = true }
 # Default features off, formats listed one at a time: every decoder linked in is a

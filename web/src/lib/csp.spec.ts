@@ -55,10 +55,20 @@ describe("the shipped policy", () => {
     ]);
   });
 
+  it("adds the desktop's IPC channel to connect-src and nowhere else", () => {
+    const policy = contentSecurityPolicy({ ...INPUTS, connect: ["ipc:"] });
+
+    expect(directive(policy, "connect-src")).toContain("ipc:");
+    expect(directive(policy, "img-src")).not.toContain("ipc:");
+    expect(directive(policy, "connect-src")).not.toContain("https:");
+  });
+
   it("allows the inline images §2.3 permits, and no third-party origin", () => {
     const images = directive(contentSecurityPolicy(INPUTS), "img-src");
 
-    expect(images).toEqual(["'self'", "data:", "https://notify.test"]);
+    // `blob:` is what avatars and thumbnails render from (`lib/object-url.ts`);
+    // without it every one of them is a broken image in production.
+    expect(images).toEqual(["'self'", "data:", "blob:", "https://notify.test"]);
     expect(images).not.toContain("https:");
   });
 
@@ -89,6 +99,7 @@ describe("the shipped policy", () => {
     expect(directive(policy, "img-src")).toEqual([
       "'self'",
       "data:",
+      "blob:",
       "https://notify.test",
     ]);
     expect(policy).not.toContain("undefined");

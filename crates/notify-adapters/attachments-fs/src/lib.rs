@@ -119,6 +119,24 @@ impl FsAttachments {
         token::verify(&self.secret, purpose, id, given, OffsetDateTime::now_utc())
     }
 
+    /// Reserve `id` for the one upload its token allows: `false` if another upload
+    /// already holds it. Atomic — the directory is created or it is not — so two
+    /// concurrent PUTs on one token cannot both land.
+    ///
+    /// # Errors
+    ///
+    /// The filesystem refusing for any reason but "already there".
+    pub async fn claim_upload(&self, id: AttachmentId) -> PortResult<bool> {
+        tokio::fs::create_dir_all(&self.root)
+            .await
+            .map_err(|error| Self::fail("create_dir_all", error))?;
+        match tokio::fs::create_dir(self.object_dir(id)).await {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(Self::fail("create_dir", error)),
+        }
+    }
+
     fn object_dir(&self, id: AttachmentId) -> PathBuf {
         self.root.join(id.to_string())
     }

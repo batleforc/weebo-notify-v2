@@ -29,7 +29,7 @@ interface Harness {
 }
 
 /** Load `sw.js` into a fake `ServiceWorkerGlobalScope` and return what it touched. */
-function load(): Harness {
+function load(language = "fr-FR"): Harness {
   const listeners = new Map<string, (event: unknown) => void>();
   const shown: Harness["shown"] = [];
   const posted: unknown[] = [];
@@ -40,6 +40,7 @@ function load(): Harness {
       listeners.set(type, handler),
     skipWaiting: () => Promise.resolve(),
     location: { origin: "https://notify.test" },
+    navigator: { language },
     registration: {
       showNotification: (title: string, options: Record<string, unknown>) => {
         shown.push({ title, options });
@@ -209,7 +210,10 @@ describe("the service worker", () => {
     expect(harness.posted).toEqual([
       {
         type: "push",
-        envelope: expect.objectContaining({ title: "etcd degraded" }),
+        envelope: expect.objectContaining({
+          title: "etcd degraded",
+          notification: "ntf_01L",
+        }),
       },
     ]);
   });
@@ -233,6 +237,20 @@ describe("the service worker", () => {
     // would swallow the notification entirely.
     expect(harness.shown).toHaveLength(1);
     expect(harness.posted).toHaveLength(0);
+  });
+
+  it("speaks the browser's language when it is not French", async () => {
+    harness = load("en-GB");
+    const { event, settled } = pushEvent({
+      kind: "notification",
+      channel: "ci-infra",
+      notification_id: "ntf_01N",
+    });
+
+    harness.listeners.get("push")?.(event);
+    await settled();
+
+    expect(harness.shown[0].options.body).toBe("Open to see the details");
   });
 
   it("asks whichever tab is open to re-enrol when the subscription rotates", async () => {

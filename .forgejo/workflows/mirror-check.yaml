@@ -42,7 +42,7 @@ jobs:
     container:
       # The act image, which is the Forgejo convention and already carries the
       # libdbus headers the GitHub workflows have to install for themselves.
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
+      image: ghcr.io/catthehacker/ubuntu:act-24.04@sha256:62d572b92f9f32d3427b6d220ad1f9dca9c7b6ffad37d295425037dbff78abaf
 
     steps:
       - name: Checkout
@@ -78,8 +78,11 @@ jobs:
         # scopeless github.com token and these jobs stop being one busy hour away
         # from a 403 that reads like a deleted release. Left unset it is empty, which
         # is exactly the behaviour this file had before the variable existed.
+        #
+        # Withheld from pull requests: those jobs then build and run the PR's code,
+        # which must not be able to read the token.
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN }}
+          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && secrets.GH_API_TOKEN || '' }}
         run: mise install --yes
 
       - name: Install the JavaScript dependencies
@@ -108,7 +111,7 @@ jobs:
   contract:
     runs-on: docker
     container:
-      image: ghcr.io/catthehacker/ubuntu:act-24.04
+      image: ghcr.io/catthehacker/ubuntu:act-24.04@sha256:62d572b92f9f32d3427b6d220ad1f9dca9c7b6ffad37d295425037dbff78abaf
 
     steps:
       - name: Checkout
@@ -139,8 +142,11 @@ jobs:
         # scopeless github.com token and these jobs stop being one busy hour away
         # from a 403 that reads like a deleted release. Left unset it is empty, which
         # is exactly the behaviour this file had before the variable existed.
+        #
+        # Withheld from pull requests: those jobs then build and run the PR's code,
+        # which must not be able to read the token.
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN }}
+          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && secrets.GH_API_TOKEN || '' }}
         run: mise install --yes
 
       - name: Install the JavaScript dependencies

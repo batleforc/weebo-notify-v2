@@ -113,6 +113,7 @@ impl CloseStale {
         // Every channel said "never". Asked here rather than left to the repository
         // so the report can tell the two silences apart.
         if deadlines.is_empty() {
+            guard.release().await;
             return Ok(report);
         }
 
@@ -133,11 +134,20 @@ impl CloseStale {
             report.closed += closed.len() as u64;
 
             // Tell the instance, so a connected client marks its copy closed
-            // instead of showing a week-old deploy as still running.
-            for notification in &closed {
-                let cursor = self.events.head().await?;
+            // instead of showing a week-old deploy as still running. One poke per
+            // channel per batch: a poke means "go read from your cursor", so a
+            // second one for the same channel would only send its streams to read
+            // the same rows again — and one head read covers the whole batch.
+            let cursor = self.events.head().await?;
+            let mut channels: Vec<&ChannelId> = closed
+                .iter()
+                .map(|notification| &notification.channel)
+                .collect();
+            channels.sort_unstable();
+            channels.dedup();
+            for channel in channels {
                 let poke = Poke::Channel {
-                    id: notification.channel.clone(),
+                    id: channel.clone(),
                     cursor,
                 };
                 if let Err(error) = self.bus.publish(&poke).await {
@@ -153,6 +163,7 @@ impl CloseStale {
             }
         }
 
+        guard.release().await;
         Ok(report)
     }
 

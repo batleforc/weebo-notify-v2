@@ -1,7 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the front end is allowed to ask the shell for. Tauri v2 denies everything not listed here, so this file is the whole of the webview's authority — see the note in src/main.rs.",
+  "description": "What the front end is allowed to ask the shell for. Tauri v2 denies everything not listed here — plugins and, since build.rs declares them in the app manifest, our own commands too.",
   "windows": ["main"],
-  "permissions": ["core:default", "notification:default", "deep-link:default"]
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "deep-link:default",
+    "allow-loopback-authorize",
+    "allow-open-external",
+    "allow-credential-save",
+    "allow-credential-load",
+    "allow-credential-clear",
+    "allow-credential-session"
+  ]
 }

@@ -1,6 +1,6 @@
 //! Channels, their members and their policy.
 
-use notify_domain::{Channel, ChannelId, ChannelPolicy, Principal, Scope};
+use notify_domain::{Channel, ChannelId, ChannelPolicy, Membership, Principal, Scope};
 
 use crate::error::PortResult;
 use crate::pagination::{Page, PageRequest};
@@ -55,6 +55,28 @@ pub trait ChannelRepository: Send + Sync {
     /// (design §11). Refusing to reshape a managed channel is the *use case's* job,
     /// not this port's — the reconciler legitimately needs to write to it.
     async fn upsert(&self, channel: &Channel) -> PortResult<()>;
+
+    /// Create a channel that must not exist yet.
+    ///
+    /// [`crate::PortError::Conflict`] when it does — asked of the store in the same
+    /// write rather than checked beforehand, because "look, then write" lets two
+    /// creators of one name both pass the look and the second take the first's
+    /// channel over.
+    async fn insert(&self, channel: &Channel) -> PortResult<()>;
+
+    /// Add one membership or change its scopes, leaving every other one alone.
+    ///
+    /// The API's member routes write through this rather than [`Self::upsert`]:
+    /// rewriting the whole list from a snapshot read a moment earlier is how two
+    /// managers adding two people at once end up with one of them.
+    async fn put_member(&self, id: &ChannelId, membership: &Membership) -> PortResult<()>;
+
+    /// Remove one membership. Returns whether it was there.
+    async fn remove_member(&self, id: &ChannelId, principal: &Principal) -> PortResult<bool>;
+
+    /// Replace the policy, leaving members and group access alone — for the same
+    /// reason as [`Self::put_member`].
+    async fn set_policy(&self, id: &ChannelId, policy: &ChannelPolicy) -> PortResult<()>;
 
     /// Delete a channel. Returns whether one was there.
     async fn delete(&self, id: &ChannelId) -> PortResult<bool>;

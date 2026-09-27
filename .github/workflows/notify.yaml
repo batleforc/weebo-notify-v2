@@ -66,7 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     # An instance that is not configured is the normal state of a fork, so the
     # whole job is skipped rather than failing somebody else's pipeline.
-    if: vars.WNK_URL != ''
+    # Fork PRs are skipped: their runs would otherwise publish under this
+    # repository's OIDC identity.
+    if: vars.WNK_URL != '' && github.event.workflow_run.head_repository.full_name == github.repository
 
     steps:
       - name: Checkout
@@ -131,20 +133,31 @@ jobs:
           echo "token=$minted" >> "$GITHUB_OUTPUT"
 
       - name: Say how it went
+        # Under workflow_run, github.sha/ref_name/run_id describe *this* run on the
+        # default branch; the checked run's own values live on the event. Passed
+        # through env so a branch name can never be spliced into the script.
         env:
           WNK_URL: ${{ vars.WNK_URL }}
           WNK_TOKEN: ${{ steps.token.outputs.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
           # `update` and not `publish`, keyed on the run id: the same call creates
           # on the first invocation and revises on a re-run, so a retried pipeline
           # amends its own notification instead of opening a second one (§2.2).
+          status=failure
+          [ "$CONCLUSION" = success ] && status=success
           ./target/release/notify update \
             --channel ci-infra \
-            --id "run-${{ github.run_id }}" \
-            --title "${{ github.repository }} · ${{ github.ref_name }}" \
-            --body "check: ${{ github.event.workflow_run.conclusion }} — ${{ github.sha }}" \
+            --id "run-$RUN_ID" \
+            --title "$REPO · $HEAD_BRANCH" \
+            --body "check: $CONCLUSION — $HEAD_SHA" \
             --state closed \
-            --status "${{ github.event.workflow_run.conclusion == 'success' && 'success' || 'failure' }}" \
-            --action "view:Voir le run:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --status "$status" \
+            --action "view:Voir le run:$RUN_URL"

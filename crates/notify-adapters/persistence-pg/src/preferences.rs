@@ -104,14 +104,20 @@ impl PreferenceRepository for PgStore {
         Ok(())
     }
 
-    async fn deferred_tallies(&self, limit: u32) -> PortResult<Vec<DeferredTally>> {
+    async fn deferred_tallies(
+        &self,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> PortResult<Vec<DeferredTally>> {
         let rows = sqlx::query(
             "SELECT preference, deferred_total, deferred_failures
                FROM user_dnd
               WHERE deferred_total > 0
+                AND ($1::text IS NULL OR user_id > $1)
               ORDER BY user_id
-              LIMIT $1",
+              LIMIT $2",
         )
+        .bind(after.map(|user| user.to_string()))
         .bind(i64::from(limit))
         .fetch_all(self.pool())
         .await
@@ -138,11 +144,18 @@ impl PreferenceRepository for PgStore {
             .collect()
     }
 
-    async fn clear_deferred(&self, user: UserId) -> PortResult<()> {
+    async fn clear_deferred(&self, user: UserId, total: u32, failures: u32) -> PortResult<()> {
+        // One statement, so a `defer` landing in between is either before it (and
+        // was in the digest) or after it (and survives for the next one).
         sqlx::query(
-            "UPDATE user_dnd SET deferred_total = 0, deferred_failures = 0 WHERE user_id = $1",
+            "UPDATE user_dnd
+                SET deferred_total = GREATEST(deferred_total - $2, 0),
+                    deferred_failures = GREATEST(deferred_failures - $3, 0)
+              WHERE user_id = $1",
         )
         .bind(user.to_string())
+        .bind(i32::try_from(total).unwrap_or(i32::MAX))
+        .bind(i32::try_from(failures).unwrap_or(i32::MAX))
         .execute(self.pool())
         .await
         .map_err(|error| fail("dnd", error))?;

@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use futures::stream::BoxStream;
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyPrefix, AttachmentId, Channel, ChannelId, ChannelPolicy, Cursor,
-    DeliveryId, Device, DeviceId, Dnd, ExternalId, InteractionRecord, Notification, NotificationId,
-    Principal, Receipt, ReceiptKind, Recorded, Revision, Scope, ServiceAccount, ServiceAccountId,
-    Silence, Status, TombstoneReason, User, UserId,
+    ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, AttachmentId, Channel, ChannelId, ChannelPolicy,
+    Cursor, DeliveryId, Device, DeviceId, Dnd, ExternalId, InteractionRecord, Notification,
+    NotificationId, Principal, Receipt, ReceiptKind, Recorded, Revision, Scope, ServiceAccount,
+    ServiceAccountId, Silence, Status, TombstoneReason, User, UserId,
 };
 use time::OffsetDateTime;
 
@@ -56,6 +56,7 @@ struct Row<T> {
 struct Reservation {
     principal_ref: String,
     key: String,
+    claimed_at: OffsetDateTime,
     response: Option<String>,
     expires_at: Option<OffsetDateTime>,
 }
@@ -109,7 +110,7 @@ struct State {
     buried: Vec<SinkDelivery>,
     /// The groups a principal's token last carried — `(principal_ref, groups)`, one
     /// row per principal. See [`DeviceRepository::remember_groups`].
-    group_snapshots: Vec<(String, Vec<String>)>,
+    group_snapshots: Vec<(String, Vec<String>, OffsetDateTime)>,
 }
 
 impl State {
@@ -338,8 +339,10 @@ impl NotificationRepository for InMemory {
         external_id: &ExternalId,
     ) -> PortResult<Option<Notification>> {
         let state = self.state();
-        // A tombstoned row is deliberately invisible here: re-running a job whose
-        // previous notification aged out creates a new one rather than reviving it.
+        let now = self.now();
+        // A tombstoned or expired row is deliberately invisible here: re-running a
+        // job whose previous notification aged out creates a new one rather than
+        // reviving it.
         Ok(state
             .notifications
             .iter()
@@ -347,13 +350,28 @@ impl NotificationRepository for InMemory {
             .find(|notification| {
                 notification.channel == *channel
                     && notification.external_id.as_ref() == Some(external_id)
-                    && notification.deleted_at.is_none()
+                    && State::is_live(notification, now)
             })
             .cloned())
     }
 
     async fn insert(&self, notification: &Notification, revision: &Revision) -> PortResult<Cursor> {
         let mut state = self.state();
+        let now = self.now();
+
+        // An expired row the sweep has not reached yet gives its external id up to
+        // the new notification, the way the Postgres adapter retires it in the same
+        // transaction.
+        for row in &mut state.notifications {
+            if row.value.channel == notification.channel
+                && row.value.external_id.is_some()
+                && row.value.external_id == notification.external_id
+                && row.value.deleted_at.is_none()
+                && row.value.is_expired(now)
+            {
+                row.value.deleted_at = Some(now);
+            }
+        }
 
         let taken = notification.external_id.as_ref().is_some_and(|external| {
             state.notifications.iter().any(|row| {
@@ -394,6 +412,17 @@ impl NotificationRepository for InMemory {
         revision: &Revision,
     ) -> PortResult<Cursor> {
         let mut state = self.state();
+        let now = self.now();
+
+        // The same optimistic check the Postgres adapter makes under its row lock.
+        if let Some(stored) = state.notification(notification.id)
+            && (stored.value.last_seq.saturating_add(1) != revision.seq
+                || !State::is_live(&stored.value, now))
+        {
+            return Err(PortError::Conflict {
+                what: "notification.revision",
+            });
+        }
 
         let cursor = state.append(
             Audience::Channel {
@@ -942,6 +971,56 @@ impl ChannelRepository for InMemory {
         Ok(())
     }
 
+    async fn insert(&self, channel: &Channel) -> PortResult<()> {
+        let mut state = self.state();
+        if state.channels.iter().any(|row| row.value.id == channel.id) {
+            return Err(PortError::Conflict { what: "channel.id" });
+        }
+        let cursor = state.next_cursor();
+        state.channels.push(Row {
+            value: channel.clone(),
+            cursor,
+        });
+        Ok(())
+    }
+
+    async fn put_member(
+        &self,
+        id: &ChannelId,
+        membership: &notify_domain::Membership,
+    ) -> PortResult<()> {
+        if let Some(row) = self
+            .state()
+            .channels
+            .iter_mut()
+            .find(|row| row.value.id == *id)
+        {
+            row.value.upsert_member(membership.clone());
+        }
+        Ok(())
+    }
+
+    async fn remove_member(&self, id: &ChannelId, principal: &Principal) -> PortResult<bool> {
+        Ok(self
+            .state()
+            .channels
+            .iter_mut()
+            .find(|row| row.value.id == *id)
+            .is_some_and(|row| row.value.remove_member(principal)))
+    }
+
+    async fn set_policy(&self, id: &ChannelId, policy: &ChannelPolicy) -> PortResult<()> {
+        if let Some(row) = self
+            .state()
+            .channels
+            .iter_mut()
+            .find(|row| row.value.id == *id)
+        {
+            row.value.policy = *policy;
+        }
+        Ok(())
+    }
+
     async fn delete(&self, id: &ChannelId) -> PortResult<bool> {
         let mut state = self.state();
         let before = state.channels.len();
@@ -1066,8 +1145,8 @@ impl DeviceRepository for InMemory {
             state
                 .group_snapshots
                 .iter()
-                .find(|(principal_ref, _)| *principal_ref == owner.reference())
-                .is_some_and(|(_, groups)| row.value.grants_group(groups, Scope::Subscribe))
+                .find(|(principal_ref, ..)| *principal_ref == owner.reference())
+                .is_some_and(|(_, groups, _)| row.value.grants_group(groups, Scope::Subscribe))
         };
 
         Ok(state
@@ -1085,19 +1164,37 @@ impl DeviceRepository for InMemory {
         &self,
         principal: &Principal,
         groups: &[String],
-        _at: OffsetDateTime,
+        at: OffsetDateTime,
     ) -> PortResult<()> {
         let mut state = self.state();
         let reference = principal.reference();
         match state
             .group_snapshots
             .iter_mut()
-            .find(|(principal_ref, _)| *principal_ref == reference)
+            .find(|(principal_ref, ..)| *principal_ref == reference)
         {
-            Some((_, stored)) => *stored = groups.to_vec(),
-            None => state.group_snapshots.push((reference, groups.to_vec())),
+            Some((_, stored, observed)) => {
+                *stored = groups.to_vec();
+                *observed = at;
+            }
+            None => state.group_snapshots.push((reference, groups.to_vec(), at)),
         }
         Ok(())
+    }
+
+    async fn remembered_groups(
+        &self,
+        principal: &Principal,
+        since: OffsetDateTime,
+    ) -> PortResult<Vec<String>> {
+        let reference = principal.reference();
+        Ok(self
+            .state()
+            .group_snapshots
+            .iter()
+            .find(|(principal_ref, _, observed)| *principal_ref == reference && *observed >= since)
+            .map(|(_, groups, _)| groups.clone())
+            .unwrap_or_default())
     }
 }
 
@@ -1280,13 +1377,25 @@ impl PreferenceRepository for InMemory {
         Ok(())
     }
 
-    async fn deferred_tallies(&self, limit: u32) -> PortResult<Vec<DeferredTally>> {
+    async fn deferred_tallies(
+        &self,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> PortResult<Vec<DeferredTally>> {
         let state = self.state();
 
-        Ok(state
+        // Ordered by the user's text form, the way the Postgres column sorts.
+        let mut pending: Vec<_> = state
             .deferred
             .iter()
-            .filter(|(_, total, _)| *total > 0)
+            .filter(|(user, total, _)| {
+                *total > 0 && after.is_none_or(|after| user.to_string() > after.to_string())
+            })
+            .collect();
+        pending.sort_by_key(|(user, ..)| user.to_string());
+
+        Ok(pending
+            .into_iter()
             .take(limit as usize)
             .filter_map(|(user, total, failures)| {
                 state
@@ -1302,8 +1411,13 @@ impl PreferenceRepository for InMemory {
             .collect())
     }
 
-    async fn clear_deferred(&self, user: UserId) -> PortResult<()> {
-        self.state().deferred.retain(|(owner, ..)| *owner != user);
+    async fn clear_deferred(&self, user: UserId, total: u32, failures: u32) -> PortResult<()> {
+        for (owner, held, failed) in &mut self.state().deferred {
+            if *owner == user {
+                *held = held.saturating_sub(total);
+                *failed = failed.saturating_sub(failures);
+            }
+        }
         Ok(())
     }
 }
@@ -1422,6 +1536,18 @@ impl ApiKeyRepository for InMemory {
             .collect())
     }
 
+    async fn list_for_channel(&self, channel: &ChannelId) -> PortResult<Vec<ApiKey>> {
+        Ok(self
+            .state()
+            .api_keys
+            .iter()
+            .filter(
+                |stored| matches!(&stored.key.owner, ApiKeyOwner::Channel { id } if id == channel),
+            )
+            .map(|stored| stored.key.clone())
+            .collect())
+    }
+
     async fn insert(&self, stored: &StoredApiKey) -> PortResult<()> {
         self.state().api_keys.push(stored.clone());
         Ok(())
@@ -1506,6 +1632,7 @@ impl IdempotencyStore for InMemory {
         state.reservations.push(Reservation {
             principal_ref: principal_ref.to_owned(),
             key: key.to_owned(),
+            claimed_at: now,
             response: None,
             expires_at: None,
         });
@@ -1516,26 +1643,34 @@ impl IdempotencyStore for InMemory {
         &self,
         principal_ref: &str,
         key: &str,
+        claimed_at: OffsetDateTime,
         response: &str,
         expires_at: OffsetDateTime,
     ) -> PortResult<()> {
         let mut state = self.state();
-        if let Some(reservation) = state
-            .reservations
-            .iter_mut()
-            .find(|candidate| candidate.principal_ref == principal_ref && candidate.key == key)
-        {
+        if let Some(reservation) = state.reservations.iter_mut().find(|candidate| {
+            candidate.principal_ref == principal_ref
+                && candidate.key == key
+                && candidate.claimed_at == claimed_at
+                && candidate.response.is_none()
+        }) {
             reservation.response = Some(response.to_owned());
             reservation.expires_at = Some(expires_at);
         }
         Ok(())
     }
 
-    async fn release(&self, principal_ref: &str, key: &str) -> PortResult<()> {
+    async fn release(
+        &self,
+        principal_ref: &str,
+        key: &str,
+        claimed_at: OffsetDateTime,
+    ) -> PortResult<()> {
         let mut state = self.state();
         state.reservations.retain(|reservation| {
             reservation.principal_ref != principal_ref
                 || reservation.key != key
+                || reservation.claimed_at != claimed_at
                 || reservation.response.is_some()
         });
         Ok(())
@@ -2296,6 +2431,7 @@ mod tests {
             &store,
             "usr_1",
             "deploy-1",
+            now(),
             "{\"id\":\"ntf_1\"}",
             now() + Duration::hours(24),
         )
@@ -2338,7 +2474,7 @@ mod tests {
         IdempotencyStore::claim(&store, "usr_1", "failed", now())
             .await
             .unwrap();
-        IdempotencyStore::release(&store, "usr_1", "failed")
+        IdempotencyStore::release(&store, "usr_1", "failed", now())
             .await
             .unwrap();
         assert_eq!(
@@ -2349,9 +2485,16 @@ mod tests {
             "work that failed must not lock its key for the rest of the window"
         );
 
-        IdempotencyStore::complete(&store, "usr_1", "old", "{}", now() + Duration::hours(1))
-            .await
-            .unwrap();
+        IdempotencyStore::complete(
+            &store,
+            "usr_1",
+            "old",
+            now(),
+            "{}",
+            now() + Duration::hours(1),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             IdempotencyStore::prune(&store, now() + Duration::hours(2))
                 .await

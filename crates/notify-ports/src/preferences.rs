@@ -78,8 +78,21 @@ pub trait PreferenceRepository: Send + Sync {
     /// Returns them whether or not their quiet period is over: the caller decides
     /// that, because it is a domain question and the store has no business
     /// answering it.
-    async fn deferred_tallies(&self, limit: u32) -> PortResult<Vec<DeferredTally>>;
+    ///
+    /// Ordered by user and paged by `after`, the last user of the previous page.
+    /// A caller has to be able to walk past a page full of people who are still
+    /// quiet — they keep their tallies, so without a way past them the same page
+    /// comes back on every pass and nobody behind it ever gets a digest.
+    async fn deferred_tallies(
+        &self,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> PortResult<Vec<DeferredTally>>;
 
-    /// Reset a user's tally, once their digest has gone out.
-    async fn clear_deferred(&self, user: UserId) -> PortResult<()>;
+    /// Take a delivered digest off a user's tally.
+    ///
+    /// Subtracts what the digest reported rather than zeroing: a push held back
+    /// between reading the tally and sending the digest was not in it, and must
+    /// still be counted in the next one.
+    async fn clear_deferred(&self, user: UserId, total: u32, failures: u32) -> PortResult<()>;
 }

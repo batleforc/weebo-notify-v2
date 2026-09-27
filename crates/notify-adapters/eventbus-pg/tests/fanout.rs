@@ -119,6 +119,46 @@ mod e2e {
 
         // The receiver reads the authoritative row at this cursor rather than
         // trusting anything the bus carried (ADR-0008).
-        assert_eq!(poke.cursor(), Cursor::from_sequence(99));
+        assert_eq!(poke.cursor(), Some(Cursor::from_sequence(99)));
+    }
+
+    #[tokio::test]
+    async fn a_listener_that_loses_its_connection_says_so_and_keeps_listening() {
+        let Ok(url) =
+            std::env::var("WNK_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
+        else {
+            eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+            return;
+        };
+        // A name of its own, so killing this listener cannot touch another test's.
+        let name = format!("wnk-resync-{}", UserId::generate());
+        let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options.application_name(&name))
+            .await
+            .unwrap();
+        let bus = PgEventBus::new(pool.clone());
+        let mut stream = bus.subscribe().await.unwrap();
+
+        sqlx::query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+             WHERE application_name = $1 AND query ILIKE 'LISTEN%'",
+        )
+        .bind(&name)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Whatever was sent while it was away is gone, so every stream re-reads.
+        assert!(wait_for(&mut stream, &Poke::Resync).await);
+
+        // And the subscription lives on rather than ending at the first error.
+        let poke = Poke::Channel {
+            id: ChannelId::parse("t-fanout-resync").unwrap(),
+            cursor: Cursor::from_sequence(7),
+        };
+        bus.publish(&poke).await.unwrap();
+        assert!(wait_for(&mut stream, &poke).await);
     }
 }

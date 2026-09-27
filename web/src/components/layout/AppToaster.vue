@@ -11,12 +11,14 @@
  * thumb is not.
  */
 import { X } from "@lucide/vue";
+import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
 import { useToasts } from "@/stores/toasts";
 
 const toasts = useToasts();
 const router = useRouter();
+const { t } = useI18n();
 
 function open(url: string | undefined, id: string): void {
   toasts.dismiss(id);
@@ -36,7 +38,7 @@ function open(url: string | undefined, id: string): void {
     class="pointer-events-none fixed inset-x-3 bottom-3 z-50 flex flex-col gap-2 sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-90"
     role="region"
     aria-live="polite"
-    aria-label="Notifications"
+    :aria-label="t('toaster.region')"
   >
     <TransitionGroup
       enter-active-class="transition duration-200 ease-out"
@@ -48,6 +50,10 @@ function open(url: string | undefined, id: string): void {
         v-for="toast in toasts.items"
         :key="toast.id"
         class="pointer-events-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
+        @mouseenter="toasts.hold(toast.id)"
+        @mouseleave="toasts.release(toast.id)"
+        @focusin="toasts.hold(toast.id)"
+        @focusout="toasts.release(toast.id)"
       >
         <div class="flex items-start gap-2">
           <button
@@ -66,7 +72,7 @@ function open(url: string | undefined, id: string): void {
           <button
             type="button"
             class="shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground"
-            aria-label="Fermer"
+            :aria-label="t('toaster.close')"
             @click="toasts.dismiss(toast.id)"
           >
             <X class="size-3.5" />

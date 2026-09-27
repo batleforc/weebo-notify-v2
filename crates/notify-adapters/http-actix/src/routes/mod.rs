@@ -52,10 +52,9 @@ pub(crate) fn served_bytes(
 /// lets `notify-server dump-openapi` build the document without a database, an
 /// object store or an identity provider (design §3.2).
 pub fn configure(config: &mut ServiceConfig<'_>) {
-    // Only `attachments_fs::upload` reads a raw body, and 25 MiB is design §8.2's
-    // ceiling for one — everything else on this scope is JSON, governed by its own
-    // default limit rather than this one.
-    config.app_data(attachments_fs::payload_config());
+    // No scope-wide payload limit: the two routes that read a raw body — the
+    // filesystem upload and the avatar — stream it against their own ceiling, and
+    // everything else is JSON under its own default.
     config.service(
         utoipa_actix_web::scope("/api/v1")
             .service(notifications::publish)

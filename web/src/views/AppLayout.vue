@@ -210,13 +210,16 @@ onMounted(async () => {
     unlisten = stop;
   });
 
+  // The stream first, then the page: a stream opened after the load starts at
+  // "now" and misses whatever was published while the page was on its way
+  // (`inbox.start`).
+  inbox.start();
   await Promise.all([
     channels.load(),
     inbox.load(),
     preferences.load(),
     unread.load(),
   ]);
-  inbox.start();
 });
 
 onBeforeUnmount(() => {

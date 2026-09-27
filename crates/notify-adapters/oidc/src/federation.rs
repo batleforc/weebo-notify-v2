@@ -140,8 +140,8 @@ struct SelfSigned {
     sub: String,
     aud: String,
     exp: i64,
-    channels: Vec<String>,
-    scopes: Vec<String>,
+    /// Each channel with its own scopes, kept paired (see `FederationVerifier::mint`).
+    grants: Vec<(String, Vec<String>)>,
 }
 
 #[async_trait::async_trait]
@@ -162,8 +162,7 @@ impl FederationVerifier for FederationTokens {
     async fn mint(
         &self,
         grant: &FederatedGrant,
-        channels: &[ChannelId],
-        scopes: &[Scope],
+        grants: &[(ChannelId, Vec<Scope>)],
     ) -> PortResult<MintedToken> {
         let expires_at = self.clock.now() + TOKEN_TTL;
         let payload = SelfSigned {
@@ -172,24 +171,26 @@ impl FederationVerifier for FederationTokens {
             sub: grant.subject.clone(),
             aud: self.audience.clone(),
             exp: expires_at.unix_timestamp(),
-            channels: channels.iter().map(ToString::to_string).collect(),
-            scopes: scopes
+            grants: grants
                 .iter()
-                .copied()
-                .map(scope_name)
-                .map(str::to_owned)
+                .map(|(channel, scopes)| {
+                    (
+                        channel.to_string(),
+                        scopes
+                            .iter()
+                            .copied()
+                            .map(scope_name)
+                            .map(str::to_owned)
+                            .collect(),
+                    )
+                })
                 .collect(),
         };
 
         let token = encode(&Header::new(Algorithm::EdDSA), &payload, &self.encoding)
             .map_err(|error| PortError::corrupt("federation.signing_key", error))?;
 
-        Ok(MintedToken {
-            token,
-            expires_at,
-            channels: channels.to_vec(),
-            scopes: scopes.to_vec(),
-        })
+        Ok(MintedToken::new(token, expires_at, grants))
     }
 
     async fn verify_minted(&self, token: &str) -> PortResult<Result<MintedClaims, TokenRejection>> {
@@ -217,28 +218,27 @@ impl FederationVerifier for FederationTokens {
         let Ok(issuer) = Url::parse(&payload.forge) else {
             return Ok(Err(TokenRejection::Malformed));
         };
-        let mut channels = Vec::with_capacity(payload.channels.len());
-        for id in &payload.channels {
+        let mut grants = Vec::with_capacity(payload.grants.len());
+        for (id, names) in &payload.grants {
             let Ok(channel) = ChannelId::parse(id) else {
                 return Ok(Err(TokenRejection::Malformed));
             };
-            channels.push(channel);
-        }
-        let mut scopes = Vec::with_capacity(payload.scopes.len());
-        for name in &payload.scopes {
-            let Some(scope) = scope_from(name) else {
-                // A scope this build does not know is not "ignore it": a token
-                // minted by a newer replica must not silently authorise less.
-                return Ok(Err(TokenRejection::Malformed));
-            };
-            scopes.push(scope);
+            let mut scopes = Vec::with_capacity(names.len());
+            for name in names {
+                let Some(scope) = scope_from(name) else {
+                    // A scope this build does not know is not "ignore it": a token
+                    // minted by a newer replica must not silently authorise less.
+                    return Ok(Err(TokenRejection::Malformed));
+                };
+                scopes.push(scope);
+            }
+            grants.push((channel, scopes));
         }
 
         Ok(Ok(MintedClaims {
             issuer,
             subject: payload.sub,
-            channels,
-            scopes,
+            grants,
             expires_at,
         }))
     }
@@ -341,17 +341,22 @@ mod tests {
     #[tokio::test]
     async fn a_minted_token_reads_back_as_exactly_what_was_minted() {
         let tokens = tokens();
-        let channels = vec![ChannelId::parse("ci-infra").unwrap()];
+        let grants = vec![
+            (ChannelId::parse("ci-infra").unwrap(), vec![Scope::Publish]),
+            (
+                ChannelId::parse("infra-admin").unwrap(),
+                vec![Scope::Manage],
+            ),
+        ];
 
-        let minted = tokens
-            .mint(&grant(), &channels, &[Scope::Publish])
-            .await
-            .unwrap();
+        let minted = tokens.mint(&grant(), &grants).await.unwrap();
         let claims = tokens.verify_minted(&minted.token).await.unwrap().unwrap();
 
         assert_eq!(claims.subject, "repo:weebo/infra:ref:refs/heads/main");
-        assert_eq!(claims.channels, channels);
-        assert_eq!(claims.scopes, vec![Scope::Publish]);
+        assert_eq!(
+            claims.grants, grants,
+            "each channel keeps its own scopes, not the union"
+        );
         assert_eq!(
             claims.issuer.as_str(),
             "https://forgejo.weebo.poc/",
@@ -382,8 +387,7 @@ mod tests {
         let minted = theirs
             .mint(
                 &grant(),
-                &[ChannelId::parse("ci-infra").unwrap()],
-                &[Scope::Publish],
+                &[(ChannelId::parse("ci-infra").unwrap(), vec![Scope::Publish])],
             )
             .await
             .unwrap();

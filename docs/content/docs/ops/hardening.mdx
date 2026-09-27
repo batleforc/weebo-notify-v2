@@ -49,7 +49,7 @@ another layer of application cryptography.
 
 Attachments are not encrypted at the application layer. The bucket must be **strictly
 private**, with a presigned URL as the only path to an object: short TTL, enforced
-content type and `content-length-range`. Any anonymous read access defeats the whole
+content type and a signed `content-length`. Any anonymous read access defeats the whole
 arrangement.
 
 ## Two security headers the bundle cannot send itself
@@ -248,7 +248,7 @@ Checking it by hand before a deploy:
 
 ```bash
 cosign verify ghcr.io/batleforc/weebo-notify@sha256:<digest> \
-  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \
+  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/\.github/workflows/release\.yaml@refs/tags/v" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -272,7 +272,7 @@ spec:
           # certificate can satisfy this; without `subject` any workflow in any
           # repository can.
           - issuer: https://token.actions.githubusercontent.com
-            subjectRegExp: "^https://github.com/batleforc/weebo-notify-v2/"
+            subjectRegExp: '^https://github.com/batleforc/weebo-notify-v2/\.github/workflows/release\.yaml@refs/tags/v'
 ```
 
 <Callout>
@@ -304,6 +304,71 @@ On the PWA path, protection from the push service comes from RFC 8291, with keys
 managed internally by the browser. In practice that is equivalent to the mobile path
 — but the guarantee is the browser's implementation, not ours. Worth stating to
 anyone running a sensitive channel.
+
+## Push endpoints must be public HTTPS
+
+A Web Push or UnifiedPush endpoint is a URL the *user* hands the server at
+`POST /devices`, and the server `POST`s to it on every fan-out. It is therefore
+refused unless it is `https://` to a public host: no loopback, private, link-local,
+unique-local or CGNAT address, checked at enrolment, checked again after DNS
+resolution at delivery, and no redirect is followed. A device already stored with
+an endpoint that fails the check is expired at its next delivery.
+
+The cost is a self-hosted UnifiedPush distributor that the server can only reach on
+a private address: it will not be delivered to. Expose it on a public name, as the
+phone needs anyway.
+
+## What a push relay sees
+
+A UnifiedPush distributor or Apple carries the push, so it gets as little as the
+transport allows: a version and the sealed box. Which channel, which notification,
+and the content all ride **inside** the box, pokes included — a relay cannot map
+who follows what. The only thing left observable is timing and the APNs priority
+header.
+
+For app authors, the wire format (envelope v2):
+
+```json
+{ "v": 2, "ciphertext_device": "<base64url, no padding>" }
+```
+
+APNs adds `"aps": {"alert": {"title": " ", "body": " "}, "mutable-content": 1}` so
+the Notification Service Extension runs. The box is
+`ephemeral_public(32) ‖ nonce(24) ‖ XChaCha20-Poly1305(ciphertext ‖ tag)`, key =
+HKDF-SHA256(X25519 shared secret, info `weebo-notify sealed-box v1`). It opens to
+one of:
+
+```json
+{"kind":"notification","channel":"ci-infra","notification_id":"…","content":{…}}
+{"kind":"notification","channel":"ci-infra","notification_id":"…"}
+{"kind":"digest","total":12,"failures":2}
+```
+
+The second is a poke: fetch the notification over TLS. Envelope v1 (identifiers in
+the clear, content alone sealed) is no longer sent; a client that finds no `v`
+field is reading a v1 push.
+
+## What else the server enforces on its own
+
+- **Attachment uploads are capped and single-use.** The S3 presign signs
+  `content-length`, so the bucket refuses anything but the declared size; the
+  filesystem backend streams the body against 25 MiB and claims the id atomically,
+  so a second upload to it — concurrent or not — is refused. The avatar route streams against 512 KiB. Nothing is buffered
+  before the credential checks out.
+- **Live streams end with their credential.** An SSE or WebSocket connection
+  closes the instant its token or key expires, and re-checks the credential every
+  five minutes: a revoked key or a removed membership ends it within that window
+  rather than when the socket happens to drop.
+- **The access log omits query strings**, because the filesystem backend's upload
+  and download URLs carry their credential there.
+- **`nbf` is enforced** on identity-provider tokens with the same leeway as `exp`,
+  and a token whose `typ` is neither `JWT` nor `at+jwt` is not accepted as an
+  access token.
+- **The server refuses to boot on the development defaults**: an `[oidc] issuer`
+  on a loopback address, or a `[database] url` carrying the development stack's
+  credentials — what a production config that forgot a section would otherwise
+  run on. Only `[server] dev = true` (set in `config/dev.toml`) lets them through;
+  `notify-server doctor` still reports them.
 
 ## Avatars are the only media the server decodes
 

@@ -23,7 +23,7 @@ use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 
 use crate::PgStore;
-use crate::mapping::{EXPIRED_UNSEEN, cursor, fail, from_json, parse, sequence};
+use crate::mapping::{EVENT_LOG_LOCK, EXPIRED_UNSEEN, cursor, fail, from_json, parse, sequence};
 
 /// The set of events a client may see, narrowed by `?channels=` and by the cursor.
 ///
@@ -116,11 +116,30 @@ impl EventStore for PgStore {
         // The sequence rather than `max(seq)`: pruning the log must not move the
         // head backwards, or a client told to "start from now" would be handed a
         // cursor that replays what it already has.
+        //
+        // Under the event-log lock, in shared mode: a writer that has drawn a value
+        // but not committed it yet is waited out, so "now" is never a cursor past a
+        // row this client has not seen and will then skip (see `lock_event_log`).
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("event", error))?;
+        sqlx::query("SELECT pg_advisory_xact_lock_shared($1, $2)")
+            .bind(EVENT_LOG_LOCK.0)
+            .bind(EVENT_LOG_LOCK.1)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| fail("event", error))?;
         let sequence: Option<i64> =
             sqlx::query_scalar("SELECT pg_sequence_last_value('events_seq_seq'::regclass)")
-                .fetch_one(self.pool())
+                .fetch_one(&mut *transaction)
                 .await
                 .map_err(|error| fail("event", error))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| fail("event", error))?;
 
         Ok(cursor(sequence.unwrap_or(0)))
     }

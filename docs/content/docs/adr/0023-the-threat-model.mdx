@@ -35,10 +35,10 @@ That single sentence decides most of what follows.
 ### In scope — adversaries this defends against
 
 1. **An unauthenticated attacker on the network.** Can reach the ingress and nothing else. Defended by: authentication on every route, one indistinguishable `401`, bounded cost on the credential path (SEC-P2-01…04), a connection ceiling per replica, and TLS terminated in front.
-2. **A holder of a leaked API key.** Gets exactly what that key names: its scopes, in its channels. Defended by: a key carrying its own grant rather than its owner's, immediate revocation, and the boundary tests in `crates/notify-app/tests/authorisation_boundaries.rs`.
+2. **A holder of a leaked API key.** Gets exactly what that key names: its scopes, in its channels. Defended by: a key carrying its own grant rather than its owner's (and a personal key capped by its owner's current membership), no minting from a key, immediate revocation, and the boundary tests in `crates/notify-app/tests/authorisation_boundaries.rs`.
 3. **A legitimate user reaching for something they were not granted.** Another channel, another user's notifications, the admin surface. Defended by: membership as the only door to content, the platform role reserved to `/admin/*`, and refusals that do not reveal whether a channel exists.
 4. **A compromised CI pipeline holding a federated token.** Defended by: anchored subject patterns, audience checked before any policy is consulted, `jti` replay guard, and short expiry.
-5. **A third-party push relay** — Apple, a UnifiedPush distributor, a browser push service. Defended by: the sealed box (§6.2), and a poke when the payload will not fit.
+5. **A third-party push relay** — Apple, a UnifiedPush distributor, a browser push service. Defended by: the sealed box (§6.2), which carries the channel and notification ids as well as the content (envelope v2, pokes included), and a poke when the payload will not fit. What remains observable is timing and the APNs priority.
 6. **Somebody who can publish to a channel, attacking its readers.** Defended by: markdown with `html: false` plus DOMPurify, an attachment allowlist bound into the upload signature, `nosniff` on everything that serves stored bytes, and a CSP that travels with the bundle.
 7. **A supply-chain attacker** — a compromised action, base image, crate or npm package. Defended by: SHA-pinned actions, digest-pinned base images, a checksum-verified toolchain installer, `--locked` builds, a build-script allowlist, `minimumReleaseAge`, and cosign signatures by digest.
 

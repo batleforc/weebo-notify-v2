@@ -7,13 +7,15 @@
 
 use std::sync::Arc;
 
-use notify_domain::{ChannelId, Cursor, DeviceId, DomainError, NotificationId, Principal, UserId};
+use notify_domain::{
+    ChannelId, Cursor, Device, DeviceId, DomainError, NotificationId, Principal, UserId,
+};
 use notify_ports::{
     Clock, DeviceRepository, EventPayload, EventStore, Failure, PageRequest, PreferenceRepository,
     SyncPage, SyncQuery,
 };
 
-use crate::authz::{Authorizer, Caller};
+use crate::authz::{Authorizer, Caller, Grant};
 
 /// `GET /api/v1/sync` — replay what a client missed (design §8, scenario T7).
 #[derive(Clone)]
@@ -84,9 +86,26 @@ impl SyncBacklog {
         // drain`) — not only at enrolment: it bounds how stale a group-derived push
         // target can get to "since this principal was last active" rather than
         // "since they last enrolled a device" (§11).
-        self.devices
-            .remember_groups(&caller.principal, &caller.groups, self.clock.now())
-            .await?;
+        //
+        // Only for a session that carries groups at all: an API key's are empty by
+        // construction (`auth.rs`), and writing that down would erase the snapshot
+        // the owner's last real login left behind.
+        if caller.grant == Grant::Membership {
+            self.devices
+                .remember_groups(&caller.principal, &caller.groups, self.clock.now())
+                .await?;
+        }
+
+        // Only a device the caller owns has its cursor read or moved. A stranger's
+        // device id is treated as no device at all — same answer as `RevokeDevice`.
+        let device = match request.device {
+            Some(id) => owned_device(self.devices.as_ref(), caller, id).await?,
+            None => None,
+        };
+        // The cursor is device-wide, so only a sync that saw every channel the owner
+        // can read may move it: a narrowed one (a filter, or a key's own channel list)
+        // would skip whatever it did not ask for.
+        let complete = request.channels.is_empty() && caller.grant == Grant::Membership;
 
         let readable = self.authorizer.readable_channels(caller).await?;
         let channels = if request.channels.is_empty() {
@@ -118,12 +137,13 @@ impl SyncBacklog {
         // Advance the device to the furthest event it actually received. Doing it
         // from the events rather than from `page.next` is what keeps a short page
         // from skipping anything: the device only ever claims what it was handed.
-        if let (Some(device), Some(furthest)) = (
-            request.device,
+        if let (true, Some(device), Some(furthest)) = (
+            complete,
+            device,
             page.events.iter().map(|event| event.cursor).max(),
         ) {
             self.devices
-                .advance_cursor(device, furthest, self.clock.now())
+                .advance_cursor(device.id, furthest, self.clock.now())
                 .await?;
         }
 
@@ -214,6 +234,7 @@ impl ResolveStreamStart {
     /// device's stored cursor, then the head of the log.
     pub async fn execute(
         &self,
+        caller: &Caller,
         last_event_id: Option<Cursor>,
         device: Option<DeviceId>,
     ) -> Result<Cursor, Failure> {
@@ -221,13 +242,25 @@ impl ResolveStreamStart {
             return Ok(cursor);
         }
         if let Some(device) = device
-            && let Some(found) = self.devices.get(device).await?
+            && let Some(found) = owned_device(self.devices.as_ref(), caller, device).await?
             && let Some(cursor) = found.cursor
         {
             return Ok(cursor);
         }
         Ok(self.events.head().await?)
     }
+}
+
+/// The device, if it exists and belongs to the caller.
+async fn owned_device(
+    devices: &dyn DeviceRepository,
+    caller: &Caller,
+    id: DeviceId,
+) -> Result<Option<Device>, Failure> {
+    Ok(devices
+        .get(id)
+        .await?
+        .filter(|device| device.owner == caller.principal))
 }
 
 #[cfg(test)]
@@ -616,7 +649,11 @@ mod tests {
         let fixture = fixture();
         publish(&fixture, "before you arrived").await;
 
-        let start = fixture.start.execute(None, None).await.unwrap();
+        let start = fixture
+            .start
+            .execute(&Caller::member(fixture.alice.clone()), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             start,
             EventStore::head(&fixture.store).await.unwrap(),
@@ -628,6 +665,7 @@ mod tests {
     async fn an_explicit_last_event_id_beats_the_stored_cursor() {
         let fixture = fixture();
         let device = device(&fixture);
+        let caller = Caller::member(fixture.alice.clone());
         DeviceRepository::advance_cursor(
             &fixture.store,
             device,
@@ -640,14 +678,137 @@ mod tests {
         assert_eq!(
             fixture
                 .start
-                .execute(Some(Cursor::from_sequence(2)), Some(device))
+                .execute(&caller, Some(Cursor::from_sequence(2)), Some(device))
                 .await
                 .unwrap(),
             Cursor::from_sequence(2)
         );
         assert_eq!(
-            fixture.start.execute(None, Some(device)).await.unwrap(),
+            fixture
+                .start
+                .execute(&caller, None, Some(device))
+                .await
+                .unwrap(),
             Cursor::from_sequence(5)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_sync_leaves_the_owners_group_snapshot_alone() {
+        let fixture = fixture();
+        let groups = vec!["infra-admins".to_owned()];
+        DeviceRepository::remember_groups(
+            &fixture.store,
+            &fixture.alice,
+            &groups,
+            fixture.clock.now(),
+        )
+        .await
+        .unwrap();
+        let as_key = Caller {
+            principal: fixture.alice.clone(),
+            grant: crate::authz::Grant::ApiKey {
+                id: notify_domain::ApiKeyId::generate(),
+                scopes: vec![Scope::Subscribe],
+                channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
+                owner_groups: groups.clone(),
+            },
+            groups: Vec::new(),
+            platform_admin: false,
+            expires_at: None,
+        };
+
+        fixture
+            .sync
+            .execute(&as_key, SyncRequest::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            DeviceRepository::remembered_groups(
+                &fixture.store,
+                &fixture.alice,
+                fixture.clock.now()
+            )
+            .await
+            .unwrap(),
+            groups,
+            "a key carries no groups; writing that down would cut group-bound push"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_strangers_device_cursor_is_neither_read_nor_moved() {
+        let fixture = fixture();
+        let device = device(&fixture);
+        publish(&fixture, "for alice").await;
+        publish(&fixture, "and again").await;
+        let mallory = Caller::member(Principal::User {
+            id: UserId::generate(),
+        });
+
+        fixture
+            .sync
+            .execute(
+                &mallory,
+                SyncRequest {
+                    device: Some(device),
+                    ..SyncRequest::default()
+                },
+            )
+            .await
+            .unwrap();
+        let stored = DeviceRepository::get(&fixture.store, device)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.cursor, None, "alice's backlog must not be skipped");
+
+        DeviceRepository::advance_cursor(
+            &fixture.store,
+            device,
+            Cursor::from_sequence(1),
+            fixture.clock.now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fixture
+                .start
+                .execute(&mallory, None, Some(device))
+                .await
+                .unwrap(),
+            EventStore::head(&fixture.store).await.unwrap(),
+            "a stranger's device id is no device at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_filtered_sync_does_not_move_the_device_cursor() {
+        let fixture = fixture();
+        let device = device(&fixture);
+        publish(&fixture, "n").await;
+
+        fixture
+            .sync
+            .execute(
+                &Caller::member(fixture.alice.clone()),
+                SyncRequest {
+                    channels: vec![channel_id("ci-infra")],
+                    device: Some(device),
+                    ..SyncRequest::default()
+                },
+            )
+            .await
+            .unwrap();
+        let stored = DeviceRepository::get(&fixture.store, device)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.cursor, None,
+            "channels it did not ask for would otherwise be skipped"
         );
     }
 }

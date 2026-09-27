@@ -40,9 +40,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use notify_domain::{ChannelId, Device, DevicePublicKey, NotificationId, Priority};
+use notify_domain::{Device, DevicePublicKey, Priority};
 use notify_ports::{
-    PortError, PortResult, PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport,
+    PortError, PortResult, PushDispatcher, PushMessage, PushOutcome, PushTransport,
+    SEALED_ENVELOPE_VERSION,
 };
 use p256::pkcs8::DecodePrivateKey as _;
 use serde::{Deserialize, Serialize};
@@ -52,16 +53,16 @@ use url::Url;
 ///
 /// Apple's limit is 4096 bytes for the whole JSON body, not just `aps`. The fixed
 /// skeleton — `{"aps":{"alert":{"title":" ","body":" "},"mutable-content":1},
-/// "channel":"","notification_id":"","ciphertext_device":""}` — is 119 bytes;
-/// budgeting roughly 70 more for a real `channel`/`notification_id` and rounding up
-/// for safety leaves ~250 bytes of fixed overhead. The remaining ~3846 bytes for
-/// the base64'd (`URL_SAFE_NO_PAD`, no JSON-escaping inflation) `ciphertext_device`
-/// back out to ~2884 raw sealed bytes, minus the sealed box's own 72-byte overhead
-/// (32-octet ephemeral key, 24-octet nonce, 16-octet tag) ≈ 2812 raw plaintext.
-/// Rounded down, deliberately a little under `notify-push-unifiedpush`'s 2,800: this
-/// envelope carries the `aps` wrapper that one does not. Revisit once a real device
+/// "v":2,"ciphertext_device":""}` — is under 100 bytes; rounding up for safety
+/// leaves ~250 bytes of fixed overhead. The remaining ~3846 bytes for the base64'd
+/// (`URL_SAFE_NO_PAD`, no JSON-escaping inflation) `ciphertext_device` back out to
+/// ~2884 raw sealed bytes, minus the sealed box's own 72-byte overhead (32-octet
+/// ephemeral key, 24-octet nonce, 16-octet tag) and the ~150-byte sealed wrapper
+/// around the content (kind, channel, notification id — envelope v2) ≈ 2660 raw
+/// content. Rounded down, deliberately a little under `notify-push-unifiedpush`'s
+/// budget: this envelope carries the `aps` wrapper that one does not. Revisit once a real device
 /// gives a number worth citing instead of a margin.
-const MAX_PAYLOAD: usize = 2_700;
+const MAX_PAYLOAD: usize = 2_600;
 
 /// How long APNs may hold a push before giving up on it, sent as `apns-expiration`.
 ///
@@ -283,67 +284,29 @@ struct Aps {
     mutable_content: u8,
 }
 
-/// What crosses the wire to APNs. `channel`/`notification_id` travel in the clear —
-/// the same mobile wire shape design §6.3 gives UnifiedPush — only content is
-/// sealed.
+/// What crosses the wire to APNs (design §6.3, envelope v2): the `aps` wrapper, a
+/// version and the sealed box. The channel and notification ids ride inside the
+/// box ([`PushMessage::sealed_plaintext`]), pokes included — Apple routes by
+/// device token and needs neither.
 #[derive(Serialize)]
 struct Envelope {
     aps: Aps,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    channel: Option<ChannelId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    notification_id: Option<NotificationId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ciphertext_device: Option<String>,
-}
-
-/// What a digest seals to (design §7.4) — no channel, no notification, just the two
-/// counts a quiet period ended with. Same shape `notify-push-unifiedpush` uses.
-#[derive(Serialize)]
-struct DigestPayload {
-    total: u32,
-    failures: u32,
+    v: u8,
+    ciphertext_device: String,
 }
 
 impl Envelope {
-    /// Build one from what the fan-out decided to send, sealing whatever plaintext
-    /// there is to `key`. `None` propagates a weak recipient key, the same
-    /// `notify-push-unifiedpush::Envelope::sealed_for` does and for the same reason:
-    /// silently sending ciphertext-less would read exactly like a poke.
+    /// Seal what the fan-out decided to send to `key`. `None` propagates a weak
+    /// recipient key, the same `notify-push-unifiedpush::Envelope::sealed_for` does
+    /// and for the same reason.
     fn sealed_for(key: &DevicePublicKey, message: &PushMessage) -> Option<Self> {
-        let aps = Aps {
-            alert: &PLACEHOLDER_ALERT,
-            mutable_content: 1,
-        };
-
-        Some(match message {
-            PushMessage::Notification {
-                channel,
-                notification_id,
-                body,
-                ..
-            } => Self {
-                aps,
-                channel: Some(channel.clone()),
-                notification_id: Some(*notification_id),
-                ciphertext_device: match body {
-                    PushBody::Poke => None,
-                    PushBody::Payload { bytes, .. } => Some(seal_base64(key, bytes)?),
-                },
+        Some(Self {
+            aps: Aps {
+                alert: &PLACEHOLDER_ALERT,
+                mutable_content: 1,
             },
-            PushMessage::Digest { total, failures } => {
-                let plaintext = serde_json::to_vec(&DigestPayload {
-                    total: *total,
-                    failures: *failures,
-                })
-                .unwrap_or_default();
-                Self {
-                    aps,
-                    channel: None,
-                    notification_id: None,
-                    ciphertext_device: Some(seal_base64(key, &plaintext)?),
-                }
-            }
+            v: SEALED_ENVELOPE_VERSION,
+            ciphertext_device: seal_base64(key, &message.sealed_plaintext())?,
         })
     }
 }
@@ -550,7 +513,8 @@ mod tests {
         reason = "a failing assertion is a failing test"
     )]
 
-    use notify_domain::{DeviceId, Principal, UserId};
+    use notify_domain::{ChannelId, DeviceId, NotificationId, Principal, UserId};
+    use notify_ports::PushBody;
     use time::OffsetDateTime;
     use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -723,49 +687,31 @@ mod tests {
     }
 
     #[test]
-    fn a_poke_carries_the_placeholder_alert_and_no_ciphertext() {
+    fn apple_sees_the_placeholder_alert_a_version_and_ciphertext_and_no_identifier() {
         let key = device_key();
-        let message = PushMessage::Notification {
+        let poke = PushMessage::Notification {
             channel: ChannelId::parse("ci-infra").unwrap(),
             notification_id: NotificationId::generate(),
             priority: Priority::Default,
             body: PushBody::Poke,
         };
+        let digest = PushMessage::Digest {
+            total: 12,
+            failures: 2,
+        };
 
-        let envelope = Envelope::sealed_for(&key, &message).unwrap();
-        let rendered = serde_json::to_value(&envelope).unwrap();
+        for message in [notification(), poke, digest] {
+            let rendered =
+                serde_json::to_string(&Envelope::sealed_for(&key, &message).unwrap()).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
-        assert_eq!(rendered["aps"]["mutable-content"], 1);
-        assert_eq!(rendered["aps"]["alert"]["title"], " ");
-        assert!(envelope.channel.is_some());
-        assert!(envelope.notification_id.is_some());
-        assert!(
-            envelope.ciphertext_device.is_none(),
-            "a poke has nothing to protect — the extension has nothing to decrypt"
-        );
-    }
-
-    #[test]
-    fn a_payload_seals_and_a_digest_seals_and_neither_names_a_channel_for_the_digest() {
-        let key = device_key();
-
-        let from_notification = Envelope::sealed_for(&key, &notification()).unwrap();
-        assert!(from_notification.channel.is_some());
-        assert!(from_notification.ciphertext_device.is_some());
-
-        let digest = Envelope::sealed_for(
-            &key,
-            &PushMessage::Digest {
-                total: 12,
-                failures: 2,
-            },
-        )
-        .unwrap();
-        assert!(
-            digest.channel.is_none(),
-            "a digest names no channel — it ends a quiet period, not one channel's"
-        );
-        assert!(digest.ciphertext_device.is_some());
+            assert_eq!(value["aps"]["mutable-content"], 1);
+            assert_eq!(value["aps"]["alert"]["title"], " ");
+            assert_eq!(value["v"], 2);
+            assert!(value["ciphertext_device"].is_string());
+            assert_eq!(value.as_object().unwrap().len(), 3, "{rendered}");
+            assert!(!rendered.contains("ci-infra"), "{rendered}");
+        }
     }
 
     #[test]

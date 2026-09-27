@@ -18,7 +18,9 @@ metadata:
   labels:
     {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}
 spec:
+  {{- if not .Values.web.autoscaling.enabled }}
   replicas: {{ .Values.web.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
@@ -56,7 +58,7 @@ spec:
       {{- end }}
       {{- if $readOnly }}
       initContainers:
-        # Writable root filesystem on purpose (chart's .trivyignore: KSV-0014)
+        # Writable root filesystem on purpose (chart's .trivyignore.yaml: KSV-0014)
         # — this container's only job is `cp -a` into the emptyDir the main
         # container then mounts read-write; the main container itself keeps
         # readOnlyRootFilesystem: true (see this file's header comment).

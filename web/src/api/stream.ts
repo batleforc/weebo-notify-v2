@@ -113,10 +113,22 @@ export interface StreamOptions extends StreamHandlers {
 /** A running stream. Call `close()` and it stops, for good. */
 export interface Stream {
   close: () => void;
+  /** The last cursor seen, so a replacement stream can resume where this one was. */
+  lastEventId: () => string | undefined;
 }
 
 /** Backoff, capped: a server coming back must not be met with a thundering herd. */
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+
+/**
+ * Silence after which a connection is presumed dead.
+ *
+ * The server sends a keep-alive every 25 s (§8.1), so two missed ones is not a
+ * quiet channel — it is a socket that died without a FIN (laptop sleep, a NAT
+ * that forgot us), on which `read()` would otherwise wait for ever while the
+ * indicator says "live".
+ */
+export const IDLE_MS = 60_000;
 
 /**
  * Open the stream and keep it open.
@@ -135,6 +147,18 @@ export function openStream(options: StreamOptions): Stream {
   let lastEventId = options.cursor;
 
   const status = (value: StreamStatus) => options.onStatus?.(value);
+
+  /** Cuts a backoff short: set while `connect` is waiting to retry. */
+  let wake: (() => void) | null = null;
+  // Back online, or the tab shown again: whatever the backoff was waiting out has
+  // probably passed, and the person looking at the screen should not wait 30 s.
+  const nudge = () => {
+    if (document.visibilityState === "visible") {
+      wake?.();
+    }
+  };
+  window.addEventListener("online", nudge);
+  document.addEventListener("visibilitychange", nudge);
 
   async function connect(): Promise<void> {
     while (!closed) {
@@ -211,7 +235,13 @@ export function openStream(options: StreamOptions): Stream {
       const wait = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
       attempt += 1;
       // Jitter, so a replica restart does not bring every tab back in lockstep.
-      await sleep(wait * (0.5 + Math.random() / 2), controller.signal);
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+        void sleep(wait * (0.5 + Math.random() / 2), controller.signal).then(
+          resolve,
+        );
+      });
+      wake = null;
     }
   }
 
@@ -220,13 +250,30 @@ export function openStream(options: StreamOptions): Stream {
     const decoder = new TextDecoder();
     const parse = createFrameParser();
 
-    while (!closed) {
-      const { done, value } = await reader.read();
-      if (done) {
-        return;
-      }
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const watch = () => {
+      clearTimeout(idle);
+      // Cancelling makes the pending `read()` resolve `done`, which is the
+      // ordinary end-of-stream path: back off, then resume from the cursor.
+      idle = setTimeout(() => void reader.cancel().catch(() => {}), IDLE_MS);
+    };
 
-      for (const frame of parse(decoder.decode(value, { stream: true }))) {
+    try {
+      watch();
+      while (!closed) {
+        const { done, value } = await reader.read();
+        if (done) {
+          return;
+        }
+        watch();
+        ingest(decoder.decode(value, { stream: true }));
+      }
+    } finally {
+      clearTimeout(idle);
+    }
+
+    function ingest(chunk: string): void {
+      for (const frame of parse(chunk)) {
         if (frame.id) {
           lastEventId = frame.id;
         }
@@ -246,21 +293,24 @@ export function openStream(options: StreamOptions): Stream {
     close() {
       closed = true;
       controller.abort();
+      window.removeEventListener("online", nudge);
+      document.removeEventListener("visibilitychange", nudge);
       status("offline");
     },
+    lastEventId: () => lastEventId,
   };
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }

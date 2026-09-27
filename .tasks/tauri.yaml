@@ -118,7 +118,13 @@ tasks:
           # the bundle in `web/dist` — so `task desktop:up`, which builds that bundle
           # in its first step, ran a shell that ignored it and showed a connection
           # error. The flag is declared in this crate's `[features]`.
-          cd web/src-tauri && cargo build --release --features custom-protocol
+          #
+          # `TAURI_CONFIG` pins the policy to the API and identity provider in
+          # `web/public/env.js` (`web/scripts/tauri-csp.ts`); tauri-build merges it
+          # over `tauri.conf.json`, whose looser policy is only the fallback.
+          set -eu
+          csp="$(node web/scripts/tauri-csp.ts)"
+          cd web/src-tauri && TAURI_CONFIG="$csp" cargo build --release --features custom-protocol
 
   bundle:
     desc: "Package the desktop shell as a .deb and an AppImage (§10bis.3, M5)"
@@ -150,7 +156,9 @@ tasks:
             echo "Nothing was built."
             exit 0
           fi
-          cd web/src-tauri && cargo tauri build {{.CLI_ARGS}}
+          # The CSP pinned to `web/public/env.js`'s origins — see `build` above.
+          csp="$(node web/scripts/tauri-csp.ts)"
+          cd web/src-tauri && cargo tauri build --config "$csp" {{.CLI_ARGS}}
           echo
           echo "Bundles: web/src-tauri/target/release/bundle/"
 

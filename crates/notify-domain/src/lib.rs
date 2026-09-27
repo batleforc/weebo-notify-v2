@@ -64,7 +64,7 @@ pub use action::{
 pub use channel::{Ceiling, Channel, ChannelPolicy, GroupBinding, Membership, PolicyEdit, Scope};
 pub use content::{Content, ContentDraft, Image, Progress};
 pub use cursor::Cursor;
-pub use device::{Device, DevicePublicKey, PushTransport};
+pub use device::{Device, DevicePublicKey, PushTransport, check_push_endpoint, is_public_address};
 pub use dnd::{Day, Dnd, DndDraft, DndScope, QuietHours, WallClock};
 pub use duration::HumanDuration;
 pub use error::{DomainError, ErrorKind, Result};

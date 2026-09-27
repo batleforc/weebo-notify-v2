@@ -95,6 +95,7 @@ impl UpdateProfile {
     /// is left alone, and an explicit `null` hands the field back to the identity
     /// provider instead of blanking it.
     pub async fn execute(&self, caller: &Caller, edit: ProfileEdit) -> Result<Profile, Failure> {
+        caller.ensure_person()?;
         let mut user = self.read.load(caller).await?;
         user.edit_profile(edit)?;
         self.users.upsert(&user).await?;
@@ -140,6 +141,7 @@ impl SetAvatar {
 
     /// Replace the caller's avatar.
     pub async fn execute(&self, caller: &Caller, bytes: &[u8]) -> Result<Profile, Failure> {
+        caller.ensure_person()?;
         let mut user = self.read.load(caller).await?;
 
         let processed = self.processor.process(bytes).await?.map_err(rejected)?;
@@ -272,6 +274,36 @@ mod tests {
 
         assert_eq!(profile.display_name.as_deref(), Some("Alice Martin"));
         assert!(profile.overridden.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_key_cannot_rename_its_owner() {
+        let (store, _, caller, _) = fixture().await;
+        let as_key = Caller {
+            grant: crate::authz::Grant::ApiKey {
+                id: notify_domain::ApiKeyId::generate(),
+                scopes: vec![notify_domain::Scope::Publish],
+                channels: Vec::new(),
+                publish_per_minute: None,
+                owner_groups: Vec::new(),
+            },
+            ..caller
+        };
+
+        let refused = UpdateProfile::new(Arc::new(store))
+            .execute(
+                &as_key,
+                ProfileEdit {
+                    display_name: Some(FieldEdit::Set("mallory".to_owned())),
+                    ..ProfileEdit::default()
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            refused,
+            Err(Failure::Domain(DomainError::SessionRequired))
+        ));
     }
 
     #[tokio::test]

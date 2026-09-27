@@ -272,6 +272,7 @@ impl Application {
                     repository.clone(),
                     repository.clone(),
                     repository.clone(),
+                    repository.clone(),
                     hasher.clone(),
                     clock.clone(),
                 )
@@ -432,14 +433,21 @@ impl Application {
 
             create_key: CreateApiKey::new(
                 repository.clone(),
+                repository.clone(),
                 hasher,
                 Arc::new(OsRngKeyGenerator),
-                authorizer,
+                authorizer.clone(),
                 repository.clone(),
                 clock.clone(),
             ),
-            keys: ListApiKeys::new(repository.clone()),
-            revoke_key: RevokeApiKey::new(repository.clone(), repository.clone(), clock.clone()),
+            keys: ListApiKeys::new(repository.clone(), repository.clone(), authorizer.clone()),
+            revoke_key: RevokeApiKey::new(
+                repository.clone(),
+                repository.clone(),
+                authorizer.clone(),
+                repository.clone(),
+                clock.clone(),
+            ),
             set_key_limit: SetApiKeyLimit::new(
                 repository.clone(),
                 repository.clone(),

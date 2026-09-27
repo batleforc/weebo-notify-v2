@@ -92,7 +92,52 @@ impl PushMessage {
             Self::Digest { .. } => Priority::Default,
         }
     }
+
+    /// What a relayed transport seals to the device key (envelope v2, design §6.3).
+    ///
+    /// Everything that identifies the push rides inside the box, so a relay (a
+    /// public ntfy, Apple) sees a version and ciphertext — never which channel or
+    /// which notification. A poke seals its identifiers too: it is the only thing a
+    /// poke carries, and exactly what the relay must not learn.
+    ///
+    /// ```json
+    /// {"kind":"notification","channel":"ci-infra","notification_id":"…","content":{…}}
+    /// {"kind":"notification","channel":"ci-infra","notification_id":"…"}   // poke
+    /// {"kind":"digest","total":12,"failures":2}
+    /// ```
+    #[must_use]
+    pub fn sealed_plaintext(&self) -> Vec<u8> {
+        let value = match self {
+            Self::Notification {
+                channel,
+                notification_id,
+                body,
+                ..
+            } => {
+                let mut value = serde_json::json!({
+                    "kind": "notification",
+                    "channel": channel,
+                    "notification_id": notification_id,
+                });
+                if let PushBody::Payload { bytes, .. } = body {
+                    value["content"] =
+                        serde_json::from_slice(bytes).unwrap_or(serde_json::Value::Null);
+                }
+                value
+            }
+            Self::Digest { total, failures } => serde_json::json!({
+                "kind": "digest",
+                "total": total,
+                "failures": failures,
+            }),
+        };
+        serde_json::to_vec(&value).unwrap_or_default()
+    }
 }
+
+/// The envelope version relayed transports put in the clear (design §6.3): `2` is
+/// "everything but the ciphertext is sealed", see [`PushMessage::sealed_plaintext`].
+pub const SEALED_ENVELOPE_VERSION: u8 = 2;
 
 /// How a delivery went.
 #[derive(Debug, Clone, PartialEq, Eq)]

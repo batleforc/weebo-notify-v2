@@ -291,6 +291,77 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn head_waits_out_a_writer_that_holds_an_uncommitted_sequence_value() {
+        let store = store!();
+
+        // What an event-appending transaction holds from its first statement to its
+        // commit (`mapping::lock_event_log`).
+        let mut writer = store.pool().begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(0x0057_4e4b_i32)
+            .bind(1_i32)
+            .execute(&mut *writer)
+            .await
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                EventStore::head(&store)
+            )
+            .await
+            .is_err(),
+            "a head read mid-write could name a seq that commits after a reader passed it"
+        );
+
+        writer.commit().await.unwrap();
+        EventStore::head(&store).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_revision_written_from_a_stale_read_conflicts_instead_of_landing() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let (snapshot, _) = publish(&store, &channel, &alice, "deploy prod").await;
+        let revise = |mut from: Notification| {
+            let written = from
+                .revise(
+                    RevisionDraft::simple(ContentDraft::default()),
+                    author(&alice),
+                    now(),
+                    &ChannelPolicy::default(),
+                )
+                .unwrap();
+            (from, written.revision)
+        };
+
+        // Two writers read the same head and both computed seq 2.
+        let (first, first_revision) = revise(snapshot.clone());
+        let (second, second_revision) = revise(snapshot.clone());
+        store
+            .append_revision(&first, &first_revision)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.append_revision(&second, &second_revision).await,
+            Err(notify_ports::PortError::Conflict { .. })
+        ));
+
+        // Deleted between the read and the write: no revision after the tombstone.
+        let (current, _) = publish(&store, &channel, &alice, "nightly").await;
+        let (revised, revision) = revise(current.clone());
+        notifications(&store)
+            .mark_deleted(current.id, now())
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.append_revision(&revised, &revision).await,
+            Err(notify_ports::PortError::Conflict { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn two_publishers_racing_on_one_external_id_produce_one_notification() {
         let store = store!();
         let (_, alice) = user();
@@ -1306,6 +1377,68 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn creating_a_name_that_exists_conflicts_instead_of_taking_it_over() {
+        let store = store!();
+        let (_, alice) = user();
+        let (_, mallory) = user();
+        let id = seeded_channel(&store, &alice).await;
+
+        let mut rival = Channel::dynamic(id.clone(), None).unwrap();
+        rival.upsert_member(Membership::new(mallory.clone(), vec![Scope::Manage]).unwrap());
+
+        assert!(matches!(
+            channels(&store).insert(&rival).await,
+            Err(notify_ports::PortError::Conflict { .. })
+        ));
+        let found = ChannelRepository::get(&store, &id).await.unwrap().unwrap();
+        assert!(found.grants(&alice, Scope::Subscribe));
+        assert!(!found.grants(&mallory, Scope::Manage));
+    }
+
+    #[tokio::test]
+    async fn member_and_policy_writes_leave_everything_else_alone() {
+        let store = store!();
+        let (_, alice) = user();
+        let (_, bob) = user();
+        let (_, carol) = user();
+        let id = seeded_channel(&store, &alice).await;
+
+        // Two managers acting on the same snapshot: neither write may undo the other.
+        let snapshot = ChannelRepository::get(&store, &id).await.unwrap().unwrap();
+        channels(&store)
+            .put_member(
+                &id,
+                &Membership::new(bob.clone(), vec![Scope::Subscribe]).unwrap(),
+            )
+            .await
+            .unwrap();
+        channels(&store)
+            .put_member(
+                &id,
+                &Membership::new(carol.clone(), vec![Scope::Subscribe]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut policy = snapshot.policy;
+        policy.receipts_enabled = !policy.receipts_enabled;
+        channels(&store).set_policy(&id, &policy).await.unwrap();
+
+        let found = ChannelRepository::get(&store, &id).await.unwrap().unwrap();
+        assert!(found.grants(&bob, Scope::Subscribe));
+        assert!(found.grants(&carol, Scope::Subscribe));
+        assert_eq!(found.policy, policy);
+
+        assert!(channels(&store).remove_member(&id, &bob).await.unwrap());
+        assert!(
+            !channels(&store).remove_member(&id, &bob).await.unwrap(),
+            "the second removal finds nobody, so only one is journalled"
+        );
+        let found = ChannelRepository::get(&store, &id).await.unwrap().unwrap();
+        assert!(!found.grants(&bob, Scope::Subscribe));
+        assert!(found.grants(&carol, Scope::Subscribe));
+    }
+
+    #[tokio::test]
     async fn membership_is_the_only_door_to_a_channel() {
         let store = store!();
         let (_, alice) = user();
@@ -1640,6 +1773,45 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn a_channels_keys_are_listed_by_that_channel() {
+        let store = store!();
+        let channel = fresh_channel();
+        let key = ApiKey {
+            id: ApiKeyId::generate(),
+            prefix: ApiKeyPrefix::parse(fresh_prefix().as_str()).unwrap(),
+            label: None,
+            owner: ApiKeyOwner::Channel {
+                id: channel.clone(),
+            },
+            scopes: vec![Scope::Publish],
+            channels: vec![channel.clone()],
+            publish_per_minute: None,
+            created_at: now(),
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+        };
+        keys(&store)
+            .insert(&StoredApiKey {
+                key: key.clone(),
+                secret_hash: "$argon2id$stub".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let listed = keys(&store).list_for_channel(&channel).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, key.id);
+        assert!(
+            keys(&store)
+                .list_for_channel(&fresh_channel())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn a_platform_admins_ceiling_on_a_key_round_trips_through_a_widened_column() {
         // D24: the domain value is `u32`, the column is `BIGINT` precisely so this
         // never has to refuse a value it wrote itself — proved here with a real
@@ -1933,6 +2105,24 @@ mod e2e {
             .await
             .unwrap();
         assert!(store.delivery_targets(&id).await.unwrap().is_empty());
+
+        // What a personal key reads back: the snapshot, only while it is fresh.
+        let taken = now();
+        assert_eq!(
+            devices(&store)
+                .remembered_groups(&alice, taken - time::Duration::days(7))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            devices(&store)
+                .remembered_groups(&alice, taken + time::Duration::days(1))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // --- What GitOps last applied (design §11, §13, D28) ---------------------
@@ -2354,7 +2544,7 @@ mod e2e {
         }
 
         let mine = store
-            .deferred_tallies(100)
+            .deferred_tallies(None, u32::MAX)
             .await
             .unwrap()
             .into_iter()
@@ -2364,12 +2554,12 @@ mod e2e {
         assert_eq!(mine.total, 3);
         assert_eq!(mine.failures, 1, "the one status a digest calls out");
 
-        PreferenceRepository::clear_deferred(&store, alice_id)
+        PreferenceRepository::clear_deferred(&store, alice_id, 3, 1)
             .await
             .unwrap();
         assert!(
             !store
-                .deferred_tallies(100)
+                .deferred_tallies(None, u32::MAX)
                 .await
                 .unwrap()
                 .iter()
@@ -2391,7 +2581,7 @@ mod e2e {
 
         assert!(
             !store
-                .deferred_tallies(100)
+                .deferred_tallies(None, u32::MAX)
                 .await
                 .unwrap()
                 .iter()
@@ -2423,7 +2613,7 @@ mod e2e {
 
         assert!(
             !store
-                .deferred_tallies(100)
+                .deferred_tallies(None, u32::MAX)
                 .await
                 .unwrap()
                 .iter()
@@ -2654,9 +2844,10 @@ mod e2e {
         let store = store!();
         let principal = format!("usr_{}", ulid_slug());
         let key = "deploy-1";
+        let claimed_at = now();
 
         assert_eq!(
-            store.claim(&principal, key, now()).await.unwrap(),
+            store.claim(&principal, key, claimed_at).await.unwrap(),
             Claim::Fresh
         );
         assert_eq!(
@@ -2669,6 +2860,7 @@ mod e2e {
             .complete(
                 &principal,
                 key,
+                claimed_at,
                 "{\"id\":\"ntf_1\"}",
                 now() + Duration::hours(24),
             )
@@ -2692,8 +2884,15 @@ mod e2e {
         let store = store!();
         let principal = format!("usr_{}", ulid_slug());
 
-        store.claim(&principal, "released", now()).await.unwrap();
-        store.release(&principal, "released").await.unwrap();
+        let claimed_at = now();
+        store
+            .claim(&principal, "released", claimed_at)
+            .await
+            .unwrap();
+        store
+            .release(&principal, "released", claimed_at)
+            .await
+            .unwrap();
         assert_eq!(
             store.claim(&principal, "released", now()).await.unwrap(),
             Claim::Fresh,
@@ -2710,12 +2909,57 @@ mod e2e {
             "the replica holding it evidently died"
         );
 
-        store.claim(&principal, "pruned", now()).await.unwrap();
+        let claimed_at = now();
+        store.claim(&principal, "pruned", claimed_at).await.unwrap();
         store
-            .complete(&principal, "pruned", "{}", now() - Duration::hours(1))
+            .complete(
+                &principal,
+                "pruned",
+                claimed_at,
+                "{}",
+                now() - Duration::hours(1),
+            )
             .await
             .unwrap();
         assert!(IdempotencyStore::prune(&store, now()).await.unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn a_claim_taken_over_cannot_be_completed_or_released_by_its_first_owner() {
+        let store = store!();
+        let principal = format!("usr_{}", ulid_slug());
+        let first = now();
+        let second = first + Duration::hours(1);
+        let window = second + Duration::hours(24);
+
+        store.claim(&principal, "slow", first).await.unwrap();
+        // The first request stalled past its in-flight window; a retry took over.
+        assert_eq!(
+            store.claim(&principal, "slow", second).await.unwrap(),
+            Claim::Fresh
+        );
+
+        store
+            .complete(&principal, "slow", first, "{\"from\":\"first\"}", window)
+            .await
+            .unwrap();
+        store.release(&principal, "slow", first).await.unwrap();
+        assert_eq!(
+            store.claim(&principal, "slow", second).await.unwrap(),
+            Claim::InFlight,
+            "the stale owner must neither overwrite nor free the successor's claim"
+        );
+
+        store
+            .complete(&principal, "slow", second, "{\"from\":\"second\"}", window)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.claim(&principal, "slow", second).await.unwrap(),
+            Claim::Replayed {
+                response: "{\"from\":\"second\"}".to_owned()
+            }
+        );
     }
 
     // --- The audit log -----------------------------------------------------

@@ -38,6 +38,46 @@
 const CACHE = "weebo-notify-shell-v1";
 
 /**
+ * How many responses the cache keeps before dropping the least recently fetched.
+ *
+ * The name above never changes between deploys, and Vite's asset names do — so
+ * without a bound every build's hashed chunks would pile up under it for ever.
+ * `put` re-appends an entry it replaces, so the oldest keys are the ones no
+ * current page has asked for in the longest time.
+ */
+const KEEP = 60;
+
+/**
+ * The strings this worker shows on its own, in the two locales the app ships
+ * (`src/locales`). The worker has no access to the app's i18n, only to the
+ * browser's language.
+ */
+const TEXT = {
+  fr: {
+    digestTitle: "Pendant votre absence",
+    digest: (total) => `${total} notification(s)`,
+    digestFailures: (total, failures) =>
+      `${total} notification(s), dont ${failures} en échec`,
+    poke: "Ouvrez pour voir le détail",
+    unknown: "Une notification est arrivée",
+  },
+  en: {
+    digestTitle: "While you were away",
+    digest: (total) => `${total} notification(s)`,
+    digestFailures: (total, failures) =>
+      `${total} notification(s), ${failures} failed`,
+    poke: "Open to see the details",
+    unknown: "A notification arrived",
+  },
+};
+
+/** French unless the browser asks for English — the app's own fallback is `fr`. */
+function text() {
+  const language = self.navigator?.language ?? "fr";
+  return language.toLowerCase().startsWith("en") ? TEXT.en : TEXT.fr;
+}
+
+/**
  * What has to be there for the app to open with no network.
  *
  * The document alone: Vite emits hashed asset names, so listing them here would
@@ -100,7 +140,16 @@ self.addEventListener("fetch", (event) => {
         // the cache is worse than being offline, which at least says so.
         if (response.ok && response.type === "basic") {
           const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put(request, copy));
+          caches.open(CACHE).then(async (cache) => {
+            await cache.put(request, copy);
+            const keys = await cache.keys();
+            await Promise.all(
+              keys
+                .slice(0, Math.max(0, keys.length - KEEP))
+                .filter((key) => !SHELL.includes(new URL(key.url).pathname))
+                .map((key) => cache.delete(key)),
+            );
+          });
         }
         return response;
       })
@@ -211,11 +260,11 @@ function readEnvelope(data) {
     const total = payload.total ?? 0;
     const failures = payload.failures ?? 0;
     return {
-      title: "Pendant votre absence",
+      title: text().digestTitle,
       body:
         failures > 0
-          ? `${total} notification(s), dont ${failures} en échec`
-          : `${total} notification(s)`,
+          ? text().digestFailures(total, failures)
+          : text().digest(total),
       tag: "digest",
       url: "/",
       renotify: true,
@@ -228,10 +277,13 @@ function readEnvelope(data) {
     return {
       title: content?.title ?? payload.channel ?? "weebo-notify",
       // No content means a poke: say what is known rather than invent a body.
-      body: content?.body ?? (content ? "" : "Ouvrez pour voir le détail"),
+      body: content?.body ?? (content ? "" : text().poke),
       // Per notification, so revisions of the same one replace each other.
       tag: id ? `notification:${id}` : "notification",
       url: id ? `/n/${id}` : "/",
+      // For the page: the silence check and the dedupe against the stream's own
+      // toast both key on it (`stores/toasts.ts`).
+      notification: id || undefined,
       renotify: true,
     };
   }
@@ -240,7 +292,7 @@ function readEnvelope(data) {
   // it is the `userVisibleOnly` contract.
   return {
     title: "weebo-notify",
-    body: "Une notification est arrivée",
+    body: text().unknown,
     tag: "unknown",
     url: "/",
     renotify: false,

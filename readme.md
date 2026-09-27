@@ -67,4 +67,6 @@ Every generated artefact — the OpenAPI document, both derived clients, the sql
 offline data — is committed, and the CI `contract` job regenerates and diffs them. A
 client can never disagree with the server it talks to.
 
-Bootstrapped from [`weebo-base`](https://github.com/batleforc/weebo-base).
+Bootstrapped from [`weebo-base`](https://github.com/batleforc/weebo-base). `task template:diff`
+shows what the template changed since; `task template:sync` pulls the files it owns
+and diffs the ones to merge by hand (the lists live in `.tasks/template.yaml`).

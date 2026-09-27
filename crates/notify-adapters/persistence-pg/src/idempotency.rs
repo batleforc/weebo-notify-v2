@@ -77,16 +77,21 @@ impl IdempotencyStore for PgStore {
         &self,
         principal_ref: &str,
         key: &str,
+        claimed_at: OffsetDateTime,
         response: &str,
         expires_at: OffsetDateTime,
     ) -> PortResult<()> {
+        // `claimed_at` is the claim's identity: a takeover rewrites it, so a slow
+        // original that finishes late matches nothing and cannot clobber the
+        // response its successor stored.
         sqlx::query(
             "UPDATE idempotency_keys
-                SET response = $3, expires_at = $4
-              WHERE principal_ref = $1 AND key = $2",
+                SET response = $4, expires_at = $5
+              WHERE principal_ref = $1 AND key = $2 AND claimed_at = $3 AND response IS NULL",
         )
         .bind(principal_ref)
         .bind(key)
+        .bind(claimed_at)
         .bind(response)
         .bind(expires_at)
         .execute(self.pool())
@@ -95,15 +100,22 @@ impl IdempotencyStore for PgStore {
         .map(|_| ())
     }
 
-    async fn release(&self, principal_ref: &str, key: &str) -> PortResult<()> {
-        // Only an unfinished claim: releasing a completed one would delete a
-        // response somebody is entitled to replay.
+    async fn release(
+        &self,
+        principal_ref: &str,
+        key: &str,
+        claimed_at: OffsetDateTime,
+    ) -> PortResult<()> {
+        // Only an unfinished claim, and only ours: releasing a completed one would
+        // delete a response somebody is entitled to replay, and releasing one taken
+        // over would let a third request publish alongside the second.
         sqlx::query(
             "DELETE FROM idempotency_keys
-             WHERE principal_ref = $1 AND key = $2 AND response IS NULL",
+             WHERE principal_ref = $1 AND key = $2 AND claimed_at = $3 AND response IS NULL",
         )
         .bind(principal_ref)
         .bind(key)
+        .bind(claimed_at)
         .execute(self.pool())
         .await
         .map_err(|error| fail("idempotency", error))

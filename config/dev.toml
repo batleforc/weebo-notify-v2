@@ -14,6 +14,9 @@
 
 [server]
 bind = "0.0.0.0:8080"
+# This is a development instance: it may boot on the loopback identity provider
+# and the `weebo:weebo` database below. Without it the server refuses them.
+dev = true
 # Closed by default; the dev origins are listed explicitly (§5.1).
 #
 # The last two are the desktop shell, and they are origins in the same sense the

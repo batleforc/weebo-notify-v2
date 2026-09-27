@@ -64,9 +64,64 @@ impl Finding {
     }
 }
 
+/// The development stack's defaults this config still runs on.
+fn development_defaults(config: &Config) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    // Every key has a default so a checkout runs with nothing but `task dev:*`,
+    // and two of those defaults are the development stack. A production config
+    // that forgot a section must not boot on them — trusting whatever answers on
+    // localhost:9110 is the worse of the two — hence `refuse_development_defaults`.
+    if url::Url::parse(&config.oidc.issuer)
+        .ok()
+        .and_then(|issuer| issuer.host_str().map(is_loopback_host))
+        .unwrap_or(false)
+    {
+        findings.push(Finding::warn(
+            format!(
+                "[oidc] issuer is {}, a loopback address: the development identity \
+                 provider, or whatever else answers there",
+                config.oidc.issuer
+            ),
+            "set [oidc] issuer (WNK_OIDC__ISSUER) to your identity provider",
+        ));
+    }
+    if config.database.url.contains("weebo:weebo@") {
+        findings.push(Finding::warn(
+            "[database] url carries the development stack's credentials",
+            "set WNK_DATABASE__URL from a Secret (server.database.existingSecret)",
+        ));
+    }
+    findings
+}
+
+/// Refuse to boot on the development defaults unless `[server] dev` says this is
+/// a development instance.
+///
+/// # Errors
+///
+/// Each default still in place, with its fix.
+pub(crate) fn refuse_development_defaults(config: &Config) -> anyhow::Result<()> {
+    if config.server.dev {
+        return Ok(());
+    }
+    let found = development_defaults(config);
+    if found.is_empty() {
+        return Ok(());
+    }
+    let reasons = found
+        .iter()
+        .map(|finding| format!("{} — {}", finding.what, finding.fix))
+        .collect::<Vec<_>>()
+        .join("; ");
+    anyhow::bail!(
+        "refusing to start on the development defaults ({reasons}); set [server] dev = true \
+         (WNK_SERVER__DEV) only for a development instance"
+    )
+}
+
 /// Everything this process can tell about its own configuration.
 pub(crate) fn review(config: &Config) -> Vec<Finding> {
-    let mut findings = Vec::new();
+    let mut findings = development_defaults(config);
 
     // ── CORS ─────────────────────────────────────────────────────────────────
     if config
@@ -155,6 +210,15 @@ pub(crate) fn review(config: &Config) -> Vec<Finding> {
     findings
 }
 
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// Whether a secret looks like something copied out of an example.
 fn looks_like_a_placeholder(secret: &str) -> bool {
     const TELLS: &[&str] = &[
@@ -218,8 +282,34 @@ pub(crate) fn report(config: &Config) -> bool {
 mod tests {
     use super::*;
 
+    /// The defaults, with the two that are the development stack replaced.
     fn config() -> Config {
-        Config::default()
+        let mut config = Config::default();
+        config.oidc.issuer = "https://id.weebo.example".to_owned();
+        config.database.url = "postgres://notify@db.internal/weebo_notify".to_owned();
+        config
+    }
+
+    #[test]
+    fn the_development_defaults_are_warned_about() {
+        let warnings: Vec<_> = review(&Config::default())
+            .into_iter()
+            .filter(|f| f.level == Level::Warn)
+            .map(|f| f.what)
+            .collect();
+
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("[oidc] issuer"));
+        assert!(warnings[1].contains("[database] url"));
+    }
+
+    #[test]
+    fn the_development_defaults_refuse_to_boot_unless_declared() {
+        let mut config = Config::default();
+        assert!(refuse_development_defaults(&config).is_err());
+
+        config.server.dev = true;
+        assert!(refuse_development_defaults(&config).is_ok());
     }
 
     #[test]

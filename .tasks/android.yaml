@@ -141,7 +141,9 @@ tasks:
           # that failed still exits 0 and prints a path to whatever was there before.
           set -eu
           {{.NEED_TOOLCHAIN}}
-          cd web/src-tauri && NDK_HOME="{{.SDK_ROOT}}/ndk/{{.NDK}}" cargo tauri android build {{.CLI_ARGS}}
+          # The CSP pinned to `web/public/env.js`'s origins (`.tasks/tauri.yaml`, `build`).
+          csp="$(node web/scripts/tauri-csp.ts)"
+          cd web/src-tauri && NDK_HOME="{{.SDK_ROOT}}/ndk/{{.NDK}}" cargo tauri android build --config "$csp" {{.CLI_ARGS}}
           echo
           echo "APK: web/src-tauri/gen/android/app/build/outputs/apk/universal/release/"
           echo "AAB: web/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/"

@@ -24,6 +24,7 @@ import { useRoute, useRouter } from "vue-router";
 import NotificationRow from "@/components/notification/NotificationRow.vue";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { listStep } from "@/lib/list-keys";
 import { useChannels } from "@/stores/channels";
 import { useDetail } from "@/stores/detail";
 import { useInbox } from "@/stores/inbox";
@@ -109,12 +110,10 @@ function onKeydown(event: KeyboardEvent): void {
   if (event.target instanceof HTMLInputElement) {
     return;
   }
-  if (event.key === "ArrowDown" || event.key === "j") {
+  const step = listStep(event);
+  if (step) {
     event.preventDefault();
-    move(1);
-  } else if (event.key === "ArrowUp" || event.key === "k") {
-    event.preventDefault();
-    move(-1);
+    move(step);
   } else if (event.key === "Escape" && detail.id) {
     event.preventDefault();
     void router.push({ name: "inbox" });

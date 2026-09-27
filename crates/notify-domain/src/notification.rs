@@ -320,7 +320,9 @@ impl Notification {
         now: OffsetDateTime,
         policy: &ChannelPolicy,
     ) -> Result<Written> {
-        if self.deleted_at.is_some() {
+        // Expired counts as gone even before the sweep tombstones it: a revision
+        // there would land on a notification no reader can see any more.
+        if self.is_gone(now) {
             return Err(DomainError::NotificationGone);
         }
         if self.last_seq >= MAX_REVISIONS {

@@ -10,14 +10,34 @@
  * thing people notice for the thing they do not.
  */
 
+import { isDesktop } from "@/lib/desktop";
 import { router } from "@/router";
 
 /** Where the worker lives. Root scope, which is what lets it serve every route. */
 const SCRIPT = "/sw.js";
 
-/** Whether this browser can run one at all. */
+/**
+ * How long `ready()` waits for a worker before answering `null`.
+ *
+ * `navigator.serviceWorker.ready` never settles when registration failed, and a
+ * settings panel awaiting it would say "checking…" for ever.
+ */
+const READY_TIMEOUT_MS = 10_000;
+
+/** The registration in flight, once `register` has been called. */
+let registering: Promise<ServiceWorkerRegistration | null> | null = null;
+
+/** What to call when the push subscription rotates — the latest `register` wins. */
+let onRotation: (() => void) | undefined;
+
+/**
+ * Whether this browser can run one at all.
+ *
+ * Never in the desktop shell: its `tauri://` origin is not one a worker can be
+ * registered on, and it has native notifications and a tray of its own (§10bis).
+ */
 export function supported(): boolean {
-  return "serviceWorker" in navigator;
+  return !isDesktop() && "serviceWorker" in navigator;
 }
 
 /**
@@ -28,13 +48,20 @@ export function supported(): boolean {
  * insecure origin, a locked-down enterprise profile. All three are ordinary, and
  * none of them is an error to report.
  */
-export async function register(
+export function register(
   onSubscriptionChange?: () => void,
 ): Promise<ServiceWorkerRegistration | null> {
+  onRotation = onSubscriptionChange;
   if (!supported()) {
-    return null;
+    return Promise.resolve(null);
   }
+  // Once per page: `AppLayout` mounts again after a sign-out, and each call used
+  // to stack one more `message` listener on the container.
+  registering ??= registerOnce();
+  return registering;
+}
 
+async function registerOnce(): Promise<ServiceWorkerRegistration | null> {
   try {
     const registration = await navigator.serviceWorker.register(SCRIPT, {
       scope: "/",
@@ -53,7 +80,7 @@ export async function register(
       // The push service rotated the subscription out from under us; only a page
       // holds the credential needed to enrol the replacement.
       if (message.type === "pushsubscriptionchange") {
-        onSubscriptionChange?.();
+        onRotation?.();
       }
     });
 
@@ -69,13 +96,25 @@ export async function register(
 /**
  * The registration, once it is ready.
  *
- * `navigator.serviceWorker.ready` never rejects and never resolves without one, so
- * it is raced against nothing: callers that need a worker *now* — subscribing to
- * push is the only one — get `null` instead of hanging when there is none.
+ * `navigator.serviceWorker.ready` never rejects and never resolves without one,
+ * so it is raced against a failed registration and a timeout: callers that need a
+ * worker *now* — subscribing to push is the only one — get `null` instead of
+ * hanging when there is none.
  */
 export async function ready(): Promise<ServiceWorkerRegistration | null> {
   if (!supported()) {
     return null;
   }
-  return navigator.serviceWorker.ready;
+  if (registering && !(await registering)) {
+    return null;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), READY_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([navigator.serviceWorker.ready, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

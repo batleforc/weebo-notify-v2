@@ -733,6 +733,9 @@
           "404": {
             "description": "Not a valid attachment id"
           },
+          "409": {
+            "description": "Already uploaded — a token is good for one upload"
+          },
           "413": {
             "description": "Over the 25 MiB ceiling (§8.2)"
           },
@@ -3019,7 +3022,7 @@
         "tags": [
           "identity"
         ],
-        "summary": "Create one, owned by the caller.",
+        "summary": "Create one, owned by the caller — a platform admin (§5.4).",
         "operationId": "create_account",
         "requestBody": {
           "content": {
@@ -3053,7 +3056,7 @@
             }
           },
           "403": {
-            "description": "A bot cannot create bots (design §5.2bis)",
+            "description": "Not a platform admin, or not a person (design §5.2bis, §5.4)",
             "content": {
               "application/json": {
                 "schema": {

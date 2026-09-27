@@ -16,6 +16,8 @@ pub(crate) struct RawClaims {
     iss: String,
     sub: String,
     exp: i64,
+    /// Checked by the verifier against its injected clock, like `exp`.
+    pub(crate) nbf: Option<i64>,
     email: Option<String>,
     name: Option<String>,
     preferred_username: Option<String>,
@@ -214,6 +216,8 @@ pub(crate) struct RawFederatedClaims {
     iss: String,
     sub: String,
     exp: i64,
+    /// Checked by the verifier against its injected clock, like `exp`.
+    pub(crate) nbf: Option<i64>,
     /// One string or several; RFC 7519 allows both spellings.
     aud: Audience,
     jti: Option<String>,

@@ -46,8 +46,8 @@ membership through the UI and with a publish-only key from a pipeline.
 | Grant | Rights come from | Wired in |
 | --- | --- | --- |
 | `Membership` | the channel's member list | M1 |
-| `ApiKey` | the key's own scopes and channel list | M1 |
-| `Federated` | a CI trust policy, same shape as a key | M4 |
+| `ApiKey` | the key's own scopes and channel list — for a personal key, capped by what its owner still holds | M1 |
+| `Federated` | a CI trust policy: each channel with the scopes the policies grant *there* | M4 |
 
 The two doors are deliberately not merged. Resolving a key through membership would
 hand it rights nobody granted it; resolving a member through key scopes would break
@@ -163,6 +163,32 @@ resurrect.
 An API key's secret is returned **once**, at creation. No endpoint can show it again,
 and that is enforced by the shape of the types rather than by discipline:
 `ApiKey` has no field that could carry it.
+
+Who may create a **service account**: the system, through the configuration's
+`[[service_accounts]]` (the reconciler, managed accounts), or a platform admin
+through the API (dynamic accounts, owned by that admin). Nobody else — a bot is
+an author the whole instance sees.
+
+What only a person's own session may do — never a key or a CI token acting for
+them, which gets `credential.session_required`: create a channel, edit their
+profile or avatar, change their do-not-disturb. A key may still *read* those.
+
+Who may mint, see and revoke a key:
+
+- **Minting** takes a person's own session. A key or a CI token cannot mint keys —
+  otherwise a one-day key would mint itself a permanent copy.
+- A **personal** key is only ever for the caller. A **service account's** needs its
+  creator or a platform admin (a managed account, which has no creator, needs
+  `manage` on every channel the key names). A **channel** key needs `manage` there.
+- **Revoking** is open to whoever the key acts as, and to whoever administers its
+  owner: a channel's managers, a service account's creator or a platform admin.
+- **Listing** returns the caller's keys, those of the service accounts they
+  administer, and those of the channels they manage.
+- A **personal** key is capped by its owner's current access. Group-based access
+  counts only while the owner's last login is under 7 days old: a key carries no
+  token, so after that it keeps only its owner's direct memberships.
+- A key's **publish quota** is its own, so a ceiling on one key does not throttle
+  its owner's other keys.
 
 ## Testing
 

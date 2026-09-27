@@ -25,8 +25,8 @@ use time::OffsetDateTime;
 
 use crate::PgStore;
 use crate::mapping::{
-    EXPIRED_UNSEEN, append_event, cursor, enum_from_text, enum_to_text, fail, from_json, parse,
-    priority_rank, sequence, to_json,
+    EXPIRED_UNSEEN, append_event, begin_with_events, cursor, enum_from_text, enum_to_text, fail,
+    from_json, lock_event_log, parse, priority_rank, sequence, to_json,
 };
 
 /// Everything a [`Notification`] needs, head revision included, plus whatever the
@@ -95,12 +95,15 @@ impl NotificationRepository for PgStore {
         external_id: &ExternalId,
     ) -> PortResult<Option<Notification>> {
         // Live rows only: re-running a job whose previous notification aged out
-        // creates a new one rather than resurrecting a tombstone.
+        // creates a new one rather than resurrecting a tombstone — including one
+        // that has expired and that the sweep has simply not reached yet.
         let row = sqlx::query(select_notification!(
-            "WHERE n.channel_id = $1 AND n.external_id = $2 AND n.deleted_at IS NULL"
+            "WHERE n.channel_id = $1 AND n.external_id = $2 AND n.deleted_at IS NULL
+               AND (n.expires_at IS NULL OR n.expires_at > $3)"
         ))
         .bind(channel.as_str())
         .bind(external_id.as_str())
+        .bind(OffsetDateTime::now_utc())
         .fetch_optional(self.pool())
         .await
         .map_err(|error| fail("notification", error))?;
@@ -109,11 +112,42 @@ impl NotificationRepository for PgStore {
     }
 
     async fn insert(&self, notification: &Notification, revision: &Revision) -> PortResult<Cursor> {
-        let mut transaction = self
-            .pool()
-            .begin()
+        let mut transaction = begin_with_events(self.pool(), "notification").await?;
+
+        // An expired row the sweep has not reached yet still holds the external id
+        // in the unique index. Retire it here, exactly as the sweep would, so the
+        // re-run that found nothing live gets its new notification instead of a
+        // conflict it would retry forever.
+        if let Some(external_id) = &notification.external_id {
+            let stale: Option<(String, bool)> = sqlx::query_as(
+                "SELECT n.id,
+                        EXISTS (
+                            SELECT 1 FROM receipts r
+                            WHERE r.notification_id = n.id AND r.kind IN ('delivered', 'seen')
+                        )
+                 FROM notifications n
+                 WHERE n.channel_id = $1 AND n.external_id = $2 AND n.deleted_at IS NULL
+                   AND n.expires_at IS NOT NULL AND n.expires_at <= $3
+                 FOR NO KEY UPDATE OF n",
+            )
+            .bind(notification.channel.as_str())
+            .bind(external_id.as_str())
+            .bind(revision.received_at)
+            .fetch_optional(&mut *transaction)
             .await
             .map_err(|error| fail("notification", error))?;
+            if let Some((id, was_delivered)) = stale {
+                let stale_id = parse("notification.id", &id, str::parse::<NotificationId>)?;
+                expire(
+                    &mut transaction,
+                    stale_id,
+                    &notification.channel,
+                    was_delivered,
+                    revision.received_at,
+                )
+                .await?;
+            }
+        }
 
         // The event first, so the row can carry the cursor it landed on and the
         // inbox can order by it without a second write.
@@ -176,11 +210,30 @@ impl NotificationRepository for PgStore {
         notification: &Notification,
         revision: &Revision,
     ) -> PortResult<Cursor> {
-        let mut transaction = self
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| fail("notification", error))?;
+        let mut transaction = begin_with_events(self.pool(), "notification").await?;
+
+        // Locked and re-checked: the aggregate was read before this transaction, and
+        // in between another revision may have taken the next seq, or a delete or
+        // the expiry sweep may have tombstoned it. Writing anyway would put a
+        // revision event after a tombstone and resurrect it in every client cache.
+        // A `Conflict` sends the upsert back to re-read (scenario T16).
+        let current: Option<(i32, bool)> = sqlx::query_as(
+            "SELECT last_seq,
+                    deleted_at IS NULL AND (expires_at IS NULL OR expires_at > $2) AS live
+             FROM notifications WHERE id = $1 FOR NO KEY UPDATE",
+        )
+        .bind(notification.id.to_string())
+        .bind(revision.received_at)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| fail("notification", error))?;
+        if !current.is_some_and(|(last_seq, live)| {
+            live && i64::from(last_seq) + 1 == i64::from(revision.seq)
+        }) {
+            return Err(notify_ports::PortError::Conflict {
+                what: "notification.revision",
+            });
+        }
 
         let cursor = append_event(
             &mut transaction,
@@ -386,16 +439,12 @@ impl NotificationRepository for PgStore {
         id: NotificationId,
         at: OffsetDateTime,
     ) -> PortResult<Option<Cursor>> {
-        let mut transaction = self
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| fail("notification", error))?;
+        let mut transaction = begin_with_events(self.pool(), "notification").await?;
 
         // Locked and re-read: deleting twice must emit one tombstone, and two
         // requests arriving together is exactly how it would emit two.
         let existing: Option<(String, Option<OffsetDateTime>)> = sqlx::query_as(
-            "SELECT channel_id, deleted_at FROM notifications WHERE id = $1 FOR UPDATE",
+            "SELECT channel_id, deleted_at FROM notifications WHERE id = $1 FOR NO KEY UPDATE",
         )
         .bind(id.to_string())
         .fetch_optional(&mut *transaction)
@@ -439,11 +488,7 @@ impl NotificationRepository for PgStore {
         now: OffsetDateTime,
         limit: u32,
     ) -> PortResult<Vec<ExpiredNotification>> {
-        let mut transaction = self
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| fail("notification", error))?;
+        let mut transaction = begin_with_events(self.pool(), "notification").await?;
 
         // SKIP LOCKED so a second replica that briefly believes it leads claims a
         // different batch rather than blocking on this one (scenario T22).
@@ -457,7 +502,7 @@ impl NotificationRepository for PgStore {
              WHERE n.deleted_at IS NULL AND n.expires_at IS NOT NULL AND n.expires_at <= $1
              ORDER BY n.expires_at
              LIMIT $2
-             FOR UPDATE OF n SKIP LOCKED",
+             FOR NO KEY UPDATE OF n SKIP LOCKED",
         )
         .bind(now)
         .bind(i64::from(limit))
@@ -470,33 +515,7 @@ impl NotificationRepository for PgStore {
             let notification = parse("notification.id", &id, str::parse::<NotificationId>)?;
             let channel = parse("notification.channel", &channel, ChannelId::parse)?;
 
-            let cursor = if was_delivered {
-                // Somebody has it on screen: they need the tombstone to drop it.
-                append_event(
-                    &mut transaction,
-                    &Audience::Channel {
-                        id: channel.clone(),
-                    },
-                    &EventPayload::Tombstone {
-                        notification_id: notification,
-                        reason: TombstoneReason::Expired,
-                    },
-                    now,
-                )
-                .await?
-            } else {
-                // Nobody ever saw it. It stays out of the backlog and becomes a
-                // number instead (design §7.2bis, scenario T9).
-                expired_unseen(&mut transaction, &channel, notification, now).await?
-            };
-
-            sqlx::query("UPDATE notifications SET deleted_at = $2, cursor_seq = $3 WHERE id = $1")
-                .bind(&id)
-                .bind(now)
-                .bind(sequence(cursor))
-                .execute(&mut *transaction)
-                .await
-                .map_err(|error| fail("notification", error))?;
+            expire(&mut transaction, notification, &channel, was_delivered, now).await?;
 
             claimed.push(ExpiredNotification {
                 id: notification,
@@ -532,11 +551,7 @@ impl NotificationRepository for PgStore {
             .map(|(channel, cutoff)| (channel.to_string(), *cutoff))
             .unzip();
 
-        let mut transaction = self
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| fail("notification", error))?;
+        let mut transaction = begin_with_events(self.pool(), "notification").await?;
 
         // `unnest` of two arrays rather than a `channel_id = ANY($1)` plus one
         // cutoff: the deadline differs per channel, and flattening it to the
@@ -566,7 +581,7 @@ impl NotificationRepository for PgStore {
                    ) <= d.cutoff
              ORDER BY n.created_at
              LIMIT $3
-             FOR UPDATE OF n SKIP LOCKED",
+             FOR NO KEY UPDATE OF n SKIP LOCKED",
         )
         .bind(&channels)
         .bind(&cutoffs)
@@ -755,6 +770,45 @@ async fn insert_revision(
     Ok(())
 }
 
+/// Tombstone one expired notification: the event its readers need, then the row.
+async fn expire(
+    transaction: &mut Transaction<'_, Postgres>,
+    notification: NotificationId,
+    channel: &ChannelId,
+    was_delivered: bool,
+    now: OffsetDateTime,
+) -> PortResult<Cursor> {
+    let cursor = if was_delivered {
+        // Somebody has it on screen: they need the tombstone to drop it.
+        append_event(
+            transaction,
+            &Audience::Channel {
+                id: channel.clone(),
+            },
+            &EventPayload::Tombstone {
+                notification_id: notification,
+                reason: TombstoneReason::Expired,
+            },
+            now,
+        )
+        .await?
+    } else {
+        // Nobody ever saw it. It stays out of the backlog and becomes a number
+        // instead (design §7.2bis, scenario T9).
+        expired_unseen(transaction, channel, notification, now).await?
+    };
+
+    sqlx::query("UPDATE notifications SET deleted_at = $2, cursor_seq = $3 WHERE id = $1")
+        .bind(notification.to_string())
+        .bind(now)
+        .bind(sequence(cursor))
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| fail("notification", error))?;
+
+    Ok(cursor)
+}
+
 /// Consume a sequence value for a notification that expired unseen.
 ///
 /// It is an `events` row so the cursor stays one unbroken order, and it carries no
@@ -765,6 +819,9 @@ async fn expired_unseen(
     notification: NotificationId,
     at: OffsetDateTime,
 ) -> PortResult<Cursor> {
+    // It draws a sequence value like any append, so it holds the same lock.
+    lock_event_log(transaction).await?;
+
     let sequence: i64 = sqlx::query_scalar(
         "INSERT INTO events
              (audience_kind, channel_id, user_id, recorded_at, kind, notification_id, payload)

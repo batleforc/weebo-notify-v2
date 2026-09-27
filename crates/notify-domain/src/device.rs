@@ -26,6 +26,7 @@
 //! enrolled that would later have to be re-enrolled.
 
 use core::fmt;
+use core::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -172,6 +173,79 @@ impl PushTransport {
             Self::Apns { .. } => "apns",
         }
     }
+
+    /// The URL the server will `POST` to, when the device chose it.
+    #[must_use]
+    pub const fn endpoint(&self) -> Option<&Url> {
+        match self {
+            Self::WebPush { endpoint, .. } | Self::UnifiedPush { endpoint } => Some(endpoint),
+            Self::Stream | Self::Apns { .. } => None,
+        }
+    }
+}
+
+/// Whether the server may `POST` to an endpoint a client handed it.
+///
+/// A push endpoint is a URL any authenticated user picks, and the server calls it
+/// on every fan-out — without this, enrolling `http://169.254.169.254/` makes the
+/// server a proxy into its own network. HTTPS only, and no host that names or is a
+/// non-public address. A name that *resolves* to one is the transport's job at
+/// connect time; this is the part that needs no I/O.
+pub fn check_push_endpoint(endpoint: &Url) -> Result<()> {
+    let refused = DomainError::Malformed {
+        field: "device.endpoint",
+        reason: "expected an https URL to a public host",
+    };
+    if endpoint.scheme() != "https" {
+        return Err(refused);
+    }
+    match endpoint.host() {
+        Some(url::Host::Domain(name))
+            if !name.eq_ignore_ascii_case("localhost")
+                && !name.to_ascii_lowercase().ends_with(".localhost") =>
+        {
+            Ok(())
+        }
+        Some(url::Host::Ipv4(ip)) if is_public_address(IpAddr::V4(ip)) => Ok(()),
+        Some(url::Host::Ipv6(ip)) if is_public_address(IpAddr::V6(ip)) => Ok(()),
+        _ => Err(refused),
+    }
+}
+
+/// Whether an address is on the public internet: not loopback, private,
+/// link-local, unique-local, shared (CGNAT), benchmarking, documentation,
+/// multicast, reserved or unspecified. An IPv4-mapped IPv6 address is judged as
+/// the IPv4 it carries.
+#[must_use]
+pub fn is_public_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || a >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_address(IpAddr::V4(v4));
+            }
+            let [first, second, ..] = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first == 0x2001 && second == 0x0db8))
+        }
+    }
 }
 
 /// An enrolled device.
@@ -225,6 +299,9 @@ impl Device {
             return Err(DomainError::Missing {
                 field: "device.public_key",
             });
+        }
+        if let Some(endpoint) = transport.endpoint() {
+            check_push_endpoint(endpoint)?;
         }
 
         Ok(Self {
@@ -434,6 +511,47 @@ mod tests {
         let json = serde_json::to_string(&device).unwrap();
         assert_eq!(serde_json::from_str::<Device>(&json).unwrap(), device);
         assert!(json.contains(&key().to_string()));
+    }
+
+    #[test]
+    fn a_push_endpoint_must_be_https_to_a_public_host() {
+        for good in [
+            "https://push.example/abc",
+            "https://8.8.8.8/x",
+            "https://[2606:4700::1111]/x",
+        ] {
+            assert!(
+                check_push_endpoint(&Url::parse(good).unwrap()).is_ok(),
+                "{good}"
+            );
+        }
+        for bad in [
+            "http://push.example/abc",
+            "https://localhost/x",
+            "https://api.localhost/x",
+            "https://127.0.0.1/x",
+            "https://10.0.0.5/x",
+            "https://192.168.1.1/x",
+            "https://172.16.0.1/x",
+            "https://169.254.169.254/latest",
+            "https://100.64.0.1/x",
+            "https://0.0.0.0/x",
+            "https://[::1]/x",
+            "https://[fd00::1]/x",
+            "https://[fe80::1]/x",
+            "https://[::ffff:10.0.0.1]/x",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                check_push_endpoint(&Url::parse(bad).unwrap()).is_err(),
+                "{bad}"
+            );
+        }
+
+        let internal = PushTransport::UnifiedPush {
+            endpoint: Url::parse("https://169.254.169.254/").unwrap(),
+        };
+        assert!(enrol(internal, Some(key())).is_err());
     }
 
     #[test]

@@ -35,6 +35,9 @@ use sqlx::postgres::PgListener;
 /// are.
 const CHANNEL: &str = "weebo_notify_pokes";
 
+/// How long the listener waits before asking again after a failure.
+const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Fan-out between replicas, over the database they already share.
 #[derive(Debug, Clone)]
 pub struct PgEventBus {
@@ -83,27 +86,41 @@ impl EventBus for PgEventBus {
             .await
             .map_err(|error| PortError::unavailable("eventbus", error))?;
 
-        // `into_stream` reconnects and re-issues the LISTEN by itself. That matters
-        // more than it looks: a replica that silently stopped receiving pokes still
-        // serves reads, so nothing would look broken while its streams went stale.
-        let stream = listener
-            .into_stream()
-            .filter_map(|notification| async move {
-                match notification {
-                    Ok(notification) => {
-                        match serde_json::from_str::<Poke>(notification.payload()) {
-                            Ok(poke) => Some(poke),
-                            Err(error) => {
+        // `try_recv` rather than `into_stream`, for two things the latter hides.
+        // It reconnects silently, and every `NOTIFY` sent while it was away is gone
+        // — a quiet channel's open streams would then stay behind until its next
+        // publish. And its first error ends the stream for good, leaving a replica
+        // that serves reads and fans out nothing, which looks like nothing at all.
+        // Here a lost connection becomes a `Resync` (every stream re-reads from its
+        // own cursor), and an error is a pause, never an end.
+        //
+        // `lost` carries a failure across to the next thing that does arrive: that
+        // is when the listener is back, and a `Resync` then covers whatever was
+        // sent in between — including the notification it stands in for.
+        let stream =
+            futures::stream::unfold((listener, false), |(mut listener, mut lost)| async move {
+                loop {
+                    match listener.try_recv().await {
+                        Ok(Some(_)) if lost => return Some((Poke::Resync, (listener, false))),
+                        Ok(Some(notification)) => {
+                            match serde_json::from_str::<Poke>(notification.payload()) {
+                                Ok(poke) => return Some((poke, (listener, false))),
                                 // A payload this build does not understand is a rolling
                                 // deploy, not a reason to tear the subscription down.
-                                tracing::warn!(%error, "dropped an unreadable poke");
-                                None
+                                Err(error) => tracing::warn!(%error, "dropped an unreadable poke"),
                             }
                         }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "the poke listener hiccuped; it reconnects itself");
-                        None
+                        Ok(None) => {
+                            tracing::warn!(
+                                "the poke listener lost its connection; resyncing streams"
+                            );
+                            return Some((Poke::Resync, (listener, false)));
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "the poke listener failed; retrying");
+                            lost = true;
+                            tokio::time::sleep(RETRY).await;
+                        }
                     }
                 }
             });

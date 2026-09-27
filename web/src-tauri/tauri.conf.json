@@ -12,7 +12,21 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob: https: http://localhost:* http://127.0.0.1:*",
+        "font-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost https: http://localhost:* http://127.0.0.1:*",
+        "manifest-src": "'self'",
+        "worker-src": "'self'",
+        "form-action": "'self'",
+        "base-uri": "'none'",
+        "frame-src": "'none'",
+        "object-src": "'none'"
+      },
+      "devCsp": null
     }
   },
   "plugins": {

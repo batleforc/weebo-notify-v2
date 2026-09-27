@@ -26,6 +26,14 @@ That property is what makes a single `config/dev.toml` work under Docker Compose
 inside an Eclipse Che workspace, where browser-facing endpoints must be public routes
 rather than `localhost`. No second file, no `if env == che`.
 
+## Development instances
+
+`[server] dev = true` (`WNK_SERVER__DEV`) declares a development instance, and is
+the only thing that lets the server boot on the development stack's defaults — a
+loopback `[oidc] issuer`, the `weebo:weebo` database. `config/dev.toml` sets it;
+nothing else should. Without it, a config that forgot `[oidc]` or `[database]`
+refuses to start rather than trusting whatever answers on localhost.
+
 ## GitOps: managed versus dynamic
 
 Channels and service accounts can be **declared in the configuration**, and then the

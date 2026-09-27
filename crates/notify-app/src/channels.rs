@@ -124,21 +124,29 @@ impl CreateChannel {
         id: ChannelId,
         display_name: Option<&str>,
     ) -> Result<Channel, Failure> {
-        if self.channels.get(&id).await?.is_some() {
-            return Err(DomainError::Malformed {
-                field: "channel.id",
-                reason: "is already taken",
-            }
-            .into());
-        }
-
+        // A person's session only: a leaked key or a CI token creating channels at
+        // will — each one a place it manages — is a foothold nobody granted.
+        caller.ensure_person()?;
         let mut channel = Channel::dynamic(id, display_name)?;
         channel.upsert_member(Membership::new(
             caller.principal.clone(),
             vec![Scope::Publish, Scope::Subscribe, Scope::Manage],
         )?);
 
-        self.channels.upsert(&channel).await?;
+        // Insert-if-absent in one write: checking first and writing second let two
+        // creators of the same name both pass the check, and the second silently
+        // replaced the first's channel with one only it could manage.
+        match self.channels.insert(&channel).await {
+            Ok(()) => {}
+            Err(notify_ports::PortError::Conflict { .. }) => {
+                return Err(DomainError::Malformed {
+                    field: "channel.id",
+                    reason: "is already taken",
+                }
+                .into());
+            }
+            Err(other) => return Err(other.into()),
+        }
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone().into(),
@@ -204,8 +212,11 @@ impl ManageMembers {
             .origin
             .ensure_mutable_through_api("channel.members")?;
 
-        channel.upsert_member(Membership::new(principal.clone(), scopes.clone())?);
-        self.channels.upsert(&channel).await?;
+        let membership = Membership::new(principal.clone(), scopes.clone())?;
+        // One row, not the whole list: rewriting every membership from the snapshot
+        // above would drop anybody another manager added in the meantime.
+        self.channels.put_member(channel_id, &membership).await?;
+        channel.upsert_member(membership);
 
         self.audit
             .record(&AuditEntry {
@@ -237,14 +248,15 @@ impl ManageMembers {
             Scope::Manage
         };
 
-        let mut channel = self.authorizer.authorize(caller, channel_id, scope).await?;
+        let channel = self.authorizer.authorize(caller, channel_id, scope).await?;
         channel
             .origin
             .ensure_mutable_through_api("channel.members")?;
 
-        let removed = channel.remove_member(principal);
+        // Asked of the store, not of the snapshot: another request may have removed
+        // them already, and only one of the two should be journalled.
+        let removed = self.channels.remove_member(channel_id, principal).await?;
         if removed {
-            self.channels.upsert(&channel).await?;
             self.audit
                 .record(&AuditEntry {
                     actor: caller.principal.clone().into(),
@@ -327,7 +339,11 @@ impl UpdateChannel {
             return Ok(channel);
         }
 
-        self.channels.upsert(&channel).await?;
+        // The policy alone: writing the whole channel back would also restore the
+        // member list as it stood when this request read it.
+        self.channels
+            .set_policy(channel_id, &channel.policy)
+            .await?;
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone().into(),
@@ -485,6 +501,40 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_persons_session_creates_a_channel() {
+        let fixture = fixture();
+        let as_key = Caller {
+            grant: crate::authz::Grant::ApiKey {
+                id: notify_domain::ApiKeyId::generate(),
+                scopes: vec![Scope::Publish, Scope::Manage],
+                channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
+                owner_groups: Vec::new(),
+            },
+            ..Caller::member(fixture.alice.clone())
+        };
+        let as_bot = Caller::member(Principal::ServiceAccount {
+            id: notify_domain::ServiceAccountId::parse("bot-argocd").unwrap(),
+        });
+
+        for caller in [as_key, as_bot] {
+            assert!(
+                fixture
+                    .create
+                    .execute(&caller, channel_id("foothold"), None)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            ChannelRepository::get(&fixture.store, &channel_id("foothold"))
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 

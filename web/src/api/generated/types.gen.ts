@@ -2789,6 +2789,10 @@ export type FsUploadErrors = {
      */
     404: unknown;
     /**
+     * Already uploaded — a token is good for one upload
+     */
+    409: unknown;
+    /**
      * Over the 25 MiB ceiling (§8.2)
      */
     413: unknown;
@@ -4081,7 +4085,7 @@ export type CreateAccountErrors = {
      */
     401: Problem;
     /**
-     * A bot cannot create bots (design §5.2bis)
+     * Not a platform admin, or not a person (design §5.2bis, §5.4)
      */
     403: Problem;
     /**

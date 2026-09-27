@@ -192,3 +192,19 @@ fn token_of(url: &Url) -> String {
         .map(|(_, value)| value.into_owned())
         .expect("a token in the query string")
 }
+
+#[tokio::test]
+async fn an_upload_claim_is_granted_once_even_under_a_race() {
+    let (store, _dir) = store();
+    let id = AttachmentId::generate();
+
+    let (first, second) = tokio::join!(store.claim_upload(id), store.claim_upload(id));
+    assert!(
+        first.unwrap() ^ second.unwrap(),
+        "exactly one of two concurrent PUTs may land"
+    );
+
+    // Released (a failed body read) — the token gets its one upload back.
+    store.delete(id).await.unwrap();
+    assert!(store.claim_upload(id).await.unwrap());
+}

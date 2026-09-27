@@ -59,7 +59,7 @@ Advisories this project has looked at and decided not to act on are recorded wit
 their reasoning and their revisit condition, rather than suppressed silently:
 
 - [`.cargo/audit.toml`](.cargo/audit.toml) and [`deny.toml`](deny.toml) — Rust advisories;
-- [`.trivyignore`](.trivyignore) and [`charts/weebo-notify/.trivyignore`](charts/weebo-notify/.trivyignore) — container and Kubernetes findings;
+- [`.trivyignore.yaml`](.trivyignore.yaml) and [`charts/weebo-notify/.trivyignore.yaml`](charts/weebo-notify/.trivyignore.yaml) — container and Kubernetes findings;
 - [`.gitleaks.toml`](.gitleaks.toml) — test fixtures shaped like credentials.
 
 If you think one of those arguments is wrong, that is a security report too — the
@@ -73,7 +73,7 @@ and the command that checks them:
 
 ```bash
 cosign verify ghcr.io/batleforc/weebo-notify@sha256:<digest> \
-  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \
+  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/\.github/workflows/release\.yaml@refs/tags/v" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

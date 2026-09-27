@@ -110,6 +110,14 @@ impl OidcVerifier {
     /// payload and not at all in how a key is found, and every rule that matters is
     /// here: no algorithm from the header, one refresh per interval, and an unknown
     /// `kid` after that refresh is a refusal rather than a retry.
+    /// Whether `nbf` is still ahead of the injected clock, past the leeway.
+    fn not_yet_valid(&self, nbf: Option<i64>) -> bool {
+        nbf.is_some_and(|nbf| {
+            OffsetDateTime::from_unix_timestamp(nbf)
+                .map_or(true, |nbf| nbf - self.config.leeway > self.clock.now())
+        })
+    }
+
     async fn key_for(&self, token: &str) -> PortResult<Result<VerifyingKey, TokenRejection>> {
         let Ok(header) = decode_header(token) else {
             return Ok(Err(TokenRejection::Malformed));
@@ -167,6 +175,9 @@ impl OidcVerifier {
             HashSet::from(["exp".to_owned(), "iss".to_owned(), "aud".to_owned()]);
 
         let claims = match decode::<RawFederatedClaims>(token, &key.decoding, &validation) {
+            Ok(data) if self.not_yet_valid(data.claims.nbf) => {
+                return Ok(Err(TokenRejection::NotYetValid));
+            }
             Ok(data) => match data.claims.into_federated() {
                 Ok(claims) => claims,
                 Err(rejection) => return Ok(Err(rejection)),
@@ -205,7 +216,20 @@ impl TokenVerifier for OidcVerifier {
         validation.required_spec_claims =
             HashSet::from(["exp".to_owned(), "iss".to_owned(), "aud".to_owned()]);
 
+        // Another kind of JWT the same issuer signs — a logout token, a DPoP proof —
+        // is not an access token, whatever its `aud` says. `JWT` and no `typ` at
+        // all stay accepted: that is what most issuers stamp on access tokens.
+        let typ = decode_header(token).ok().and_then(|header| header.typ);
+        if let Some(typ) = typ
+            && !["jwt", "at+jwt", "application/at+jwt"].contains(&typ.to_ascii_lowercase().as_str())
+        {
+            return Ok(Err(TokenRejection::Malformed));
+        }
+
         let claims = match decode::<RawClaims>(token, &key.decoding, &validation) {
+            Ok(data) if self.not_yet_valid(data.claims.nbf) => {
+                return Ok(Err(TokenRejection::NotYetValid));
+            }
             Ok(data) => match data.claims.into_verified(&self.config.groups_claim) {
                 Ok(claims) => claims,
                 Err(rejection) => return Ok(Err(rejection)),
@@ -552,6 +576,20 @@ mod tests {
 
         let rejected = fixture.verifier.verify(&token).await.unwrap();
         assert_eq!(rejected.unwrap_err(), TokenRejection::Expired);
+    }
+
+    #[tokio::test]
+    async fn a_token_is_refused_before_its_nbf_past_the_leeway() {
+        let fixture = Fixture::new();
+        let mut claims = fixture.valid_claims();
+
+        claims["nbf"] = json!((fixture.clock.now() + Duration::seconds(30)).unix_timestamp());
+        let skewed = fixture.verifier.verify(&fixture.token(&claims)).await;
+        assert!(skewed.unwrap().is_ok(), "inside the leeway");
+
+        claims["nbf"] = json!((fixture.clock.now() + Duration::minutes(3)).unix_timestamp());
+        let early = fixture.verifier.verify(&fixture.token(&claims)).await;
+        assert_eq!(early.unwrap().unwrap_err(), TokenRejection::NotYetValid);
     }
 
     #[tokio::test]

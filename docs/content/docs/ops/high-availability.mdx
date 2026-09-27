@@ -25,7 +25,29 @@ TTL purge, stale closure, GitOps reconciliation, sink retries and DND digests ru
 a single replica, each under its own lock — a slow purge must not stop notifications
 from being closed. Leader election is either a Postgres advisory lock (default, no extra
 infrastructure) or the Kubernetes Lease API. When the lock is lost another replica
-takes over; non-leaders keep serving the API normally.
+takes over; non-leaders keep serving the API normally. The jobs are independent
+loops, so a slow reconcile pass or SMTP send never delays the five-second sink tick.
+
+During a rolling update, or after a `SIGHUP` that reached only some pods, replicas
+hold **different copies** of the configuration file. A file is applied when it is
+read — at boot and on `SIGHUP` — and the one-minute timer only re-applies the file
+the database last recorded. A replica whose copy differs stands aside on its timer
+instead of undoing the newer one, so an old pod can never archive a channel that the
+new configuration just declared.
+
+## One writer at a time on the event log
+
+The cursor is the event log's sequence, and a sequence hands out numbers in insert
+order rather than commit order. Every write that appends an event therefore holds a
+transaction-scoped advisory lock until it commits, which is what guarantees a client
+reading `seq > cursor` never skips a row that committed late. The cost is that
+event-producing writes are serialised across the whole deployment — comfortable at
+hundreds per second. Past that, the upgrade path is to drop the lock and have readers
+stop at the `pg_snapshot_xmin` watermark.
+
+The `LISTEN` connection reconnects by itself. Pokes sent while it was down are lost,
+so on reconnection every open stream re-reads the log from its own cursor instead of
+waiting for that channel's next publication.
 
 ## Rolling updates without a gap
 

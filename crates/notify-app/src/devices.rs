@@ -10,7 +10,7 @@ use std::sync::Arc;
 use notify_domain::{Device, DeviceId, DevicePublicKey, PushTransport};
 use notify_ports::{AuditEntry, AuditLog, Clock, DeviceRepository, Failure, actions};
 
-use crate::authz::Caller;
+use crate::authz::{Caller, Grant};
 
 /// `POST /api/v1/devices` (design §8).
 #[derive(Clone)]
@@ -67,9 +67,14 @@ impl EnrolDevice {
         // The moment a device is enrolled is the moment a group-only channel
         // binding needs somewhere offline to reach: without this, `delivery_targets`
         // never sees an owner whose access is only `channel_group_access` (§11).
-        self.devices
-            .remember_groups(&caller.principal, &caller.groups, now)
-            .await?;
+        //
+        // Not from an API key, whose groups are empty by construction: that would
+        // erase what the owner's last real login recorded.
+        if caller.grant == Grant::Membership {
+            self.devices
+                .remember_groups(&caller.principal, &caller.groups, now)
+                .await?;
+        }
         self.audit
             .record(&AuditEntry {
                 actor: caller.principal.clone().into(),

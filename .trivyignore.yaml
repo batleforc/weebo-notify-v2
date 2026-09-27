@@ -1,0 +1,44 @@
+# Findings `task audit:container` has looked at and accepted, with the reason and
+# the condition that would take each one back out.
+#
+# This file exists so the scan can run at MEDIUM rather than HIGH. A gate set above
+# a finding cannot tell "we understand this" from "nobody has looked" — and the two
+# entries below are exactly the kind that get lost under a threshold: one is a
+# genuine upstream constraint, the other is a test fixture. Written down, they cost
+# a reader thirty seconds; unwritten, they cost a threshold that hides the next one.
+# (`charts/weebo-notify/.trivyignore.yaml` does the same job for the Helm scan.)
+#
+# YAML rather than the plain list so each entry is scoped to the paths its
+# justification covers: an ID alone would silence the rule repository-wide.
+
+vulnerabilities:
+  # GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429 — unsoundness in `glib`'s
+  # `VariantStrIter` iterator impls, fixed in glib 0.20.
+  #
+  # NOT FIXABLE FROM HERE, and not a vulnerability: RustSec classes it `unsound`, and
+  # `cargo audit` reports zero vulnerabilities for this lockfile. It reaches us only
+  # through `web/src-tauri`, where `gtk 0.18.2` is pinned by Tauri 2.11.5 itself —
+  # via `tao`, `wry`, `webkit2gtk`, `muda` and `libappindicator` — because Tauri v2 on
+  # Linux is built on the GTK3 bindings. That whole binding set is unmaintained
+  # upstream (the gtk-rs project moved to GTK4), so "upgrade glib" is not a move that
+  # exists until Tauri's Linux stack does.
+  #
+  # Scope, stated plainly: that crate is the desktop shell (M5). No gate compiles it,
+  # no release ships it, and nothing in the deployed server or web image links it.
+  #
+  # REVISIT IF: Tauri moves off GTK3, or this stops being `unsound` and becomes a
+  # vulnerability with a reachable path.
+  - id: GHSA-wrw7-89jp-8q8g
+    paths:
+      - "web/src-tauri/Cargo.lock"
+
+secrets:
+  # jwt-token in `crates/notify-adapters/oidc/src/federation.rs` — a JWT literal
+  # inside a `#[cfg(test)]` assertion, signed with a key generated in the same test.
+  # The same finding is allowlisted in `.gitleaks.toml`, with the fuller reasoning
+  # about why a scan that always reports something is a scan nobody reads.
+  #
+  # REVISIT IF: that file ever carries a token minted against a real issuer.
+  - id: jwt-token
+    paths:
+      - "crates/notify-adapters/oidc/src/federation.rs"

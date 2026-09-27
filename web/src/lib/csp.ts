@@ -94,6 +94,11 @@ export interface PolicyInputs {
   attachmentOrigin?: string;
   /** Source expressions from {@link inlineScriptHashes}. */
   hashes: string[];
+  /**
+   * Extra `connect-src` sources the host shell needs — the desktop's IPC
+   * channel (`scripts/tauri-csp.ts`). Absent for the browser.
+   */
+  connect?: string[];
 }
 
 /**
@@ -108,6 +113,7 @@ export function contentSecurityPolicy({
   oidcOrigin: issuer,
   attachmentOrigin,
   hashes,
+  connect = [],
 }: PolicyInputs): string {
   // Not run through `originOf`: the optional bucket origin arrives already an
   // origin (or already a shell placeholder, at build time) — same reasoning as
@@ -119,7 +125,7 @@ export function contentSecurityPolicy({
     // No `'unsafe-inline'`, which is the whole point (§10.3): a body published by
     // a CI job reaches readers holding an access token in memory, and the one
     // inline script this page has is named by its hash.
-    `script-src 'self' ${hashes.join(" ")}`,
+    ["script-src 'self'", ...hashes].join(" "),
     // `'unsafe-inline'` here and nowhere else, and it is not laziness: reka-ui
     // positions its popovers and tooltips by writing `style` attributes, which
     // CSP counts as inline styles. Hashing them is impossible — they change with
@@ -132,12 +138,17 @@ export function contentSecurityPolicy({
     // therefore from an origin that is not the API's (§6.1, D26). Bodies cannot
     // contain an `<img>` at all — DOMPurify forbids the tag — so beyond those
     // three no image origin is allowed, and in particular never `https:`.
-    ["img-src 'self' data:", api, bucket].filter(Boolean).join(" "),
+    //
+    // `blob:` for avatars and thumbnails, which are fetched with the bearer token
+    // and shown as object URLs (`lib/object-url.ts`) — an `<img>` cannot send the
+    // header their routes require. A `blob:` URL can only be minted by script
+    // already running on this origin, so it admits nothing `script-src` has not.
+    ["img-src 'self' data: blob:", api, bucket].filter(Boolean).join(" "),
     "font-src 'self'",
     // The API and the identity provider, and nothing else. This is the directive
     // that makes a stolen token hard to send anywhere: an injected script that
     // cannot reach an attacker's host has to exfiltrate through one of these two.
-    `connect-src 'self' ${api} ${issuer}`,
+    ["connect-src 'self'", ...connect, api, issuer].join(" "),
     "manifest-src 'self'",
     // The PWA service worker (§10.4), registered from this origin.
     "worker-src 'self'",

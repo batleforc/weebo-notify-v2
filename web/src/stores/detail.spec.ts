@@ -221,3 +221,26 @@ describe("who has read it", () => {
     expect(readershipMock).not.toHaveBeenCalled();
   });
 });
+
+describe("switching rows while one is loading", () => {
+  it("does not let a slow failure for the old row land on the new one", async () => {
+    let failOld: (reason: unknown) => void = () => {};
+    getOneMock
+      .mockReturnValueOnce(new Promise((_, reject) => (failOld = reject)))
+      .mockResolvedValue({ data: { ...NOTIFICATION, id: "ntf_2" } });
+    revisionsMock.mockResolvedValue({ data: { items: [], next: null } });
+    listInteractionsMock.mockResolvedValue({ data: [] });
+    readershipMock.mockResolvedValue({ data: null });
+    const detail = useDetail();
+
+    const old = detail.open("ntf_1");
+    await detail.open("ntf_2");
+    failOld(new Error("404"));
+    await old;
+
+    expect(detail.gone).toBeNull();
+    expect(detail.error).toBeNull();
+    expect(detail.loading).toBe(false);
+    expect(detail.notification?.id).toBe("ntf_2");
+  });
+});

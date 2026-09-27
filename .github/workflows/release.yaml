@@ -58,6 +58,10 @@ env:
   IMAGE_REGISTRY: ghcr.io
   IMAGE_NAME: ghcr.io/batleforc/weebo-notify
 
+# Least privilege; a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   gate:
     # A tag never exempts anything from the gates a pull request had to pass.
@@ -226,9 +230,9 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.kind.outputs.tag }}
-            ${{ steps.kind.outputs.prerelease == 'false' && format('{0}:latest', env.IMAGE_NAME) || '' }}
+          # `:latest` is not pushed here: it moves only after the scan and the
+          # signature below, so a vulnerable build never becomes what `latest` pulls.
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.kind.outputs.tag }}
 
       - name: Build and push the web image
         # No build args since ADR-0021 superseded ADR-0019: one image now serves
@@ -243,9 +247,7 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          tags: |
-            ${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}
-            ${{ steps.kind.outputs.prerelease == 'false' && format('{0}-web:latest', env.IMAGE_NAME) || '' }}
+          tags: ${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}
 
       - name: Scan the published images
         # After the push and not before it: what is scanned has to be what was
@@ -280,6 +282,18 @@ jobs:
           test -n "$SERVER_DIGEST" && test -n "$WEB_DIGEST"
           cosign sign --yes "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}"
           cosign sign --yes "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
+
+      - name: Promote to latest
+        # Scanned and signed by now; `imagetools create` re-points the tag at the
+        # exact digests above without rebuilding or re-pulling anything.
+        if: steps.kind.outputs.prerelease == 'false'
+        env:
+          SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "${{ env.IMAGE_NAME }}:latest" "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}"
+          docker buildx imagetools create -t "${{ env.IMAGE_NAME }}-web:latest" "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
 
       - name: Publish the release
         # Created as a draft, filled with artefacts and the changelog notes, then
@@ -320,7 +334,7 @@ jobs:
             printf 'Verify before you run them:\n\n'
             printf '```\n'
             printf 'cosign verify %s@%s \\\n' "${{ env.IMAGE_NAME }}" "$SERVER_DIGEST"
-            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \\\n'
+            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/\\.github/workflows/release\\.yaml@refs/tags/v" \\\n'
             printf '  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n'
             printf '```\n\n'
             printf '| Image | Digest |\n| --- | --- |\n'
@@ -333,7 +347,7 @@ jobs:
             printf 'cosign verify-blob <file> \\\n'
             printf '  --signature <file>.sig \\\n'
             printf '  --certificate <file>.pem \\\n'
-            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/" \\\n'
+            printf '  --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/\\.github/workflows/release\\.yaml@refs/tags/v" \\\n'
             printf '  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n'
             printf '```\n'
           } > release-notes.md

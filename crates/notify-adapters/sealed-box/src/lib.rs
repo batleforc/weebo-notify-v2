@@ -201,4 +201,50 @@ mod tests {
 
         assert_eq!(open(&secret, &sealed).unwrap(), b"");
     }
+
+    #[test]
+    fn a_relayed_push_carries_its_identifiers_inside_the_box() {
+        use notify_domain::{ChannelId, NotificationId, Priority};
+        use notify_ports::{PushBody, PushMessage};
+
+        let (secret, public) = device_keypair();
+        let notification_id = NotificationId::generate();
+
+        for body in [
+            PushBody::Poke,
+            PushBody::Payload {
+                bytes: br#"{"title":"etcd degraded"}"#.to_vec(),
+                sealed: false,
+            },
+        ] {
+            let message = PushMessage::Notification {
+                channel: ChannelId::parse("ci-infra").unwrap(),
+                notification_id,
+                priority: Priority::Default,
+                body: body.clone(),
+            };
+
+            let sealed = seal(&public, &message.sealed_plaintext()).unwrap();
+            let opened: serde_json::Value =
+                serde_json::from_slice(&open(&secret, &sealed).unwrap()).unwrap();
+
+            assert_eq!(opened["kind"], "notification");
+            assert_eq!(opened["channel"], "ci-infra");
+            assert_eq!(opened["notification_id"], notification_id.to_string());
+            assert_eq!(
+                opened["content"]["title"].as_str(),
+                matches!(body, PushBody::Payload { .. }).then_some("etcd degraded")
+            );
+        }
+
+        let digest = PushMessage::Digest {
+            total: 12,
+            failures: 2,
+        };
+        let sealed = seal(&public, &digest.sealed_plaintext()).unwrap();
+        let opened: serde_json::Value =
+            serde_json::from_slice(&open(&secret, &sealed).unwrap()).unwrap();
+        assert_eq!(opened["kind"], "digest");
+        assert_eq!(opened["total"], 12);
+    }
 }

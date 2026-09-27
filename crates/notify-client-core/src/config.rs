@@ -177,26 +177,33 @@ impl Profile {
             source: std::io::Error::other(error),
         })?;
 
-        std::fs::write(path, rendered).map_err(|error| ConfigError::Unwritable {
+        let unwritable = |error| ConfigError::Unwritable {
             path: path.to_path_buf(),
             source: error,
-        })?;
+        };
 
         // A credential, not a config file to leave world-readable — the same
         // "mode-0600 file" this struct's own `token` doc comment already assumes.
-        // Unix only: there is no equivalent bit to set on the platforms this
-        // crate also ships to, and leaving the platform default there is the
-        // honest thing rather than a false sense of parity.
+        // Created 0600 and narrowed to it *before* the token is written, so there
+        // is no moment where the token sits in a readable file. Unix only: there
+        // is no equivalent bit to set on the platforms this crate also ships to,
+        // and leaving the platform default there is the honest thing rather than
+        // a false sense of parity.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut handle = options.open(path).map_err(unwritable)?;
         #[cfg(unix)]
         {
+            // `mode` only applies to a file this call creates; an older one keeps
+            // whatever it had until told otherwise.
             use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |error| ConfigError::Unwritable {
-                    path: path.to_path_buf(),
-                    source: error,
-                },
-            )?;
+            handle
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(unwritable)?;
         }
+        std::io::Write::write_all(&mut handle, rendered.as_bytes()).map_err(unwritable)?;
 
         Ok(())
     }

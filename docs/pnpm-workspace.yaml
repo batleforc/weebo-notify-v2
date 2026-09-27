@@ -22,9 +22,13 @@ overrides:
   # GHSA-r28c-9q8g-f849 — path traversal via sourceMappingURL auto-loading;
   # CVE-2026-45623 — information disclosure and denial of service on crafted CSS.
   postcss: ^8.5.18
-  # GHSA-f88m-g3jw-g9cj — inherited libvips vulnerabilities.
-  sharp: ^0.35.0
+  # GHSA-f88m-g3jw-g9cj — inherited libvips vulnerabilities;
+  # GHSA-rgj7-g3m4-5g8c — inherited libheif vulnerabilities, fixed in 0.35.4.
+  sharp: ^0.35.4
   # GHSA-2v37-7h3g-55p8 — nanoid's custom alphabet generator can loop forever
   # when size is 0, fixed in 3.3.17. Reaches us through postcss above, same as
   # web/pnpm-workspace.yaml's identical override.
   nanoid: ^3.3.17
+  # GHSA fast-uri 3.x < 3.1.6 (four advisories, high). Reaches us only through
+  # `serve` > ajv, the static preview server; fixed upstream in 3.1.6.
+  fast-uri: ^3.1.6

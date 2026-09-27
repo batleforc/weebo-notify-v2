@@ -23,6 +23,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { isWebUrl } from "@/lib/markdown";
 
 const props = defineProps<{
   actions: Action[];
@@ -83,10 +84,10 @@ function send(): void {
 <template>
   <div class="flex flex-wrap items-center gap-2">
     <template v-for="(action, position) in actions" :key="position">
-      <!-- view: client-side only, and the URL was already restricted to http(s)
-           by the server before it ever reached us (§2.3). -->
+      <!-- view: client-side only. The server restricts the URL to http(s) (§2.3);
+           it is checked again here, because an `href` is where `javascript:` runs. -->
       <Button
-        v-if="action.type === 'view'"
+        v-if="action.type === 'view' && isWebUrl(action.url)"
         as="a"
         variant="outline"
         size="sm"

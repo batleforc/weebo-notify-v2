@@ -16,7 +16,7 @@
 //! wildcard certificate. Every self-hosted store supports path style
 //! (`host/bucket`), which is what a `docker compose up` can actually serve.
 
-use notify_domain::AttachmentId;
+use notify_domain::{AttachmentId, limits::MAX_ATTACHMENT_BYTES};
 use notify_ports::{
     AttachmentStore, PortError, PortResult, PresignedDownload, PresignedUpload, StoredObject,
     UploadRequest,
@@ -148,9 +148,11 @@ impl AttachmentStore for S3Attachments {
         let id = AttachmentId::generate();
         let expiry = u32::try_from(PRESIGN_TTL.whole_seconds()).unwrap_or(900);
 
-        // The content type rides in the signature rather than in a check afterwards:
-        // an upload that lies about it is refused by the bucket, which is the only
-        // thing that sees those bytes (§6.1).
+        // The content type and the length ride in the signature rather than in a
+        // check afterwards: an upload that lies about either is refused by the
+        // bucket, which is the only thing that sees those bytes (§6.1). Without the
+        // length, the ceiling checked before signing would bind only what the
+        // client declared, not what it sent.
         let mut headers = http::HeaderMap::new();
         headers.insert(
             "content-type",
@@ -159,6 +161,7 @@ impl AttachmentStore for S3Attachments {
                 .parse()
                 .map_err(|error| PortError::corrupt("attachment.content_type", error))?,
         );
+        headers.insert(http::header::CONTENT_LENGTH, request.content_length.into());
 
         let url = self
             .bucket
@@ -235,7 +238,26 @@ impl AttachmentStore for S3Attachments {
     }
 
     async fn get(&self, id: AttachmentId) -> PortResult<Option<StoredObject>> {
-        self.get_key(Self::key(id)).await
+        // `get` buffers the whole object, and this one was written by a client.
+        // The signed length bounds new uploads; the `HEAD` bounds everything else —
+        // an object from before that, or a store that does not enforce it.
+        let key = Self::key(id);
+        match self.bucket.head_object(&key).await {
+            Ok((head, 200..=299)) => {
+                let size = head.content_length.unwrap_or(0);
+                if u64::try_from(size).unwrap_or(u64::MAX) > MAX_ATTACHMENT_BYTES {
+                    return Err(PortError::corrupt(
+                        "attachment.size",
+                        format!("{size} bytes"),
+                    ));
+                }
+            }
+            Ok((_, 404)) => return Ok(None),
+            Ok((_, status)) => return Err(Self::fail("head_object", format!("status {status}"))),
+            Err(error) if is_missing(&error) => return Ok(None),
+            Err(error) => return Err(Self::fail("head_object", error)),
+        }
+        self.get_key(key).await
     }
 
     async fn put_thumbnail(

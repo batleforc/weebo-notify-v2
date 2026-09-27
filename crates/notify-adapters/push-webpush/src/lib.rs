@@ -199,8 +199,14 @@ impl WebPush {
         let point = secret.public_key().to_encoded_point(false);
 
         Ok(Self {
+            // The endpoint is the subscriber's choice, so the client refuses what
+            // `check_push_endpoint` refuses, once more after DNS: a redirect or a
+            // name resolving inside the network is the same request forgery as an
+            // IP literal (design §6.2).
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(PublicOnly)
                 .build()
                 .map_err(WebPushSetup::Client)?,
             signing,
@@ -276,6 +282,12 @@ impl PushTransport for WebPush {
             ));
         };
 
+        // Enrolment checked it, but a row written before that check existed did not
+        // go through it — and an IP literal never reaches the resolver below.
+        if notify_domain::check_push_endpoint(endpoint).is_err() {
+            return Ok(PushOutcome::Expired);
+        }
+
         // A subscription whose keys cannot be read will never work again, and the
         // relay is not going to say so. Reported as expired rather than failed, which
         // revokes the device instead of retrying it until the notification does.
@@ -313,6 +325,27 @@ impl PushTransport for WebPush {
             Err(_) => PushOutcome::Failed {
                 reason: "unreachable",
             },
+        })
+    }
+}
+
+/// A resolver that only ever hands back public addresses.
+///
+/// ponytail: duplicated in `notify-push-unifiedpush`; a shared crate if a third
+/// transport ever dials an address a user picked.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|addr| notify_domain::is_public_address(addr.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err("the push endpoint resolves to no public address".into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
     }
 }
@@ -625,9 +658,9 @@ mod tests {
     #[tokio::test]
     async fn a_relay_that_cannot_be_reached_is_a_metric_and_not_an_error() {
         let transport = WebPush::new(&config()).unwrap();
-        // A port nothing listens on: the request fails at the socket, which also
-        // means the encryption above it ran for real.
-        let unreachable = device_with(&subscriber_key(), "http://127.0.0.1:1/push");
+        // A name that never resolves (RFC 6761): the request fails before the
+        // socket, which also means the encryption above it ran for real.
+        let unreachable = device_with(&subscriber_key(), "https://push.invalid/push");
 
         let outcome = transport
             .deliver(&unreachable, &notification())
@@ -642,6 +675,17 @@ mod tests {
                 }
             ),
             "a dropped connection is not this transport being unusable"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_resolving_inside_the_network_is_never_dialled() {
+        use reqwest::dns::Resolve as _;
+
+        let resolved = PublicOnly.resolve("localhost".parse().unwrap()).await;
+        assert!(
+            resolved.is_err_and(|error| error.to_string().contains("no public address")),
+            "localhost is not a push service"
         );
     }
 

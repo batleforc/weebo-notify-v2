@@ -44,6 +44,11 @@ for the operator side of this, and what an unconfigured deployment answers inste
 `notify <command> --help` is authoritative: it is generated from the same
 definitions the commands run on.
 
+`channel create`, `dnd on`/`off`/`schedule` change your account, and the server
+only accepts that from your own session — not from the personal key `notify
+login` stores. They answer `credential.session_required`; use the web app for
+those. Reading (`dnd status`, `channel list`) works with the key.
+
 ## What a script can rely on
 
 **`--output json` on every command.** Table output is for people and may be

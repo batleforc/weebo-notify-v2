@@ -20,11 +20,12 @@ allowBuilds:
 # Re-run `task audit` after removing one to check whether it is still needed — they
 # should not outlive the advisory.
 overrides:
-  # GHSA-52cp-r559-cp3m — prototype pollution in js-yaml, fixed in 4.3.0. Reaches
+  # GHSA-52cp-r559-cp3m (prototype pollution, fixed in 4.3.0) and GHSA-2883-xcg3-v3hh
+  # (merge-key CPU use, fixed in 4.3.2) in js-yaml. Reaches
   # us only through HeyApi's spec parser, which runs at build time on a document
   # this repository produces — but "only a build tool" is how a supply-chain
   # problem gets waved through, and the fix is one line.
-  js-yaml: ^4.3.0
+  js-yaml: ^4.3.2
   # GHSA-2v37-7h3g-55p8 — nanoid's custom alphabet generator can loop forever
   # when size is 0, fixed in 3.3.17. Reaches us only through postcss, itself
   # pulled in at build time by @vue/compiler-sfc — same "only a build tool"

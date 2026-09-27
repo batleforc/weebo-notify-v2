@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-loopback-authorize"
+description = "Enables the loopback_authorize command without any pre-configured scope."
+commands.allow = ["loopback_authorize"]
+
+[[permission]]
+identifier = "deny-loopback-authorize"
+description = "Denies the loopback_authorize command without any pre-configured scope."
+commands.deny = ["loopback_authorize"]

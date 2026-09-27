@@ -36,6 +36,11 @@ const markdown = new MarkdownIt({
 // silently becomes something else is worse than a link that is not a link.
 const SAFE_SCHEME = /^https?:\/\//i;
 
+/** Whether a URL is one this app will put behind a link: http(s), nothing else. */
+export function isWebUrl(url: string): boolean {
+  return SAFE_SCHEME.test(url);
+}
+
 const defaultLinkOpen =
   markdown.renderer.rules.link_open ??
   ((tokens, index, options, _env, self) =>

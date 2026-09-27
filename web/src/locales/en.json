@@ -13,7 +13,12 @@
   "callback": {
     "failed": "Sign-in failed.",
     "retry": "Retry",
-    "inProgress": "Signing in…"
+    "inProgress": "Signing in…",
+    "error": {
+      "noPending": "No sign-in was started from this tab.",
+      "state": "The provider answered a sign-in this tab did not start.",
+      "noCode": "The provider came back without an authorization code."
+    }
   },
   "status": {
     "success": "Success",
@@ -47,7 +52,8 @@
     "channels": {
       "title": "Channels",
       "all": "All channels",
-      "empty": "No channels. Access comes from a group in your identity provider or an invitation (§5.1)."
+      "empty": "No channels. Access comes from a group in your identity provider or an invitation (§5.1).",
+      "managed": "managed"
     },
     "filters": {
       "title": "Filters",
@@ -416,5 +422,9 @@
     "networkDown": "The server is unreachable. Check your connection, or that it's running.",
     "serverResponded": "The server responded {status}.",
     "unexpected": "An unexpected error occurred."
+  },
+  "toaster": {
+    "region": "Notifications",
+    "close": "Close"
   }
 }

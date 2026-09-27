@@ -165,11 +165,17 @@ pub fn credential_clear() -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Both tests read `XDG_DATA_HOME` and one sets it; cargo runs them in parallel.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// The fallback lives beside the profile's store rather than at some path of
     /// this module's own invention — the property that keeps a second profile from
     /// reading the first one's secret.
     #[test]
     fn the_fallback_sits_next_to_that_profile_store() {
+        let _env = ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = fallback_path("work");
         assert_eq!(path.file_name().unwrap(), "credential");
         assert_eq!(path.parent(), store_path("work").parent());
@@ -184,8 +190,12 @@ mod tests {
     fn the_fallback_file_is_not_readable_by_anybody_else() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let _env = ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
-        // SAFETY: single-threaded test, and the variable is what `store_path` reads.
+        // SAFETY: `ENV` keeps every test that touches the environment serial, and
+        // the variable is what `store_path` reads.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
 
         write_fallback("test-profile", "s3cr3t").unwrap();

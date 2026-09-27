@@ -1,6 +1,6 @@
 {{/*
 Credentials the config schema takes as plain strings (database.url, the S3/token
-keys, redis_url) travel as WNK_-prefixed env instead of through the ConfigMap —
+keys) travel as WNK_-prefixed env instead of through the ConfigMap —
 the same env-override layer design §11 already guarantees for every key, used
 here for the one thing a ConfigMap should never carry.
 */}}
@@ -10,6 +10,15 @@ here for the one thing a ConfigMap should never carry.
 {{/* ADR-0022's accepted debt: no cross-replica story for a local directory. */}}
 {{- $replicas = 1 }}
 {{- end }}
+{{- $chartVolume := and $fsBackend (or .Values.server.attachments.persistence.enabled .Values.server.attachments.persistence.existingClaim) }}
+{{- if and $fsBackend (not $chartVolume) }}
+{{- $own := false }}
+{{- range .Values.server.extraVolumes }}{{ if eq .name "attachments" }}{{ $own = true }}{{ end }}{{ end }}
+{{- if not $own }}
+{{- fail "server.attachments.kind=filesystem needs a volume: set server.attachments.persistence.enabled, persistence.existingClaim, or add a server.extraVolumes entry named \"attachments\"" }}
+{{- end }}
+{{- end }}
+{{- $hpa := and .Values.server.autoscaling.enabled (not $fsBackend) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,7 +26,10 @@ metadata:
   labels:
     {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
 spec:
+  {{- if not $hpa }}
+  {{/* The HPA owns the count; rendering it here would reset it on every upgrade. */}}
   replicas: {{ $replicas }}
+  {{- end }}
   {{- if $fsBackend }}
   strategy:
     # Recreate, not RollingUpdate: a filesystem-backed deployment is already
@@ -105,13 +117,6 @@ spec:
                   name: {{ .Values.server.attachments.existingSecret }}
                   key: {{ .Values.server.attachments.tokenSecretKey }}
             {{- end }}
-            {{- if and (eq .Values.server.eventbus.backend "redis") .Values.server.eventbus.redis.existingSecret }}
-            - name: WNK_EVENTBUS__REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.server.eventbus.redis.existingSecret }}
-                  key: {{ .Values.server.eventbus.redis.urlKey }}
-            {{- end }}
             {{- if and .Values.server.sinks.smtp.enabled .Values.server.sinks.smtp.existingSecret }}
             - name: {{ .Values.server.sinks.smtp.passwordEnvName }}
               valueFrom:
@@ -189,7 +194,7 @@ spec:
           secret:
             secretName: {{ required "server.federation.existingSecret is required when server.federation.enabled" .Values.server.federation.existingSecret }}
         {{- end }}
-        {{- if $fsBackend }}
+        {{- if $chartVolume }}
         - name: attachments
           persistentVolumeClaim:
             claimName: {{ .Values.server.attachments.persistence.existingClaim | default (include "weebo-notify.componentFullname" (dict "ctx" . "component" "server-attachments")) }}

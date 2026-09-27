@@ -74,6 +74,12 @@ pub(crate) enum FsError {
     UnsupportedType,
     /// The object is not there.
     NoSuchObject,
+    /// An upload token is good for one upload: the object is already there.
+    AlreadyUploaded,
+    /// Over the ceiling the presign was checked against.
+    TooLarge,
+    /// The client stopped sending halfway.
+    Aborted,
     /// The store itself failed.
     Store(PortError),
 }
@@ -94,6 +100,9 @@ impl core::fmt::Display for FsError {
                 f,
                 "attachments are images: png, jpeg, webp or gif (design §2.3)"
             ),
+            Self::AlreadyUploaded => write!(f, "this attachment has already been uploaded"),
+            Self::TooLarge => write!(f, "attachments are at most 25 MiB (design §8.2)"),
+            Self::Aborted => write!(f, "the upload did not complete"),
             Self::Store(_) => write!(f, "the request could not be served"),
         }
     }
@@ -112,6 +121,9 @@ impl ResponseError for FsError {
             Self::NotFound | Self::NoSuchObject => StatusCode::NOT_FOUND,
             Self::Invalid(_) => StatusCode::FORBIDDEN,
             Self::UnsupportedType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::AlreadyUploaded => StatusCode::CONFLICT,
+            Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::Aborted => StatusCode::BAD_REQUEST,
             Self::Store(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -140,6 +152,7 @@ impl ResponseError for FsError {
         (status = 204, description = "Stored"),
         (status = 403, description = "The token is missing, expired, or for another id/purpose/content type"),
         (status = 404, description = "Not a valid attachment id"),
+        (status = 409, description = "Already uploaded — a token is good for one upload"),
         (status = 413, description = "Over the 25 MiB ceiling (§8.2)"),
         (status = 415, description = "The declared content type is not an allowed attachment type"),
         (status = 501, description = "This deployment is not running the filesystem backend"),
@@ -151,7 +164,10 @@ pub(crate) async fn fs_upload(
     id: web::Path<String>,
     query: web::Query<TokenQuery>,
     request: HttpRequest,
-    body: web::Bytes,
+    // A stream rather than `web::Bytes`: this route is unauthenticated, so nothing
+    // is buffered until the token has checked out — an extractor would read the
+    // whole body before the first line below ran.
+    payload: web::Payload,
 ) -> Result<HttpResponse, FsError> {
     let store = state
         .attachments_fs
@@ -173,8 +189,8 @@ pub(crate) async fn fs_upload(
 
     // The allowlist, applied again at the route that carries the bytes. The presign
     // already checked it — against a *different request*, which is precisely why the
-    // payload ceiling is re-applied here too (`payload_config` below). A check that
-    // ran on the request before this one is not a check on this one.
+    // payload ceiling is re-applied here too. A check that ran on the request before
+    // this one is not a check on this one.
     if !notify_app::is_allowed_attachment_type(&declared) {
         return Err(FsError::UnsupportedType);
     }
@@ -192,6 +208,27 @@ pub(crate) async fn fs_upload(
             &query.token,
         )
         .map_err(FsError::Invalid)?;
+
+    // One upload per token: without this, its bearer could swap the bytes after
+    // the notification was published and its thumbnail derived from the first ones.
+    // The claim is atomic, so two concurrent PUTs cannot both pass it.
+    if !store.claim_upload(id).await? {
+        return Err(FsError::AlreadyUploaded);
+    }
+
+    let limit = usize::try_from(MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
+    let body = match payload.to_bytes_limited(limit).await {
+        Ok(Ok(body)) => body,
+        failed => {
+            // Nothing landed: give the token its one upload back.
+            store.delete(id).await?;
+            return Err(if failed.is_err() {
+                FsError::TooLarge
+            } else {
+                FsError::Aborted
+            });
+        }
+    };
 
     // The normalised form is stored, never the raw header: what was signed is what
     // is served back.
@@ -237,12 +274,4 @@ pub(crate) async fn fs_download(
     Ok(crate::routes::served_bytes(&mut HttpResponse::Ok())
         .content_type(object.content_type)
         .body(object.bytes))
-}
-
-/// The payload limit the upload route is registered under (design §8.2): the same
-/// ceiling the presign use case already checked before signing, applied again here
-/// because that check ran against a different request and this is the one that
-/// actually carries the bytes.
-pub(crate) fn payload_config() -> web::PayloadConfig {
-    web::PayloadConfig::new(usize::try_from(MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX))
 }

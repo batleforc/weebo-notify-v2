@@ -16,7 +16,7 @@
  * (design keeps zero cookies, §5.1) — so this fetches through the generated
  * client, exactly like `lib/avatar.ts`, and hands back an object URL.
  *
- * # The cache never expires, and that is not a shortcut
+ * # An entry is never stale, and that is not a shortcut
  *
  * An attachment is never replaced in place: a revision showing a different
  * image references a different attachment id (design §2.3). So this id's
@@ -26,15 +26,7 @@
  */
 
 import { thumbnail } from "@/api/generated";
-
-/**
- * Object URLs by attachment id.
- *
- * The promise is stored rather than the resolved URL, for the same reason
- * `lib/avatar.ts` does it: two rows rendering the same attachment at once share
- * one request instead of racing into two.
- */
-const urls = new Map<string, Promise<string | null>>();
+import { objectUrlCache } from "./object-url";
 
 /**
  * The object URL for an attachment's thumbnail, or `null` when there is none.
@@ -42,43 +34,9 @@ const urls = new Map<string, Promise<string | null>>();
  * Never rejects. Nothing was necessarily ever derived for this id — an
  * unsupported source format, an upload that never arrived, or a deployment with
  * no object store all answer the same way (design D30) — and a row with no
- * thumbnail must not take the rest of the inbox down with it.
+ * thumbnail must not take the rest of the inbox down with it. Caching and its
+ * bounds: `./object-url`.
  */
-export function thumbnailObjectUrl(id: string): Promise<string | null> {
-  const known = urls.get(id);
-  if (known) {
-    return known;
-  }
-
-  const pending = fetchAsObjectUrl(id).catch(() => null);
-  urls.set(id, pending);
-  return pending;
-}
-
-async function fetchAsObjectUrl(id: string): Promise<string | null> {
-  const response = await thumbnail({
-    path: { id },
-    // The bytes are an image, not JSON — see `lib/avatar.ts` for what axios does
-    // to a blob without this.
-    responseType: "blob",
-  });
-
-  if (response.error || !response.data) {
-    return null;
-  }
-
-  const bytes =
-    response.data instanceof Blob
-      ? response.data
-      : new Blob([response.data as BlobPart]);
-
-  return URL.createObjectURL(bytes);
-}
-
-/**
- * Forget everything. Tests only — the cache is deliberately permanent in a live
- * page, so nothing in the application calls this.
- */
-export function forgetThumbnails(): void {
-  urls.clear();
-}
+export const thumbnailObjectUrl = objectUrlCache((id) =>
+  thumbnail({ path: { id }, responseType: "blob" }),
+);

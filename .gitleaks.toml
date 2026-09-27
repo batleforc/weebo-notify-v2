@@ -41,23 +41,30 @@ paths = [
 description = """
 Test fixtures that are shaped like credentials and are not any.
 
-A full-history `gitleaks detect` reported six findings, all of them here: a JWT
-literal inside a `#[cfg(test)]` assertion, a VAPID keypair minted for a unit test,
-a Web Push fixture, and the phrase "the token itself" in a doc comment that the
-generic-api-key rule matches on.
+A full-history `gitleaks git` reported them all: a JWT literal inside a
+`#[cfg(test)]` assertion, a VAPID keypair minted for a unit test (since removed,
+kept for history scans), a Web Push fixture, and the phrase "Ed25519-signed" in a
+doc comment that the generic-api-key rule matches on.
 
-They are listed rather than left, because the value of this scan is entirely in its
-signal-to-noise: a repository whose secret scan always reports six findings is a
-repository where the seventh is not noticed. Each entry is a specific file, never a
-rule-wide disable — a real secret committed to any of these paths would still have
-to get past a reviewer, but it would no longer be hidden in a standing list of
-known noise.
+Scoped to path AND the exact value: a whole-file allowlist would also hide a real
+key pasted into the same production file later. Anything new in these files still
+has to get past the scan.
 """
+condition = "AND"
+# Rule-scoped: a global allowlist with `paths` skips the whole file before the
+# `regexes` are ever consulted, which would silently undo the AND above.
+targetRules = ["jwt", "generic-api-key", "private-key"]
 paths = [
     '''^crates/notify-adapters/oidc/src/federation\.rs$''',
     '''^crates/notify-adapters/push-webpush/src/lib\.rs$''',
     '''^crates/notify-ports/src/tokens\.rs$''',
     '''^web/src/lib/push\.spec\.ts$''',
+]
+regexes = [
+    '''^eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiJhbGljZSJ9\.not-a-signature$''',
+    '''MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgevZzL1gdAFr88hb2''',
+    '''^Ed25519-signed$''',
+    '''^BMGre7JnmZhpSd1wfd8QBHYtNNuMqlA5mPDbzs14tq03pclJZ54o2c1_WCIZWP-gixwzu4Ods98Yb_UHS25OC5w$''',
 ]
 
 [[allowlists]]

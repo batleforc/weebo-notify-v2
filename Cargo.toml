@@ -7,7 +7,6 @@ members = [
     "crates/notify-adapters/http-actix",
     "crates/notify-adapters/persistence-pg",
     "crates/notify-adapters/eventbus-pg",
-    "crates/notify-adapters/eventbus-redis",
     "crates/notify-adapters/oidc",
     "crates/notify-adapters/attachments-s3",
     "crates/notify-adapters/attachments-fs",
@@ -66,7 +65,6 @@ notify-app = { path = "crates/notify-app" }
 notify-http-actix = { path = "crates/notify-adapters/http-actix" }
 notify-persistence-pg = { path = "crates/notify-adapters/persistence-pg" }
 notify-eventbus-pg = { path = "crates/notify-adapters/eventbus-pg" }
-notify-eventbus-redis = { path = "crates/notify-adapters/eventbus-redis" }
 notify-oidc = { path = "crates/notify-adapters/oidc" }
 notify-attachments-s3 = { path = "crates/notify-adapters/attachments-s3" }
 notify-attachments-fs = { path = "crates/notify-adapters/attachments-fs" }
@@ -101,7 +99,9 @@ async-trait = "0.1"
 futures = "0.3"
 
 # --- HTTP / API ---
-actix-web = "4.14"
+# No `http2`: h2 0.3 (RUSTSEC-2026-0258) has no fix, and TLS terminates at the
+# ingress, which speaks HTTP/1.1 to us. The rest is actix-web's default set.
+actix-web = { version = "4.14", default-features = false, features = ["macros", "compress-brotli", "compress-gzip", "compress-zstd", "cookies", "unicode", "compat", "ws"] }
 actix-cors = "0.7"
 actix-web-lab = "0.26"
 # WebSocket without the actor runtime: the SSE and WS handlers then share one plain
@@ -244,3 +244,11 @@ missing_panics_doc = "allow"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# From weebo-base: keeps `target/` from ballooning — line tables are enough for
+# backtraces, and dependencies are never stepped through in a debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

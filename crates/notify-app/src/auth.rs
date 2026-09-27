@@ -30,8 +30,8 @@ use std::sync::Arc;
 
 use notify_domain::{DomainError, PresentedApiKey, Principal, User, UserId};
 use notify_ports::{
-    ApiKeyRepository, Clock, Failure, FederationVerifier, SecretHasher, ServiceAccountRepository,
-    TokenRejection, TokenVerifier, UserRepository,
+    ApiKeyRepository, Clock, DeviceRepository, Failure, FederationVerifier, SecretHasher,
+    ServiceAccountRepository, TokenRejection, TokenVerifier, UserRepository,
 };
 use time::OffsetDateTime;
 
@@ -43,6 +43,13 @@ use crate::authz::{Caller, Grant};
 /// coarse enough that a pipeline publishing every second writes once rather than
 /// sixty times.
 const LAST_USED_GRANULARITY: time::Duration = time::Duration::minutes(1);
+
+/// How old an owner's remembered groups may be and still widen what a personal key
+/// reaches. Past it, the key keeps only its owner's direct memberships.
+///
+/// ponytail: fixed at 7 days; make it `[auth]` config if an instance needs a
+/// tighter bound than "logged in this week".
+const GROUP_SNAPSHOT_TTL: time::Duration = time::Duration::days(7);
 
 /// What arrived on the request.
 #[derive(Debug, Clone)]
@@ -68,6 +75,7 @@ pub struct Authenticate {
     users: Arc<dyn UserRepository>,
     accounts: Arc<dyn ServiceAccountRepository>,
     keys: Arc<dyn ApiKeyRepository>,
+    devices: Arc<dyn DeviceRepository>,
     hasher: Arc<dyn SecretHasher>,
     clock: Arc<dyn Clock>,
 }
@@ -86,6 +94,7 @@ impl Authenticate {
         users: Arc<dyn UserRepository>,
         accounts: Arc<dyn ServiceAccountRepository>,
         keys: Arc<dyn ApiKeyRepository>,
+        devices: Arc<dyn DeviceRepository>,
         hasher: Arc<dyn SecretHasher>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -96,6 +105,7 @@ impl Authenticate {
             users,
             accounts,
             keys,
+            devices,
             hasher,
             clock,
         }
@@ -132,6 +142,17 @@ impl Authenticate {
             Credential::Bearer(token) => self.bearer(&token).await,
             Credential::ApiKey(presented) => self.api_key(&presented).await,
         }
+    }
+
+    /// How long `caller`'s credential stays valid, by this use case's clock.
+    /// `None` for one that never expires; zero once it has.
+    #[must_use]
+    pub fn time_left(&self, caller: &Caller) -> Option<std::time::Duration> {
+        caller.expires_at.map(|at| {
+            (at - self.clock.now())
+                .try_into()
+                .unwrap_or(std::time::Duration::ZERO)
+        })
     }
 
     /// OIDC: validate against JWKS, then find or create the user (design §5.1).
@@ -186,6 +207,7 @@ impl Authenticate {
         let platform_admin = self.is_platform_admin(&claims.groups);
         Ok(Caller {
             platform_admin,
+            expires_at: Some(claims.expires_at),
             ..Caller::member_of(user.principal(), claims.groups)
         })
     }
@@ -217,8 +239,7 @@ impl Authenticate {
         Ok(Some(Caller {
             principal: Principal::ci_job(claims.issuer, &claims.subject)?,
             grant: Grant::Federated {
-                scopes: claims.scopes,
-                channels: claims.channels,
+                grants: claims.grants,
             },
             // A CI job carries no groups: its rights come from the trust policy, and
             // a forge's token has no notion of this instance's identity provider.
@@ -227,6 +248,7 @@ impl Authenticate {
             // is a `false` the type system keeps rather than a check somebody has to
             // remember to write in every admin handler.
             platform_admin: false,
+            expires_at: Some(claims.expires_at),
         }))
     }
 
@@ -297,12 +319,27 @@ impl Authenticate {
             tracing::warn!(?error, "could not record api key usage");
         }
 
+        // A personal key is capped by its owner's membership (`Authorizer`), and a
+        // key carries no token, so the groups come from the owner's last login.
+        // Only a recent login counts: a user dropped from a group who never logs in
+        // again loses the group-derived reach after `GROUP_SNAPSHOT_TTL`.
+        let owner_groups = match &principal {
+            Principal::User { .. } => {
+                self.devices
+                    .remembered_groups(&principal, now - GROUP_SNAPSHOT_TTL)
+                    .await?
+            }
+            _ => Vec::new(),
+        };
+
         Ok(Caller {
             principal,
             grant: Grant::ApiKey {
+                id: stored.key.id,
                 scopes: stored.key.scopes.clone(),
                 channels: stored.key.channels.clone(),
                 publish_per_minute: stored.key.publish_per_minute,
+                owner_groups,
             },
             // A key carries its own scopes and its own channel list (§5.2). Giving
             // it its owner's groups on top would hand it rights nobody granted it —
@@ -310,6 +347,7 @@ impl Authenticate {
             // key administers channels and never the instance (§5.4).
             groups: Vec::new(),
             platform_admin: false,
+            expires_at: stored.key.expires_at,
         })
     }
 
@@ -362,6 +400,7 @@ mod tests {
         Fixture {
             auth: Authenticate::new(
                 Arc::new(verifier.clone()),
+                Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -478,6 +517,7 @@ mod tests {
         let auth = Authenticate::new(
             Arc::new(verifier.clone()),
             Arc::new(users.clone()),
+            Arc::new(store.clone()),
             Arc::new(store.clone()),
             Arc::new(store),
             Arc::new(StubSecretHasher),
@@ -634,14 +674,51 @@ mod tests {
             .unwrap();
 
         assert!(matches!(caller.principal, Principal::ChannelKey { .. }));
+        let Grant::ApiKey {
+            scopes,
+            channels,
+            publish_per_minute,
+            ..
+        } = caller.grant
+        else {
+            unreachable!("a key authenticates as a key");
+        };
+        assert_eq!(scopes, vec![Scope::Publish]);
+        assert_eq!(channels, vec![ChannelId::parse("ci-infra").unwrap()]);
+        assert_eq!(publish_per_minute, None);
         assert_eq!(
-            caller.grant,
-            Grant::ApiKey {
-                scopes: vec![Scope::Publish],
-                channels: vec![ChannelId::parse("ci-infra").unwrap()],
-                publish_per_minute: None,
-            }
+            caller.expires_at, None,
+            "a key without expiry never closes a stream"
         );
+    }
+
+    #[tokio::test]
+    async fn a_personal_key_forgets_groups_its_owner_has_not_shown_for_a_week() {
+        let fixture = fixture();
+        let alice = UserId::generate();
+        seed_key(&fixture, ApiKeyOwner::User { id: alice }, None);
+        let principal = Principal::User { id: alice };
+        let groups = vec!["infra-admins".to_owned()];
+        fixture
+            .store
+            .remember_groups(&principal, &groups, fixture.clock.now())
+            .await
+            .unwrap();
+
+        let owner_groups = |caller: Caller| match caller.grant {
+            Grant::ApiKey { owner_groups, .. } => owner_groups,
+            _ => unreachable!("a key authenticates as a key"),
+        };
+        let key = || Credential::ApiKey("wnk_ci4xa9k2_s3cr3t".to_owned());
+
+        let fresh = fixture.auth.execute(key()).await.unwrap();
+        assert_eq!(owner_groups(fresh), groups);
+
+        fixture
+            .clock
+            .advance(GROUP_SNAPSHOT_TTL + Duration::seconds(1));
+        let stale = fixture.auth.execute(key()).await.unwrap();
+        assert!(owner_groups(stale).is_empty());
     }
 
     #[tokio::test]
@@ -793,6 +870,7 @@ mod tests {
             Arc::new(fixture.store.clone()),
             Arc::new(fixture.store.clone()),
             Arc::new(fixture.store.clone()),
+            Arc::new(fixture.store.clone()),
             Arc::new(StubSecretHasher),
             Arc::new(fixture.clock.clone()),
         )
@@ -806,11 +884,11 @@ mod tests {
             subject: "repo:weebo/infra:ref:refs/heads/main".to_owned(),
             allowances: Vec::new(),
         };
-        let channels: Vec<ChannelId> = channels
+        let grants: Vec<(ChannelId, Vec<Scope>)> = channels
             .iter()
-            .map(|id| ChannelId::parse(id).unwrap())
+            .map(|id| (ChannelId::parse(id).unwrap(), vec![Scope::Publish]))
             .collect();
-        notify_ports::FederationVerifier::mint(federation, &grant, &channels, &[Scope::Publish])
+        notify_ports::FederationVerifier::mint(federation, &grant, &grants)
             .await
             .unwrap()
             .token

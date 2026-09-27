@@ -20,10 +20,21 @@ export interface ProviderMetadata {
 
 let cached: Promise<ProviderMetadata> | null = null;
 
-/** Fetch (once per page load) the provider's discovery document. */
+/**
+ * Fetch (once per page load) the provider's discovery document.
+ *
+ * Only a success is kept: a failure — offline at boot, the provider restarting —
+ * is forgotten so the next call asks again instead of failing until a reload.
+ */
 export function discover(): Promise<ProviderMetadata> {
   if (!cached) {
-    cached = load();
+    const attempt = load();
+    cached = attempt;
+    attempt.catch(() => {
+      if (cached === attempt) {
+        cached = null;
+      }
+    });
   }
   return cached;
 }
@@ -40,10 +51,34 @@ async function load(): Promise<ProviderMetadata> {
   }
 
   const metadata = (await response.json()) as ProviderMetadata;
+  // OIDC Discovery §4.3: the document must name the issuer it was fetched from.
+  // Anything else is a document we did not ask for, and its endpoints — the
+  // logout one is opened by the desktop shell — are not ours to trust.
+  // `oidcIssuer` is stored without a trailing slash; Authentik's has one.
+  if (metadata.issuer?.replace(/\/+$/, "") !== oidcIssuer) {
+    throw new Error(
+      `The discovery document at ${url} names another issuer (${metadata.issuer}).`,
+    );
+  }
   if (!metadata.authorization_endpoint || !metadata.token_endpoint) {
     throw new Error(
       `The discovery document at ${url} is missing an endpoint we need.`,
     );
+  }
+  // Every endpoint on the issuer's own origin — which the CSP's `connect-src`
+  // already assumes for the token endpoint (`lib/csp.ts`), and which keeps the
+  // logout URL the desktop shell opens in the system browser a page we chose.
+  const origin = new URL(oidcIssuer).origin;
+  for (const endpoint of [
+    metadata.authorization_endpoint,
+    metadata.token_endpoint,
+    metadata.end_session_endpoint,
+  ]) {
+    if (endpoint && new URL(endpoint).origin !== origin) {
+      throw new Error(
+        `The discovery document at ${url} points outside ${origin} (${endpoint}).`,
+      );
+    }
   }
 
   // Refusing here rather than starting a flow that cannot be secure: a provider

@@ -187,20 +187,52 @@ export const useInbox = defineStore("inbox", () => {
     };
   }
 
+  /**
+   * Bumped by every `load`, so only the latest one lands.
+   *
+   * Filter clicks in quick succession start several loads, and the network does
+   * not answer them in order: without this, the slowest — an *older* filter —
+   * would replace the rows last. Same pattern as `stores/palette.ts`.
+   */
+  let generation = 0;
+
+  /**
+   * Stream events that arrived while a page was loading, folded once it lands.
+   *
+   * Folding them straight away would be undone by the page replacing the rows —
+   * a revision that happened after the server read the page, overwritten by the
+   * page's older copy, or a new row dropped with `pending`. `seq` makes the replay
+   * safe: whatever the page already has is skipped (`applyRevision`).
+   */
+  let held: StreamEvent[] = [];
+
   /** Load the first page, replacing whatever was there. */
   async function load(): Promise<void> {
+    const mine = ++generation;
     loading.value = true;
     error.value = null;
     try {
       const page = await fetchInbox({ query: query(), throwOnError: true });
+      if (mine !== generation) {
+        return;
+      }
       rows.value = page.data.items;
       cursor.value = page.data.next ?? null;
       pending.value = [];
       reindex();
     } catch (caught) {
-      error.value = failureOf(caught).message;
+      if (mine === generation) {
+        error.value = failureOf(caught).message;
+      }
     } finally {
-      loading.value = false;
+      if (mine === generation) {
+        loading.value = false;
+        const replay = held;
+        held = [];
+        for (const event of replay) {
+          ingest(event);
+        }
+      }
     }
   }
 
@@ -357,16 +389,28 @@ export const useInbox = defineStore("inbox", () => {
     return () => listeners.delete(listener);
   }
 
-  /** Open the stream, narrowed to whatever the filters ask for. */
-  function start(): void {
+  /**
+   * Open the stream, narrowed to whatever the filters ask for.
+   *
+   * Call it *before* the first `load`, not after: a stream opened without a
+   * cursor starts at "now", so anything published while the page was loading
+   * would otherwise fall between the two. Opened first, those events are held
+   * (`held`) and folded once the page is in.
+   */
+  function start(cursor?: string): void {
     stream?.close();
     stream = openStream({
       channels: filters.value.channels,
+      cursor,
       onStatus: (value) => {
         status.value = value;
       },
       onEvent: (event) => {
-        ingest(event);
+        if (loading.value) {
+          held.push(event);
+        } else {
+          ingest(event);
+        }
         for (const listener of listeners) {
           listener(event);
         }
@@ -374,9 +418,14 @@ export const useInbox = defineStore("inbox", () => {
     });
   }
 
+  /**
+   * Reopen for new filters, resuming from where the old stream was rather than
+   * from "now" — the gap between the old stream closing and the new one opening
+   * is exactly where an event used to be lost.
+   */
   function restart(): void {
     if (stream) {
-      start();
+      start(stream.lastEventId());
     }
   }
 

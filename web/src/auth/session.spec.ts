@@ -234,6 +234,87 @@ describe("session — where the refresh token rests", () => {
       expect(credential.share).not.toHaveBeenCalled();
     });
 
+    it("keeps the refresh token through a network failure", async () => {
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          throw new TypeError("Failed to fetch");
+        }),
+      );
+      const store = await session(false);
+
+      // Offline is not signed out: the router lets the app load, and the next
+      // request tries the refresh again.
+      expect(await store.restore()).toBe(true);
+      expect(store.expired).toBe(false);
+      expect(sessionStorage.getItem(REFRESH_KEY)).toBe("refresh-1");
+    });
+
+    it("keeps it through a provider error that is not a refusal", async () => {
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("down", { status: 503 })),
+      );
+      const store = await session(false);
+
+      expect(await store.refresh()).toBeNull();
+      expect(sessionStorage.getItem(REFRESH_KEY)).toBe("refresh-1");
+    });
+
+    it("ends the session when the provider refuses the token", async () => {
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response('{"error":"invalid_grant"}', { status: 400 }),
+        ),
+      );
+      const store = await session(false);
+
+      expect(await store.refresh()).toBeNull();
+      expect(store.expired).toBe(true);
+      expect(sessionStorage.getItem(REFRESH_KEY)).toBeNull();
+    });
+
+    it("hands a rotated token to a duplicated tab holding the old one", async () => {
+      // "Duplicate tab" copies sessionStorage, so both tabs hold refresh-1.
+      const channels: { onmessage: ((e: MessageEvent) => void) | null }[] = [];
+      vi.stubGlobal(
+        "BroadcastChannel",
+        class {
+          onmessage: ((e: MessageEvent) => void) | null = null;
+          constructor() {
+            channels.push(this);
+          }
+          postMessage(data: unknown) {
+            for (const other of channels) {
+              if (other !== this) {
+                other.onmessage?.({ data } as MessageEvent);
+              }
+            }
+          }
+        },
+      );
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      const store = await session(false);
+      // The twin tab: another module instance whose storage still says refresh-1.
+      const twin = channels.length;
+      await session(false);
+      const received: unknown[] = [];
+      const original = channels[twin].onmessage;
+      channels[twin].onmessage = (event) => {
+        received.push(event.data);
+        original?.(event);
+      };
+
+      await store.refresh();
+
+      expect(received).toEqual([{ from: "refresh-1", to: "refresh-2" }]);
+    });
+
     it("does not reach for the vault on sign-out either", async () => {
       sessionStorage.setItem(REFRESH_KEY, "refresh-1");
       const store = await session(false);

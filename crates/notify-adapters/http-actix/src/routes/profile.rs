@@ -7,7 +7,7 @@
 //! only through a shared channel". Adding a lookup route later means redoing that
 //! analysis rather than adding a handler.
 
-use actix_web::{HttpResponse, get, put, web};
+use actix_web::{HttpRequest, HttpResponse, get, put, web};
 use notify_domain::limits::MAX_AVATAR_BYTES;
 use notify_domain::{AttachmentId, DomainError, FieldEdit, Profile, ProfileEdit};
 use serde::{Deserialize, Deserializer};
@@ -108,7 +108,7 @@ pub(crate) async fn read_profile(
 pub struct AvatarUpload(
     #[allow(
         dead_code,
-        reason = "the handler takes `web::Bytes`; this field exists so utoipa has a \
+        reason = "the handler streams `web::Payload`; this field exists so utoipa has a \
                   type to hang the binary schema on"
     )]
     Vec<u8>,
@@ -141,19 +141,35 @@ pub struct AvatarUpload(
 pub(crate) async fn set_avatar(
     state: web::Data<ApiState>,
     caller: Authenticated,
-    body: web::Bytes,
+    request: HttpRequest,
+    payload: web::Payload,
 ) -> Result<web::Json<Profile>, ApiError> {
     // The ceiling is checked here as well as in the decoder, and both are wanted:
-    // this one stops the bytes before they are buffered, the other one is the rule
-    // the port promises whatever calls it.
-    if body.len() > MAX_AVATAR_BYTES {
-        return Err(DomainError::TooLarge {
-            what: "avatar",
-            max: MAX_AVATAR_BYTES,
-            actual: body.len(),
+    // this one stops reading the moment the body passes it, the other one is the
+    // rule the port promises whatever calls it.
+    let body = match payload.to_bytes_limited(MAX_AVATAR_BYTES).await {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) => {
+            return Err(DomainError::Malformed {
+                field: "avatar",
+                reason: "the upload did not complete",
+            }
+            .into());
         }
-        .into());
-    }
+        Err(_) => {
+            // Stopped early, so the real size is only known if the client said it.
+            let declared = request
+                .headers()
+                .get("content-length")
+                .and_then(|value| value.to_str().ok()?.parse().ok());
+            return Err(DomainError::TooLarge {
+                what: "avatar",
+                max: MAX_AVATAR_BYTES,
+                actual: declared.unwrap_or(MAX_AVATAR_BYTES + 1),
+            }
+            .into());
+        }
+    };
 
     Ok(web::Json(state.set_avatar.execute(&caller.0, &body).await?))
 }

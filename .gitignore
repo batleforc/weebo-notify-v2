@@ -10,6 +10,7 @@ target/
 dist/
 .next/
 web/coverage/
+graphify-out/
 
 # Local env files
 .env

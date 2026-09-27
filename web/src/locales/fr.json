@@ -13,7 +13,12 @@
   "callback": {
     "failed": "La connexion a échoué.",
     "retry": "Réessayer",
-    "inProgress": "Connexion en cours…"
+    "inProgress": "Connexion en cours…",
+    "error": {
+      "noPending": "Aucune connexion n'a été lancée depuis cet onglet.",
+      "state": "Le fournisseur a répondu à une connexion que cet onglet n'a pas lancée.",
+      "noCode": "Le fournisseur est revenu sans code d'autorisation."
+    }
   },
   "status": {
     "success": "Succès",
@@ -47,7 +52,8 @@
     "channels": {
       "title": "Canaux",
       "all": "Tous les canaux",
-      "empty": "Aucun canal. L'accès vient d'un groupe de ton fournisseur d'identité ou d'une invitation (§5.1)."
+      "empty": "Aucun canal. L'accès vient d'un groupe de ton fournisseur d'identité ou d'une invitation (§5.1).",
+      "managed": "managé"
     },
     "filters": {
       "title": "Filtres",
@@ -416,5 +422,9 @@
     "networkDown": "Le serveur est injoignable. Vérifie ta connexion, ou qu'il tourne bien.",
     "serverResponded": "Le serveur a répondu {status}.",
     "unexpected": "Une erreur inattendue s'est produite."
+  },
+  "toaster": {
+    "region": "Notifications",
+    "close": "Fermer"
   }
 }

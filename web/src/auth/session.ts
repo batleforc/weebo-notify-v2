@@ -65,6 +65,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import { oidcClientId, oidcScopes } from "@/config";
+import { i18n } from "@/i18n";
 import { isDesktop } from "@/lib/desktop";
 import {
   clearCredential,
@@ -103,6 +104,39 @@ const REFRESH_KEY = "weebo-notify:refresh-token";
 
 /** Refresh this long before expiry, so no in-flight request rides a dead token. */
 const REFRESH_MARGIN_MS = 60_000;
+
+/**
+ * The provider answered the token request, and the answer was no.
+ *
+ * Distinct from a `fetch` that never got an answer: only this one ends a session.
+ * A network blip, a provider restarting, a laptop waking before its Wi-Fi — those
+ * leave the refresh token exactly as valid as it was, and forgetting it there
+ * turned every offline boot of the shell into a fresh sign-in.
+ */
+class TokenRefused extends Error {
+  constructor(
+    readonly status: number,
+    detail: string,
+  ) {
+    super(
+      `The identity provider refused the token request (${status}). ${detail}`.trim(),
+    );
+  }
+}
+
+/**
+ * Tabs of one browser tell each other when they rotate the refresh token.
+ *
+ * `sessionStorage` is per tab, *except* that "duplicate tab" copies it: two tabs
+ * then hold the same single-use token, and whichever refreshes second is signed
+ * out — or, at a provider with reuse detection, gets the whole family revoked. A
+ * tab that rotates announces `{ from, to }`; any tab still holding `from` adopts
+ * `to`. `null` where `BroadcastChannel` does not exist (tests, old engines).
+ */
+const rotations: BroadcastChannel | null =
+  typeof BroadcastChannel === "undefined"
+    ? null
+    : new BroadcastChannel("weebo-notify:refresh-rotation");
 
 interface TokenResponse {
   access_token: string;
@@ -159,6 +193,16 @@ export const useSession = defineStore("session", () => {
    */
   const refreshToken = ref<string | null>(null);
 
+  if (rotations && !isDesktop()) {
+    rotations.onmessage = (
+      event: MessageEvent<{ from: string; to: string }>,
+    ) => {
+      if (sessionStorage.getItem(REFRESH_KEY) === event.data.from) {
+        sessionStorage.setItem(REFRESH_KEY, event.data.to);
+      }
+    };
+  }
+
   function storedRefreshToken(): string | null {
     return isDesktop()
       ? refreshToken.value
@@ -178,7 +222,11 @@ export const useSession = defineStore("session", () => {
   function persistRefreshToken(token: string): void {
     refreshToken.value = token;
     if (!isDesktop()) {
+      const previous = sessionStorage.getItem(REFRESH_KEY);
       sessionStorage.setItem(REFRESH_KEY, token);
+      if (previous && previous !== token) {
+        rotations?.postMessage({ from: previous, to: token });
+      }
       return;
     }
     void saveCredential(token).catch((error: unknown) => {
@@ -305,7 +353,7 @@ export const useSession = defineStore("session", () => {
     const raw = sessionStorage.getItem(PENDING_KEY);
     sessionStorage.removeItem(PENDING_KEY);
     if (!raw) {
-      throw new Error("No login was started from this tab.");
+      throw new Error(i18n.global.t("callback.error.noPending"));
     }
     const pending: PendingAuthorization = JSON.parse(raw);
 
@@ -317,12 +365,12 @@ export const useSession = defineStore("session", () => {
     // The state check is the CSRF gate: a code delivered to this redirect URI by
     // anything other than the flow this tab started is refused (RFC 6749 §10.12).
     if (params.get("state") !== pending.state) {
-      throw new Error("The provider answered a login this tab did not start.");
+      throw new Error(i18n.global.t("callback.error.state"));
     }
 
     const code = params.get("code");
     if (!code) {
-      throw new Error("The provider came back without an authorization code.");
+      throw new Error(i18n.global.t("callback.error.noCode"));
     }
 
     const metadata = await discover();
@@ -370,11 +418,21 @@ export const useSession = defineStore("session", () => {
         );
         remember(tokens);
         return tokens.access_token;
-      } catch {
-        // Rotation means a refresh token is single-use: a failure here is a
-        // session that has ended, whatever the reason.
-        forget();
-        expired.value = true;
+      } catch (error) {
+        // Only a provider that *answered* 400/401 (`invalid_grant`) has ended the
+        // session. Anything else — offline, DNS, a 5xx — leaves the refresh token
+        // as good as it was: report "no token right now" and keep it for the next
+        // attempt, which `bearer()` makes on the next request.
+        // A duplicate tab that rotated first has already handed us its token
+        // (`rotations`), so ours was spent, not revoked: keep the new one.
+        if (
+          error instanceof TokenRefused &&
+          (error.status === 400 || error.status === 401) &&
+          storedRefreshToken() === token
+        ) {
+          forget();
+          expired.value = true;
+        }
         return null;
       } finally {
         refreshing = null;
@@ -427,7 +485,12 @@ export const useSession = defineStore("session", () => {
       });
     }
 
-    return storedRefreshToken() ? (await refresh()) !== null : false;
+    if (!storedRefreshToken()) {
+      return false;
+    }
+    // A refresh that failed without the provider refusing it (offline boot) still
+    // has a session to resume: the token is kept, and the next API call retries.
+    return (await refresh()) !== null || storedRefreshToken() !== null;
   }
 
   /** Sign out here, and at the provider when it offers a way to. */
@@ -499,9 +562,7 @@ async function redeem(
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(
-      `The identity provider refused the token request (${response.status}). ${detail}`.trim(),
-    );
+    throw new TokenRefused(response.status, detail);
   }
 
   return (await response.json()) as TokenResponse;

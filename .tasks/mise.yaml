@@ -10,3 +10,7 @@ tasks:
     desc: "Update lock file"
     cmds:
       - mise upgrade
+  install:
+    desc: "Install current package"
+    cmds:
+      - mise install

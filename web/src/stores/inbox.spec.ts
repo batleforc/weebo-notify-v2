@@ -8,10 +8,21 @@ import type {
 } from "@/api/generated/types.gen";
 import { emptyFilters, useInbox } from "./inbox";
 
-const { inboxMock } = vi.hoisted(() => ({ inboxMock: vi.fn() }));
+const { inboxMock, opened } = vi.hoisted(() => ({
+  inboxMock: vi.fn(),
+  opened: [] as {
+    cursor?: string;
+    onEvent: (event: unknown) => void;
+  }[],
+}));
 
 vi.mock("@/api/generated", () => ({ inbox: inboxMock }));
-vi.mock("@/api/stream", () => ({ openStream: () => ({ close: () => {} }) }));
+vi.mock("@/api/stream", () => ({
+  openStream: (options: (typeof opened)[number]) => {
+    opened.push(options);
+    return { close: () => {}, lastEventId: () => "evt_last" };
+  },
+}));
 
 const author: Author = { kind: "user", id: "usr_1", display_name: "Alice" };
 
@@ -318,5 +329,56 @@ describe("paging", () => {
     await inbox.loadMore();
 
     expect(inbox.rows).toHaveLength(1);
+  });
+});
+
+describe("loads and the stream racing each other", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    inboxMock.mockReset();
+    opened.length = 0;
+  });
+
+  it("keeps the latest filter's rows when an older load answers last", async () => {
+    const inbox = useInbox();
+    let answerSlow: (value: unknown) => void = () => {};
+    inboxMock
+      .mockReturnValueOnce(new Promise((resolve) => (answerSlow = resolve)))
+      .mockResolvedValueOnce({
+        data: { items: [notification("ntf_new")], next: null },
+      });
+
+    const slow = inbox.apply({ ...emptyFilters(), status: ["failure"] });
+    await inbox.apply({ ...emptyFilters(), status: ["success"] });
+    answerSlow({ data: { items: [notification("ntf_old")], next: null } });
+    await slow;
+
+    expect(inbox.rows.map((row) => row.id)).toEqual(["ntf_new"]);
+    expect(inbox.loading).toBe(false);
+  });
+
+  it("folds an event that arrived during the load once the page is in", async () => {
+    const inbox = useInbox();
+    let answer: (value: unknown) => void = () => {};
+    inboxMock.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+
+    inbox.start();
+    const loading = inbox.load();
+    // Published after the server read the page, delivered before it answered.
+    opened[0].onEvent(revision("ntf_1", { seq: 2, title: "fixed" }));
+    answer({ data: { items: [notification("ntf_1")], next: null } });
+    await loading;
+
+    expect(inbox.rows[0].head.content.title).toBe("fixed");
+  });
+
+  it("resumes from the old stream's cursor when the filters change", async () => {
+    const inbox = useInbox();
+    inboxMock.mockResolvedValue({ data: { items: [], next: null } });
+
+    inbox.start();
+    await inbox.apply({ ...emptyFilters(), channels: ["ci-infra"] });
+
+    expect(opened.at(-1)?.cursor).toBe("evt_last");
   });
 });

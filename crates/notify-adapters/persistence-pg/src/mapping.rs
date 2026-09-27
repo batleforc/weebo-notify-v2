@@ -108,6 +108,55 @@ pub(crate) fn sequence(cursor: Cursor) -> i64 {
     i64::try_from(cursor.sequence()).unwrap_or(i64::MAX)
 }
 
+/// Take the event-log write lock for the rest of `transaction`.
+///
+/// `events.seq` is a sequence, and a sequence hands out numbers in *insert* order,
+/// not commit order: without this, a slow transaction holding seq 10 commits after a
+/// fast one holding 11, a reader has already moved its cursor to 11, and 10 is never
+/// delivered. Holding one transaction-scoped lock from before the insert until the
+/// commit makes the two orders the same, so `seq > cursor` never skips a row.
+///
+/// [`append_event`] takes it, so no append can skip it. A transaction that locks
+/// `notifications` rows takes it **first** as well, through [`begin_with_events`]:
+/// otherwise it could hold a row, wait here, and deadlock with one that holds this
+/// and waits for that row. The receipt, interaction and preference writers take it
+/// late, at the append, on purpose — they only lock rows of their own tables, which
+/// no holder of this lock waits on, and a receipt that changes nothing (most of
+/// them) should not queue behind every publish in the deployment. Their foreign
+/// key does take a `KEY SHARE` lock on the notification, which is why the early
+/// takers lock notifications `FOR NO KEY UPDATE` and never `FOR UPDATE`: the
+/// weaker lock does not wait on a key share, so that cycle cannot close either.
+///
+/// The two-integer form lives in a keyspace of its own, so it can never collide with
+/// the bigint keys leader election hashes job names into.
+///
+/// ponytail: one global writer lock — every event-producing write is serialised
+/// across all replicas. Fine at hundreds of writes per second; past that, drop the
+/// lock and have readers stop at the `pg_snapshot_xmin` watermark instead.
+pub(crate) async fn lock_event_log(transaction: &mut Transaction<'_, Postgres>) -> PortResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+        .bind(EVENT_LOG_LOCK.0)
+        .bind(EVENT_LOG_LOCK.1)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| fail("event", error))?;
+    Ok(())
+}
+
+/// Open a transaction that will append to the event log, with the lock already held.
+pub(crate) async fn begin_with_events(
+    pool: &sqlx::PgPool,
+    what: &'static str,
+) -> PortResult<Transaction<'static, Postgres>> {
+    let mut transaction = pool.begin().await.map_err(|error| fail(what, error))?;
+    lock_event_log(&mut transaction).await?;
+    Ok(transaction)
+}
+
+/// The key [`lock_event_log`] takes. Shared with the head read, which takes it
+/// in shared mode to wait out a writer that already holds a sequence value.
+pub(crate) const EVENT_LOG_LOCK: (i32, i32) = (0x0057_4e4b, 1);
+
 /// Append one row to the event log and return the cursor it took.
 ///
 /// **The only place in this crate that allocates a cursor.** It takes a transaction
@@ -120,6 +169,8 @@ pub(crate) async fn append_event(
     payload: &EventPayload,
     at: OffsetDateTime,
 ) -> PortResult<Cursor> {
+    lock_event_log(transaction).await?;
+
     let (audience_kind, channel_id, user_id) = match audience {
         Audience::Channel { id } => ("channel", Some(id.to_string()), None),
         Audience::User { id } => ("user", None, Some(id.to_string())),

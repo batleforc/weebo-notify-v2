@@ -56,11 +56,6 @@ data:
 
     [eventbus]
     backend = {{ .Values.server.eventbus.backend | quote }}
-    {{- if eq .Values.server.eventbus.backend "redis" }}
-    # Blank for the same reason `[database] url` is: WNK_EVENTBUS__REDIS_URL
-    # (server.eventbus.redis.existingSecret) supplies it.
-    redis_url = ""
-    {{- end }}
 
     {{- if .Values.server.attachments }}
     [attachments]

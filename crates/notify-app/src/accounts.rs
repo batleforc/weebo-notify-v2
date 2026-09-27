@@ -15,9 +15,9 @@
 //! * **managed** — the configuration is the source of truth, so the API refuses to
 //!   mutate it at all (§11). The same refusal `DELETE /channels/{id}` already gives:
 //!   letting an API call win would only mean the next reconciliation undoing it.
-//! * **dynamic** — created through the API, and the creator may deactivate it. That
-//!   is the rule `CreateChannel` already follows for the same reason: an object
-//!   nobody can administer needs somebody with database access to fix.
+//! * **dynamic** — created through the API by a platform admin (§5.4), who then owns
+//!   it and may deactivate it — an object nobody can administer needs somebody
+//!   with database access to fix.
 //!
 //! The gap that leaves is the one §5.2bis names out loud: a bot whose creator has
 //! left keeps *running* — its keys are its own — but has nobody left to turn it
@@ -110,6 +110,10 @@ impl CreateServiceAccount {
         let Principal::User { id: owner } = caller.principal else {
             return Err(Failure::Domain(DomainError::NotAPerson));
         };
+        // A bot is an identity the whole instance sees as an author: minting one is
+        // the platform role's call (§5.4). The other door is the configuration,
+        // which the reconciler applies without passing through here.
+        caller.ensure_platform_admin()?;
 
         let id = ServiceAccountId::parse(id)?;
         if self.accounts.get(&id).await?.is_some() {
@@ -284,13 +288,36 @@ mod tests {
         Caller::member(Principal::User { id })
     }
 
+    fn admin(id: UserId) -> Caller {
+        Caller {
+            platform_admin: true,
+            ..caller(id)
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_platform_admin_creates_one() {
+        let fixture = fixture();
+
+        let refused = fixture
+            .create
+            .execute(&caller(fixture.alice), "bot-argocd", None, None)
+            .await;
+
+        assert!(matches!(
+            refused,
+            Err(Failure::Domain(DomainError::NotPlatformAdmin))
+        ));
+        assert!(fixture.store.list().await.unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn creating_one_makes_the_creator_its_owner() {
         let fixture = fixture();
 
         let account = fixture
             .create
-            .execute(&caller(fixture.alice), "bot-argocd", Some("ArgoCD"), None)
+            .execute(&admin(fixture.alice), "bot-argocd", Some("ArgoCD"), None)
             .await
             .unwrap();
 
@@ -304,13 +331,13 @@ mod tests {
         let fixture = fixture();
         fixture
             .create
-            .execute(&caller(fixture.alice), "bot-argocd", None, None)
+            .execute(&admin(fixture.alice), "bot-argocd", None, None)
             .await
             .unwrap();
 
         let refused = fixture
             .create
-            .execute(&caller(fixture.bob), "bot-argocd", None, None)
+            .execute(&admin(fixture.bob), "bot-argocd", None, None)
             .await;
 
         assert!(
@@ -340,7 +367,7 @@ mod tests {
         let fixture = fixture();
         let account = fixture
             .create
-            .execute(&caller(fixture.alice), "bot-argocd", None, None)
+            .execute(&admin(fixture.alice), "bot-argocd", None, None)
             .await
             .unwrap();
 
@@ -390,7 +417,7 @@ mod tests {
         let fixture = fixture();
         let account = fixture
             .create
-            .execute(&caller(fixture.alice), "bot-argocd", None, None)
+            .execute(&admin(fixture.alice), "bot-argocd", None, None)
             .await
             .unwrap();
 
@@ -449,7 +476,7 @@ mod tests {
         let fixture = fixture();
         fixture
             .create
-            .execute(&caller(fixture.alice), "bot-argocd", Some("ArgoCD"), None)
+            .execute(&admin(fixture.alice), "bot-argocd", Some("ArgoCD"), None)
             .await
             .unwrap();
 

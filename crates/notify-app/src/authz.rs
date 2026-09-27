@@ -20,8 +20,9 @@
 //! the two can map the whole instance. The log records which it was; the caller
 //! does not.
 
-use notify_domain::{Channel, ChannelId, DomainError, Principal, Scope};
-use notify_ports::{ChannelRepository, Failure};
+use notify_domain::{ApiKeyId, Channel, ChannelId, DomainError, Principal, Scope, UserId};
+use notify_ports::{ChannelRepository, Failure, PageRequest};
+use time::OffsetDateTime;
 
 /// The credential a request arrived with, once authenticated.
 ///
@@ -35,6 +36,8 @@ pub enum Grant {
     /// Rights come from an API key: these scopes, in these channels, and nothing
     /// else (design §5.2).
     ApiKey {
+        /// Which key, so its publish quota is its own (design §8.2).
+        id: ApiKeyId,
         /// What the key may do.
         scopes: Vec<Scope>,
         /// Where it may do it.
@@ -43,14 +46,18 @@ pub enum Grant {
         /// §8.2, D24). Carried here rather than re-fetched at quota-check time:
         /// the key was already loaded to build this `Grant` in the first place.
         publish_per_minute: Option<u32>,
+        /// For a personal key, the groups its owner's last real login carried
+        /// (`DeviceRepository::remembered_groups`). Used only to check the owner
+        /// still holds what the key grants — never to widen it.
+        owner_groups: Vec<String>,
     },
     /// Rights come from a federated CI token, resolved from a trust policy
     /// (design §5.3). Same shape as a key, different door.
     Federated {
-        /// What the token may do.
-        scopes: Vec<Scope>,
-        /// Where it may do it.
-        channels: Vec<ChannelId>,
+        /// Each channel, with exactly the scopes the policies grant *there*. Kept
+        /// paired: a flat channel list and a flat scope list would hand every
+        /// channel the union of every policy's scopes.
+        grants: Vec<(ChannelId, Vec<Scope>)>,
     },
 }
 
@@ -65,10 +72,10 @@ impl Grant {
             Self::Membership => false,
             Self::ApiKey {
                 scopes, channels, ..
-            }
-            | Self::Federated { scopes, channels } => {
-                scopes.contains(&scope) && channels.contains(channel)
-            }
+            } => scopes.contains(&scope) && channels.contains(channel),
+            Self::Federated { grants } => grants
+                .iter()
+                .any(|(id, scopes)| id == channel && scopes.contains(&scope)),
         }
     }
 }
@@ -102,6 +109,10 @@ pub struct Caller {
     /// it to OIDC users: a bot scoped to its channels does not administer the
     /// platform, and no API path grants this — it comes from GitOps or not at all.
     pub platform_admin: bool,
+    /// When this credential stops being valid: the token's `exp`, or the key's
+    /// own expiry. `None` for a key that never expires. Long-lived connections
+    /// (SSE, WebSocket) close at this instant rather than outliving it.
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 impl Caller {
@@ -114,6 +125,7 @@ impl Caller {
             grant: Grant::Membership,
             groups: Vec::new(),
             platform_admin: false,
+            expires_at: None,
         }
     }
 
@@ -123,6 +135,24 @@ impl Caller {
         Self {
             groups,
             ..Self::member(principal)
+        }
+    }
+
+    /// The user behind a person's own session, or a refusal.
+    ///
+    /// For what changes the account itself — its profile, its settings, the
+    /// channels it creates. A key or a CI token acts *for* a user, but a leaked
+    /// publish-only key must not be able to rename its owner or silence them.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotAPerson`] for a principal that is not a user;
+    /// [`DomainError::SessionRequired`] for a user reached through a key.
+    pub const fn ensure_person(&self) -> Result<UserId, DomainError> {
+        match (&self.principal, &self.grant) {
+            (Principal::User { id }, Grant::Membership) => Ok(*id),
+            (Principal::User { .. }, _) => Err(DomainError::SessionRequired),
+            _ => Err(DomainError::NotAPerson),
         }
     }
 
@@ -186,13 +216,41 @@ impl Authorizer {
             Grant::Membership => found.allows(&caller.principal, &caller.groups, scope),
             // A key still has to name a real channel, but its rights come from
             // itself — not from whatever membership its owner happens to have.
-            grant => grant.carries(channel, scope),
+            // A personal key is also capped by that membership: it must not
+            // outlive its owner's removal from the channel.
+            grant @ Grant::ApiKey { owner_groups, .. } => {
+                grant.carries(channel, scope)
+                    && (!matches!(caller.principal, Principal::User { .. })
+                        || found.allows(&caller.principal, owner_groups, scope))
+            }
+            grant @ Grant::Federated { .. } => grant.carries(channel, scope),
         };
 
         if allowed {
             Ok(found)
         } else {
             Err(Self::refuse(scope))
+        }
+    }
+
+    /// Every channel the caller manages through membership, named or by group.
+    /// Empty for a key or a CI token: administration is a person's session.
+    pub async fn managed_channels(&self, caller: &Caller) -> Result<Vec<ChannelId>, Failure> {
+        let mut ids = Vec::new();
+        if caller.grant != Grant::Membership {
+            return Ok(ids);
+        }
+        let mut page = PageRequest::of_size(PageRequest::MAX_LIMIT);
+        loop {
+            let found = self
+                .channels
+                .list_for(&caller.principal, &caller.groups, Scope::Manage, page)
+                .await?;
+            ids.extend(found.items.into_iter().map(|channel| channel.id));
+            match found.next {
+                Some(cursor) => page = page.after(cursor),
+                None => return Ok(ids),
+            }
         }
     }
 
@@ -206,17 +264,36 @@ impl Authorizer {
                     .await?
             }
             Grant::ApiKey {
-                scopes, channels, ..
-            }
-            | Grant::Federated { scopes, channels } => {
-                if scopes.contains(&Scope::Subscribe) {
-                    channels.clone()
-                } else {
+                scopes,
+                channels,
+                owner_groups,
+                ..
+            } => {
+                if !scopes.contains(&Scope::Subscribe) {
                     // A publish-only key reads nothing, and gets an empty scope
                     // rather than an error: listing zero channels is a valid answer.
-                    Vec::new()
+                    return Ok(Vec::new());
+                }
+                if matches!(caller.principal, Principal::User { .. }) {
+                    // Same cap as `authorize`: what the owner can still read.
+                    let owner = self
+                        .channels
+                        .subscribed_ids(&caller.principal, owner_groups)
+                        .await?;
+                    channels
+                        .iter()
+                        .filter(|channel| owner.contains(channel))
+                        .cloned()
+                        .collect()
+                } else {
+                    channels.clone()
                 }
             }
+            Grant::Federated { grants } => grants
+                .iter()
+                .filter(|(_, scopes)| scopes.contains(&Scope::Subscribe))
+                .map(|(channel, _)| channel.clone())
+                .collect(),
         })
     }
 
@@ -327,12 +404,15 @@ mod tests {
         let caller = Caller {
             principal: alice,
             grant: Grant::ApiKey {
+                id: ApiKeyId::generate(),
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id("ci-infra")],
                 publish_per_minute: None,
+                owner_groups: Vec::new(),
             },
             groups: Vec::new(),
             platform_admin: false,
+            expires_at: None,
         };
 
         assert!(
@@ -369,18 +449,87 @@ mod tests {
         let caller = Caller {
             principal: alice,
             grant: Grant::ApiKey {
+                id: ApiKeyId::generate(),
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id("ci-infra")],
                 publish_per_minute: None,
+                owner_groups: Vec::new(),
             },
             groups: Vec::new(),
             platform_admin: false,
+            expires_at: None,
         };
         assert!(
             authorizer
                 .authorize(&caller, &channel_id("cluster-ovh-1"), Scope::Publish)
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_personal_key_stops_working_once_its_owner_leaves_the_channel() {
+        let alice = user();
+        // Alice is no longer a member of ci-infra; her key still names it.
+        let (_store, authorizer) =
+            store_with(channel_for("ci-infra", &user(), vec![Scope::Subscribe]));
+        let key = |owner_groups: Vec<String>| Caller {
+            principal: alice.clone(),
+            grant: Grant::ApiKey {
+                id: ApiKeyId::generate(),
+                scopes: vec![Scope::Subscribe],
+                channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
+                owner_groups,
+            },
+            groups: Vec::new(),
+            platform_admin: false,
+            expires_at: None,
+        };
+
+        assert!(
+            authorizer
+                .authorize(&key(Vec::new()), &channel_id("ci-infra"), Scope::Subscribe)
+                .await
+                .is_err()
+        );
+        assert!(
+            authorizer
+                .readable_channels(&key(Vec::new()))
+                .await
+                .unwrap()
+                .is_empty(),
+            "removal from the channel must reach the key, not wait for its expiry"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_personal_key_reaches_what_its_owners_remembered_groups_reach() {
+        let alice = user();
+        let mut channel = Channel::dynamic(channel_id("ci-infra"), None).unwrap();
+        channel.upsert_group(
+            notify_domain::GroupBinding::new("infra-admins", vec![Scope::Subscribe]).unwrap(),
+        );
+        let (_store, authorizer) = store_with(channel);
+        let caller = Caller {
+            principal: alice,
+            grant: Grant::ApiKey {
+                id: ApiKeyId::generate(),
+                scopes: vec![Scope::Subscribe],
+                channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
+                owner_groups: vec!["infra-admins".to_owned()],
+            },
+            groups: Vec::new(),
+            platform_admin: false,
+            expires_at: None,
+        };
+
+        assert!(
+            authorizer
+                .authorize(&caller, &channel_id("ci-infra"), Scope::Subscribe)
+                .await
+                .is_ok()
         );
     }
 
@@ -396,12 +545,15 @@ mod tests {
         let publish_only = Caller {
             principal: alice.clone(),
             grant: Grant::ApiKey {
+                id: ApiKeyId::generate(),
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id("ci-infra")],
                 publish_per_minute: None,
+                owner_groups: Vec::new(),
             },
             groups: Vec::new(),
             platform_admin: false,
+            expires_at: None,
         };
         assert!(
             authorizer

@@ -159,6 +159,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     // — so an operator who never reads the documentation still meets the list here.
     // `notify-server doctor` prints the same review on demand.
     doctor::log_review(&config);
+    doctor::refuse_development_defaults(&config)?;
 
     let application = wiring::Application::build(&config).await?;
 
@@ -166,19 +167,32 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     // a schema it has not finished applying is worse than one that is slow to start.
     application.store.migrate().await?;
 
-    let report = application.reconciler.execute(&config).await?;
-    application
-        .reconciliation_log
-        .record(report.as_pass(OffsetDateTime::now_utc(), notify_app::Trigger::Boot));
-    tracing::info!(
-        channels = report.channels,
-        accounts = report.accounts,
-        removed = report.removed,
-        "applied the declarative configuration"
+    // Under the reconcile lock like every other pass, so replicas booting together
+    // do not write the same channels at once and deadlock each other.
+    let election: std::sync::Arc<dyn notify_ports::LeaderElection> = std::sync::Arc::new(
+        notify_persistence_pg::PgLeaderElection::new(application.store.pool().clone()),
     );
-    for pending in &report.pending {
-        tracing::warn!(%pending, "access binding is waiting on a first login");
-    }
+    let reconcile_owed = if let Some(guard) = lead_reconciliation(election.as_ref(), true).await {
+        let outcome = application.reconciler.execute(&config).await;
+        guard.release().await;
+        let report = outcome?;
+        application
+            .reconciliation_log
+            .record(report.as_pass(OffsetDateTime::now_utc(), notify_app::Trigger::Boot));
+        tracing::info!(
+            channels = report.channels,
+            accounts = report.accounts,
+            removed = report.removed,
+            "applied the declarative configuration"
+        );
+        for pending in &report.pending {
+            tracing::warn!(%pending, "access binding is waiting on a first login");
+        }
+        false
+    } else {
+        tracing::warn!("could not take the reconcile lock at boot; the timer will apply the file");
+        true
+    };
 
     if application.routes.len() > 0 {
         // Counts and kinds, never destinations: a webhook url is where the sink's
@@ -227,7 +241,15 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             .app_data(exporter.clone())
             .map(|app| {
                 app.wrap(cors)
-                    .wrap(actix_web::middleware::Logger::default().log_target("http"))
+                    // The default format minus the query string (`%U`, not `%r`):
+                    // the filesystem store's `?token=` is a bearer credential, and
+                    // an access log is not where one should outlive its request.
+                    .wrap(
+                        actix_web::middleware::Logger::new(
+                            r#"%a "%m %U" %s %b "%{Referer}i" "%{User-Agent}i" %T"#,
+                        )
+                        .log_target("http"),
+                    )
                     // Outermost of the two, so the access log line lands inside the
                     // request span rather than beside it (design §13).
                     .wrap(actix_web::middleware::from_fn(telemetry::continue_trace))
@@ -264,7 +286,10 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             config,
             path: config_path.to_path_buf(),
             policies: application.policies,
+            election,
+            owed: reconcile_owed,
         },
+        store.clone(),
     ));
 
     tracing::info!(%bind, "weebo-notify is listening");
@@ -294,11 +319,9 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     outcome.map_err(Into::into)
 }
 
-/// The background loops: TTL purge, do-not-disturb digests and reconciliation, all
-/// leader-tolerant.
 /// Everything the reconciliation half of [`background`] needs (design §11).
 ///
-/// One struct rather than four parameters, and it earns its place: these four move
+/// One struct rather than a list of parameters, and it earns its place: these move
 /// together — the file is re-read on `SIGHUP`, applied by the reconciler, and left
 /// on the log for the console. Passing them separately made the signature longer
 /// than the loop it configures.
@@ -311,6 +334,11 @@ struct Reconciling {
     path: std::path::PathBuf,
     /// The set the token exchange consults, swapped on reload (§5.3, D31).
     policies: notify_app::LivePolicies,
+    /// Who may run a pass right now: one replica at a time.
+    election: std::sync::Arc<dyn notify_ports::LeaderElection>,
+    /// This replica read its file (at boot or on `SIGHUP`) and has not managed to
+    /// apply it yet, so its next timer pass is a full one.
+    owed: bool,
 }
 
 impl Reconciling {
@@ -351,13 +379,53 @@ impl Reconciling {
             ),
         }
 
+        self.owed = true;
         self.pass(notify_app::Trigger::Sighup).await;
     }
 
     /// One reconciliation pass, recorded for the console (§10.4bis).
-    async fn pass(&self, trigger: notify_app::Trigger) {
+    ///
+    /// # Which replica's file wins
+    ///
+    /// Every replica holds its own copy of the file, and during a rolling deploy or
+    /// after a `SIGHUP` that reached only some pods those copies differ. Letting
+    /// each apply its own every minute would have them undo each other — an old pod
+    /// archiving the channel a new one just declared, disabling the account it just
+    /// re-enabled. So a file is applied **when it is read** (boot, `SIGHUP`), and
+    /// the timer only re-applies the file the database last recorded (which is
+    /// what lets a binding waiting on a first login resolve): a timer pass whose
+    /// copy differs belongs to a replica that is out of date, and it stands aside
+    /// rather than winning by being scheduled later.
+    async fn pass(&mut self, trigger: notify_app::Trigger) {
+        let full = self.owed || trigger != notify_app::Trigger::Timer;
+
+        // One pass at a time across the whole deployment: two at once write the
+        // same rows in different orders and journal the same change twice.
+        let Some(guard) = lead_reconciliation(self.election.as_ref(), full).await else {
+            return;
+        };
+
+        if !full {
+            match self.reconciler.is_current(&self.config).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(
+                        "another replica applied a different configuration; standing aside"
+                    );
+                    guard.release().await;
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(?error, "could not compare the configuration; skipping");
+                    guard.release().await;
+                    return;
+                }
+            }
+        }
+
         match self.reconciler.execute(&self.config).await {
             Ok(report) => {
+                self.owed = false;
                 // Recorded only on success: a failed pass must leave the last good
                 // one on the console, not replace it with nothing.
                 self.log
@@ -376,69 +444,98 @@ impl Reconciling {
             }
             Err(error) => tracing::warn!(?error, ?trigger, "reconcile pass failed"),
         }
+        guard.release().await;
     }
 }
 
+/// Take the reconcile lock, waiting for it when `wait` is set.
+///
+/// A timer pass does not wait: somebody else running one is as good. A pass that
+/// applies a freshly read file does, for as long as a pass plausibly takes, because
+/// giving up would leave that file unapplied until the next timer.
+async fn lead_reconciliation(
+    election: &dyn notify_ports::LeaderElection,
+    wait: bool,
+) -> Option<Box<dyn notify_ports::LeaderGuard>> {
+    let attempts = if wait { 60 } else { 1 };
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            actix_web::rt::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        match election.try_acquire("reconcile").await {
+            Ok(Some(guard)) => return Some(guard),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(?error, "could not ask for the reconcile lock");
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// An interval that, after a stall, waits a full period rather than firing every
+/// tick it missed back to back.
+fn every(period: std::time::Duration) -> actix_web::rt::time::Interval {
+    let mut interval = actix_web::rt::time::interval(period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
+/// The background loops: TTL purge, stale closure, do-not-disturb digests, sink
+/// delivery and reconciliation, all leader-tolerant.
+///
+/// Each job is its own loop and the loops run concurrently. One `select!` over all
+/// of them ran each arm's body to completion before polling the next, so a
+/// reconcile pass or an SMTP send that took a minute held the five-second sink
+/// tick for that whole minute.
 async fn background(
     purge: notify_app::PurgeExpired,
     close_stale: notify_app::CloseStale,
     digests: notify_app::SendDndDigests,
     drain: notify_app::DrainSinks,
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
-    mut reconciling: Reconciling,
+    reconciling: Reconciling,
+    store: notify_persistence_pg::PgStore,
 ) {
-    let mut purge_tick = actix_web::rt::time::interval(JOB_INTERVAL);
-    let mut closure_tick = actix_web::rt::time::interval(JOB_INTERVAL);
-    let mut digest_tick = actix_web::rt::time::interval(JOB_INTERVAL);
-    let mut sink_tick = actix_web::rt::time::interval(SINK_INTERVAL);
-    let mut reconcile_tick = actix_web::rt::time::interval(RECONCILE_INTERVAL);
-    // The first tick fires immediately and all of these have just run at boot.
-    purge_tick.tick().await;
-    closure_tick.tick().await;
-    digest_tick.tick().await;
-    sink_tick.tick().await;
-    reconcile_tick.tick().await;
-
-    // A process that cannot listen for the signal keeps running: reconciliation
-    // still happens at boot and on the timer, so the failure is "no SIGHUP" and
-    // not "no server". It is reported rather than swallowed, because an operator
-    // sending a signal into a process that never registered for it would get
-    // silence and no way to tell why.
-    let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
-        Ok(stream) => Some(stream),
-        Err(error) => {
-            tracing::warn!(?error, "cannot listen for SIGHUP; reload will not work");
-            None
-        }
-    };
-
-    loop {
-        tokio::select! {
-            // `Option::None` would make this branch fire in a loop, so it is
-            // disabled outright when the handler could not be installed.
-            Some(()) = async {
-                match hangups.as_mut() {
-                    Some(stream) => stream.recv().await,
-                    None => std::future::pending().await,
+    let purging = async {
+        let mut tick = every(JOB_INTERVAL);
+        // The first tick fires immediately, and every job has just run at boot.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match purge.execute().await {
+                Ok(report) if report.led => {
+                    tracing::info!(
+                        expired = report.expired,
+                        purged = report.purged,
+                        events_pruned = report.events_pruned,
+                        "purge pass complete"
+                    );
+                    // Rides on the purge's leadership: a counter whose window rolled
+                    // over is dead weight, and one replica clearing it is enough.
+                    if let Err(error) = store.prune_rate_limits(OffsetDateTime::now_utc()).await {
+                        tracing::warn!(?error, "could not prune rate-limit counters");
+                    }
                 }
-            } => reconciling.on_hangup().await,
-            _ = purge_tick.tick() => match purge.execute().await {
-                Ok(report) if report.led => tracing::info!(
-                    expired = report.expired,
-                    purged = report.purged,
-                    events_pruned = report.events_pruned,
-                    "purge pass complete"
-                ),
                 // Not leading is the normal answer on all but one replica.
                 Ok(_) => {}
                 Err(error) => tracing::warn!(?error, "purge pass failed; retrying next tick"),
-            },
-            // Its own arm on the same interval rather than a step inside the purge:
-            // the two are independent jobs with independent leader locks, and a
-            // purge that fails must not stop notifications from being closed. What
-            // this closes becomes what the *next* purge tick can expire — a
-            // lifecycle notification does not age until it closes (§7.2bis).
-            _ = closure_tick.tick() => match close_stale.execute().await {
+            }
+        }
+    };
+
+    // Its own loop on the same interval rather than a step inside the purge: the
+    // two are independent jobs with independent leader locks, and a purge that
+    // fails must not stop notifications from being closed. What this closes
+    // becomes what the *next* purge can expire — a lifecycle notification does
+    // not age until it closes (§7.2bis).
+    let closing = async {
+        let mut tick = every(JOB_INTERVAL);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match close_stale.execute().await {
                 Ok(report) if report.led => tracing::info!(
                     closed = report.closed,
                     channels_watched = report.channels_watched,
@@ -448,10 +545,18 @@ async fn background(
                 Err(error) => {
                     tracing::warn!(?error, "stale-closure pass failed; retrying next tick");
                 }
-            },
-            // A quiet period ending is the absence of an event, so somebody has to
-            // look — which is why this is a timer rather than a moment (§7.4).
-            _ = digest_tick.tick() => match digests.execute().await {
+            }
+        }
+    };
+
+    // A quiet period ending is the absence of an event, so somebody has to look —
+    // which is why this is a timer rather than a moment (§7.4).
+    let digesting = async {
+        let mut tick = every(JOB_INTERVAL);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match digests.execute().await {
                 Ok(report) if report.sent > 0 => tracing::info!(
                     sent = report.sent,
                     still_quiet = report.still_quiet,
@@ -459,11 +564,18 @@ async fn background(
                 ),
                 Ok(_) => {}
                 Err(error) => tracing::warn!(?error, "digest pass failed; retrying next tick"),
-            },
-            // The sinks of §7.1bis. Logged only when something moved: a quiet
-            // instance ticks twelve times a minute, and a line each would bury
-            // everything else in the log.
-            _ = sink_tick.tick() => match drain.execute().await {
+            }
+        }
+    };
+
+    // The sinks of §7.1bis. Logged only when something moved: a quiet instance
+    // ticks twelve times a minute, and a line each would bury everything else.
+    let draining = async {
+        let mut tick = every(SINK_INTERVAL);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match drain.execute().await {
                 Ok(report) => {
                     if report.delivered + report.retried + report.buried + report.orphaned > 0 {
                         tracing::info!(
@@ -489,8 +601,51 @@ async fn background(
                     }
                 }
                 Err(error) => tracing::warn!(?error, "sink drain failed; retrying next tick"),
-            },
-            _ = reconcile_tick.tick() => reconciling.pass(notify_app::Trigger::Timer).await,
+            }
+        }
+    };
+
+    tokio::join!(
+        purging,
+        closing,
+        digesting,
+        draining,
+        reconcile_loop(reconciling)
+    );
+}
+
+/// Reconciliation on the timer and on `SIGHUP`.
+///
+/// The two share one loop because they share `reconciling`: a reload and a timer
+/// pass over the same configuration must not interleave.
+async fn reconcile_loop(mut reconciling: Reconciling) {
+    let mut tick = every(RECONCILE_INTERVAL);
+    tick.tick().await;
+
+    // A process that cannot listen for the signal keeps running: reconciliation
+    // still happens at boot and on the timer, so the failure is "no SIGHUP" and not
+    // "no server". It is reported rather than swallowed, because an operator
+    // sending a signal into a process that never registered for it would get
+    // silence and no way to tell why.
+    let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(stream) => Some(stream),
+        Err(error) => {
+            tracing::warn!(?error, "cannot listen for SIGHUP; reload will not work");
+            None
+        }
+    };
+
+    loop {
+        tokio::select! {
+            // `Option::None` would make this branch fire in a loop, so it is
+            // disabled outright when the handler could not be installed.
+            Some(()) = async {
+                match hangups.as_mut() {
+                    Some(stream) => stream.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => reconciling.on_hangup().await,
+            _ = tick.tick() => reconciling.pass(notify_app::Trigger::Timer).await,
         }
     }
 }

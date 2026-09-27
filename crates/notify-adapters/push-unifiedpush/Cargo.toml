@@ -23,6 +23,8 @@ notify-sealed-box = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }
+# `lookup_host`, for the resolver that refuses non-public addresses.
+tokio = { workspace = true, features = ["net"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

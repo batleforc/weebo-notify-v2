@@ -2,6 +2,8 @@ version: "3"
 
 includes:
   mise: ./.tasks/mise.yaml
+  claude: ./.tasks/claude.yaml
+  template: ./.tasks/template.yaml
   build: ./.tasks/build.yaml
   dev: ./.tasks/dev.yaml
   gen: ./.tasks/gen.yaml
@@ -25,7 +27,13 @@ tasks:
       # to keep them on your PATH afterwards; without it you get exactly what CI
       # gets, which is a supported and slightly emptier setup.
       - MISE_ENV=dev mise install
+      # Hooks first: they carry gitleaks, and nothing below may stand between a
+      # clone and them.
       - cog install-hook -a -o
+      # Marketplaces and plugins declared in .claude/settings.json (weebo-base).
+      # Optional tooling — a network hiccup or a missing marketplace must not stop init.
+      - cmd: MISE_ENV=dev mise exec -- task claude:install
+        ignore_error: true
       - cmd: '[ -f docs/package.json ] && pnpm -C docs install || true'
         silent: true
       - cmd: '[ -f web/package.json ] && pnpm -C web install || true'

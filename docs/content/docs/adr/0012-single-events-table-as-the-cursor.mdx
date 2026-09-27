@@ -33,6 +33,13 @@ that sequence value *is* the cursor everywhere.
 
 - A single hot insert point, and a table that grows with every event. Purge and
   partitioning are operational requirements, not optimisations.
+- A sequence is handed out in insert order, not commit order: a slow transaction
+  holding seq 10 could commit after one holding 11, once a reader had already moved
+  past 11. Zero gaps therefore holds only because every appending transaction takes
+  one advisory lock before its insert and keeps it until commit, and the head read
+  waits on the same lock. Event-producing writes are serialised deployment-wide;
+  the upgrade path, if that ever binds, is to read only up to the
+  `pg_snapshot_xmin` watermark instead.
 - The sequence is instance-global, so it leaks a rough activity volume to anyone
   holding a cursor.
 

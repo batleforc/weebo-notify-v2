@@ -100,11 +100,19 @@ export const useDetail = defineStore("detail", () => {
     error.value = null;
   }
 
+  /**
+   * Bumped by every `open` and `close`: only the latest request may write, on
+   * success *and* on failure. Comparing ids is not enough — A, then B, then A
+   * again has two A requests in flight, and the older one must not win.
+   */
+  let generation = 0;
+
   /** Open a notification. Safe to call with the same id twice. */
   async function open(next: string): Promise<void> {
     if (id.value === next && notification.value) {
       return;
     }
+    const mine = ++generation;
     id.value = next;
     reset();
     loading.value = true;
@@ -123,7 +131,7 @@ export const useDetail = defineStore("detail", () => {
         fetchReadership({ path: { id: next }, throwOnError: true }),
       ]);
 
-      if (id.value !== next) {
+      if (mine !== generation) {
         // Somebody clicked another row while this was in flight.
         return;
       }
@@ -133,6 +141,9 @@ export const useDetail = defineStore("detail", () => {
       interactions.value = answered.data;
       readership.value = read.data ?? null;
     } catch (caught) {
+      if (mine !== generation) {
+        return;
+      }
       const failure = failureOf(caught);
       if (failure.status === 404 || failure.code === "notification.unknown") {
         gone.value = "deleted";
@@ -140,12 +151,16 @@ export const useDetail = defineStore("detail", () => {
         error.value = failure.message;
       }
     } finally {
-      loading.value = false;
+      if (mine === generation) {
+        loading.value = false;
+      }
     }
   }
 
   function close(): void {
+    generation += 1;
     id.value = null;
+    loading.value = false;
     reset();
   }
 

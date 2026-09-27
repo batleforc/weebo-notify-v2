@@ -14,7 +14,8 @@
 //! paying a deliberately expensive KDF on every case.
 
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyPrefix, Principal, ServiceAccount, ServiceAccountId, User, UserId,
+    ApiKey, ApiKeyId, ApiKeyPrefix, ChannelId, Principal, ServiceAccount, ServiceAccountId, User,
+    UserId,
 };
 use time::OffsetDateTime;
 
@@ -85,6 +86,10 @@ pub trait ApiKeyRepository: Send + Sync {
     /// The keys a principal owns, secrets excluded — `GET /apikeys` shows metadata
     /// only, and there is no endpoint that can show a secret again (scenario T12).
     async fn list_for(&self, owner: &Principal) -> PortResult<Vec<ApiKey>>;
+
+    /// The keys a channel owns (`ApiKeyOwner::Channel`), secrets excluded — what
+    /// its managers see and revoke.
+    async fn list_for_channel(&self, channel: &ChannelId) -> PortResult<Vec<ApiKey>>;
 
     /// Store a newly created key.
     async fn insert(&self, stored: &StoredApiKey) -> PortResult<()>;

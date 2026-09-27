@@ -42,14 +42,21 @@ pub enum Poke {
         /// Where the event landed in the log.
         cursor: Cursor,
     },
+    /// This replica may have missed pokes — its subscription dropped and came back
+    /// — so every stream should re-read the log from its own cursor.
+    ///
+    /// Raised locally by a bus adapter, never published: it describes this
+    /// replica's view of the bus, not an event anybody else needs.
+    Resync,
 }
 
 impl Poke {
-    /// Where the event landed.
+    /// Where the event landed, when the poke is about one.
     #[must_use]
-    pub const fn cursor(&self) -> Cursor {
+    pub const fn cursor(&self) -> Option<Cursor> {
         match self {
-            Self::Channel { cursor, .. } | Self::User { cursor, .. } => *cursor,
+            Self::Channel { cursor, .. } | Self::User { cursor, .. } => Some(*cursor),
+            Self::Resync => None,
         }
     }
 }

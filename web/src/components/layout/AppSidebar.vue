@@ -324,7 +324,7 @@ const connection = computed(() => {
         <Hash class="text-muted-foreground" />
         <span class="truncate">{{ channel.display_name || channel.id }}</span>
         <Badge v-if="channel.origin === 'managed'" variant="muted" class="ml-auto">
-          managed
+          {{ t("sidebar.channels.managed") }}
         </Badge>
         <!--
           A number and not a dot: §10.3's "jamais la couleur seule" applies here

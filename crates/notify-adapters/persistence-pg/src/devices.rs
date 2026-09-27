@@ -181,6 +181,23 @@ impl DeviceRepository for PgStore {
         .map_err(|error| fail("device", error))?;
         Ok(())
     }
+
+    async fn remembered_groups(
+        &self,
+        principal: &Principal,
+        since: OffsetDateTime,
+    ) -> PortResult<Vec<String>> {
+        let groups: Option<Vec<String>> = sqlx::query_scalar(
+            "SELECT groups FROM principal_group_snapshots
+             WHERE principal_ref = $1 AND observed_at >= $2",
+        )
+        .bind(principal.reference())
+        .bind(since)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|error| fail("device", error))?;
+        Ok(groups.unwrap_or_default())
+    }
 }
 
 fn hydrate(row: &PgRow) -> PortResult<Device> {

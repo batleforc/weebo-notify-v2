@@ -10,15 +10,85 @@ use std::sync::Arc;
 
 use notify_domain::{
     ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, ChannelId, DomainError, PresentedApiKey,
-    Principal, Scope,
+    Principal, Scope, ServiceAccount,
 };
 use notify_ports::{
     ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, KeyGenerator, SecretHasher,
-    StoredApiKey, actions,
+    ServiceAccountRepository, StoredApiKey, actions,
 };
 use time::OffsetDateTime;
 
-use crate::authz::{Authorizer, Caller};
+use crate::authz::{Authorizer, Caller, Grant};
+
+/// Refused the same way a missing scope is: a `403` naming `manage`.
+fn refuse() -> Failure {
+    DomainError::ScopeMissing { scope: "manage" }.into()
+}
+
+/// Whether `caller` may administer the keys of `account`.
+///
+/// Its creator, or a platform admin. A managed account has no creator — the
+/// configuration owns it (§11) — so for those the caller must also manage every
+/// channel in question, the door that already applied before ownership was checked.
+async fn administers_account(
+    authorizer: &Authorizer,
+    caller: &Caller,
+    account: &ServiceAccount,
+    channels: &[ChannelId],
+) -> Result<bool, Failure> {
+    if caller.platform_admin {
+        return Ok(true);
+    }
+    match account.created_by {
+        Some(creator) => Ok(caller.principal == Principal::User { id: creator }),
+        None => manages_all(authorizer, caller, channels).await,
+    }
+}
+
+async fn manages_all(
+    authorizer: &Authorizer,
+    caller: &Caller,
+    channels: &[ChannelId],
+) -> Result<bool, Failure> {
+    for channel in channels {
+        if authorizer
+            .authorize(caller, channel, Scope::Manage)
+            .await
+            .is_err()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(!channels.is_empty())
+}
+
+/// Whether `caller` may see and revoke `key`: whoever it acts as, or — for a
+/// channel's or a service account's key — whoever administers that owner.
+async fn administers_key(
+    authorizer: &Authorizer,
+    accounts: &dyn ServiceAccountRepository,
+    caller: &Caller,
+    key: &ApiKey,
+) -> Result<bool, Failure> {
+    if key.principal() == caller.principal {
+        return Ok(true);
+    }
+    // Administration is a person's session, not another credential (see
+    // `CreateApiKey::execute`).
+    if caller.grant != Grant::Membership {
+        return Ok(false);
+    }
+    match &key.owner {
+        ApiKeyOwner::User { .. } => Ok(false),
+        ApiKeyOwner::Channel { id } => {
+            manages_all(authorizer, caller, core::slice::from_ref(id)).await
+        }
+        ApiKeyOwner::ServiceAccount { id } => match accounts.get(id).await? {
+            Some(account) => administers_account(authorizer, caller, &account, &key.channels).await,
+            None => Ok(caller.platform_admin),
+        },
+    }
+}
 
 /// A freshly minted key: the record, plus the one and only sight of its secret.
 #[derive(Debug, Clone)]
@@ -33,6 +103,7 @@ pub struct MintedApiKey {
 #[derive(Clone)]
 pub struct CreateApiKey {
     keys: Arc<dyn ApiKeyRepository>,
+    accounts: Arc<dyn ServiceAccountRepository>,
     hasher: Arc<dyn SecretHasher>,
     generator: Arc<dyn KeyGenerator>,
     authorizer: Authorizer,
@@ -66,6 +137,7 @@ impl CreateApiKey {
     #[must_use]
     pub fn new(
         keys: Arc<dyn ApiKeyRepository>,
+        accounts: Arc<dyn ServiceAccountRepository>,
         hasher: Arc<dyn SecretHasher>,
         generator: Arc<dyn KeyGenerator>,
         authorizer: Authorizer,
@@ -74,6 +146,7 @@ impl CreateApiKey {
     ) -> Self {
         Self {
             keys,
+            accounts,
             hasher,
             generator,
             authorizer,
@@ -105,10 +178,34 @@ impl CreateApiKey {
             .into());
         }
 
-        // A key for a channel or a service account is administrative; a personal key
-        // only needs the caller to already hold what it grants.
-        let needs_manage = !matches!(&request.owner, ApiKeyOwner::User { id }
-            if Principal::User { id: *id } == caller.principal);
+        // Only a person's own session mints. A key or a CI token minting keys would
+        // turn a one-day or fifteen-minute credential into a permanent one, and
+        // outlive the revocation of the one it came from.
+        if caller.grant != Grant::Membership {
+            return Err(refuse());
+        }
+
+        // A personal key is for the caller and nobody else: minting one "for" Bob
+        // would let its holder act as Bob — his sync, his devices, his silences.
+        // A service account's key needs whoever administers that account.
+        let needs_manage = match &request.owner {
+            ApiKeyOwner::User { id } => {
+                if caller.principal != (Principal::User { id: *id }) {
+                    return Err(refuse());
+                }
+                false
+            }
+            ApiKeyOwner::ServiceAccount { id } => {
+                let account = self.accounts.get(id).await?.ok_or_else(refuse)?;
+                if !administers_account(&self.authorizer, caller, &account, &request.channels)
+                    .await?
+                {
+                    return Err(refuse());
+                }
+                true
+            }
+            ApiKeyOwner::Channel { .. } => true,
+        };
 
         for channel in &request.channels {
             if needs_manage {
@@ -172,6 +269,8 @@ impl CreateApiKey {
 #[derive(Clone)]
 pub struct ListApiKeys {
     keys: Arc<dyn ApiKeyRepository>,
+    accounts: Arc<dyn ServiceAccountRepository>,
+    authorizer: Authorizer,
 }
 
 impl core::fmt::Debug for ListApiKeys {
@@ -183,13 +282,37 @@ impl core::fmt::Debug for ListApiKeys {
 impl ListApiKeys {
     /// Wire it.
     #[must_use]
-    pub fn new(keys: Arc<dyn ApiKeyRepository>) -> Self {
-        Self { keys }
+    pub fn new(
+        keys: Arc<dyn ApiKeyRepository>,
+        accounts: Arc<dyn ServiceAccountRepository>,
+        authorizer: Authorizer,
+    ) -> Self {
+        Self {
+            keys,
+            accounts,
+            authorizer,
+        }
     }
 
-    /// The caller's own keys.
+    /// The caller's own keys, those of the service accounts it administers, and
+    /// those of the channels it manages.
     pub async fn execute(&self, caller: &Caller) -> Result<Vec<ApiKey>, Failure> {
-        Ok(self.keys.list_for(&caller.principal).await?)
+        let mut keys = self.keys.list_for(&caller.principal).await?;
+        for channel in self.authorizer.managed_channels(caller).await? {
+            keys.extend(self.keys.list_for_channel(&channel).await?);
+        }
+        if caller.grant == Grant::Membership {
+            for account in self.accounts.list().await? {
+                for key in self.keys.list_for(&account.principal()).await? {
+                    if administers_account(&self.authorizer, caller, &account, &key.channels)
+                        .await?
+                    {
+                        keys.push(key);
+                    }
+                }
+            }
+        }
+        Ok(keys)
     }
 }
 
@@ -197,6 +320,8 @@ impl ListApiKeys {
 #[derive(Clone)]
 pub struct RevokeApiKey {
     keys: Arc<dyn ApiKeyRepository>,
+    accounts: Arc<dyn ServiceAccountRepository>,
+    authorizer: Authorizer,
     audit: Arc<dyn AuditLog>,
     clock: Arc<dyn Clock>,
 }
@@ -212,22 +337,32 @@ impl RevokeApiKey {
     #[must_use]
     pub fn new(
         keys: Arc<dyn ApiKeyRepository>,
+        accounts: Arc<dyn ServiceAccountRepository>,
+        authorizer: Authorizer,
         audit: Arc<dyn AuditLog>,
         clock: Arc<dyn Clock>,
     ) -> Self {
-        Self { keys, audit, clock }
+        Self {
+            keys,
+            accounts,
+            authorizer,
+            audit,
+            clock,
+        }
     }
 
-    /// Revoke a key the caller owns.
+    /// Revoke a key the caller owns or administers.
     ///
-    /// Ownership rather than `manage`: a key is revoked by whoever it acts as. That
-    /// keeps the emergency path — "this leaked, kill it" — available to the person
-    /// most likely to notice first.
+    /// Whoever it acts as may always revoke it: that keeps the emergency path —
+    /// "this leaked, kill it" — available to the person most likely to notice
+    /// first. A channel's key is also revocable by that channel's managers, and a
+    /// service account's by whoever administers the account; otherwise the admin
+    /// who minted a channel key could never kill it.
     pub async fn execute(&self, caller: &Caller, id: ApiKeyId) -> Result<bool, Failure> {
         let Some(key) = self.keys.get(id).await? else {
             return Ok(false);
         };
-        if key.principal() != caller.principal {
+        if !administers_key(&self.authorizer, self.accounts.as_ref(), caller, &key).await? {
             // Same answer as "no such key": whether an id exists is not something a
             // stranger gets to probe.
             return Ok(false);
@@ -425,7 +560,7 @@ fn random_string(len: usize) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
-    use notify_domain::{Channel, Membership, UserId};
+    use notify_domain::{Channel, Membership, ServiceAccountId, UserId};
     use notify_ports::test_utils::{CountingKeyGenerator, InMemory, StubSecretHasher, TestClock};
 
     use super::*;
@@ -458,15 +593,22 @@ mod tests {
         Fixture {
             create: CreateApiKey::new(
                 Arc::new(store.clone()),
+                Arc::new(store.clone()),
                 Arc::new(StubSecretHasher),
                 Arc::new(CountingKeyGenerator::new()),
                 Authorizer::new(Arc::new(store.clone())),
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
-            list: ListApiKeys::new(Arc::new(store.clone())),
+            list: ListApiKeys::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Authorizer::new(Arc::new(store.clone())),
+            ),
             revoke: RevokeApiKey::new(
                 Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Authorizer::new(Arc::new(store.clone())),
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
@@ -486,6 +628,7 @@ mod tests {
             grant: Grant::Membership,
             groups: Vec::new(),
             platform_admin: true,
+            expires_at: None,
         }
     }
 
@@ -642,6 +785,241 @@ mod tests {
                 .audit_entries()
                 .iter()
                 .any(|entry| entry.action.as_str() == "apikey.revoked")
+        );
+    }
+
+    fn alice_id(fixture: &Fixture) -> UserId {
+        match fixture.alice {
+            Principal::User { id } => id,
+            _ => unreachable!(),
+        }
+    }
+
+    async fn seed_account(fixture: &Fixture, created_by: Option<UserId>) -> ServiceAccountId {
+        let id = ServiceAccountId::parse("bot-argocd").unwrap();
+        let origin = if created_by.is_some() {
+            notify_domain::Origin::Dynamic
+        } else {
+            notify_domain::Origin::Managed
+        };
+        let account = ServiceAccount::new(
+            id.clone(),
+            None,
+            None,
+            origin,
+            created_by,
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        ServiceAccountRepository::upsert(&fixture.store, &account)
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn a_personal_key_cannot_be_minted_for_somebody_else() {
+        // Manage everywhere is not a way to become Bob.
+        let fixture = fixture(vec![Scope::Subscribe, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+
+        let failure = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::User {
+                        id: UserId::generate(),
+                    },
+                    vec![Scope::Subscribe],
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), Some("scope.missing"));
+    }
+
+    #[tokio::test]
+    async fn a_service_accounts_key_needs_whoever_administers_it() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let bob = UserId::generate();
+        let account = seed_account(&fixture, Some(bob)).await;
+
+        assert!(
+            fixture
+                .create
+                .execute(
+                    &caller,
+                    request(
+                        ApiKeyOwner::ServiceAccount {
+                            id: account.clone()
+                        },
+                        vec![Scope::Publish]
+                    )
+                )
+                .await
+                .is_err(),
+            "managing the channel does not make Bob's bot alice's to speak as"
+        );
+        assert!(
+            fixture
+                .create
+                .execute(
+                    &Caller::member(Principal::User { id: bob }),
+                    request(
+                        ApiKeyOwner::ServiceAccount { id: account },
+                        vec![Scope::Publish]
+                    )
+                )
+                .await
+                .is_err(),
+            "and its creator still needs manage on the channels it names"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_managed_accounts_key_is_minted_by_the_channels_manager() {
+        // The configuration owns it; `task dev:argocd-key` is this path.
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let account = seed_account(&fixture, None).await;
+
+        assert!(
+            fixture
+                .create
+                .execute(
+                    &Caller::member(fixture.alice.clone()),
+                    request(
+                        ApiKeyOwner::ServiceAccount { id: account },
+                        vec![Scope::Publish]
+                    )
+                )
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_cannot_mint_another_key() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let as_key = Caller {
+            principal: fixture.alice.clone(),
+            grant: Grant::ApiKey {
+                id: ApiKeyId::generate(),
+                scopes: vec![Scope::Publish, Scope::Manage],
+                channels: vec![channel_id()],
+                publish_per_minute: None,
+                owner_groups: Vec::new(),
+            },
+            groups: Vec::new(),
+            platform_admin: false,
+            expires_at: None,
+        };
+
+        assert!(
+            fixture
+                .create
+                .execute(
+                    &as_key,
+                    request(
+                        ApiKeyOwner::User {
+                            id: alice_id(&fixture)
+                        },
+                        vec![Scope::Publish]
+                    )
+                )
+                .await
+                .is_err(),
+            "a leaked one-day key must not mint itself a permanent copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_key_is_revocable_by_its_manager() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let minted = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::Channel { id: channel_id() },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+
+        let stranger = Caller::member(Principal::User {
+            id: UserId::generate(),
+        });
+        assert!(
+            !fixture
+                .revoke
+                .execute(&stranger, minted.key.id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            fixture
+                .revoke
+                .execute(&caller, minted.key.id)
+                .await
+                .unwrap(),
+            "otherwise the admin who minted a leaked channel key could never kill it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_key_is_listed_to_its_managers_only() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let minted = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::Channel { id: channel_id() },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+
+        let listed = fixture.list.execute(&caller).await.unwrap();
+        assert!(listed.iter().any(|key| key.id == minted.key.id));
+
+        let stranger = Caller::member(Principal::User {
+            id: UserId::generate(),
+        });
+        assert!(fixture.list.execute(&stranger).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_service_accounts_keys_are_listed_and_revoked_by_its_creator() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+        let account = seed_account(&fixture, Some(alice_id(&fixture))).await;
+        let minted = fixture
+            .create
+            .execute(
+                &caller,
+                request(
+                    ApiKeyOwner::ServiceAccount { id: account },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+
+        let listed = fixture.list.execute(&caller).await.unwrap();
+        assert!(listed.iter().any(|key| key.id == minted.key.id));
+        assert!(
+            fixture
+                .revoke
+                .execute(&caller, minted.key.id)
+                .await
+                .unwrap()
         );
     }
 

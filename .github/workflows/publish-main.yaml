@@ -39,7 +39,6 @@ env:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   gate:
@@ -333,6 +332,11 @@ jobs:
     name: Build and push images
     needs: gate
     runs-on: ubuntu-latest
+    # Only this job pushes; gate and clients run third-party build scripts and
+    # must not hold a token that can.
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

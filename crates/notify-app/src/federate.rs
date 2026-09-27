@@ -165,8 +165,8 @@ impl ExchangeToken {
         // Resolve the patterns *now*, against the channels that exist now. A token
         // carrying `ci-*` would push this work onto every later request, against a
         // configuration that may have been reloaded in between (§11).
-        let channels = self.resolve(&grant).await?;
-        if channels.is_empty() {
+        let grants = self.resolve(&grant).await?;
+        if grants.is_empty() {
             // A policy that matches but grants nothing reachable is a configuration
             // mistake, and saying so beats minting a token that can do nothing and
             // letting the job discover it one 403 at a time.
@@ -176,7 +176,6 @@ impl ExchangeToken {
             }
             .into());
         }
-        let scopes = Self::scopes_of(&grant);
 
         // Now, and not before: an id burned by a token that turned out not to match
         // any policy would be a way to lock a real job out of its own exchange.
@@ -186,42 +185,31 @@ impl ExchangeToken {
             return Err(DomainError::InvalidCredential.into());
         }
 
-        Ok(self.federation.mint(&grant, &channels, &scopes).await?)
+        Ok(self.federation.mint(&grant, &grants).await?)
     }
 
-    /// Every existing channel the grant's patterns cover.
+    /// Every existing channel the grant's patterns cover, each with the scopes the
+    /// allowances covering *it* grant — never another allowance's.
     ///
     /// Reads the channel list rather than trusting the patterns: a policy naming
     /// `ci-*` on an instance with no such channel must produce a token that says so,
     /// not one that looks broad and does nothing.
-    async fn resolve(&self, grant: &FederatedGrant) -> Result<Vec<ChannelId>, Failure> {
-        let mut resolved: Vec<ChannelId> = Vec::new();
+    async fn resolve(
+        &self,
+        grant: &FederatedGrant,
+    ) -> Result<Vec<(ChannelId, Vec<Scope>)>, Failure> {
+        let mut resolved = Vec::new();
         for channel in self.channels.all_ids().await? {
-            let covered = grant.allowances.iter().any(|allowance| {
-                allowance
-                    .channels
-                    .iter()
-                    .any(|pattern| pattern.matches(channel.as_str()))
-            });
-            if covered && !resolved.contains(&channel) {
-                resolved.push(channel);
+            let mut scopes: Vec<Scope> = [Scope::Publish, Scope::Subscribe, Scope::Manage]
+                .into_iter()
+                .filter(|scope| grant.allows(&channel, *scope))
+                .collect();
+            scopes.sort_unstable();
+            if !scopes.is_empty() {
+                resolved.push((channel, scopes));
             }
         }
         Ok(resolved)
-    }
-
-    /// The union of what the winning policies grant.
-    fn scopes_of(grant: &FederatedGrant) -> Vec<Scope> {
-        let mut scopes: Vec<Scope> = Vec::new();
-        for allowance in &grant.allowances {
-            for scope in &allowance.scopes {
-                if !scopes.contains(scope) {
-                    scopes.push(*scope);
-                }
-            }
-        }
-        scopes.sort_unstable();
-        scopes
     }
 }
 
@@ -462,5 +450,35 @@ mod tests {
             Failure::RateLimited { .. }
         ));
         assert_eq!(fixture.federation.minted(), 0);
+    }
+
+    #[tokio::test]
+    async fn two_policies_do_not_add_up_to_both_scopes_everywhere() {
+        let publish = policy("repo:weebo/*", &["ci-*"]);
+        let manage = TrustPolicy {
+            scopes: vec![Scope::Manage],
+            ..policy("repo:weebo/infra:*", &["infra-admin"])
+        };
+        let fixture = fixture(vec![publish, manage], &["ci-infra", "infra-admin"]);
+        fixture.federation.register("job", claims("tok-pair"));
+
+        let minted = fixture.exchange.execute("job").await.unwrap();
+        let claims = fixture
+            .federation
+            .verify_minted(&minted.token)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            claims
+                .grants
+                .contains(&(ChannelId::parse("ci-infra").unwrap(), vec![Scope::Publish])),
+            "ci-* only ever got publish"
+        );
+        assert!(claims.grants.contains(&(
+            ChannelId::parse("infra-admin").unwrap(),
+            vec![Scope::Manage]
+        )));
     }
 }

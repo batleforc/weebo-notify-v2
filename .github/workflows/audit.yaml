@@ -29,6 +29,10 @@ on:
       - "Containerfile*"
   workflow_dispatch:
 
+# Least privilege; a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   audit:
     runs-on: ubuntu-latest

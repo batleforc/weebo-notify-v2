@@ -113,7 +113,9 @@ pub use notifications::{
 };
 pub use pagination::{Page, PageRequest};
 pub use preferences::{DeferredTally, PreferenceRepository};
-pub use push::{PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport};
+pub use push::{
+    PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport, SEALED_ENVELOPE_VERSION,
+};
 pub use quota::{Allowance, Quota, RateLimiter};
 pub use receipts::{ReceiptRepository, Visibility};
 pub use sinks::{

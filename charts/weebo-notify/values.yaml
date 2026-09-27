@@ -205,9 +205,10 @@ server:
     # s3 keys above — WNK_ATTACHMENTS__TOKEN_SECRET from existingSecret.
     tokenSecretKey: token-secret
     persistence:
-      # A PVC this chart owns. Bring your own volume via server.extraVolumes
-      # and leave this disabled if you already have one (e.g. NFS, a cloud
-      # filesystem) — the mount path is the same either way: attachments.path.
+      # A PVC this chart owns (enabled) or one you already have (existingClaim).
+      # Otherwise bring your own volume via server.extraVolumes under the name
+      # `attachments` (e.g. NFS, a cloud filesystem) — the chart mounts it at
+      # `path` either way, and refuses to render when none of the three is set.
       enabled: false
       path: /var/lib/weebo-notify/attachments
       storageClassName: ""
@@ -216,13 +217,10 @@ server:
       existingClaim: ""
 
   eventbus:
-    # postgres (LISTEN/NOTIFY, ADR-0008, zero extra infrastructure) or redis (the
-    # scale-out path, §11). Redis is not bundled here for the same reason
-    # Postgres is not: its HA is an operator's call.
+    # postgres (LISTEN/NOTIFY, ADR-0008, zero extra infrastructure). `redis` is
+    # the scale-out path §11 names, but no adapter exists yet and the server
+    # refuses to start with it.
     backend: postgres
-    redis:
-      existingSecret: ""
-      urlKey: redis-url
 
   oidc:
     issuer: ""
@@ -394,11 +392,11 @@ web:
     attachmentOrigin: ""
 
 networkPolicy:
-  # Default-deny plus the flows this chart knows about: web -> server on
-  # `server.service.port`, server -> Postgres/S3/Redis/OIDC on 0.0.0.0/0 (their
-  # actual location is outside this chart's knowledge). Ingress-controller
-  # traffic is allowed via `policyTypes: [Ingress]` on the two Services rather
-  # than a namespace label, which is the one thing this cannot guess for you —
-  # set `networkPolicy.ingressFrom` to your controller's namespace selector.
+  # Ingress-only default-deny: web -> server on the `http` port, plus whatever
+  # `ingressFrom` admits to both. No egress policy — where Postgres, the object
+  # store, Redis and the OIDC issuer live is outside this chart's knowledge.
+  # `ingressFrom` is required when enabled: the ingress controller's and
+  # Prometheus's namespace selectors, which this chart cannot guess (see
+  # examples/values-production.yaml).
   enabled: false
   ingressFrom: []

@@ -226,8 +226,7 @@ impl FederationVerifier for StaticFederationVerifier {
     async fn mint(
         &self,
         grant: &FederatedGrant,
-        channels: &[ChannelId],
-        scopes: &[Scope],
+        grants: &[(ChannelId, Vec<Scope>)],
     ) -> PortResult<MintedToken> {
         let mut minted = lock(&self.minted);
         *minted += 1;
@@ -242,18 +241,12 @@ impl FederationVerifier for StaticFederationVerifier {
                 issuer: Url::parse(&grant.issuer)
                     .unwrap_or_else(|_| Url::parse("https://forge.invalid").expect("a valid url")),
                 subject: grant.subject.clone(),
-                channels: channels.to_vec(),
-                scopes: scopes.to_vec(),
+                grants: grants.to_vec(),
                 expires_at,
             },
         ));
 
-        Ok(MintedToken {
-            token,
-            expires_at,
-            channels: channels.to_vec(),
-            scopes: scopes.to_vec(),
-        })
+        Ok(MintedToken::new(token, expires_at, grants))
     }
 
     async fn verify_minted(&self, token: &str) -> PortResult<Result<MintedClaims, TokenRejection>> {

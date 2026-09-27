@@ -93,41 +93,57 @@ impl SendDndDigests {
             ..DigestReport::default()
         };
 
-        for tally in self.preferences.deferred_tallies(BATCH).await? {
-            // Re-checked per user rather than once at the top: a partition mid-pass
-            // must stop this replica before it sends anything else, the same rule
-            // the purge follows (scenario T22).
-            if !guard.is_held().await {
-                tracing::warn!("lost leadership mid-digest; stopping");
-                break;
-            }
+        // Paged past everyone who is still quiet: they keep their tallies, so a
+        // single fixed-size read would return the same people every pass and
+        // nobody sorted after them would ever get a digest.
+        let mut after = None;
+        'pages: loop {
+            let page = self.preferences.deferred_tallies(after, BATCH).await?;
+            let full = page.len() >= BATCH as usize;
+            after = page.last().map(|tally| tally.dnd.user);
 
-            if tally.dnd.is_active(now) {
-                // Still quiet. Leaving the tally alone is the whole point: it keeps
-                // counting until there is somebody to tell.
-                report.still_quiet += 1;
-                continue;
-            }
+            for tally in page {
+                // Re-checked per user rather than once at the top: a partition
+                // mid-pass must stop this replica before it sends anything else,
+                // the same rule the purge follows (scenario T22).
+                if !guard.is_held().await {
+                    tracing::warn!("lost leadership mid-digest; stopping");
+                    break 'pages;
+                }
 
-            let message = PushMessage::Digest {
-                total: tally.total,
-                failures: tally.failures,
-            };
-            let owner = Principal::User { id: tally.dnd.user };
-
-            for device in self.devices.list_for(&owner).await? {
-                if !device.is_active() {
+                if tally.dnd.is_active(now) {
+                    // Still quiet. Leaving the tally alone is the whole point: it
+                    // keeps counting until there is somebody to tell.
+                    report.still_quiet += 1;
                     continue;
                 }
-                self.fanout.push_digest(&device, &message).await;
+
+                let message = PushMessage::Digest {
+                    total: tally.total,
+                    failures: tally.failures,
+                };
+                let owner = Principal::User { id: tally.dnd.user };
+
+                for device in self.devices.list_for(&owner).await? {
+                    if !device.is_active() {
+                        continue;
+                    }
+                    self.fanout.push_digest(&device, &message).await;
+                }
+
+                // Cleared whether or not a device took it. A digest that failed to
+                // send must not be re-sent on the next tick: a person who missed
+                // one summary has an inbox, and a person who gets the same summary
+                // every minute has a bug (§7.4 — the burst this exists to prevent).
+                self.preferences
+                    .clear_deferred(tally.dnd.user, tally.total, tally.failures)
+                    .await?;
+                report.sent += 1;
             }
 
-            // Cleared whether or not a device took it. A digest that failed to send
-            // must not be re-sent on the next tick: a person who missed one summary
-            // has an inbox, and a person who gets the same summary every minute has
-            // a bug (§7.4 — the burst this exists to prevent).
-            self.preferences.clear_deferred(tally.dnd.user).await?;
-            report.sent += 1;
+            if !full {
+                break;
+            }
         }
 
         guard.release().await;
@@ -290,6 +306,77 @@ mod tests {
 
         assert_eq!(second.sent, 0);
         assert_eq!(fixture.store.pushes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_full_page_of_people_still_quiet_does_not_starve_the_ones_behind_it() {
+        let fixture = fixture();
+        let mut users: Vec<UserId> = (0..=BATCH).map(|_| UserId::generate()).collect();
+        users.sort_by_key(ToString::to_string);
+        let (late, quiet) = users.split_last().unwrap();
+
+        for user in quiet {
+            PreferenceRepository::set_dnd(
+                &fixture.store,
+                &Dnd {
+                    until: Some(fixture.clock.now() + time::Duration::hours(8)),
+                    ..Dnd::off(*user)
+                },
+                fixture.clock.now(),
+            )
+            .await
+            .unwrap();
+            PreferenceRepository::defer(&fixture.store, *user, Status::Info)
+                .await
+                .unwrap();
+        }
+        // Sorts after every one of them, and their quiet period is over.
+        PreferenceRepository::set_dnd(
+            &fixture.store,
+            &Dnd {
+                until: Some(fixture.clock.now() - time::Duration::hours(1)),
+                ..Dnd::off(*late)
+            },
+            fixture.clock.now(),
+        )
+        .await
+        .unwrap();
+        PreferenceRepository::defer(&fixture.store, *late, Status::Info)
+            .await
+            .unwrap();
+
+        let report = fixture.job.execute().await.unwrap();
+
+        assert_eq!(report.still_quiet, u64::from(BATCH));
+        assert_eq!(report.sent, 1, "the pass walks past the first page");
+    }
+
+    #[tokio::test]
+    async fn a_push_held_back_while_the_digest_was_sent_is_counted_in_the_next_one() {
+        let fixture = fixture();
+        quiet_until(&fixture, -1).await;
+        defer(&fixture, 3, 0).await;
+
+        let tally = PreferenceRepository::deferred_tallies(&fixture.store, None, 10)
+            .await
+            .unwrap()
+            .remove(0);
+        // One more lands between the read and the clear.
+        defer(&fixture, 1, 1).await;
+        PreferenceRepository::clear_deferred(
+            &fixture.store,
+            fixture.alice,
+            tally.total,
+            tally.failures,
+        )
+        .await
+        .unwrap();
+
+        let left = PreferenceRepository::deferred_tallies(&fixture.store, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!((left[0].total, left[0].failures), (1, 1));
     }
 
     #[tokio::test]

@@ -21,8 +21,8 @@
 use std::sync::Arc;
 
 use notify_domain::{
-    ChannelId, Cursor, DomainError, ExternalId, Notification, NotificationId, Revision,
-    RevisionDraft, Scope, TtlResolution,
+    ChannelId, Cursor, ExternalId, Notification, NotificationId, Revision, RevisionDraft, Scope,
+    TtlResolution,
 };
 use notify_ports::{
     Allowance, Claim, Clock, Failure, IdempotencyStore, NotificationRepository, PortError, Quota,
@@ -37,6 +37,9 @@ use crate::fanout::Fanout;
 
 /// How long a replayed `Idempotency-Key` response stays available (design §8).
 const IDEMPOTENCY_WINDOW: Duration = Duration::hours(24);
+
+/// How many times an upsert re-reads after losing a race before giving up.
+const UPSERT_ATTEMPTS: usize = 3;
 
 /// What a publish produced.
 ///
@@ -97,8 +100,13 @@ impl Writer {
         channel: &notify_domain::Channel,
         now: OffsetDateTime,
     ) -> Result<(), Failure> {
+        // Per key when the caller is one, so a ceiling set on one key throttles that
+        // key and not its owner's other keys (§8.2, D24); per principal otherwise.
         let per_key = Quota::PublishPerKey {
-            key: caller.principal.reference(),
+            key: match &caller.grant {
+                Grant::ApiKey { id, .. } => format!("apikey:{id}"),
+                Grant::Membership | Grant::Federated { .. } => caller.principal.reference(),
+            },
         };
         let per_channel = Quota::PublishPerChannel {
             channel: channel.id.to_string(),
@@ -272,9 +280,9 @@ impl PublishNotification {
             .authorizer
             .authorize(caller, &request.channel, Scope::Publish)
             .await?;
-        self.writer.check_quotas(caller, &channel, now).await?;
 
         let Some(key) = request.idempotency_key.clone() else {
+            self.writer.check_quotas(caller, &channel, now).await?;
             return self
                 .writer
                 .create(caller, &channel, None, request.draft, now)
@@ -300,26 +308,57 @@ impl PublishNotification {
                 what: "idempotency_key",
             })),
             Claim::Fresh => {
-                let published = match self
-                    .writer
-                    .create(caller, &channel, None, request.draft, now)
-                    .await
-                {
+                // The quota is charged only for work that will actually be done:
+                // replaying a response costs nothing, so a retry of a publish that
+                // already succeeded is never answered `429` instead of its replay.
+                let published = match self.writer.check_quotas(caller, &channel, now).await {
+                    Ok(()) => {
+                        self.writer
+                            .create(caller, &channel, None, request.draft, now)
+                            .await
+                    }
+                    Err(failure) => Err(failure),
+                };
+                let published = match published {
                     Ok(published) => published,
                     Err(failure) => {
                         // Leaving the claim in place would answer the client's
-                        // retry with `InFlight` for the next 24 hours.
-                        let _ = self.writer.idempotency.release(&principal_ref, &key).await;
+                        // retry with `InFlight` until the claim lapses.
+                        let _ = self
+                            .writer
+                            .idempotency
+                            .release(&principal_ref, &key, now)
+                            .await;
                         return Err(failure);
                     }
                 };
 
-                let encoded = serde_json::to_string(&published)
-                    .map_err(|error| PortError::corrupt("idempotency.response", error))?;
-                self.writer
-                    .idempotency
-                    .complete(&principal_ref, &key, &encoded, now + IDEMPOTENCY_WINDOW)
-                    .await?;
+                // The notification exists now, whatever happens next. Failing the
+                // request because the replay could not be stored would send the
+                // client to retry a publish that succeeded — and once the claim
+                // lapses, that retry publishes twice. So the answer stands; only
+                // the replay is lost.
+                match serde_json::to_string(&published) {
+                    Ok(encoded) => {
+                        if let Err(error) = self
+                            .writer
+                            .idempotency
+                            .complete(
+                                &principal_ref,
+                                &key,
+                                now,
+                                &encoded,
+                                now + IDEMPOTENCY_WINDOW,
+                            )
+                            .await
+                        {
+                            tracing::warn!(%error, "published, but could not store the idempotent replay");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "published, but could not encode the idempotent replay");
+                    }
+                }
                 Ok(published)
             }
         }
@@ -392,46 +431,47 @@ impl UpsertNotification {
             .await?;
         self.writer.check_quotas(caller, &channel, now).await?;
 
-        let existing = self
-            .writer
-            .notifications
-            .find_by_external_id(&request.channel, &request.external_id)
-            .await?;
-
-        if let Some(notification) = existing {
-            return self
+        // Every race this can lose — an insert beaten to the external id, a revision
+        // beaten to the next seq, a notification deleted or expired between the read
+        // and the write — is answered the same way: re-read and go again, which is
+        // the outcome we would have had a moment later. Bounded, so an id under
+        // constant contention fails instead of spinning.
+        for _ in 0..UPSERT_ATTEMPTS {
+            let existing = self
                 .writer
-                .revise(caller, &channel, notification, request.draft, now)
-                .await;
+                .notifications
+                .find_by_external_id(&request.channel, &request.external_id)
+                .await?;
+
+            let outcome = match existing {
+                Some(notification) => {
+                    self.writer
+                        .revise(caller, &channel, notification, request.draft.clone(), now)
+                        .await
+                }
+                None => {
+                    self.writer
+                        .create(
+                            caller,
+                            &channel,
+                            Some(request.external_id.clone()),
+                            request.draft.clone(),
+                            now,
+                        )
+                        .await
+                }
+            };
+
+            match outcome {
+                Err(Failure::Port(PortError::Conflict { .. })) => {}
+                other => return other,
+            }
         }
 
-        match self
-            .writer
-            .create(
-                caller,
-                &channel,
-                Some(request.external_id.clone()),
-                request.draft.clone(),
-                now,
-            )
-            .await
-        {
-            Ok(published) => Ok(published),
-            // A parallel job won the race. Losing it is not an error: re-read and
-            // revise, which is the outcome we would have had a moment later.
-            Err(Failure::Port(PortError::Conflict { .. })) => {
-                let notification = self
-                    .writer
-                    .notifications
-                    .find_by_external_id(&request.channel, &request.external_id)
-                    .await?
-                    .ok_or(DomainError::NotificationGone)?;
-                self.writer
-                    .revise(caller, &channel, notification, request.draft, now)
-                    .await
-            }
-            Err(other) => Err(other),
+        Err(PortError::Conflict {
+            what: "notification.external_id",
         }
+        .into())
     }
 }
 
@@ -440,8 +480,8 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
     use notify_domain::{
-        Channel, ChannelPolicy, ContentDraft, Membership, Principal, State, Status, TtlPolicy,
-        UserId,
+        ApiKeyId, Channel, ChannelPolicy, ContentDraft, Membership, Principal, State, Status,
+        TtlPolicy, UserId,
     };
     use notify_ports::test_utils::{InMemory, InMemoryAttachments, TestClock, TestRateLimiter};
 
@@ -501,8 +541,10 @@ mod tests {
     }
 
     fn build(policy: ChannelPolicy, refuse_thumbnails: bool) -> Fixture {
-        let store = InMemory::new();
         let clock = TestClock::new();
+        // One clock for the use case and the store, so a test that moves time
+        // moves it for what the store considers expired too.
+        let store = InMemory::with_clock(clock.clone());
         let limiter = TestRateLimiter::new();
         let attachments = InMemoryAttachments::new();
         let alice = Principal::User {
@@ -741,6 +783,59 @@ mod tests {
         assert_eq!(finished.notification.status(), Status::Success);
     }
 
+    #[tokio::test]
+    async fn an_upsert_on_an_expired_notification_the_sweep_has_not_reached_starts_a_new_one() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let external = ExternalId::parse("run-4521").unwrap();
+        let upsert = || UpsertRequest {
+            channel: channel_id(),
+            external_id: external.clone(),
+            draft: RevisionDraft {
+                ttl: Some(notify_domain::Ttl::parse("1h", "ttl").unwrap()),
+                ..RevisionDraft::simple(ContentDraft::titled("nightly backup"))
+            },
+        };
+
+        let first = fixture.upsert.execute(&caller, upsert()).await.unwrap();
+        // Past its retention, and no purge has run.
+        fixture.clock.advance(Duration::hours(2));
+        let second = fixture.upsert.execute(&caller, upsert()).await.unwrap();
+
+        assert_ne!(
+            first.notification.id, second.notification.id,
+            "a revision there would land on something no reader can see"
+        );
+        assert_eq!(second.revision.seq, 1);
+    }
+
+    #[tokio::test]
+    async fn critical_t16_a_replay_is_answered_even_once_the_quota_is_spent() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+
+        let first = fixture
+            .publish
+            .execute(&caller, request(Some("deploy-1")))
+            .await
+            .unwrap();
+        fixture.limiter.limit(Quota::PublishPerKey {
+            key: fixture.alice.reference(),
+        });
+
+        let retried = fixture
+            .publish
+            .execute(&caller, request(Some("deploy-1")))
+            .await
+            .unwrap();
+
+        assert!(
+            retried.replayed,
+            "replaying costs nothing, so it is not a 429"
+        );
+        assert_eq!(retried.notification.id, first.notification.id);
+    }
+
     // --- T6 · The clamp is visible ----------------------------------------
 
     #[tokio::test]
@@ -872,15 +967,19 @@ mod tests {
             publish_per_minute: Some(30),
             ..ChannelPolicy::default()
         });
+        let key = ApiKeyId::generate();
         let capped = Caller {
             principal: fixture.alice.clone(),
             grant: Grant::ApiKey {
+                id: key,
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id()],
                 publish_per_minute: Some(5),
+                owner_groups: Vec::new(),
             },
             groups: Vec::new(),
             platform_admin: false,
+            expires_at: None,
         };
 
         fixture
@@ -894,7 +993,7 @@ mod tests {
             vec![
                 (
                     Quota::PublishPerKey {
-                        key: fixture.alice.reference()
+                        key: format!("apikey:{key}")
                     },
                     Some(5)
                 ),
@@ -912,18 +1011,22 @@ mod tests {
     #[tokio::test]
     async fn critical_t14_one_limited_publisher_does_not_affect_the_others() {
         let fixture = fixture(ChannelPolicy::default());
+        let key = ApiKeyId::generate();
         let noisy = Caller {
             principal: fixture.alice.clone(),
             grant: Grant::ApiKey {
+                id: key,
                 scopes: vec![Scope::Publish],
                 channels: vec![channel_id()],
                 publish_per_minute: None,
+                owner_groups: Vec::new(),
             },
             groups: Vec::new(),
             platform_admin: false,
+            expires_at: None,
         };
         fixture.limiter.limit(Quota::PublishPerKey {
-            key: fixture.alice.reference(),
+            key: format!("apikey:{key}"),
         });
 
         assert!(
@@ -932,6 +1035,25 @@ mod tests {
                 .execute(&noisy, request(None))
                 .await
                 .is_err()
+        );
+
+        // Nor is the same owner's other key: the ceiling is this key's (D24).
+        let sibling = Caller {
+            grant: Grant::ApiKey {
+                id: ApiKeyId::generate(),
+                scopes: vec![Scope::Publish],
+                channels: vec![channel_id()],
+                publish_per_minute: None,
+                owner_groups: Vec::new(),
+            },
+            ..noisy.clone()
+        };
+        assert!(
+            fixture
+                .publish
+                .execute(&sibling, request(None))
+                .await
+                .is_ok()
         );
 
         // A different principal in the same channel is untouched.

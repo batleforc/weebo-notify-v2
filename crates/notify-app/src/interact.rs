@@ -7,14 +7,17 @@ use notify_domain::{
     Readership, Receipt, ReceiptId, ReceiptKind, Recorded, Silence, SilenceScope, SilenceTarget,
 };
 use notify_ports::{
-    ChannelRepository, Clock, DeviceRepository, Failure, InteractionRepository, ReceiptRepository,
-    UserRepository, Visibility,
+    ChannelRepository, Clock, DeviceRepository, Failure, InteractionRepository, PortError,
+    ReceiptRepository, UserRepository, Visibility,
 };
 
 use crate::attribution::Attribution;
 use crate::authz::Caller;
 use crate::fanout::Fanout;
 use crate::read::GetNotification;
+
+/// How many times an interaction re-reads the log after losing a race to write it.
+const RECORD_ATTEMPTS: u32 = 3;
 
 /// `POST /api/v1/notifications/{id}/interactions` — ack, reply or choice
 /// (design §2.3).
@@ -68,23 +71,37 @@ impl RecordInteraction {
         // Interacting is a read-side act: a subscriber may acknowledge, and a
         // publish-only key may not.
         let notification = self.get.execute(caller, notification_id).await?;
-
-        let existing = self.interactions.list_for(notification_id).await?;
-        let mut log = InteractionLog::from_records(existing);
-
         let author = self.attribution.author(&caller.principal).await;
-        let outcome = log.record(
-            &notification.head.content.actions,
-            notification_id,
-            author,
-            interaction,
-            self.clock.now(),
-        )?;
 
-        if let Some(cursor) = self.interactions.apply(&outcome).await? {
-            self.fanout.poke_channel(&notification, cursor).await;
+        // The log is read, decided on, then written — and a double-clicked ack or
+        // two quick picks can both read it before either writes. The loser hits the
+        // unique index; re-reading lets the domain see the winner and decide again
+        // (`Unchanged`, or a pick replacing it), which is the answer T4 promises
+        // whether the requests arrive in sequence or together.
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let existing = self.interactions.list_for(notification_id).await?;
+            let mut log = InteractionLog::from_records(existing);
+
+            let outcome = log.record(
+                &notification.head.content.actions,
+                notification_id,
+                author.clone(),
+                interaction.clone(),
+                self.clock.now(),
+            )?;
+
+            match self.interactions.apply(&outcome).await {
+                Ok(Some(cursor)) => {
+                    self.fanout.poke_channel(&notification, cursor).await;
+                    return Ok(outcome);
+                }
+                Ok(None) => return Ok(outcome),
+                Err(PortError::Conflict { .. }) if attempts < RECORD_ATTEMPTS => {}
+                Err(other) => return Err(other.into()),
+            }
         }
-        Ok(outcome)
     }
 }
 
@@ -598,6 +615,97 @@ mod tests {
             fixture.store.pokes().len(),
             pokes_after_first,
             "an idempotent acknowledgement is not an event"
+        );
+    }
+
+    /// Loses the first write to a request that recorded the same thing a moment
+    /// earlier, the way a double click races through the unique index.
+    struct Racing {
+        inner: InMemory,
+        raced: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl InteractionRepository for Racing {
+        async fn apply(
+            &self,
+            outcome: &Recorded,
+        ) -> notify_ports::PortResult<Option<notify_domain::Cursor>> {
+            if !self.raced.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                InteractionRepository::apply(&self.inner, outcome).await?;
+                return Err(PortError::Conflict {
+                    what: "interaction",
+                });
+            }
+            InteractionRepository::apply(&self.inner, outcome).await
+        }
+        async fn list_for(
+            &self,
+            notification: NotificationId,
+        ) -> notify_ports::PortResult<Vec<InteractionRecord>> {
+            InteractionRepository::list_for(&self.inner, notification).await
+        }
+        async fn silence(
+            &self,
+            silence: &Silence,
+        ) -> notify_ports::PortResult<notify_domain::Cursor> {
+            InteractionRepository::silence(&self.inner, silence).await
+        }
+        async fn active_silences(
+            &self,
+            user: UserId,
+            now: time::OffsetDateTime,
+        ) -> notify_ports::PortResult<Vec<Silence>> {
+            InteractionRepository::active_silences(&self.inner, user, now).await
+        }
+    }
+
+    #[tokio::test]
+    async fn critical_t4_an_acknowledgement_that_loses_the_race_is_unchanged_not_an_error() {
+        let fixture = fixture();
+        let notification = seed(&fixture, None).await;
+        let caller = Caller::member(fixture.alice.clone());
+        let authorizer = Authorizer::new(Arc::new(fixture.store.clone()));
+        let record = RecordInteraction::new(
+            Arc::new(Racing {
+                inner: fixture.store.clone(),
+                raced: std::sync::atomic::AtomicBool::new(false),
+            }),
+            GetNotification::new(
+                Arc::new(fixture.store.clone()),
+                authorizer,
+                Arc::new(fixture.clock.clone()),
+            ),
+            Arc::new(fixture.clock.clone()),
+            Fanout::new(
+                Arc::new(fixture.store.clone()),
+                Arc::new(fixture.store.clone()),
+                Arc::new(fixture.store.clone()),
+                Arc::new(fixture.store.clone()),
+                Arc::new(fixture.store.clone()),
+                Arc::new(fixture.clock.clone()),
+                4_096,
+            ),
+            Attribution::new(
+                Arc::new(fixture.store.clone()),
+                Arc::new(fixture.store.clone()),
+            ),
+        );
+
+        let outcome = record
+            .execute(&caller, notification.id, ack())
+            .await
+            .unwrap();
+
+        assert!(matches!(outcome, Recorded::Unchanged(_)));
+        assert_eq!(
+            fixture
+                .list
+                .execute(&caller, notification.id)
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 

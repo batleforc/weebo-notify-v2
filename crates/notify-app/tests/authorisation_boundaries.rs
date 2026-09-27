@@ -23,7 +23,9 @@
 use std::sync::Arc;
 
 use notify_app::{Authorizer, Caller, Grant};
-use notify_domain::{Channel, ChannelId, Membership, Principal, Scope, ServiceAccountId, UserId};
+use notify_domain::{
+    ApiKeyId, Channel, ChannelId, Membership, Principal, Scope, ServiceAccountId, UserId,
+};
 use notify_ports::test_utils::InMemory;
 
 fn channel_id(id: &str) -> ChannelId {
@@ -56,12 +58,15 @@ fn api_key(principal: Principal, scopes: Vec<Scope>, channels: Vec<&str>) -> Cal
     Caller {
         principal,
         grant: Grant::ApiKey {
+            id: ApiKeyId::generate(),
             scopes,
             channels: channels.into_iter().map(channel_id).collect(),
             publish_per_minute: None,
+            owner_groups: Vec::new(),
         },
         groups: Vec::new(),
         platform_admin: false,
+        expires_at: None,
     }
 }
 

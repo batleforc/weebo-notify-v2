@@ -6,17 +6,19 @@ vi.mock("@/api/generated", () => ({
   readAvatar: (...args: unknown[]) => readAvatar(...args),
 }));
 
-import { avatarObjectUrl, forgetAvatars } from "./avatar";
+import { avatarObjectUrl } from "./avatar";
+import { forgetObjectUrls } from "./object-url";
 
 /** jsdom has no object URLs, and the point of this module is producing them. */
 let minted = 0;
 beforeEach(() => {
-  forgetAvatars();
+  forgetObjectUrls();
   readAvatar.mockReset();
   minted = 0;
   vi.stubGlobal("URL", {
     ...URL,
     createObjectURL: () => `blob:avatar-${++minted}`,
+    revokeObjectURL: () => {},
   });
 });
 
@@ -83,5 +85,15 @@ describe("fetching an avatar", () => {
     readAvatar.mockRejectedValue(new Error("offline"));
 
     expect(await avatarObjectUrl("att_01J")).toBeNull();
+  });
+
+  it("asks again after a request that never got an answer", async () => {
+    // Offline is not "there is no image": caching that null would leave the row
+    // blank until a reload, however long ago the network came back.
+    readAvatar.mockRejectedValueOnce(new Error("offline"));
+    readAvatar.mockResolvedValue({ data: new Blob(["png"]) });
+
+    expect(await avatarObjectUrl("att_01J")).toBeNull();
+    expect(await avatarObjectUrl("att_01J")).not.toBeNull();
   });
 });

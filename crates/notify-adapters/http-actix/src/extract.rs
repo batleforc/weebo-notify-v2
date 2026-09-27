@@ -51,7 +51,7 @@ impl FromRequest for Authenticated {
 /// `curl` example already does (design §8). They are told apart by the key format
 /// rather than by a second scheme: `wnk_` is a prefix we mint, so the test is exact
 /// and a JWT can never be mistaken for a key.
-fn credential_from(header: Option<&str>) -> Result<Credential, DomainError> {
+pub(crate) fn credential_from(header: Option<&str>) -> Result<Credential, DomainError> {
     let raw = header.ok_or(DomainError::InvalidCredential)?;
     let token = raw
         .strip_prefix("Bearer ")

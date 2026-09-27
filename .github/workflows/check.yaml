@@ -32,6 +32,10 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   RUST_BACKTRACE: "1"
 
+# Least privilege; a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest

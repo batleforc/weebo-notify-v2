@@ -244,6 +244,25 @@ impl Reconciler {
         Ok(report)
     }
 
+    /// Whether this configuration is the one the last pass recorded.
+    ///
+    /// The same comparison [`Self::journal`] makes, asked without writing: `false`
+    /// means some pass since applied a different file, which is how a replica holding
+    /// an outdated copy knows to stand aside on its timer.
+    pub(crate) async fn is_current(&self, config: &Config) -> anyhow::Result<bool> {
+        for (kind, declared) in [
+            (DeclarationKind::TrustPolicy, trust_policies(config)?),
+            (DeclarationKind::Channel, managed_channels(config)?),
+            (DeclarationKind::ServiceAccount, managed_accounts(config)?),
+        ] {
+            let before = self.declarations.snapshot(kind).await?;
+            if !notify_ports::declarations::diff(&before, &declared).is_empty() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Write what the file changed since the last pass into the audit log (§13).
     ///
     /// Returns how many entries were written, which is zero on a steady instance —
@@ -1096,6 +1115,31 @@ mod tests {
 
         assert_eq!(first, second, "boot, SIGHUP and the timer all run this");
         assert!(second.policy.receipts_enabled);
+    }
+
+    #[tokio::test]
+    async fn a_replica_holding_an_older_file_learns_it_is_not_current() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let old = config(vec![ManagedChannel {
+            id: "ci-infra".to_owned(),
+            ..ManagedChannel::default()
+        }]);
+        let new = config(vec![ManagedChannel {
+            id: "ci-deploy".to_owned(),
+            ..ManagedChannel::default()
+        }]);
+
+        reconciler(&store, &clock).execute(&old).await.unwrap();
+        assert!(reconciler(&store, &clock).is_current(&old).await.unwrap());
+
+        // A newer replica booted and applied its file.
+        reconciler(&store, &clock).execute(&new).await.unwrap();
+        assert!(
+            !reconciler(&store, &clock).is_current(&old).await.unwrap(),
+            "the old replica's timer must stand aside rather than archive `ci-deploy`"
+        );
+        assert!(reconciler(&store, &clock).is_current(&new).await.unwrap());
     }
 
     #[tokio::test]

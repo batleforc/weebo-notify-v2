@@ -81,6 +81,8 @@ pub enum TokenRejection {
     WrongAudience,
     /// Past its `exp`.
     Expired,
+    /// Before its `nbf`.
+    NotYetValid,
     /// Not a JWT, or missing a required claim.
     Malformed,
 }
@@ -94,7 +96,29 @@ impl TokenRejection {
             Self::WrongIssuer => "wrong_issuer",
             Self::WrongAudience => "wrong_audience",
             Self::Expired => "expired",
+            Self::NotYetValid => "not_yet_valid",
             Self::Malformed => "malformed",
+        }
+    }
+}
+
+impl MintedToken {
+    /// Build the response for `grants`: the channels, and the union of the scopes —
+    /// what the caller is told it got, not what authorises it.
+    #[must_use]
+    pub fn new(
+        token: String,
+        expires_at: OffsetDateTime,
+        grants: &[(ChannelId, Vec<Scope>)],
+    ) -> Self {
+        let mut scopes: Vec<Scope> = grants.iter().flat_map(|(_, s)| s.iter().copied()).collect();
+        scopes.sort_unstable();
+        scopes.dedup();
+        Self {
+            token,
+            expires_at,
+            channels: grants.iter().map(|(channel, _)| channel.clone()).collect(),
+            scopes,
         }
     }
 }
@@ -148,11 +172,13 @@ pub trait FederationVerifier: Send + Sync {
     /// The channels are the ones the grant resolved to, already intersected with
     /// what exists — a token naming `ci-*` would force every later request to
     /// re-run the pattern match, and the two runs would eventually disagree.
+    ///
+    /// Each channel travels with its own scopes: two policies granting different
+    /// scopes on different channels must not add up to both everywhere.
     async fn mint(
         &self,
         grant: &FederatedGrant,
-        channels: &[ChannelId],
-        scopes: &[Scope],
+        grants: &[(ChannelId, Vec<Scope>)],
     ) -> PortResult<MintedToken>;
 
     /// Verify a token *we* minted, presented on a later request.
@@ -180,10 +206,9 @@ pub struct MintedClaims {
     /// The `subject` claim of the original ID token, which becomes the `CiJob`
     /// principal (design §5.1).
     pub subject: String,
-    /// Exactly the channels this token may act in.
-    pub channels: Vec<ChannelId>,
-    /// Exactly what it may do there.
-    pub scopes: Vec<Scope>,
+    /// Exactly the channels this token may act in, each with exactly what it may
+    /// do there.
+    pub grants: Vec<(ChannelId, Vec<Scope>)>,
     /// When it stops working. Fifteen minutes at most (design §5.3).
     pub expires_at: OffsetDateTime,
 }

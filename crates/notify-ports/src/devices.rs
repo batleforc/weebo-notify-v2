@@ -60,4 +60,14 @@ pub trait DeviceRepository: Send + Sync {
         groups: &[String],
         at: OffsetDateTime,
     ) -> PortResult<()>;
+
+    /// The groups [`DeviceRepository::remember_groups`] last saw for `principal`,
+    /// empty if none or if that observation is older than `since`. Lets a personal
+    /// API key — which carries no token, so no groups — be capped by what its owner
+    /// could still reach recently enough to be believed.
+    async fn remembered_groups(
+        &self,
+        principal: &Principal,
+        since: OffsetDateTime,
+    ) -> PortResult<Vec<String>>;
 }

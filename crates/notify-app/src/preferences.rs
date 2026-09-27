@@ -84,7 +84,8 @@ impl SetDnd {
     /// It takes a [`DndDraft`] and not a [`Dnd`] because the subject is not an
     /// input: this is the only place that knows whose preference is being written.
     pub async fn execute(&self, caller: &Caller, wanted: DndDraft) -> Result<Dnd, Failure> {
-        let user = subject(caller)?;
+        subject(caller)?;
+        let user = caller.ensure_person()?;
         let dnd = wanted.for_user(user).validated()?;
 
         let cursor = self.preferences.set_dnd(&dnd, self.clock.now()).await?;
@@ -181,6 +182,27 @@ mod tests {
 
         assert!(dnd.quiet_hours.is_empty());
         assert!(!dnd.is_active(fixture.clock.now()));
+    }
+
+    #[tokio::test]
+    async fn a_key_reads_its_owners_preference_but_cannot_change_it() {
+        let fixture = fixture();
+        let as_key = Caller {
+            grant: crate::authz::Grant::ApiKey {
+                id: notify_domain::ApiKeyId::generate(),
+                scopes: vec![notify_domain::Scope::Publish],
+                channels: Vec::new(),
+                publish_per_minute: None,
+                owner_groups: Vec::new(),
+            },
+            ..Caller::member(fixture.alice.clone())
+        };
+
+        assert!(fixture.read.execute(&as_key).await.is_ok());
+        assert!(matches!(
+            fixture.set.execute(&as_key, wanted(vec![nights()])).await,
+            Err(Failure::Domain(DomainError::SessionRequired))
+        ));
     }
 
     #[tokio::test]

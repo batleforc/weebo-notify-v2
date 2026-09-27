@@ -28,7 +28,7 @@
 
 use image::{DynamicImage, ImageFormat, ImageReader};
 use notify_ports::{
-    AttachmentThumbnailer, AvatarProcessor, ImageRejection, PortResult, ProcessedImage,
+    AttachmentThumbnailer, AvatarProcessor, ImageRejection, PortError, PortResult, ProcessedImage,
 };
 
 /// The ceiling on an upload (design §2.4, §8.2).
@@ -115,6 +115,20 @@ fn square_png(decoded: &DynamicImage, size: u32) -> Result<ProcessedImage, Image
     })
 }
 
+/// Run a decode on the blocking pool.
+///
+/// Up to 40 megapixels and a Lanczos3 resize is seconds of CPU; on the async
+/// worker it would freeze every stream and request that worker holds.
+async fn off_the_runtime(
+    bytes: &[u8],
+    run: fn(&[u8]) -> Result<ProcessedImage, ImageRejection>,
+) -> PortResult<Result<ProcessedImage, ImageRejection>> {
+    let bytes = bytes.to_vec();
+    tokio::task::spawn_blocking(move || run(&bytes))
+        .await
+        .map_err(|error| PortError::unavailable("images", error))
+}
+
 /// Decodes avatars with the rules of §2.4 applied in the order of §15.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageAvatarProcessor;
@@ -139,7 +153,11 @@ impl ImageAvatarProcessor {
 #[async_trait::async_trait]
 impl AvatarProcessor for ImageAvatarProcessor {
     async fn process(&self, bytes: &[u8]) -> PortResult<Result<ProcessedImage, ImageRejection>> {
-        let outcome = Self::run(bytes);
+        // Checked before the copy `off_the_runtime` makes, not only inside `run`.
+        if bytes.len() > MAX_AVATAR_BYTES {
+            return Ok(Err(ImageRejection::TooLarge));
+        }
+        let outcome = off_the_runtime(bytes, Self::run).await?;
         if let Err(rejection) = &outcome {
             // Refusals are logged at debug: they are ordinary, and a bad upload must
             // not be a way to fill somebody's log.
@@ -173,7 +191,7 @@ impl ImageAttachmentThumbnailer {
 #[async_trait::async_trait]
 impl AttachmentThumbnailer for ImageAttachmentThumbnailer {
     async fn thumbnail(&self, bytes: &[u8]) -> PortResult<Result<ProcessedImage, ImageRejection>> {
-        let outcome = Self::run(bytes);
+        let outcome = off_the_runtime(bytes, Self::run).await?;
         if let Err(rejection) = &outcome {
             // Debug, not warn: an unsupported source (a GIF, say) is an ordinary
             // outcome nobody is paged for — the row simply shows no thumbnail.

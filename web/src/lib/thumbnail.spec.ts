@@ -6,17 +6,19 @@ vi.mock("@/api/generated", () => ({
   thumbnail: (...args: unknown[]) => thumbnail(...args),
 }));
 
-import { forgetThumbnails, thumbnailObjectUrl } from "./thumbnail";
+import { forgetObjectUrls } from "./object-url";
+import { thumbnailObjectUrl } from "./thumbnail";
 
 /** jsdom has no object URLs, and the point of this module is producing them. */
 let minted = 0;
 beforeEach(() => {
-  forgetThumbnails();
+  forgetObjectUrls();
   thumbnail.mockReset();
   minted = 0;
   vi.stubGlobal("URL", {
     ...URL,
     createObjectURL: () => `blob:thumbnail-${++minted}`,
+    revokeObjectURL: () => {},
   });
 });
 
@@ -78,5 +80,15 @@ describe("fetching an attachment's thumbnail", () => {
     thumbnail.mockRejectedValue(new Error("offline"));
 
     expect(await thumbnailObjectUrl("att_01J")).toBeNull();
+  });
+
+  it("asks again after a request that never got an answer", async () => {
+    // Offline is not "there is no image": caching that null would leave the row
+    // blank until a reload, however long ago the network came back.
+    thumbnail.mockRejectedValueOnce(new Error("offline"));
+    thumbnail.mockResolvedValue({ data: new Blob(["png"]) });
+
+    expect(await thumbnailObjectUrl("att_01J")).toBeNull();
+    expect(await thumbnailObjectUrl("att_01J")).not.toBeNull();
   });
 });

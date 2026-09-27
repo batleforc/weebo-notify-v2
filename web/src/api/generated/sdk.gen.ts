@@ -557,7 +557,7 @@ export const listAccounts = <ThrowOnError extends boolean = false>(options?: Opt
 });
 
 /**
- * Create one, owned by the caller.
+ * Create one, owned by the caller — a platform admin (§5.4).
  */
 export const createAccount = <ThrowOnError extends boolean = false>(options: Options<CreateAccountData, ThrowOnError>): RequestResult<CreateAccountResponses, CreateAccountErrors, ThrowOnError> => (options.client ?? client).post<CreateAccountResponses, CreateAccountErrors, ThrowOnError>({
     responseType: 'json',

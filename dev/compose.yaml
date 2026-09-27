@@ -34,12 +34,14 @@ x-authentik-env: &authentik-env
   AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
   AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
 
+# Every port is published on loopback only: the credentials below are committed,
+# and 0.0.0.0 would hand them to anyone on the same Wi-Fi.
 services:
   postgres:
     # Two databases in one instance: weebo_notify for the server, authentik for the
     # IdP — created by postgres/init/01-databases.sql on first boot.
     image: postgres:17-alpine
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     environment:
       POSTGRES_USER: weebo
       POSTGRES_PASSWORD: weebo
@@ -57,7 +59,7 @@ services:
     # S3-compatible object store for attachments. The adapter only ever uses
     # standard S3 operations, so this stays swappable for MinIO/Garage/S3 (§15).
     image: rustfs/rustfs:latest
-    ports: ["9000:9000", "9001:9001"] # S3 API / console
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"] # S3 API / console
     environment:
       RUSTFS_ACCESS_KEY: weebo-dev
       RUSTFS_SECRET_KEY: weebo-dev-secret
@@ -67,16 +69,16 @@ services:
       - rustfs-data:/data
 
   redis:
-    # Authentik's broker; on its own it also backs the eventbus-redis adapter (§11).
+    # Authentik's broker.
     image: valkey/valkey:8-alpine
     profiles: [authentik, eventbus]
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
 
   authentik-server:
     image: ghcr.io/goauthentik/server:2025.6
     command: server
     profiles: [authentik]
-    ports: ["9100:9100"]
+    ports: ["127.0.0.1:9100:9100"]
     environment: *authentik-env
     volumes:
       - ./authentik/blueprints:/blueprints/weebo:ro
@@ -99,7 +101,7 @@ services:
     # SMTP sink for exercising the `email` channel sink (§7.1bis).
     image: axllent/mailpit:latest
     profiles: [sinks]
-    ports: ["8025:8025", "1025:1025"]
+    ports: ["127.0.0.1:8025:8025", "127.0.0.1:1025:1025"]
 
   dex:
     # The strict-minimal leg of the identity matrix (§3.2, T29) — a provider that
@@ -113,7 +115,7 @@ services:
     image: ghcr.io/dexidp/dex:v2.45.1
     profiles: [dex]
     command: ["dex", "serve", "/etc/dex/config.yaml"]
-    ports: ["5556:5556"]
+    ports: ["127.0.0.1:5556:5556"]
     volumes:
       - ./dex/config.local.yaml:/etc/dex/config.yaml:ro
 

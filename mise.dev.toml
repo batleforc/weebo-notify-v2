@@ -19,3 +19,9 @@ claude = "latest"
 # Token-optimised command wrappers (see CLAUDE.md).
 rtk = "latest"
 herdr = "latest"
+# Needed by `task claude:install` to read .claude/settings.json.
+jq = "latest"
+# Python tool installer for the pipx tool below.
+uv = "latest"
+# Knowledge graph behind the `/graphify` skill and the .claude/settings.json hooks.
+"pipx:graphifyy" = "latest"

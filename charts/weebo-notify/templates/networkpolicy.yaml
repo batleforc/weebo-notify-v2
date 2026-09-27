@@ -4,6 +4,9 @@
    an egress policy — a wrong guess there fails closed against a real
    dependency, which is worse than no policy at all. */}}
 {{- if .Values.networkPolicy.enabled }}
+{{- if not .Values.networkPolicy.ingressFrom }}
+{{- fail "networkPolicy.enabled needs networkPolicy.ingressFrom: the server policy admits only web pods otherwise, so its Ingress and the ServiceMonitor would be cut off (see examples/values-production.yaml)" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

@@ -238,6 +238,12 @@ pub enum DomainError {
     /// them somewhere nobody can help.
     #[error("this action needs the platform role")]
     NotPlatformAdmin,
+
+    /// The action changes a person's own account — their profile, their settings,
+    /// the channels they create — and the credential is a key or a CI token rather
+    /// than that person's session. Fixed by logging in, not by asking for a scope.
+    #[error("this action needs a person's own session, not a key or a CI token")]
+    SessionRequired,
 }
 
 impl DomainError {
@@ -269,6 +275,7 @@ impl DomainError {
             Self::ScopeMissing { .. } => "scope.missing",
             Self::NotAPerson => "principal.not_a_person",
             Self::NotPlatformAdmin => "platform.role_required",
+            Self::SessionRequired => "credential.session_required",
         }
     }
 
@@ -297,9 +304,10 @@ impl DomainError {
             | Self::ApiKeyExpired
             | Self::ApiKeyRevoked
             | Self::ServiceAccountDisabled => ErrorKind::Unauthenticated,
-            Self::ScopeMissing { .. } | Self::NotAPerson | Self::NotPlatformAdmin => {
-                ErrorKind::Forbidden
-            }
+            Self::ScopeMissing { .. }
+            | Self::NotAPerson
+            | Self::NotPlatformAdmin
+            | Self::SessionRequired => ErrorKind::Forbidden,
         }
     }
 }

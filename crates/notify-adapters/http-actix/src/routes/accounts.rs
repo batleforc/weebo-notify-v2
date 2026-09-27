@@ -48,7 +48,7 @@ pub(crate) async fn list_accounts(
     Ok(web::Json(state.accounts.execute(&caller.0).await?))
 }
 
-/// Create one, owned by the caller.
+/// Create one, owned by the caller — a platform admin (§5.4).
 #[utoipa::path(
     post,
     path = "/serviceaccounts",
@@ -57,7 +57,7 @@ pub(crate) async fn list_accounts(
     responses(
         (status = 201, description = "Created", body = ServiceAccount),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 403, description = "A bot cannot create bots (design §5.2bis)", body = Problem),
+        (status = 403, description = "Not a platform admin, or not a person (design §5.2bis, §5.4)", body = Problem),
         (status = 422, description = "A name that is not a slug, or one already taken", body = Problem),
     ),
     security(("bearer" = []))

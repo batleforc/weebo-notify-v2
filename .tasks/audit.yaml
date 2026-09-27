@@ -62,8 +62,8 @@ tasks:
           # GHSA-wrw7-89jp-8q8g: pinned by Tauri's GTK3 stack, not by us.
           gtk="$(grep -A1 'name = "gtk"' web/src-tauri/Cargo.lock 2>/dev/null | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
           case "${gtk:-none}" in
-            0.18*) echo "    gtk ${gtk} — Tauri still on GTK3; the glib ignore in .trivyignore still applies" ;;
-            none)  echo "    gtk not found in web/src-tauri/Cargo.lock — check the .trivyignore glib entry" ;;
+            0.18*) echo "    gtk ${gtk} — Tauri still on GTK3; the glib ignore in .trivyignore.yaml still applies" ;;
+            none)  echo "    gtk not found in web/src-tauri/Cargo.lock — check the .trivyignore.yaml glib entry" ;;
             *)     echo "    gtk ${gtk} — REVISIT: Tauri moved off GTK3, so the glib ignore may be removable" ;;
           esac
 
@@ -98,7 +98,7 @@ tasks:
     # satisfy them, which fails the whole scan rather than just that chart —
     # `audit:helm` below scans it instead, with the placeholders it needs.
     cmds:
-      - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity MEDIUM,HIGH,CRITICAL --skip-dirs charts .
+      - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity MEDIUM,HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-dirs charts .
 
   helm:
     desc: "Scan charts/weebo-notify for Kubernetes misconfigurations and secrets (trivy config)"
@@ -108,13 +108,13 @@ tasks:
     # placeholders rather than a real deployment's values.
     #
     # `--ignorefile` is explicit rather than relying on trivy's own discovery:
-    # that only finds `charts/weebo-notify/.trivyignore` automatically when the
+    # that only finds a plain `.trivyignore` automatically (never the YAML form) when the
     # scan runs *from* that directory, not when it is passed as a path from the
     # repository root, which is how this task and CI both invoke it.
     cmds:
       - >-
         trivy config --exit-code 1 --severity MEDIUM,HIGH,CRITICAL
-        --ignorefile charts/weebo-notify/.trivyignore
+        --ignorefile charts/weebo-notify/.trivyignore.yaml
         --helm-set web.env.apiBaseUrl=https://notify.example.invalid
         --helm-set web.env.oidcIssuer=https://auth.example.invalid
         charts/weebo-notify

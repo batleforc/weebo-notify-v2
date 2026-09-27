@@ -34,6 +34,7 @@
 
 import { enrolDevice, revokeDevice, webpushKey } from "@/api/generated";
 import { i18n } from "@/i18n";
+import { isDesktop } from "@/lib/desktop";
 import { ready } from "@/lib/service-worker";
 
 /** Where the enrolled device id is remembered, per browser profile. */
@@ -51,9 +52,13 @@ export interface PushState {
   enabled: boolean;
 }
 
-/** Whether the three APIs this needs exist. */
+/**
+ * Whether the three APIs this needs exist — and never in the desktop shell,
+ * which notifies natively and has no service worker (`lib/service-worker.ts`).
+ */
 export function supported(): boolean {
   return (
+    !isDesktop() &&
     "serviceWorker" in navigator &&
     "PushManager" in window &&
     "Notification" in window

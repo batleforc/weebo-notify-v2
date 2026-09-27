@@ -37,9 +37,10 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use notify_domain::{ChannelId, Device, DevicePublicKey, NotificationId};
+use notify_domain::{Device, DevicePublicKey};
 use notify_ports::{
-    PortError, PortResult, PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport,
+    PortError, PortResult, PushDispatcher, PushMessage, PushOutcome, PushTransport,
+    SEALED_ENVELOPE_VERSION,
 };
 use serde::Serialize;
 
@@ -53,7 +54,7 @@ use serde::Serialize;
 /// octets of JSON — the arithmetic that keeps the wire body under 4 KiB, a size most
 /// HTTP intermediaries accept without configuration. Revisit once a real distributor
 /// gives a number worth citing instead of a margin.
-const MAX_PAYLOAD: usize = 2_800;
+const MAX_PAYLOAD: usize = 2_750;
 
 /// Why the transport could not be built (design §11, `[push.unifiedpush]`).
 ///
@@ -66,70 +67,29 @@ pub enum UnifiedPushSetup {
     Client(#[source] reqwest::Error),
 }
 
-/// What crosses the wire to a distributor endpoint (design §6.3).
+/// What crosses the wire to a distributor endpoint (design §6.3, envelope v2).
 ///
-/// Unlike Web Push's `Envelope`, which puts the whole message inside the browser's
-/// own encryption, `channel` and `notification_id` travel in the clear here — the
-/// design's own wire shape for the mobile blob (§6.3: `{channel_id, notification_id,
-/// ciphertext_device}`), presumably so a distributor can route or coalesce without
-/// ever holding a device's private key, which it never has. Only content crosses
-/// sealed.
+/// A version and the sealed box, nothing else. Channel and notification ids used
+/// to travel in the clear here (v1); a third-party distributor — a public ntfy —
+/// could then map who follows what without ever opening a box. They now ride
+/// inside it ([`PushMessage::sealed_plaintext`]), pokes included.
 #[derive(Debug, Serialize)]
 struct Envelope {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    channel: Option<ChannelId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    notification_id: Option<NotificationId>,
-    /// The sealed box, base64. Absent only for a poke: nothing to protect but the
-    /// identifiers above, and the client fetches the rest over TLS (design §6.3).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ciphertext_device: Option<String>,
-}
-
-/// What a digest seals to (design §7.4) — no channel, no notification, just the two
-/// counts a quiet period ended with.
-#[derive(Serialize)]
-struct DigestPayload {
-    total: u32,
-    failures: u32,
+    v: u8,
+    /// The sealed box, base64.
+    ciphertext_device: String,
 }
 
 impl Envelope {
-    /// Build one from what the fan-out decided to send, sealing whatever plaintext
-    /// there is to `key`.
+    /// Seal what the fan-out decided to send to `key`.
     ///
     /// `None` propagates a weak recipient key (design's threat model trusts an
-    /// enrolled device, but not blindly — see [`notify_sealed_box::seal`]) rather than
-    /// silently sending an envelope with no ciphertext, which would read to a
-    /// distributor exactly like a poke and be wrong in a way nothing downstream
-    /// could tell apart from the real thing.
+    /// enrolled device, but not blindly — see [`notify_sealed_box::seal`]) rather
+    /// than sending something a device could not trust.
     fn sealed_for(key: &DevicePublicKey, message: &PushMessage) -> Option<Self> {
-        Some(match message {
-            PushMessage::Notification {
-                channel,
-                notification_id,
-                body,
-                ..
-            } => Self {
-                channel: Some(channel.clone()),
-                notification_id: Some(*notification_id),
-                ciphertext_device: match body {
-                    PushBody::Poke => None,
-                    PushBody::Payload { bytes, .. } => Some(seal_base64(key, bytes)?),
-                },
-            },
-            PushMessage::Digest { total, failures } => {
-                let plaintext = serde_json::to_vec(&DigestPayload {
-                    total: *total,
-                    failures: *failures,
-                })
-                .unwrap_or_default();
-                Self {
-                    channel: None,
-                    notification_id: None,
-                    ciphertext_device: Some(seal_base64(key, &plaintext)?),
-                }
-            }
+        Some(Self {
+            v: SEALED_ENVELOPE_VERSION,
+            ciphertext_device: seal_base64(key, &message.sealed_plaintext())?,
         })
     }
 }
@@ -155,8 +115,14 @@ impl UnifiedPush {
     /// identifies this server to it.
     pub fn new() -> Result<Self, UnifiedPushSetup> {
         Ok(Self {
+            // The endpoint is the device's choice, so the client refuses what
+            // `check_push_endpoint` refuses, once more after DNS: a redirect or a
+            // name resolving inside the network is the same request forgery as an
+            // IP literal.
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(PublicOnly)
                 .build()
                 .map_err(UnifiedPushSetup::Client)?,
         })
@@ -182,6 +148,12 @@ impl PushTransport for UnifiedPush {
                 "not a UnifiedPush registration",
             ));
         };
+
+        // Enrolment checked it, but a row written before that check existed did not
+        // go through it — and an IP literal never reaches the resolver below.
+        if notify_domain::check_push_endpoint(endpoint).is_err() {
+            return Ok(PushOutcome::Expired);
+        }
 
         // `Device::enrol` refuses a relayed transport with no key (design §6.2), so
         // a `None` here is not a device that forgot to publish one — it is stored
@@ -219,6 +191,27 @@ impl PushTransport for UnifiedPush {
             Err(_) => PushOutcome::Failed {
                 reason: "unreachable",
             },
+        })
+    }
+}
+
+/// A resolver that only ever hands back public addresses.
+///
+/// ponytail: duplicated in `notify-push-webpush`; a shared crate if a third
+/// transport ever dials an address a user picked.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|addr| notify_domain::is_public_address(addr.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err("the push endpoint resolves to no public address".into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
     }
 }
@@ -261,7 +254,8 @@ const fn outcome(status: u16) -> PushOutcome {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
-    use notify_domain::{ChannelId, DeviceId, Principal, Priority, UserId};
+    use notify_domain::{ChannelId, DeviceId, NotificationId, Principal, Priority, UserId};
+    use notify_ports::PushBody;
     use time::OffsetDateTime;
     use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -347,46 +341,29 @@ mod tests {
     }
 
     #[test]
-    fn a_poke_carries_identifiers_and_no_ciphertext() {
+    fn the_relay_sees_a_version_and_ciphertext_and_no_identifier() {
         let key = device_key();
-        let message = PushMessage::Notification {
+        let poke = PushMessage::Notification {
             channel: ChannelId::parse("ci-infra").unwrap(),
             notification_id: NotificationId::generate(),
             priority: Priority::Default,
             body: PushBody::Poke,
         };
+        let digest = PushMessage::Digest {
+            total: 12,
+            failures: 2,
+        };
 
-        let envelope = Envelope::sealed_for(&key, &message).unwrap();
+        for message in [notification(), poke, digest] {
+            let rendered =
+                serde_json::to_string(&Envelope::sealed_for(&key, &message).unwrap()).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
-        assert!(envelope.channel.is_some());
-        assert!(envelope.notification_id.is_some());
-        assert!(
-            envelope.ciphertext_device.is_none(),
-            "a poke has nothing to protect — the client fetches over TLS"
-        );
-    }
-
-    #[test]
-    fn a_payload_seals_and_a_digest_seals_and_neither_names_a_channel_for_the_digest() {
-        let key = device_key();
-
-        let from_notification = Envelope::sealed_for(&key, &notification()).unwrap();
-        assert!(from_notification.channel.is_some());
-        assert!(from_notification.ciphertext_device.is_some());
-
-        let digest = Envelope::sealed_for(
-            &key,
-            &PushMessage::Digest {
-                total: 12,
-                failures: 2,
-            },
-        )
-        .unwrap();
-        assert!(
-            digest.channel.is_none(),
-            "a digest names no channel — it ends a quiet period, not one channel's"
-        );
-        assert!(digest.ciphertext_device.is_some());
+            assert_eq!(value["v"], 2);
+            assert!(value["ciphertext_device"].is_string());
+            assert_eq!(value.as_object().unwrap().len(), 2, "{rendered}");
+            assert!(!rendered.contains("ci-infra"), "{rendered}");
+        }
     }
 
     #[test]

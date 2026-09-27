@@ -30,9 +30,9 @@
 # through.
 /.cargo/audit.toml                            @batleforc
 /deny.toml                                    @batleforc
-/.trivyignore                                 @batleforc
+/.trivyignore.yaml                            @batleforc
 /.gitleaks.toml                               @batleforc
-/charts/weebo-notify/.trivyignore             @batleforc
+/charts/weebo-notify/.trivyignore.yaml        @batleforc
 /SECURITY.md                                  @batleforc
 
 # Translations, and the reason they are listed with the security-sensitive paths:

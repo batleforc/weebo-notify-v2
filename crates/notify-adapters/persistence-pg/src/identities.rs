@@ -330,6 +330,21 @@ impl ApiKeyRepository for PgStore {
         rows.iter().map(hydrate_key).collect()
     }
 
+    async fn list_for_channel(&self, channel: &ChannelId) -> PortResult<Vec<ApiKey>> {
+        let sql = [
+            SELECT_KEY,
+            "WHERE owner->>'owner' = 'channel' AND owner->>'id' = $1 ORDER BY created_at DESC",
+        ]
+        .concat();
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(channel.as_str())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| fail("api_key", error))?;
+
+        rows.iter().map(hydrate_key).collect()
+    }
+
     async fn insert(&self, stored: &StoredApiKey) -> PortResult<()> {
         let key = &stored.key;
         let scopes = key

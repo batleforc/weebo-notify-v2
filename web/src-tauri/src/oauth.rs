@@ -71,6 +71,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// subtly wrong.
 #[tauri::command]
 pub async fn loopback_authorize(app: AppHandle, authorize_url: String) -> Result<String, String> {
+    web_url(&authorize_url)?;
     // Bound *before* the browser opens, not after: the reverse order races a fast
     // provider (an already-signed-in session redirects immediately) against our
     // own `bind`, and loses that race as a connection refused the person can only
@@ -118,11 +119,30 @@ pub async fn loopback_authorize(app: AppHandle, authorize_url: String) -> Result
 /// provider's session cookie lives in the browser that signed in, so ending it has
 /// to happen there. Navigating the shell's own window to it would clear nothing
 /// and strand the app on the provider's page.
+///
+/// `http`/`https` only — see [`web_url`].
 #[tauri::command]
 pub fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+    web_url(&url)?;
     app.opener()
         .open_url(&url, None::<&str>)
         .map_err(|error| format!("Could not open {url}: {error}"))
+}
+
+/// Refuse anything but a web page before handing a URL to the OS opener.
+///
+/// Both commands take their URL from the webview, and the opener runs whatever
+/// handler the OS maps a scheme to: `file:` opens local files, and a custom
+/// scheme reaches any application that registered one. The webview is trusted to
+/// ask for a sign-in or sign-out page — never for that, so a script that got
+/// into it (the thing CSP is there to stop) cannot use the shell as a launcher.
+fn web_url(url: &str) -> Result<(), String> {
+    match tauri::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => Ok(()),
+        _ => Err(format!(
+            "Refusing to open {url}: only http(s) pages are opened."
+        )),
+    }
 }
 
 /// Accept connections until one of them is the provider's redirect.
@@ -289,6 +309,21 @@ mod tests {
     fn accepts_a_callback_without_a_query() {
         let (decided, _) = round_trip("GET /auth/callback HTTP/1.1\r\n\r\n");
         assert_eq!(decided.as_deref(), Some(""));
+    }
+
+    /// The opener must never be handed a local file or another app's scheme.
+    #[test]
+    fn opens_only_web_pages() {
+        assert!(web_url("https://idp.test/logout?client_id=x").is_ok());
+        assert!(web_url("http://127.0.0.1:9110/authorize").is_ok());
+        for refused in [
+            "file:///etc/passwd",
+            "weebo-notify://n/1",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert!(web_url(refused).is_err(), "{refused}");
+        }
     }
 
     /// The response has to be complete on its own — see [`respond`]'s doc.

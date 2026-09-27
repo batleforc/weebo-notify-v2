@@ -9222,6 +9222,7 @@ Arguments:
             204u16 => Ok(ResponseValue::empty(response)),
             403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+            409u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             413u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             415u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
             501u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
@@ -10957,7 +10958,7 @@ Sends a `GET` request to `/api/v1/serviceaccounts`
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /**Create one, owned by the caller
+    /**Create one, owned by the caller — a platform admin (§5.4)
 
 Sends a `POST` request to `/api/v1/serviceaccounts`
 

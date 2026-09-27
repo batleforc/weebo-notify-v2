@@ -155,6 +155,11 @@ pub(crate) struct Server {
     /// `404`, not `401` — an endpoint that exists and refuses is still an
     /// admission that it exists.
     pub docs: bool,
+    /// Declares this a development instance, which is what lets it boot on the
+    /// development stack's defaults — a loopback OIDC issuer, the `weebo:weebo`
+    /// database. Off by default: a production config that forgot `[oidc]` refuses
+    /// to start instead of trusting whatever answers on localhost.
+    pub dev: bool,
 }
 
 impl Default for Server {
@@ -163,6 +168,7 @@ impl Default for Server {
             bind: SocketAddr::from(([0, 0, 0, 0], 8080)),
             cors_origins: Vec::new(),
             docs: true,
+            dev: false,
         }
     }
 }
@@ -269,8 +275,9 @@ pub(crate) enum BusBackend {
     /// `LISTEN/NOTIFY` (ADR-0008).
     #[default]
     Postgres,
-    /// Redis pub/sub, for when the NOTIFY per transaction starts to weigh. Not
-    /// implemented yet; refused at startup for the same reason as above.
+    /// Redis pub/sub, for when the NOTIFY per transaction starts to weigh. No
+    /// adapter exists; kept as a name only so asking for it is refused at startup
+    /// with a reason rather than as an unknown variant.
     Redis,
 }
 
@@ -278,7 +285,6 @@ pub(crate) enum BusBackend {
 #[serde(default)]
 pub(crate) struct EventBus {
     pub backend: BusBackend,
-    pub redis_url: Option<String>,
 }
 
 /// Which object store `[attachments]` describes (ADR-0002, ADR-0022).

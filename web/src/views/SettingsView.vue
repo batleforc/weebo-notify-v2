@@ -37,6 +37,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { avatarObjectUrl } from "@/lib/avatar";
+import { isDesktop } from "@/lib/desktop";
 import { exact } from "@/lib/format";
 import { LOCALE_KEY, type Locale } from "@/lib/locale";
 import { useChannels } from "@/stores/channels";
@@ -46,6 +47,7 @@ const session = useSession();
 const ui = useUi();
 const channels = useChannels();
 const { t } = useI18n();
+const desktop = isDesktop();
 
 const profile = ref<Profile | null>(null);
 const loading = ref(true);
@@ -243,9 +245,9 @@ const cliKeyError = ref<string | null>(null);
 async function loadCliKeys(): Promise<void> {
   try {
     const answer = await listKeys({ throwOnError: true });
-    // Scoped by the server to the caller's own keys (`ListApiKeys::execute`) —
-    // nobody else's tokens ever reach this screen.
-    cliKeys.value = answer.data;
+    // Scoped by the server to the caller's own keys plus those of the service
+    // accounts they administer (`ListApiKeys::execute`); this screen is personal.
+    cliKeys.value = answer.data.filter((key) => key.owner.owner === "user");
   } catch (caught) {
     cliKeyError.value = failureOf(caught).message;
   }
@@ -479,7 +481,8 @@ onMounted(() => {
       </p>
     </Card>
 
-    <PushPanel />
+    <!-- Web Push is a browser's; the desktop shell notifies natively (§10bis). -->
+    <PushPanel v-if="!desktop" />
 
     <DndPanel />
 

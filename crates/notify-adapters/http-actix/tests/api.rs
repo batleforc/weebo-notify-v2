@@ -105,6 +105,7 @@ impl Harness {
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
+                Arc::new(store.clone()),
                 Arc::new(StubSecretHasher),
                 Arc::new(clock.clone()),
             )
@@ -257,15 +258,22 @@ impl Harness {
             ),
             create_key: CreateApiKey::new(
                 Arc::new(store.clone()),
+                Arc::new(store.clone()),
                 Arc::new(StubSecretHasher),
                 Arc::new(CountingKeyGenerator::default()),
-                authorizer,
+                authorizer.clone(),
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
-            keys: ListApiKeys::new(Arc::new(store.clone())),
+            keys: ListApiKeys::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                authorizer.clone(),
+            ),
             revoke_key: RevokeApiKey::new(
                 Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                authorizer.clone(),
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
             ),
@@ -1137,6 +1145,41 @@ async fn the_websocket_shares_the_connection_ceiling_with_the_stream() {
 }
 
 #[actix_web::test]
+async fn a_stream_ends_when_its_token_expires() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    harness.tokens.register(
+        "short-token",
+        VerifiedClaims {
+            issuer: Url::parse("https://idp.example").unwrap(),
+            subject: "alice".to_owned(),
+            email: Some("alice@weebo.local".to_owned()),
+            display_name: Some("Alice Martin".to_owned()),
+            groups: vec![],
+            expires_at: harness.clock.now() + Duration::milliseconds(200),
+        },
+    );
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/stream")
+        .insert_header(("Authorization", "Bearer short-token"))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The body only ends when the server closes the stream; well before the
+    // five-minute re-check, since the token itself says when.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        actix_web::body::to_bytes(response.into_body()),
+    )
+    .await
+    .expect("the stream outlived its token")
+    .unwrap();
+}
+
+#[actix_web::test]
 async fn a_stream_needs_a_credential_like_everything_else() {
     let (_, state) = Harness::new();
     let app = service!(state);
@@ -1319,11 +1362,23 @@ async fn a_timezone_the_database_does_not_know_is_refused() {
 async fn a_service_account_is_created_listed_and_deactivated() {
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;
+    harness.alice_as_platform_admin();
     let app = service!(state);
 
+    // Without the platform role, no bot.
     let request = test::TestRequest::post()
         .uri("/api/v1/serviceaccounts")
         .insert_header(AUTH)
+        .set_json(json!({ "id": "bot-argocd" }))
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/serviceaccounts")
+        .insert_header(ADMIN_AUTH)
         .set_json(json!({ "id": "bot-argocd", "display_name": "ArgoCD" }))
         .to_request();
     let response = test::call_service(&app, request).await;
@@ -1347,7 +1402,7 @@ async fn a_service_account_is_created_listed_and_deactivated() {
     // The same name twice is refused rather than adopted.
     let request = test::TestRequest::post()
         .uri("/api/v1/serviceaccounts")
-        .insert_header(AUTH)
+        .insert_header(ADMIN_AUTH)
         .set_json(json!({ "id": "bot-argocd" }))
         .to_request();
     assert_eq!(
@@ -1714,6 +1769,58 @@ async fn fs_upload_is_refused_without_a_valid_token() {
         fs.get(id).await.unwrap().is_none(),
         "an unsigned request must not reach the disk"
     );
+}
+
+#[actix_web::test]
+async fn fs_upload_is_capped_and_single_use() {
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let signed = fs
+        .presign_upload(&notify_ports::UploadRequest {
+            content_type: "image/png".to_owned(),
+            content_length: 4,
+        })
+        .await
+        .unwrap();
+    let put = |payload: Vec<u8>| {
+        test::TestRequest::put()
+            .uri(&path_and_query(&signed.url))
+            .insert_header(("content-type", "image/png"))
+            .set_payload(payload)
+            .to_request()
+    };
+
+    let over = vec![0_u8; 25 * 1024 * 1024 + 1];
+    let response = test::call_service(&app, put(over)).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(fs.get(signed.id).await.unwrap().is_none());
+
+    let response = test::call_service(&app, put(b"\x89PNG".to_vec())).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // The same token again: the bytes the notification was published with stay.
+    let response = test::call_service(&app, put(b"GIF8".to_vec())).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(fs.get(signed.id).await.unwrap().unwrap().bytes, b"\x89PNG");
+}
+
+#[actix_web::test]
+async fn an_avatar_over_its_ceiling_is_refused_with_413() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/users/me/avatar")
+        .insert_header(AUTH)
+        .set_payload(vec![0_u8; 512 * 1024 + 1])
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[actix_web::test]
