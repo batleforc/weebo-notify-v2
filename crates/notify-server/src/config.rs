@@ -738,6 +738,24 @@ impl Config {
              use \"postgres\" (LISTEN/NOTIFY)"
         );
 
+        // actix-cors rejects `*` and malformed origins only when a worker starts,
+        // which fails every worker. Refuse here, with the key named.
+        for origin in &self.server.cors_origins {
+            let exact = !origin.ends_with('/')
+                && url::Url::parse(origin).is_ok_and(|url| {
+                    url.host_str().is_some()
+                        && url.username().is_empty()
+                        && matches!(url.path(), "" | "/")
+                        && url.query().is_none()
+                        && url.fragment().is_none()
+                });
+            anyhow::ensure!(
+                exact,
+                "[server] cors_origins entry `{origin}` is not an exact origin \
+                 (`scheme://host[:port]`, no path, no trailing slash, no `*`)"
+            );
+        }
+
         if let Some(attachments) = &self.attachments {
             match attachments.kind {
                 AttachmentsBackend::S3 => {}
@@ -852,6 +870,22 @@ impl Config {
     }
 }
 
+/// [`Config::load`] under figment's global `Jail` lock, so the T23 test's `WNK_*`
+/// variables cannot leak into a load running concurrently on another thread.
+#[cfg(test)]
+pub(crate) fn load_isolated(path: &Path) -> anyhow::Result<Config> {
+    let mut loaded = None;
+    #[expect(
+        clippy::result_large_err,
+        reason = "the signature belongs to figment::Jail"
+    )]
+    figment::Jail::expect_with(|_| {
+        loaded = Some(Config::load(path));
+        Ok(())
+    });
+    loaded.unwrap_or_else(|| anyhow::bail!("the jail did not run"))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -873,7 +907,7 @@ mod tests {
 
     #[test]
     fn the_defaults_are_a_working_configuration() {
-        let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
+        let config = load_isolated(Path::new("/nonexistent/config.toml")).unwrap();
 
         assert_eq!(config.server.bind.port(), 8080);
         assert!(
@@ -885,12 +919,33 @@ mod tests {
     }
 
     #[test]
+    fn a_cors_origin_actix_would_refuse_is_refused_at_load() {
+        for bad in [
+            "*",
+            "https://app.example/",
+            "https://app.example/path",
+            "app.example",
+        ] {
+            let mut config = Config::default();
+            config.server.cors_origins = vec![bad.to_owned()];
+            assert!(config.validate().is_err(), "`{bad}` was accepted");
+        }
+        let mut config = Config::default();
+        config.server.cors_origins = vec![
+            "https://app.example".to_owned(),
+            "http://localhost:5173".to_owned(),
+            "tauri://localhost".to_owned(),
+        ];
+        config.validate().unwrap();
+    }
+
+    #[test]
     fn the_committed_dev_configuration_parses() {
         // The one config file this repository ships. If it stops parsing, `task
         // dev:run` stops working, and finding that out at startup is worse than
         // finding it out here.
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/dev.toml");
-        let config = Config::load(&path).expect("config/dev.toml parses");
+        let config = load_isolated(&path).expect("config/dev.toml parses");
 
         assert_eq!(config.oidc.client_id, "weebo-notify");
         assert_eq!(config.admin.oidc_groups, ["platform-admins"]);
@@ -949,7 +1004,7 @@ mod tests {
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/dev.toml");
         let mut leaves = Vec::new();
         scalar_leaves(
-            &serde_json::to_value(Config::load(&base).unwrap()).unwrap(),
+            &serde_json::to_value(load_isolated(&base).unwrap()).unwrap(),
             &mut Vec::new(),
             &mut leaves,
         );
@@ -1080,7 +1135,7 @@ mod tests {
     fn a_kubernetes_lease_is_refused_rather_than_silently_downgraded() {
         let path = with_config("k8s", "[ha]\nleader_election = \"kubernetes\"\n");
 
-        let error = Config::load(&path).unwrap_err().to_string();
+        let error = load_isolated(&path).unwrap_err().to_string();
 
         assert!(
             error.contains("not implemented"),
@@ -1092,7 +1147,7 @@ mod tests {
     fn a_filesystem_attachment_store_without_its_required_fields_is_refused() {
         let path = with_config("fs-incomplete", "[attachments]\nkind = \"filesystem\"\n");
 
-        let error = Config::load(&path).unwrap_err().to_string();
+        let error = load_isolated(&path).unwrap_err().to_string();
 
         assert!(
             error.contains("requires `path`"),
@@ -1111,7 +1166,7 @@ mod tests {
              token_secret = \"correct-horse-battery-staple\"\n",
         );
 
-        let config = Config::load(&path).expect("a complete filesystem config validates");
+        let config = load_isolated(&path).expect("a complete filesystem config validates");
         let attachments = config.attachments.expect("[attachments] was set");
 
         assert_eq!(attachments.kind, AttachmentsBackend::Filesystem);
@@ -1129,7 +1184,7 @@ mod tests {
              email = \"alice@weebo.local\"\n\
              scopes = [\"subscribe\"]\n",
         );
-        assert!(Config::load(&both).is_err());
+        assert!(load_isolated(&both).is_err());
 
         let neither = with_config(
             "neither",
@@ -1138,7 +1193,7 @@ mod tests {
              [[channels.managed.access]]\n\
              scopes = [\"subscribe\"]\n",
         );
-        assert!(Config::load(&neither).is_err());
+        assert!(load_isolated(&neither).is_err());
     }
 
     #[test]
@@ -1152,7 +1207,7 @@ mod tests {
              scopes = []\n",
         );
 
-        assert!(Config::load(&path).is_err());
+        assert!(load_isolated(&path).is_err());
     }
 
     #[test]
@@ -1165,7 +1220,7 @@ mod tests {
              scopes = [\"publish\"]\n",
         );
 
-        let pending = Config::load(&path).unwrap().unhonoured();
+        let pending = load_isolated(&path).unwrap().unhonoured();
 
         assert_eq!(
             pending.len(),
@@ -1190,7 +1245,7 @@ mod tests {
         // Same rule as Web Push above: warning about a section the composition root
         // reads would train an operator to ignore this list.
         assert!(
-            !Config::load(&path)
+            !load_isolated(&path)
                 .unwrap()
                 .unhonoured()
                 .iter()
@@ -1211,7 +1266,7 @@ mod tests {
 
         // An unsigned webhook is one a consumer cannot tell from anybody else's POST
         // (§7.1bis), so it is not a degraded mode — it is a refusal.
-        assert!(Config::load(&path).is_err());
+        assert!(load_isolated(&path).is_err());
     }
 
     #[test]
@@ -1235,7 +1290,7 @@ mod tests {
                 ),
             );
 
-            assert!(Config::load(&path).is_err(), "`{url}` must be refused");
+            assert!(load_isolated(&path).is_err(), "`{url}` must be refused");
         }
     }
 
@@ -1250,7 +1305,7 @@ mod tests {
              address = \"oncall@weebo.poc\"\n",
         );
 
-        assert!(Config::load(&path).is_err());
+        assert!(load_isolated(&path).is_err());
     }
 
     #[test]
@@ -1265,7 +1320,7 @@ mod tests {
              limits = { publish_per_min = 120 }\n",
         );
 
-        let config = Config::load(&path).unwrap();
+        let config = load_isolated(&path).unwrap();
 
         assert_eq!(
             config.channels.managed[0]
@@ -1287,7 +1342,7 @@ mod tests {
              limits = { publish_per_min = 0 }\n",
         );
 
-        assert!(Config::load(&path).is_err());
+        assert!(load_isolated(&path).is_err());
     }
 
     #[test]
@@ -1305,7 +1360,7 @@ mod tests {
              topic = \"poc.weebo.notify\"\n",
         );
 
-        let pending = Config::load(&path).unwrap().unhonoured();
+        let pending = load_isolated(&path).unwrap().unhonoured();
 
         // Warning about a section the composition root reads would train an operator
         // to ignore this list, which is the one thing it cannot afford (M3.5).
@@ -1332,7 +1387,7 @@ mod tests {
              topic = \"poc.weebo.notify\"\n",
         );
 
-        let pending = Config::load(&path).unwrap().unhonoured();
+        let pending = load_isolated(&path).unwrap().unhonoured();
 
         assert!(
             !pending.iter().any(|line| line.contains("push.unifiedpush")),
@@ -1352,7 +1407,7 @@ mod tests {
              binary_path = \"/usr/local/bin/notify\"\n",
         );
 
-        let config = Config::load(&path).unwrap();
+        let config = load_isolated(&path).unwrap();
 
         assert_eq!(
             config.cli.unwrap().binary_path,
@@ -1362,7 +1417,7 @@ mod tests {
 
     #[test]
     fn no_cli_section_means_the_download_route_has_nothing_to_serve() {
-        let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
+        let config = load_isolated(Path::new("/nonexistent/config.toml")).unwrap();
 
         assert!(
             config.cli.is_none(),

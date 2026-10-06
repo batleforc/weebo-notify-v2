@@ -216,7 +216,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{:x}.toml", toml.len()));
         std::fs::write(&path, toml).unwrap();
-        Config::load(&path).unwrap()
+        crate::config::load_isolated(&path).unwrap()
     }
 
     /// A secret file, and the `file:` reference that names it.

@@ -127,6 +127,11 @@ For ingress-nginx that is `nginx.ingress.kubernetes.io/limit-rps`,
 `limit-connections` and `proxy-body-size` on the annotations in
 `server.ingress.annotations`.
 
+The stream caps (20 SSE/WebSocket connections per principal, 10 000 in total) are
+counted **per replica**: they bound the memory of the process holding the
+connections, so with N replicas a principal can hold up to `20 × N`. An
+instance-wide number is the ingress's `limit-connections`, not the application's.
+
 ## `[cli] binary_path` is a code-execution surface
 
 `GET /api/v1/cli` serves the file that `[cli] binary_path` points at, to any

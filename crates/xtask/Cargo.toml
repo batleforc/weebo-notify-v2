@@ -19,17 +19,9 @@ anyhow.workspace = true
 # neither caddy nor htpasswd — which is every Eclipse Che workspace.
 bcrypt = { version = "0.19", default-features = false, features = ["std", "zeroize", "getrandom"] }
 clap.workspace = true
-# The stub notification daemon behind `task desktop:notifyd` (D19). This is the one
-# libdbus link left in the workspace, and it is why every workflow that touches
-# `--workspace` still installs `libdbus-1-dev` and `pkg-config`. It used to be free —
-# `notify-rust`'s `d` feature was the same bindings — but the client moved to zbus
-# when the first container build failed on those headers (see
-# `crates/notify-cli/Cargo.toml`), so this now costs a C dependency on its own.
-#
-# `xtask` is a developer tool: it is not in the image, not in the release artefacts,
-# and not on anybody's machine but a contributor's. Porting the stub daemon to zbus
-# would take the last system dependency out of CI; nothing shipping is waiting on it.
-dbus = "0.9"
+# The stub notification daemon behind `task desktop:notifyd` (D19). `vendored`
+# builds libdbus from source, so no `libdbus-1-dev` is needed to build the workspace.
+dbus = { version = "0.9", features = ["vendored"] }
 # The VAPID key generator: `pkcs8` on top of the workspace's features, because the
 # key is written in the PKCS#8 PEM form `[push.webpush]` reads.
 getrandom = "0.3"

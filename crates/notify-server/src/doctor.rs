@@ -123,20 +123,7 @@ pub(crate) fn refuse_development_defaults(config: &Config) -> anyhow::Result<()>
 pub(crate) fn review(config: &Config) -> Vec<Finding> {
     let mut findings = development_defaults(config);
 
-    // ── CORS ─────────────────────────────────────────────────────────────────
-    if config
-        .server
-        .cors_origins
-        .iter()
-        .any(|origin| origin.trim() == "*")
-    {
-        findings.push(Finding::warn(
-            "[server] cors_origins contains `*`, so any website can call this API from a \
-             visitor's browser",
-            "name the web bundle's origin explicitly; there is no cookie here, but a wildcard \
-             still lets any page read responses a visitor's token authorises",
-        ));
-    }
+    // A wildcard CORS origin is refused by `Config::validate`.
 
     // ── Attachments ──────────────────────────────────────────────────────────
     match &config.attachments {
@@ -327,19 +314,6 @@ mod tests {
         assert!(
             !findings.is_empty(),
             "a review that says nothing at all has stopped being useful"
-        );
-    }
-
-    #[test]
-    fn a_wildcard_cors_origin_is_a_warning() {
-        let mut config = config();
-        config.server.cors_origins = vec!["*".to_owned()];
-
-        assert!(
-            review(&config)
-                .iter()
-                .any(|f| f.level == Level::Warn && f.what.contains("cors_origins")),
-            "a wildcard origin passed the review"
         );
     }
 

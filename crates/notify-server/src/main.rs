@@ -241,6 +241,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             .app_data(exporter.clone())
             .map(|app| {
                 app.wrap(cors)
+                    .wrap(security_headers())
                     // The default format minus the query string (`%U`, not `%r`):
                     // the filesystem store's `?token=` is a bearer credential, and
                     // an access log is not where one should outlive its request.
@@ -317,6 +318,16 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     traces.shutdown();
 
     outcome.map_err(Into::into)
+}
+
+/// Headers every response carries unless its route set its own: no sniffing, no
+/// framing, no caching of authorised JSON, and no `?token=` leaking via `Referer`.
+fn security_headers() -> actix_web::middleware::DefaultHeaders {
+    actix_web::middleware::DefaultHeaders::new()
+        .add(("x-content-type-options", "nosniff"))
+        .add(("x-frame-options", "DENY"))
+        .add(("referrer-policy", "no-referrer"))
+        .add(("cache-control", "no-store"))
 }
 
 /// Everything the reconciliation half of [`background`] needs (design §11).
@@ -647,5 +658,48 @@ async fn reconcile_loop(mut reconciling: Reconciling) {
             } => reconciling.on_hangup().await,
             _ = tick.tick() => reconciling.pass(notify_app::Trigger::Timer).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
+
+    use actix_web::{App, HttpResponse, test, web};
+
+    #[actix_web::test]
+    async fn responses_carry_the_security_headers_without_overriding_a_route() {
+        let app = test::init_service(
+            App::new()
+                .wrap(super::security_headers())
+                .route("/json", web::get().to(HttpResponse::Ok))
+                .route(
+                    "/bytes",
+                    web::get().to(|| async {
+                        HttpResponse::Ok()
+                            .insert_header(("cache-control", "private, max-age=60"))
+                            .finish()
+                    }),
+                ),
+        )
+        .await;
+
+        let json =
+            test::call_service(&app, test::TestRequest::get().uri("/json").to_request()).await;
+        for (name, value) in [
+            ("x-content-type-options", "nosniff"),
+            ("x-frame-options", "DENY"),
+            ("referrer-policy", "no-referrer"),
+            ("cache-control", "no-store"),
+        ] {
+            assert_eq!(json.headers().get(name).unwrap(), value, "{name}");
+        }
+
+        let bytes =
+            test::call_service(&app, test::TestRequest::get().uri("/bytes").to_request()).await;
+        assert_eq!(
+            bytes.headers().get("cache-control").unwrap(),
+            "private, max-age=60"
+        );
     }
 }

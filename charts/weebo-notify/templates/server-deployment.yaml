@@ -135,11 +135,18 @@ spec:
           # entry into the Service and is the one that must not restart a
           # replica just because Postgres is briefly unreachable (health.rs's
           # own reasoning for keeping the two separate).
+          # Migrations and the boot reconcile (up to 60 s waiting on the lock)
+          # run before the listener binds: give them 5 min before liveness counts.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:

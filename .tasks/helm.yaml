@@ -46,7 +46,9 @@ tasks:
             "the server NetworkPolicy admits only ${sources:-0} source(s); ingressFrom is unset, so the API and the scrape are blocked"
 
           # Two replicas and a PDB: the example is the high-availability shape.
+          # With the HPA on, the Deployment omits `replicas`; the floor is minReplicas.
           replicas="$(pick 'select(.kind == "Deployment" and .metadata.name == "weebo-notify-server") | .spec.replicas')"
+          [ "$replicas" != "null" ] || replicas="$(pick 'select(.kind == "HorizontalPodAutoscaler" and .metadata.name == "weebo-notify-server") | .spec.minReplicas')"
           [ "${replicas:-0}" -ge 2 ] || fail \
             "the server Deployment renders ${replicas:-0} replica(s)"
 
