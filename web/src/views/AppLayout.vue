@@ -152,7 +152,7 @@ onMounted(async () => {
   inbox.start();
   await Promise.all([
     channels.load(),
-    inbox.load(),
+    inbox.live().then(inbox.load),
     preferences.load(),
     unread.load(),
   ]);

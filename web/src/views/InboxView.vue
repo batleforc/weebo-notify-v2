@@ -120,7 +120,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
     <!-- §10.5: the separator is how an arrival announces itself. -->
     <button
-      v-if="inbox.pendingCount"
+      v-if="inbox.pendingCount && !inbox.loading"
       type="button"
       class="meta flex items-center justify-center gap-2 border-b border-rule-strong bg-ground-raised py-2 text-ink hover:bg-ground-sunk"
       @click="inbox.revealPending()"

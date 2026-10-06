@@ -5,7 +5,7 @@
  */
 
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { inbox as fetchInbox } from "@/api/generated";
 import type {
   Notification,
@@ -198,10 +198,27 @@ export const useInbox = defineStore("inbox", () => {
     }
   }
 
+  /** Resolves once the stream is subscribed (or after `ms`), so a page fetched
+   * next cannot miss what is published in between. */
+  function live(ms = 3000): Promise<void> {
+    if (status.value === "live" || !stream) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(done, ms);
+      const unwatch = watch(status, (value) => value === "live" && done());
+      function done() {
+        clearTimeout(timer);
+        unwatch();
+        resolve();
+      }
+    });
+  }
+
+  /** Stream first, then page: the reverse order loses what lands in between. */
   async function apply(next: Filters): Promise<void> {
     filters.value = next;
-    await load();
     restart();
+    await live();
+    await load();
   }
 
   /** The stream is only channel-filtered, so the page filters are re-applied here. */
@@ -348,6 +365,7 @@ export const useInbox = defineStore("inbox", () => {
     pending,
     pendingCount,
     cursor,
+    live,
     hasMore,
     loading,
     loadingMore,
