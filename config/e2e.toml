@@ -1,0 +1,23 @@
+# Self-contained stack for the browser E2E suite (`task test:browser`, CI `e2e`).
+# No object store, no SMTP: attachments on disk, channels created by the tests.
+
+[server]
+bind = "0.0.0.0:8080"
+dev = true
+cors_origins = ["http://localhost:5173"]
+
+[database]
+url = "postgres://weebo:weebo@localhost:5432/weebo_notify"
+
+[oidc]
+issuer = "http://localhost:9110"
+client_id = "weebo-notify"
+
+[admin]
+oidc_groups = ["platform-admins"]
+
+[attachments]
+kind = "filesystem"
+path = "target/e2e-attachments"
+public_base_url = "http://localhost:8080"
+token_secret = "e2e-only-not-a-secret-0123456789abcdef"

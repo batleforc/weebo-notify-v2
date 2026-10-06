@@ -27,6 +27,29 @@ tasks:
     cmds:
       - cargo nextest run --workspace -E 'test(/^e2e::/)' --no-fail-fast
 
+  browser:
+    desc: "Run the browser E2E suite against a running stack; WNK_E2E_* point it at a deployed release."
+    cmds:
+      - pnpm -C web exec playwright test
+
+  browser:ci:
+    desc: "Boot the self-contained E2E stack (config/e2e.toml: server, oidc-mock, built web) and run the browser suite."
+    cmds:
+      - cmd: |
+          set -euo pipefail
+          trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+          cargo build -p notify-server -p notify-oidc-mock
+          pnpm -C web install --frozen-lockfile
+          pnpm -C web build
+          [ -n "${WNK_E2E_CHROMIUM:-}" ] || pnpm -C web exec playwright install --with-deps chromium
+          ./target/debug/oidc-mock --identities dev/oidc-mock/identities.toml &
+          ./target/debug/notify-server --config config/e2e.toml &
+          pnpm -C web exec vite preview --port 5173 --strictPort &
+          for url in http://localhost:9110/.well-known/openid-configuration http://localhost:8080/readyz http://localhost:5173/; do
+            timeout 120 sh -c "until curl -fsS -o /dev/null $url; do sleep 1; done"
+          done
+          pnpm -C web exec playwright test
+
   oidc-compat:
     desc: "Run the identity-provider compatibility suite (§3.2, T29); WNK_TEST_OIDC_PROVIDER picks one."
     # Defaults to the in-process mock; an external provider without an issuer fails rather than skips.
