@@ -1,15 +1,7 @@
 <script setup lang="ts">
 /**
- * The boot-time ask: "want push on this browser?" (§6.2, M3.6).
- *
- * Shown at most once per browser profile — `PROMPTED_KEY` is set the moment this
- * decides to show, not on dismiss, so leaving without clicking anything still
- * counts as asked. Settings › Notifications (`PushPanel.vue`) is where the switch
- * lives for good; this is only the one nudge toward finding it.
- *
- * Gated on the same three things `PushPanel` reads from `push.state()` — supported,
- * available, permission still "default" — so this never asks for a permission the
- * browser would refuse to raise again, or a deployment cannot honour.
+ * The one-time "push on this browser?" nudge (§6.2). Marked as asked when shown,
+ * and only offered when supported, available and permission is still "default".
  */
 import { BellRing, X } from "@lucide/vue";
 import { onMounted, ref } from "vue";

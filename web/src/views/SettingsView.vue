@@ -1,13 +1,5 @@
 <script setup lang="ts">
-/**
- * Settings — profile, avatar, theme, density (§10.4, §2.4).
- *
- * The screen exists to make one thing visible that the API models and no other
- * client shows: **which fields you own**. §2.4 says a field you edited stops being
- * overwritten by your identity provider, and without a way to see and undo that,
- * the rule is invisible until it surprises somebody. So every field says whose it
- * is, and offers to hand it back.
- */
+/** Settings (§10.4, §2.4). Every profile field shows whether you own it or the IdP does, and can hand it back. */
 import { KeyRound, RotateCcw, Trash2, Upload } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
@@ -61,15 +53,7 @@ const claimed = computed(
   () => new Set<ProfileField>(profile.value?.overridden ?? []),
 );
 
-/**
- * The avatar, as an object URL.
- *
- * Not `<img src="${apiBaseUrl}/api/v1/avatars/${id}">`, which is what this was
- * and which could never have worked: that route is authenticated and this
- * application keeps zero cookies (§5.1), so a browser `<img>` request carries no
- * credential and answered 401 every time. The bytes are fetched through the API
- * client instead — see `lib/avatar`.
- */
+/** An object URL: the avatar route needs a bearer an `<img>` can't send (§5.1, `lib/avatar`). */
 const avatarUrl = ref<string | null>(null);
 
 async function showAvatar(id: string | null | undefined): Promise<void> {
@@ -78,23 +62,14 @@ async function showAvatar(id: string | null | undefined): Promise<void> {
 
 function hydrate(next: Profile): void {
   profile.value = next;
-  // Here rather than in `load`, because this is the one funnel every answer goes
-  // through — `load`, `save`, `release` and `upload` all end up in it. Wiring it to
-  // any single caller is how `showAvatar` ended up with no caller at all, and the
-  // symptom was silent: `avatarUrl` stayed null, `v-if` hid the `<img>`, and the
-  // fallback initials rendered exactly as they do for somebody with no avatar.
-  //
-  // Not awaited: the profile has to paint now, and the face arrives when it
-  // arrives. `avatarObjectUrl` caches by id and never rejects, so a repeat call
-  // costs nothing and a failure leaves the initials up.
+  // Every answer funnels here. Not awaited; `avatarObjectUrl` caches and never rejects.
   void showAvatar(next.avatar);
   draft.value = {
     display_name: next.display_name ?? "",
     timezone: next.timezone ?? "",
   };
 
-  // Inherit the account's chosen UI language the first time the app opens on
-  // this browser — but never fight a choice already made here (§ C5).
+  // Adopt the account's UI language once, never over a local choice (§ C5).
   const prefix = next.locale?.slice(0, 2).toLowerCase();
   if (
     !localStorage.getItem(LOCALE_KEY) &&
@@ -116,29 +91,10 @@ async function load(): Promise<void> {
   }
 }
 
-/**
- * Send only what changed.
- *
- * An absent field means "leave it alone" and an explicit `null` means "hand it
- * back to the provider" (§2.4) — so sending the whole form on every save would
- * claim three fields when somebody edited one.
- */
-async function save(): Promise<void> {
-  if (!profile.value) {
-    return;
-  }
+/** Absent = leave alone, `null` = hand back to the IdP (§2.4). */
+async function patch(body: Record<string, string | null>): Promise<void> {
   saving.value = true;
   error.value = null;
-
-  const body: Record<string, string | null> = {};
-  const current = profile.value;
-  if (draft.value.display_name !== (current.display_name ?? "")) {
-    body.display_name = draft.value.display_name || null;
-  }
-  if (draft.value.timezone !== (current.timezone ?? "")) {
-    body.timezone = draft.value.timezone || null;
-  }
-
   try {
     const answer = await updateProfile({ body, throwOnError: true });
     hydrate(answer.data);
@@ -149,45 +105,30 @@ async function save(): Promise<void> {
   }
 }
 
-/**
- * Set the UI language — immediately (localStorage, live retranslation via
- * `ui.locale`'s own watcher) and, same as any other claimed profile field,
- * persisted server-side so a next device inherits it (§ C5).
- */
-async function setLocale(value: Locale): Promise<void> {
-  ui.locale = value;
-  saving.value = true;
-  error.value = null;
-  try {
-    const answer = await updateProfile({
-      body: { locale: value },
-      throwOnError: true,
-    });
-    hydrate(answer.data);
-  } catch (caught) {
-    error.value = failureOf(caught).message;
-  } finally {
-    saving.value = false;
+/** Send only what changed, so editing one field doesn't claim the others. */
+async function save(): Promise<void> {
+  if (!profile.value) {
+    return;
   }
+  const body: Record<string, string | null> = {};
+  const current = profile.value;
+  if (draft.value.display_name !== (current.display_name ?? "")) {
+    body.display_name = draft.value.display_name || null;
+  }
+  if (draft.value.timezone !== (current.timezone ?? "")) {
+    body.timezone = draft.value.timezone || null;
+  }
+  await patch(body);
 }
 
-/** Hand one field back to the identity provider. */
-async function release(
-  field: "display_name" | "timezone" | "locale",
-): Promise<void> {
-  saving.value = true;
-  error.value = null;
-  try {
-    const answer = await updateProfile({
-      body: { [field]: null },
-      throwOnError: true,
-    });
-    hydrate(answer.data);
-  } catch (caught) {
-    error.value = failureOf(caught).message;
-  } finally {
-    saving.value = false;
-  }
+/** Applied locally at once, and persisted so other devices inherit it (§ C5). */
+async function setLocale(value: Locale): Promise<void> {
+  ui.locale = value;
+  await patch({ locale: value });
+}
+
+function release(field: "display_name" | "timezone" | "locale"): Promise<void> {
+  return patch({ [field]: null });
 }
 
 async function upload(event: globalThis.Event): Promise<void> {
@@ -200,34 +141,20 @@ async function upload(event: globalThis.Event): Promise<void> {
   error.value = null;
   try {
     const answer = await setAvatar({
-      // The `File` itself: the generated type is binary, and reading it into an
-      // ArrayBuffer first would only copy 512 KiB for nothing.
       body: picked,
       headers: { "content-type": "application/octet-stream" },
       throwOnError: true,
     });
     hydrate(answer.data);
   } catch (caught) {
-    // The server refuses a file that is too big, animated or not an image at all
-    // (§2.4) — and its `code` is what turns that into a sentence.
+    // The problem `code` explains size/animation/format refusals (§2.4).
     error.value = failureOf(caught).message;
   } finally {
     saving.value = false;
   }
 }
 
-/**
- * A personal token for the CLI/TUI (`notify login`, §9.1).
- *
- * Owner is always the caller — never offered as a choice, unlike the admin
- * screen's service-account keys: §5.2 draws that line at "a durable bot never
- * runs on a human's key", and the reverse (a human's tool running on a key
- * that is unmistakably theirs) is exactly what this is for.
- *
- * The caller's own [`UserId`] has to be asked for explicitly (`whoami`):
- * nothing else the browser holds carries it — the OIDC `sub` claim is a
- * different identifier than the server's internal id.
- */
+/** Personal CLI keys (§9.1, §5.2): always owned by the caller, whose id needs `whoami`. */
 const cliKeys = ref<ApiKey[]>([]);
 const cliKeyLabel = ref(
   `notify-cli · ${new Date().toISOString().slice(0, 10)}`,
@@ -241,27 +168,16 @@ const cliKeyError = ref<string | null>(null);
 async function loadCliKeys(): Promise<void> {
   try {
     const answer = await listKeys({ throwOnError: true });
-    // Scoped by the server to the caller's own keys plus those of the service
-    // accounts they administer (`ListApiKeys::execute`); this screen is personal.
+    // The server also returns administered service accounts' keys.
     cliKeys.value = answer.data.filter((key) => key.owner.owner === "user");
   } catch (caught) {
     cliKeyError.value = failureOf(caught).message;
   }
 }
 
-function toggleCliKeyChannel(id: string): void {
-  if (cliKeyChannels.value.has(id)) {
-    cliKeyChannels.value.delete(id);
-  } else {
-    cliKeyChannels.value.add(id);
-  }
-}
-
-function toggleCliKeyScope(scope: Scope): void {
-  if (cliKeyScopes.value.has(scope)) {
-    cliKeyScopes.value.delete(scope);
-  } else {
-    cliKeyScopes.value.add(scope);
+function toggle<T>(set: Set<T>, value: T): void {
+  if (!set.delete(value)) {
+    set.add(value);
   }
 }
 
@@ -282,7 +198,7 @@ async function mintCliKey(): Promise<void> {
       },
       throwOnError: true,
     });
-    // The one moment this value exists outside the caller's hands (§5.2).
+    // Shown once (§5.2).
     cliKeyMinted.value = answer.data.secret;
     await loadCliKeys();
   } catch (caught) {
@@ -548,8 +464,7 @@ const appearance = computed(() => [
       <CardContent class="space-y-3">
         <p v-if="cliKeyError" class="text-sm text-signal">{{ cliKeyError }}</p>
 
-        <!-- Montré une fois, jamais réaffiché : seul le hachage est conservé
-             (§5.2), exactement la même règle que pour une clé de bot. -->
+        <!-- Shown once: only the hash is kept (§5.2). -->
         <Card v-if="cliKeyMinted" class="border border-copper p-4">
           <CardContent class="space-y-2 pt-4">
             <p class="text-sm text-ink-dim">
@@ -579,7 +494,7 @@ const appearance = computed(() => [
               <input
                 type="checkbox"
                 :checked="cliKeyChannels.has(channel.id)"
-                @change="toggleCliKeyChannel(channel.id)"
+                @change="toggle(cliKeyChannels, channel.id)"
               />
               {{ channel.display_name || channel.id }}
             </label>
@@ -600,7 +515,7 @@ const appearance = computed(() => [
               <input
                 type="checkbox"
                 :checked="cliKeyScopes.has(scope)"
-                @change="toggleCliKeyScope(scope)"
+                @change="toggle(cliKeyScopes, scope)"
               />
               {{ scope }}
             </label>

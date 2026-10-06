@@ -1,8 +1,4 @@
-/**
- * UI chrome language detection — no dependency on Pinia or vue-i18n, so both
- * `stores/ui.ts` (the persisted preference) and `i18n.ts` (the initial locale
- * `createI18n` needs before any store exists) can import this without a cycle.
- */
+/** UI language detection, dependency-free so `stores/ui.ts` and `i18n.ts` avoid a cycle. */
 
 export type Locale = "en" | "fr";
 
@@ -14,8 +10,6 @@ export function detectLocale(): Locale {
   if (stored === "en" || stored === "fr") {
     return stored;
   }
-  // `navigator.language` is absent in some test/embedding environments (a
-  // stubbed `navigator` that mocks only what its test needs, for instance) —
-  // that is not a reason to throw before a locale is even decided.
+  // `navigator.language` may be missing in stubbed environments.
   return navigator.language?.slice(0, 2).toLowerCase() === "en" ? "en" : "fr";
 }

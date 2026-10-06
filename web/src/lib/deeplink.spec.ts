@@ -1,11 +1,4 @@
-/**
- * What the front end accepts from the shell (§10bis.3quater).
- *
- * The Rust side parses the OS's URL and refuses everything it does not recognise.
- * This is the second gate, and it exists because "the other side checked" stops
- * being true the moment there is a second other side — anything able to emit a Tauri
- * event into this webview reaches this function.
- */
+/** The front's second validation gate for shell deep links (§10bis.3quater). */
 
 import { describe, expect, it } from "vitest";
 
@@ -34,9 +27,7 @@ describe("pathOf", () => {
   });
 
   it("refuses an absolute URL wearing a path's clothes", () => {
-    // `//host/x` is protocol-relative: a router given it would navigate off the
-    // app entirely, and it passes any check that only asks "does it start with a
-    // slash".
+    // Protocol-relative: would navigate off the app.
     expect(pathOf({ path: "//evil.example/n/ntf_1" })).toBeNull();
     expect(pathOf({ path: "https://evil.example/n/ntf_1" })).toBeNull();
   });

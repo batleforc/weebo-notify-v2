@@ -1,11 +1,5 @@
 <script setup lang="ts">
-/**
- * The lifecycle as a pixel matrix — weebo-notify's signature (DESIGN.md).
- *
- * Still running (`open`, `working`) draws coarse: a 2×2 matrix, `working` chasing.
- * `closed` resolves to a fine 3×3 whose pattern names the status. Pattern, hue and
- * the aria-label all say the same thing — never colour alone (§10.3).
- */
+/** The lifecycle as a pixel matrix: coarse 2×2 while running, a 3×3 status pattern once closed. Never colour alone (§10.3). */
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 

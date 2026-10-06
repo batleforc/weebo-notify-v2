@@ -1,20 +1,7 @@
 <script setup lang="ts">
 /**
- * The middle zone: the inbox itself (§10.4).
- *
- * # Arrivals are announced, not inserted
- *
- * §10.5 forbids the list moving under a cursor. New notifications land in the
- * store's `pending` buffer and this view shows a "N nouvelles" separator; the list
- * only grows when somebody asks it to. Updates to rows already on screen apply
- * immediately, because that is the revision model doing its job — a pipeline going
- * from `working` to `failure` must not wait for a click.
- *
- * # Keyboard first
- *
- * ↑ ↓ move, Entrée opens, Échap closes. Parity with the TUI is a stated goal
- * (§10.1), and it is also what makes the list usable while reading a stack trace
- * with the other hand on a terminal.
+ * The inbox list (§10.4). Arrivals wait behind a "N new" separator (§10.5); updates
+ * to visible rows apply at once. Keyboard: ↑ ↓ move, Enter opens, Esc closes (§10.1).
  */
 import { Inbox as InboxIcon, RefreshCw } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -36,8 +23,7 @@ const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
 
-/** Whether any filter narrows the inbox — the empty state reads differently
- * when it does (§10.4). */
+/** The empty state reads differently when filtered (§10.4). */
 const isFiltered = computed(
   () =>
     inbox.filters.channels.length > 0 ||
@@ -62,14 +48,7 @@ const title = computed(() => {
     : t("sidebar.channels.all");
 });
 
-/**
- * How late a row reached this client (§7.2).
- *
- * Only rows the stream delivered are measured: a page of `GET /notifications` is
- * "what exists", not "what was delivered to me", and pretending otherwise would
- * badge every notification older than the threshold on a cold load. The complete
- * version needs the per-device sync cursor, which is M2's `GET /sync`.
- */
+/** Lateness (§7.2), only for rows delivered after this view opened: a cold page isn't "late". */
 const LATE_THRESHOLD_MS = 5 * 60_000;
 const openedAt = Date.now();
 
@@ -83,18 +62,13 @@ function lateness(receivedAt: string): number | undefined {
 }
 
 function open(id: string, viaKeyboard = false): void {
-  // Inside a channel, the row opens *within* it: `/c/<channel>/n/<id>`. Pushing
-  // the bare `/n/<id>` from here is what threw the reader back to every channel —
-  // the URL stopped naming the channel, so the list widened underneath the panel.
+  // Inside a channel, open within it so the URL keeps naming the channel.
   const channel = route.params.channel;
   const target =
     typeof channel === "string"
       ? { name: "channel-notification", params: { channel, id } }
       : { name: "notification", params: { id } };
-  // Arrow keys REPLACE rather than push: holding a key through fifty rows would
-  // otherwise leave fifty history entries, and Back would walk the list backwards
-  // one row at a time instead of leaving it. A click is a real navigation and
-  // keeps its entry.
+  // Arrow keys replace, so Back leaves the list instead of walking it.
   void (viaKeyboard ? router.replace(target) : router.push(target));
 }
 
@@ -107,7 +81,6 @@ function move(delta: number): void {
   const row = rows[cursor.value];
   open(row.head.id, true);
 
-  // Keep the focused row in view without yanking the whole list around.
   const element = list.value?.querySelector<HTMLElement>(
     `[data-row="${row.head.id}"]`,
   );

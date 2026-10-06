@@ -1,17 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-/**
- * Read off disk rather than imported.
- *
- * `@intlify/unplugin-vue-i18n` owns `src/locales/**` in this Vite pipeline and
- * pre-compiles messages at build time — including through `?raw` — so any import
- * yields a compiled AST (`{ body: { items: [...] } }`) rather than the strings a
- * translator wrote. Walking that would assert something about the compiler's
- * output shape, which differs per language for anything interpolated. Vitest runs
- * with `web/` as its working directory, so a plain relative read gets the source
- * file, which is the artefact under review.
- */
+/** Read from disk: imports yield the i18n plugin's compiled AST, not the source strings. */
 function read(name: string): unknown {
   return JSON.parse(readFileSync(`src/locales/${name}.json`, "utf8"));
 }
@@ -19,21 +9,7 @@ function read(name: string): unknown {
 const en = read("en");
 const fr = read("fr");
 
-/**
- * The locale files carry text, and only text.
- *
- * This used to be a convention held up by four comments reading "static,
- * locale-file text only". It was true, and it was true only for as long as every
- * `v-html` interpolation stayed a literal — the components render through
- * `<i18n-t>` slots now, so markup lives in the template and a translation is
- * inert data.
- *
- * The test exists because that property has to survive the day this project
- * accepts a community translation. Reviewers read code diffs carefully and locale
- * diffs quickly, which is exactly what makes a locale file an attractive place to
- * put a `<script>` — and exactly why the guarantee should not depend on anybody
- * noticing.
- */
+/** Locale files carry text only: markup lives in `<i18n-t>` slots, so a translation stays inert. */
 
 const locales: Array<[string, unknown]> = [
   ["en", en],

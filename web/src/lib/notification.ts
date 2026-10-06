@@ -1,15 +1,4 @@
-/**
- * The visual language of a notification (design §10.3), in one place.
- *
- * Both mappings below are colour-blind-safe by construction, because neither of
- * them returns a colour alone: a status is a token **and** an icon, a priority is a
- * token **and** a rank. §10.3 is explicit that colour is never the only carrier —
- * a failure that reads as "grey circle" to one reader in twelve is a failure that
- * did not get reported.
- *
- * Labels are looked up through the global i18n composer rather than `useI18n()`:
- * this module has no component instance, and is called from many that do.
- */
+/** The visual language of a notification (§10.3): never colour alone. Uses global i18n (no component). */
 
 import {
   Ban,
@@ -51,13 +40,7 @@ export function priorityLabel(priority: Priority): string {
   return i18n.global.t(`priority.${priority}`);
 }
 
-/**
- * What a screen reader says for the sidebar's unread badge (§7.3, §10.4).
- *
- * Here rather than inline in the template because the wording agrees with the
- * count: the badge said "1 non lues" until somebody opened the page, which is
- * the one reader who would have been told so is the one who cannot see the digit.
- */
+/** Screen-reader label for the unread badge, with plural agreement (§7.3). */
 export function unreadLabel(count: number): string {
   return i18n.global.t("sidebar.unreadLabel", { count }, count);
 }

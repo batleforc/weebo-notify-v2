@@ -1,12 +1,5 @@
 <script setup lang="ts">
-/**
- * Where the identity provider sends the browser back.
- *
- * The redirect URI is registered in the provider (§12.5), so this route exists at
- * one address and one only. It redeems the code and leaves — the URL carrying the
- * code is replaced rather than pushed, so the back button cannot land on a spent
- * authorization code.
- */
+/** Redeems the IdP's code (§12.5), replacing the URL so Back can't land on a spent code. */
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";

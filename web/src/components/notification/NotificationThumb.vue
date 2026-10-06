@@ -1,19 +1,7 @@
 <script setup lang="ts">
 /**
- * The small square a list row shows for a notification's image (§2.3, §10.3, D30).
- *
- * Two kinds, two paths, and only one of them looks like `NotificationImage.vue`
- * next door. A `data_uri` is already small (capped by `MAX_DATA_URI_BYTES`) and
- * goes straight into `src`, same as the detail panel. An `attachment` resolves
- * through `lib/thumbnail.ts` — the small *derived* square — and never through
- * `lib/attachment.ts`'s presigned download of the full object: pulling that per
- * visible row of a virtualised list is exactly the bandwidth incident D30
- * exists to avoid.
- *
- * Silent rather than captioned when there is nothing to show, unlike the detail
- * panel: a row that cannot show a thumbnail (nothing was ever derived for an
- * attachment, say) simply omits the square. There is no room on a single row
- * for an explanation, and the title still reads without it.
+ * A row's image thumbnail (§2.3, D30). Attachments use the derived thumbnail
+ * (`lib/thumbnail.ts`), never the full presigned download. Silent when unavailable.
  */
 import { computed, ref, watch } from "vue";
 

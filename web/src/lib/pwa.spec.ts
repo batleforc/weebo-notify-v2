@@ -1,12 +1,4 @@
-/**
- * What the browser fetches on install, and nothing in `src/` imports (§10.4, M3).
- *
- * `public/` is copied verbatim into the bundle, so nothing there is compiled,
- * type-checked, linted or imported by a test. That is fine for files nobody reads
- * — and the manifest and its icon are read by an operating system, once, at the
- * moment somebody installs the application, which is the least observable moment
- * this project has. These pin the two properties a broken file loses silently.
- */
+/** `public/` files are never compiled or linted; pin what a broken manifest/icon loses silently. */
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -30,12 +22,7 @@ describe("the PWA manifest", () => {
 
 describe("the application icon", () => {
   it("parses as XML, which is what makes it decodable at all", () => {
-    // The bug this exists for, found by opening the page in a real browser
-    // (M4quatervicies): the icon's comment mentioned the CSS custom properties
-    // `background` and `foreground` by their full names, and **XML forbids a
-    // double hyphen inside a comment**. Chrome answered "Download error or
-    // resource isn't a valid image", the installed PWA had no icon, and no test
-    // anywhere noticed — an `<img>` is the only thing that ever parses this file.
+    // XML forbids `--` in comments; a broken icon only shows up at install time.
     const svg = asset("icon.svg");
     const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
 

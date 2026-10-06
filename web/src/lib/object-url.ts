@@ -1,21 +1,7 @@
 /**
- * Images the API serves itself — avatars and thumbnails — turned into object URLs.
- *
- * Both routes authenticate by the `Authorization` header alone (§5.1, zero
- * cookies), which an `<img src>` cannot send, so the bytes are fetched through the
- * generated client and handed to the page as a `blob:` URL. `lib/avatar.ts` and
- * `lib/thumbnail.ts` say why each one is served this way; this is what they share.
- *
- * # What is cached, and for how long
- *
- * Both ids are immutable (a new upload mints a new id, §2.3, §2.4), so a URL can
- * never go stale. What is bounded is memory: past {@link LIMIT} ids the oldest is
- * dropped and its object URL revoked. An `<img>` already showing it keeps the
- * decoded picture; a row mounted later simply fetches again.
- *
- * A definitive "no image" (an error the API answered) is cached as `null`, so a
- * row with no thumbnail does not ask on every render. A request that never got an
- * answer — offline, a timeout — is not: the next render tries again.
+ * Bearer-fetched images (avatars, thumbnails) as `blob:` URLs. Ids are immutable,
+ * so only memory is bounded (LIMIT, oldest revoked). API refusals cache as `null`;
+ * network failures don't.
  */
 
 type Read = (

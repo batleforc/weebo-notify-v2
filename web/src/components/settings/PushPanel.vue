@@ -1,15 +1,7 @@
 <script setup lang="ts">
 /**
- * Push on this browser (§6.2, §10.4, M3.6).
- *
- * One switch, and the honesty around it: four different things stop a push from
- * arriving — this browser cannot, this deployment does not, permission was
- * refused, or nobody asked yet — and a switch that reads "off" for all four sends
- * people to look in the wrong place. Each says which one it is.
- *
- * Enrolment is a *device* (§15), not a preference: turning this on adds a row to
- * Devices in Admin, and revoking it there kills the subscription and the sync
- * cursor together. That is why the copy names it.
+ * Push on this browser (§6.2, §10.4): says which of unsupported / unavailable /
+ * denied / not asked is in play. Enabling enrols a device (§15).
  */
 import { BellOff, BellRing } from "@lucide/vue";
 import { onMounted, ref } from "vue";
@@ -63,11 +55,7 @@ async function toggle(): Promise<void> {
       <CardTitle>{{ t("settings.push.title") }}</CardTitle>
     </CardHeader>
     <CardContent class="space-y-3 text-sm">
-      <!-- The markup is a slot, so the locale file carries text and only text.
-           This used to be `v-html` over an interpolated translation: correct as
-           written, and correct only for as long as every interpolation stayed a
-           literal. A slot makes that structural — and it fixed a real bug on the
-           way, since the emphasised word was hardcoded English in every locale. -->
+      <!-- A slot keeps markup out of the locale files. -->
       <i18n-t
         keypath="settings.push.description"
         tag="p"

@@ -1,10 +1,4 @@
-/**
- * Which way a key moves the inbox selection, if any.
- *
- * `j`/`k` only bare: with a modifier they belong to someone else — Ctrl/Cmd+K is
- * the command palette (`AppLayout.vue`), and moving the selection under it
- * opened a row every time the palette did. Typing in a field is never navigation.
- */
+/** Inbox key navigation. `j`/`k` only without modifiers (Ctrl/Cmd+K is the palette); never inside fields. */
 export function listStep(event: KeyboardEvent): 1 | -1 | null {
   const target = event.target;
   if (

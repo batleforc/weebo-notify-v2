@@ -1,21 +1,11 @@
-/**
- * Routes, and the one guard that matters.
- *
- * The permalinks are `/n/<id>` and `/c/<id>` (§10.4) — deliberately short, because
- * they are pasted into CI logs, sink emails and chat messages, and they mirror the
- * `weebo-notify://` deep links a desktop client will register (§10bis.3quater).
- */
+/** Routes and the auth guard. Permalinks `/n/<id>`, `/c/<id>` mirror desktop deep links (§10.4). */
 
 import { createRouter, createWebHistory } from "vue-router";
 
 import { useSession } from "@/auth/session";
-import AdminView from "@/views/AdminView.vue";
 import AppLayout from "@/views/AppLayout.vue";
-import CallbackView from "@/views/CallbackView.vue";
-import ConsoleView from "@/views/ConsoleView.vue";
 import InboxView from "@/views/InboxView.vue";
 import LoginView from "@/views/LoginView.vue";
-import SettingsView from "@/views/SettingsView.vue";
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -25,12 +15,7 @@ export const router = createRouter({
       component: AppLayout,
       children: [
         { path: "", name: "inbox", component: InboxView },
-        // `/n/<id>` stays a context-free permalink: a link pasted into a CI log
-        // names a notification and knows nothing about which list its reader was
-        // looking at. Opening one from *inside* a channel takes the nested route
-        // below instead, so the URL keeps saying where you are as well as what you
-        // are reading — without it, clicking a row inside a channel silently threw
-        // you back to every channel.
+        // Context-free permalink; inside a channel the nested route keeps the channel in the URL.
         { path: "n/:id", name: "notification", component: InboxView },
         { path: "c/:channel", name: "channel", component: InboxView },
         {
@@ -38,13 +23,29 @@ export const router = createRouter({
           name: "channel-notification",
           component: InboxView,
         },
-        { path: "settings", name: "settings", component: SettingsView },
-        { path: "admin", name: "admin", component: AdminView },
-        { path: "console", name: "console", component: ConsoleView },
+        {
+          path: "settings",
+          name: "settings",
+          component: () => import("@/views/SettingsView.vue"),
+        },
+        {
+          path: "admin",
+          name: "admin",
+          component: () => import("@/views/AdminView.vue"),
+        },
+        {
+          path: "console",
+          name: "console",
+          component: () => import("@/views/ConsoleView.vue"),
+        },
       ],
     },
     { path: "/login", name: "login", component: LoginView },
-    { path: "/auth/callback", name: "callback", component: CallbackView },
+    {
+      path: "/auth/callback",
+      name: "callback",
+      component: () => import("@/views/CallbackView.vue"),
+    },
     // Anything else is an old link or a typo; the inbox is a better answer than a
     // 404 page nobody maintains.
     { path: "/:pathMatch(.*)*", redirect: { name: "inbox" } },

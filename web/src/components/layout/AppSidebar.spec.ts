@@ -1,12 +1,4 @@
-/**
- * The sidebar's channel list is a **navigation**, not a set of checkboxes.
- *
- * It used to toggle `inbox.filters.channels` and nothing else, which had three
- * consequences worth a test each: the URL never moved, so a channel could not be
- * shared or reached with the back button; leaving a channel left its filter behind;
- * and on Settings, Admin or Console — where this same sidebar is drawn — clicking a
- * channel silently narrowed a list that was not on screen.
- */
+/** The channel list navigates (URL, back button, other pages) rather than toggling a filter. */
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,11 +59,7 @@ async function sidebar(at = "/") {
   return { wrapper, router };
 }
 
-/**
- * Click it and let the router settle. `trigger` awaits a tick, `router.push`
- * resolves a promise — without the second, every assertion below reads the route
- * as it was before the click.
- */
+/** Click, then let the router settle. */
 async function click(
   wrapper: Awaited<ReturnType<typeof sidebar>>["wrapper"],
   label: string,
@@ -97,9 +85,7 @@ function button(
 describe("the sidebar's channel list", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    // jsdom ships no `matchMedia`, and the theme store asks for one at creation.
-    // Stubbed rather than mocked away: the sidebar genuinely builds that store, and
-    // a test that skipped it would be testing a different component.
+    // jsdom has no `matchMedia`; the theme store needs one.
     vi.stubGlobal(
       "matchMedia",
       vi.fn(() => ({
@@ -144,10 +130,7 @@ describe("the sidebar's channel list", () => {
     expect(router.currentRoute.value.name).toBe("inbox");
   });
 
-  /**
-   * Which one is open comes from the URL, so a channel reached by permalink or by
-   * the back button is highlighted exactly like one reached by clicking.
-   */
+  /** The highlight comes from the URL, however it was reached. */
   it("marks the open channel from the route", async () => {
     const { wrapper } = await sidebar("/c/cluster-ovh-1");
 
@@ -170,11 +153,7 @@ describe("the sidebar's channel list", () => {
     );
   });
 
-  /**
-   * Reading a notification inside a channel must not read as leaving it. The
-   * nested route carries the channel, and the highlight has to follow — otherwise
-   * the list stays narrowed while the sidebar claims you are in "all channels".
-   */
+  /** The nested notification route keeps the channel highlighted. */
   it("stays on the channel while one of its notifications is open", async () => {
     const { wrapper } = await sidebar("/c/ci-infra/n/ntf_1");
 

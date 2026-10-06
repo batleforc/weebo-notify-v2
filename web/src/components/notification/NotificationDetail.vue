@@ -1,14 +1,5 @@
 <script setup lang="ts">
-/**
- * The detail panel (§10.4): what it says, what changed, what was answered.
- *
- * States it has to get right, and each one is a different sentence:
- *   * nothing selected — an invitation, not an error;
- *   * loading — skeletons that match the shape about to appear;
- *   * deleted or expired — the notification is gone and the panel says which,
- *     because §7.2bis words those two differently on purpose;
- *   * refused — the problem's `code` decided the message (§8).
- */
+/** The detail panel (§10.4): empty, loading, gone (deleted vs expired, §7.2bis), or the notification. */
 import { Check, Copy, Eye } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -42,26 +33,14 @@ const copied = ref(false);
 const head = computed(() => detail.notification?.head ?? null);
 const image = computed(() => head.value?.content.image ?? null);
 
-/**
- * Receipts are opt-in per channel (§7.3): no policy, no counter.
- *
- * Read from the channel policy rather than from the readership being present,
- * because this also gates the `seen` receipt this panel posts — asking the channel
- * first saves a request the server would answer with nothing.
- */
+/** Receipts are opt-in per channel (§7.3): no policy, no counter. */
 const showsReceipts = computed(() =>
   detail.notification
     ? channels.collectsReceipts(detail.notification.channel)
     : false,
 );
 
-/**
- * Who read it, in the words the rest of the app uses for a principal (§2.4).
- *
- * `authorLabel` rather than the raw `display_name`: a profile the server could not
- * name still has to render as something, and it is the same fallback the timeline
- * and the inbox already show for the same person.
- */
+/** Same principal fallback as the timeline and inbox (§2.4). */
 const readers = computed(() =>
   (detail.readership?.seen ?? []).map((sighting, index) => ({
     key: `${authorLabel(sighting.author)}-${index}`,
@@ -74,8 +53,7 @@ async function copyPermalink(): Promise<void> {
   if (!detail.id) {
     return;
   }
-  // §10.4: the permalink mirrors the deep link exactly, so what lands in a chat
-  // message is the same address a desktop client will one day open.
+  // Mirrors the deep link (§10.4).
   await navigator.clipboard.writeText(
     `${window.location.origin}/n/${detail.id}`,
   );
@@ -85,16 +63,8 @@ async function copyPermalink(): Promise<void> {
   }, 2000);
 }
 
-// Opening a notification is what `seen` means (§7.3), and it is posted on **every**
-// channel — including the ones that collect no receipts.
-//
-// It used to be gated on `showsReceipts`, on the reasoning that a channel opting out
-// of receipts should not be told who read what. That is still true, and it is the
-// server that enforces it: a `seen` on such a channel is recorded and broadcast only
-// to the reader's own connections, never to the channel (D27). Gating it here as
-// well meant the unread badge never dropped on a default channel — `receipts_enabled`
-// is false unless an operator says otherwise — so the badge sat at the channel's
-// full size for ever.
+// Opening is `seen` (§7.3) on every channel; the server keeps it private where
+// receipts are off (D27). Gating here froze the unread badge.
 watch(
   () => detail.id,
   (id) => {
@@ -157,9 +127,7 @@ watch(
 
     <template v-else-if="head && detail.notification">
       <header class="space-y-3 px-5 pb-4 pt-5">
-        <!-- `pr-10` clears `AppLayout`'s absolutely-positioned mobile close button
-             (`right-2 top-2`, `xl:hidden`): without it, this row's own trailing
-             button sits in the exact same corner under `xl`. -->
+        <!-- `pr-12` clears AppLayout's mobile close button. -->
         <div class="flex items-start gap-3 pr-12 xl:pr-0">
           <StatusDot :status="head.status" :state="head.state" class="mt-1.5" />
           <h2 class="flex-1 text-xl leading-snug [overflow-wrap:anywhere]" data-selectable>
@@ -213,12 +181,7 @@ watch(
                     {{ t("notification.detail.outOfAudience", { audience: detail.audience }) }}
                   </template>
                 </p>
-                <!--
-                  §14.2: l'accès par groupe OIDC n'est jamais matérialisé, donc
-                  personne ici ne sait combien de gens sont dans le groupe. Un
-                  total inventé à partir des membres stockés dirait « tout le
-                  monde l'a vue » sur un canal que toute une équipe peut lire.
-                -->
+                <!-- IdP-group access has no countable audience (§14.2). -->
                 <p v-if="detail.audience === null" class="text-ink-dim">
                   {{ t("notification.detail.noGroupTotal") }}
                 </p>
@@ -273,11 +236,6 @@ watch(
           {{ t("notification.detail.noBody") }}
         </p>
 
-        <!--
-          Both kinds, since M4quatervicies. The `kind === 'data_uri'` guard that
-          used to be here was the whole of D26: an attachment reference — what the
-          CLI produces above 48 KiB — matched nothing and rendered nothing.
-        -->
         <NotificationImage v-if="image" :image="image" />
 
         <ActionBar

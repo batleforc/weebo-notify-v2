@@ -1,11 +1,5 @@
 <script setup lang="ts">
-/**
- * One row of the inbox (§10.3).
- *
- * The row is a `<button>` rather than a `<div>` with a click handler, which is
- * what gets it keyboard focus, Enter and Space for free — the inbox has to be
- * drivable without a mouse to match the TUI (§10.1).
- */
+/** One inbox row (§10.3); a `<button>` for keyboard parity with the TUI (§10.1). */
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Badge } from "@/components/ui/badge";
@@ -28,10 +22,7 @@ const props = defineProps<{
   selected?: boolean;
   /** How many notifications this row stands for, when it heads a group (§10.4). */
   groupSize?: number;
-  /**
-   * How late this row reached us, in milliseconds — set only for rows the stream
-   * replayed after a reconnect (§7.2).
-   */
+  /** Delivery delay in ms, set only for late stream rows (§7.2). */
   lateBy?: number;
 }>();
 

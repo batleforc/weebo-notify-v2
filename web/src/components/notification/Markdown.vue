@@ -1,11 +1,5 @@
 <script setup lang="ts">
-/**
- * A notification body.
- *
- * `v-html` on sanitised output: the sanitising is in `lib/markdown.ts` and is the
- * only place allowed to produce HTML for this component. Passing anything else
- * here is the mistake to look for in review.
- */
+/** A notification body. `v-html` only ever receives `lib/markdown.ts` output. */
 import { computed } from "vue";
 
 import { renderMarkdown } from "@/lib/markdown";
@@ -16,13 +10,7 @@ const html = computed(() => renderMarkdown(props.source));
 </script>
 
 <template>
-  <!--
-    `data-selectable` is what exempts this from the desktop build's
-    `user-select: none` (§10bis.3bis): the app's chrome is not draggable-select,
-    but a notification body is *content* — somebody wants to copy the error out of
-    it. Marked here rather than in the stylesheet because this component is the one
-    place that knows the difference.
-  -->
+  <!-- `data-selectable`: exempt from the desktop `user-select: none` (§10bis.3bis). -->
   <!-- eslint-disable-next-line vue/no-v-html -->
   <div
     data-selectable

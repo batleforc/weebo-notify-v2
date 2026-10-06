@@ -1,15 +1,6 @@
 /**
- * Turning a refusal into something a person can read (RFC 9457, design §8).
- *
- * The contract is explicit about what to branch on: **`code`**, not `status` and
- * definitely not `title`. Statuses are coarse — a `422` covers a missing field and
- * a notification that ran out of revisions — and titles are prose that gets
- * reworded. A code is a promise.
- *
- * So the mapping below is keyed by code, and the server's `title` is the fallback
- * for anything not listed. An unknown code shows the server's own words rather
- * than "an error occurred", which is what makes a new server error usable by an
- * older frontend instead of invisible.
+ * Refusals as readable messages (RFC 9457, §8). Branch on `code`, never `status`
+ * or `title`; unknown codes fall back to the server's `title`.
  */
 
 import axios from "axios";
@@ -29,16 +20,7 @@ export interface Failure {
   retryAfter?: number;
 }
 
-/**
- * `problem.*` keys the web client can actually provoke, keyed by the server's
- * stable `code` (§8) with dots turned into camelCase segments.
- *
- * Any `code` the server sends that is NOT in this map falls back to the raw,
- * unlocalized server `title` a few lines down — the backend has no
- * `Accept-Language` handling anywhere, so that fallback stays whatever
- * language the server wrote it in. Out of scope here; growing this map is the
- * only lever the frontend has.
- */
+/** Localised `problem.*` keys by `code` (dots → camelCase). The server doesn't localise titles. */
 const MESSAGE_KEYS: Record<string, string> = {
   "auth.missing": "problem.authMissing",
   "auth.invalid": "problem.authInvalid",
@@ -54,13 +36,7 @@ const MESSAGE_KEYS: Record<string, string> = {
   "action.unknown": "problem.actionUnknown",
 };
 
-/**
- * Normalise anything thrown by the API layer.
- *
- * Deliberately total: a caller renders `failureOf(error).message` without ever
- * checking what it caught, because an error path that can itself throw is an
- * error path nobody tests.
- */
+/** Total: never throws, so error paths can render it blindly. */
 export function failureOf(error: unknown): Failure {
   if (axios.isAxiosError(error)) {
     const status = error.response?.status ?? 0;

@@ -1,12 +1,5 @@
 <script setup lang="ts">
-/**
- * The left zone of the shell (§10.4): channels, filters, and who you are.
- *
- * Filters are applied by asking the server (`GET /notifications` takes them all,
- * §8) rather than by hiding rows locally — a filtered inbox has to be able to page
- * through everything that matches, not through the first fifty rows that happened
- * to be loaded.
- */
+/** The left zone (§10.4): channels, server-side filters (§8), and who you are. */
 import {
   ChevronDown,
   ChevronRight,
@@ -69,10 +62,7 @@ const PRIORITIES: Priority[] = ["min", "low", "default", "high", "urgent"];
 
 const filters = computed(() => inbox.filters);
 
-// The channel is deliberately absent from this list, and from `clear()` below.
-// It is not a filter any more but where you *are* (see `openChannel`), so counting
-// it here would light up "filters active" for simply being in a channel, and
-// `clear all` would silently navigate you somewhere else.
+// The channel is where you are, not a filter: excluded here and from `clear()`.
 const filtered = computed(
   () =>
     filters.value.state.length > 0 ||
@@ -82,21 +72,12 @@ const filtered = computed(
     filters.value.hasActions !== null,
 );
 
-/**
- * Which channel is being looked at, straight from the route.
- *
- * Read from the URL rather than from `inbox.filters` because the URL is what makes
- * it shareable, survivable across a reload and reachable with the back button —
- * and because the sidebar is drawn on Settings, Admin and Console too, where
- * `inbox.filters` describes a list nobody is looking at.
- */
+/** From the URL: shareable, reload-proof, and correct on non-inbox routes too. */
 const openChannelId = computed(() =>
   typeof route.params.channel === "string" ? route.params.channel : null,
 );
 
-// `Collapsible`'s model is "is the content shown"; `ui.filtersCollapsed` is the
-// inverse (and the one that persists), so this bridges the two without either
-// side having to know about the other's sign.
+// `Collapsible` models "open"; the persisted UI flag is "collapsed".
 const filtersOpen = computed({
   get: () => !ui.filtersCollapsed,
   set: (value) => {
@@ -110,19 +91,7 @@ function toggle<T>(list: T[], value: T): T[] {
     : [...list, value];
 }
 
-/**
- * Go to a channel — or back to everything, when it is the one already open.
- *
- * A navigation and not a checkbox. Clicking a channel used to toggle it in
- * `inbox.filters` and nothing else: the URL never moved, so the selection could
- * not be shared, survived no reload and had no back button — and from Settings,
- * Admin or Console, where this sidebar is also drawn, clicking a channel changed
- * an invisible filter on a list that was not on screen. Which is exactly what
- * `/c/<id>` already did correctly for anybody who arrived by link.
- */
-function openAllChannels(): void {
-  void router.push({ name: "inbox" });
-}
+/** Channels navigate (`/c/<id>`); clicking the open one goes back to everything. */
 
 function openChannel(id: string): void {
   void router.push(
@@ -161,22 +130,12 @@ function toggleHasActions(): void {
   });
 }
 
-/**
- * Clear the filters — and only the filters.
- *
- * The channel is kept: it is where you are, not something you filtered by, and a
- * "clear all" that quietly moved you out of a channel would contradict the URL
- * still naming it. Leaving a channel is clicking it again, or "all channels".
- */
+/** Clears filters but keeps the channel, which the URL still names. */
 function clear(): void {
   void inbox.apply({ ...emptyFilters(), channels: filters.value.channels });
 }
 
-/**
- * Freeform tag filter (§8 AND semantics). No enumeration endpoint exists, so
- * suggestions are drawn from tags already carried by loaded rows — a hint, not
- * an authoritative list.
- */
+/** Freeform tags (§8, AND). Suggestions come from loaded rows: no enumeration endpoint. */
 const tagInput = ref("");
 
 const knownTags = computed(() => {
@@ -274,7 +233,7 @@ const connection = computed(() => {
           type="button"
           class="bay-item"
           :aria-current="openChannelId === null ? 'page' : undefined"
-          @click="openAllChannels"
+          @click="router.push({ name: 'inbox' })"
         >
           <Inbox class="size-4 shrink-0" />
           <span class="truncate">{{ t("sidebar.channels.all") }}</span>

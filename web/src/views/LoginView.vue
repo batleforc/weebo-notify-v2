@@ -1,11 +1,5 @@
 <script setup lang="ts">
-/**
- * The login screen: one button, because there is exactly one way in (§5.1).
- *
- * No password field, ever — this app never sees a credential. It sends the browser
- * to the identity provider and comes back holding a token, which is what makes the
- * server able to keep zero sessions.
- */
+/** One button, one way in (§5.1): the app never sees a credential. */
 import { LogIn, RotateCcw } from "@lucide/vue";
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
@@ -47,34 +41,21 @@ async function signIn(): Promise<void> {
   try {
     const returnTo =
       typeof route.query.returnTo === "string" ? route.query.returnTo : "/";
-    // A browser never gets here — the page has navigated to the provider by now.
-    // The shell does: it signs in without leaving, so this is where the desktop
-    // flow ends, and `target` is the permalink that survived it.
+    // Desktop only: the shell signs in without navigating away.
     const target = await session.login(returnTo);
     if (target) {
       await router.replace(target);
     }
   } catch (error) {
-    // A provider that is down, or a discovery document we cannot read: the
-    // message says which, because "connexion impossible" helps nobody debug a
-    // development stack that is missing `task dev:oidc`.
+    // Say which failure (provider down, unreadable discovery) to help debugging.
     failure.value = error instanceof Error ? error.message : String(error);
     going.value = false;
   }
 }
 
 /**
- * What "retry" means depends on whether there is still something listening.
- *
- * While a desktop sign-in is pending, the flow is fine and only the browser is
- * missing — the loopback listener is up and holding port 1420, so re-running
- * `signIn` would not retry anything, it would fail on `EADDRINUSE` against our own
- * first attempt. Reopening the same URL is the actual repair, and it costs nothing
- * if a browser did open: the provider sees one more request for a page it is
- * already showing.
- *
- * Once that attempt is over — provider down, listener timed out — there is nothing
- * left to reopen, and asking again is the whole of what retry can mean.
+ * While a desktop sign-in is pending, the loopback listener holds port 1420, so
+ * "retry" reopens the browser; afterwards it starts a new sign-in.
  */
 async function retry(): Promise<void> {
   const pending = session.pendingAuthorizeUrl;

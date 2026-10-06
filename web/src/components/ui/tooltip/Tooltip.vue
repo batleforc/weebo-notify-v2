@@ -1,12 +1,5 @@
 <script setup lang="ts">
-/**
- * A tooltip, in one component instead of shadcn's four.
- *
- * The upstream split (Provider / Root / Trigger / Content) exists so a trigger can
- * be composed anywhere; every tooltip in this app is "hover this, read that", and
- * a single component with two slots is what the call sites actually want. Reka UI
- * still carries the behaviour — delay, focus, escape, ARIA (ADR-0004).
- */
+/** A tooltip in one component instead of shadcn's four; Reka UI does the behaviour (ADR-0004). */
 import {
   TooltipContent,
   TooltipPortal,

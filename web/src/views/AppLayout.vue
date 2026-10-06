@@ -1,12 +1,5 @@
 <script setup lang="ts">
-/**
- * The three-zone shell (§10.4): channels, inbox, detail.
- *
- * The same component serves the browser, and later the desktop and mobile shells
- * (§10bis) — what changes is the breakpoint, not the code. Under `lg` the sidebar
- * folds away behind a button and the detail takes the whole screen when something
- * is open, which is the mobile behaviour §10.4 asks for.
- */
+/** The three-zone shell (§10.4): channels, inbox, detail. Under `lg` the sidebar becomes a drawer. */
 import { Inbox, Menu, Search, Settings, X } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -46,16 +39,7 @@ const { t } = useI18n();
 const sidebarOpen = ref(false);
 const palette = usePalette();
 
-/**
- * Whether this route has a detail panel at all. Only the three that render
- * `InboxView` do (§10.4) — `settings`/`admin`/`console` are full pages of their
- * own, and reserving 22rem for an always-empty panel on them is not a smaller
- * version of the three-zone shell, it is 22rem taken from a page that never had
- * anything to put there. `under` is what makes this worth naming: on those
- * routes it used to leave `<main>` visibly short of the viewport, by exactly the
- * height the empty panel still claimed off-screen.
- */
-/** The routes that show the inbox, and therefore care about the channel. */
+/** The routes that render InboxView: only they get a detail pane (§10.4). */
 const INBOX_ROUTES = [
   "inbox",
   "notification",
@@ -63,16 +47,9 @@ const INBOX_ROUTES = [
   "channel-notification",
 ];
 
-/** The routes that open the detail panel. */
 const DETAIL_ROUTES = ["notification", "channel-notification"];
 
-/**
- * The channel the current route is in, if any.
- *
- * One expression for both channel routes: `/c/<id>` and `/c/<id>/n/<n>` carry it
- * in the same parameter, which is the point of nesting them — reading a
- * notification does not leave the channel it was read from.
- */
+/** `/c/<id>` and `/c/<id>/n/<n>` share the param: reading a notification keeps its channel. */
 const routeChannel = computed(() =>
   typeof route.params.channel === "string" ? route.params.channel : null,
 );
@@ -88,47 +65,20 @@ function tabClass(active: boolean): string {
   );
 }
 
-const showDetailPane = computed(() =>
-  INBOX_ROUTES.includes(String(route.name ?? "")),
-);
-
-/**
- * Where the list and the detail panel sit, above `xl` (§10.4, the preference in
- * Réglages › Apparence). Below `xl` the panel is always the full-screen layer it
- * already was — this only reshapes the desktop three-zone arrangement.
- *
- * One grid, not three duplicated templates: `content` always holds exactly the
- * list and the detail panel, in that DOM order, and these classes are the only
- * thing that decides whether that reads left-to-right, right-to-left, or
- * top-to-bottom. `order-*` moves them without touching the router or the
- * detail panel's own mount/unmount timing.
- */
-/**
- * Whether the detail panel is a *pane under the list* rather than a layer over it.
- *
- * Side-by-side needs width, which is why `left` and `right` stay gated on `xl` and
- * fall back to the full-screen layer below it. Stacking needs none: two rows fit a
- * phone exactly as well as a monitor. Gating it on `xl` anyway is what made a
- * window narrower than 1280px answer "detail under the list" with a layer covering
- * the list — the one arrangement where the person asked to see both at once was
- * the one where they saw one.
- */
+/** Below `xl`, only "under" keeps the pane in the grid; left/right become a full-screen layer. */
 const detailStacked = computed(
-  () => showDetailPane.value && ui.detailPosition === "under",
+  () => isInbox.value && ui.detailPosition === "under",
 );
 
 const contentGridClass = computed(() => {
-  if (!showDetailPane.value) {
+  if (!isInbox.value) {
     return "";
   }
   switch (ui.detailPosition) {
     case "left":
       return "xl:grid-cols-[26rem_minmax(0,1fr)]";
     case "under":
-      // The second track only exists when something is in it. Unprefixed at every
-      // width otherwise, an inbox with nothing selected would reserve 22rem of
-      // blank below the list on a small window — the placeholder that fills it
-      // above `xl` is `hidden` there.
+      // Second row only when something is selected, else small windows reserve blank space.
       return detail.id
         ? "grid-rows-[minmax(0,1fr)_22rem]"
         : "xl:grid-rows-[minmax(0,1fr)_22rem]";
@@ -138,35 +88,23 @@ const contentGridClass = computed(() => {
 });
 
 const mainOrderClass = computed(() =>
-  showDetailPane.value && ui.detailPosition === "left" ? "xl:order-2" : "",
+  isInbox.value && ui.detailPosition === "left" ? "xl:order-2" : "",
 );
 
-/** The one border between the two panes — its edge follows whichever side the
- * detail panel ends up on, so the list is never the one carrying it. */
+/** The divider follows the detail pane's side. */
 const detailPositionClass = computed(() => {
   switch (ui.detailPosition) {
     case "left":
       return "xl:order-1 xl:border-l-0 xl:border-r";
     case "under":
-      // Kept, and not folded into the `detailStacked` branch below: this class also
-      // dresses the *empty* placeholder, which is a plain `border-l` element that
-      // has always relied on these `xl:` overrides to move its divider to the top
-      // edge. Dropping them left the placeholder drawing a left border under the
-      // list, where there is nothing to its left.
+      // Also positions the empty placeholder's divider.
       return "xl:border-l-0 xl:border-t";
     default:
       return "";
   }
 });
 
-/**
- * The one shortcut the shell owns (§10.4).
- *
- * On `window` rather than on a focused element, because the palette has to open
- * from anywhere — including from inside the inbox list, which handles its own keys.
- * It does not fire while the palette is open: Reka UI traps focus there, and
- * `Esc` is what closes it.
- */
+/** On `window` so the palette opens from anywhere (§10.4). */
 function onKeydown(event: KeyboardEvent): void {
   if (opensPalette(event)) {
     event.preventDefault();
@@ -180,23 +118,17 @@ let unlisten: (() => void) | null = null;
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
 
-  // The detail panel does not hold a stream of its own: one connection per tab,
-  // out of the twenty a user gets across every client (§8.2).
+  // One stream per tab, shared with the detail panel (§8.2).
   unsubscribe = inbox.subscribe((event) => {
     detail.ingest(event);
-    // Both before the toast: a `preference` event that arrives with an arrival
-    // has to be applied first, or the toast it should have silenced is already up.
+    // Preferences before the toast, so a silencing change applies to it.
     preferences.ingest(event);
     toasts.arrival(event);
-    // The badge is the server's count, so an event only says *ask again* — and
-    // says it for every kind, because a revision adds to it, a tombstone takes
-    // away, and a receipt of ours clears it. `refresh` coalesces the burst.
+    // Every event kind may change the server's count; `refresh` coalesces.
     unread.refresh();
   });
 
-  // A push the worker handed over because this tab is visible (see `public/sw.js`)
-  // — it skipped the OS notification so that this one goes through the same
-  // do-not-disturb gate as the stream does.
+  // Pushes the worker forwarded because this tab is visible (`public/sw.js`).
   const onMessage = (event: MessageEvent) => {
     const message = event.data as { type?: string; envelope?: unknown } | null;
     if (message?.type === "push" && message.envelope) {
@@ -209,22 +141,14 @@ onMounted(async () => {
       navigator.serviceWorker.removeEventListener("message", onMessage);
   }
 
-  // Registration is not awaited by anything that renders: the app works without a
-  // worker, and the person waiting for the inbox should not wait for one.
   void register(() => void resubscribe());
 
-  // The desktop shell hands over `weebo-notify://n/<id>` clicks (§10bis.3quater).
-  // `router.push` and not the History API: the guard that survives a permalink
-  // opened while signed out lives on the router (see `router/index.ts`), and the
-  // first draft of the shell bypassed it by driving `pushState` directly.
-  // A no-op in a browser, and not awaited — the inbox must not wait for it.
+  // Desktop `weebo-notify://n/<id>` clicks (§10bis.3quater); via the router so its guard runs.
   void onDeepLink((path) => void router.push(path)).then((stop) => {
     unlisten = stop;
   });
 
-  // The stream first, then the page: a stream opened after the load starts at
-  // "now" and misses whatever was published while the page was on its way
-  // (`inbox.start`).
+  // Stream before the page, or events published during the load are missed.
   inbox.start();
   await Promise.all([
     channels.load(),
@@ -250,8 +174,7 @@ watch(
   },
 );
 
-/** `/n/<id>` — and `/c/<channel>/n/<id>` — are permalinks: opening one must open
- * the panel (§10.4). */
+/** Permalinks open the panel (§10.4). */
 watch(
   () => [route.name, route.params.id] as const,
   ([name, id]) => {
@@ -264,19 +187,7 @@ watch(
   { immediate: true },
 );
 
-/**
- * The channel is the route, and the route is the channel.
- *
- * `/c/<id>` narrows the inbox to it and `/` widens back to everything — both
- * directions, which is what was missing: only the first was handled, so leaving a
- * channel left its filter behind and the inbox stayed narrowed while the URL said
- * otherwise. The sidebar now navigates rather than toggling a filter, so this
- * watcher is the single place the two are reconciled.
- *
- * Routes that are not the inbox are left alone on purpose. Settings, Admin and
- * Console draw the same sidebar, and clearing the filter on the way there would
- * reload a list nobody is looking at and lose the channel on the way back.
- */
+/** Keeps the inbox filter in sync with the route, in both directions. Non-inbox routes are left alone. */
 watch(
   () => [route.name, routeChannel.value] as const,
   ([name, channel]) => {
@@ -285,9 +196,7 @@ watch(
     }
     const next = channel === null ? [] : [channel];
     const current = inbox.filters.channels;
-    // Compared rather than applied unconditionally: `apply` reloads the page and
-    // restarts the stream, and every `/n/<id>` opened from within a channel would
-    // otherwise do both for no change at all.
+    // `apply` reloads and restarts the stream; skip it when nothing changed.
     if (
       current.length === next.length &&
       current.every((c, i) => c === next[i])
@@ -299,11 +208,7 @@ watch(
   { immediate: true },
 );
 
-/**
- * Close the panel by leaving the notification's route — back to the channel it was
- * read from when there is one, rather than out to every channel. Closing a message
- * is not leaving the list you found it in.
- */
+/** Close by going back to the channel the notification was read from. */
 function closeDetail(): void {
   const channel = routeChannel.value;
   void router.push(
@@ -329,22 +234,7 @@ function closeDetail(): void {
       </Button>
     </header>
 
-    <!--
-      The way out of the drawer, and the reason it is an element rather than a
-      document-level click handler: a listener on `document` has to decide whether
-      each click landed inside the panel, which means knowing the panel's bounds and
-      getting it wrong for anything that teleports out of it (a native menu, a
-      tooltip). A scrim answers by construction — the only clicks it receives are
-      the ones that missed.
-
-      `z-30`, one below the drawer's `z-40`, so it covers the content and not the
-      panel. It also covers the header, which puts it over the burger button: a
-      click there closes rather than toggles, which is the same outcome by a
-      shorter path.
-
-      `lg:hidden` because above `lg` the sidebar is `lg:static` — part of the grid,
-      covering nothing, with nothing to dismiss.
-    -->
+    <!-- Scrim: z-30 under the drawer's z-40; catches only clicks that missed it. -->
     <div
       v-if="sidebarOpen"
       class="fixed inset-0 z-30 bg-ground/80 lg:hidden"
@@ -353,15 +243,7 @@ function closeDetail(): void {
     />
 
     <div class="grid min-h-0 lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <!--
-        `cn` and not a plain array, and that is the whole fix rather than a tidy-up.
-        Both `bg-card/40` and `bg-card` used to land on this element at once, and an
-        array decides nothing: the winner is whichever rule Tailwind emitted last,
-        which is `.bg-card\/40` (it carries an opacity modifier, so it sorts after
-        the bare utility). The open drawer therefore rendered at 40% opacity with
-        the inbox showing straight through it — which reads as a stacking bug and is
-        not one. `cn` runs tailwind-merge, so the later argument wins for real.
-      -->
+      <!-- `cn` (tailwind-merge) so `bg-card` really overrides `bg-card/40`. -->
       <div
         :class="
           cn(
@@ -375,22 +257,14 @@ function closeDetail(): void {
         <AppSidebar @click="sidebarOpen = false" />
       </div>
 
-      <!-- The list and the detail panel, always in this order in the DOM —
-           `contentGridClass` and the two order classes below are what decide
-           whether that reads left-to-right, right-to-left, or top-to-bottom
-           (Réglages › Apparence). -->
+      <!-- DOM order is always list, detail; classes decide the visual arrangement. -->
       <div class="grid min-h-0" :class="contentGridClass">
         <main class="min-h-0 overflow-hidden" :class="mainOrderClass">
           <RouterView />
         </main>
 
-        <!-- Only the three routes that render InboxView have a detail panel at
-             all (see `showDetailPane`) — `settings`/`admin`/`console` render
-             nothing here rather than an always-empty pane with nothing to show. -->
-        <template v-if="showDetailPane">
-          <!-- Under xl the panel is a full-screen layer, which is the mobile
-               shape §10.4 describes; above it, it is the second pane, wherever
-               the preference puts it. -->
+        <template v-if="isInbox">
+          <!-- Under xl the panel is a full-screen layer (§10.4). -->
           <div
             v-if="detail.id"
             :class="
@@ -403,14 +277,7 @@ function closeDetail(): void {
               )
             "
           >
-            <!--
-              `xl:hidden` and nothing more. This briefly also hid on `detailStacked`,
-              on the reasoning that a pane covers nothing and `NotificationDetail`
-              carries its own close — and that second half is false: that button
-              lives in the `detail.gone` branch, so a *loaded* notification has only
-              the copy-permalink one. Removing this left `Escape` as the sole way to
-              dismiss the pane, which on a touch device is no way at all.
-            -->
+            <!-- The only close a loaded notification has on touch devices. -->
             <Button
               variant="outline"
               size="icon"
@@ -465,11 +332,7 @@ function closeDetail(): void {
     </nav>
   </div>
 
-  <!-- Outside the grid above, deliberately: it is `position: fixed` and reads
-       from the viewport, not a cell — a grid child that Firefox and Chrome
-       still hand an implicit row to on `lg+` (header goes `display: none`
-       there, but this one stays a grid item), which is the black band this
-       moved to stop being. -->
+  <!-- Outside the grid: a fixed grid child still gets an implicit row on lg+. -->
   <AppToaster />
   <PushPrompt />
 </template>

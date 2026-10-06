@@ -1,20 +1,7 @@
 <script setup lang="ts">
 /**
- * The platform console (§10.4bis): states and counters that can be acted on.
- *
- * Deliberately not a dashboard. §10.1 refuses the generic kind, and §13 keeps time
- * series in Grafana — duplicating them here would be a screen nobody trusts because
- * it disagrees with the one that has the data.
- *
- * Four panels, each answering a question somebody actually arrives with:
- *   * **Canaux** — is this instance configured the way we think it is;
- *   * **Trust policies** — why was that pipeline refused;
- *   * **DLQ** — what did we fail to deliver, and can it be sent again;
- *   * **Audit** — what happened, and who did it.
- *
- * The DLQ panel shows the delivery and never the event: an admin who is not a
- * member of the channel would otherwise read its notifications through a failed
- * webhook, which is the door §5.4 closes.
+ * The platform console (§10.4bis): actionable states, not a dashboard (time series
+ * stay in Grafana, §13). The DLQ shows deliveries, never event content (§5.4).
  */
 import { onMounted } from "vue";
 import { useI18n } from "vue-i18n";
@@ -76,12 +63,7 @@ onMounted(() => {
           {{ t("console.reconciliation.none") }}
         </p>
         <div v-else class="space-y-1 border border-rule p-3 text-xs">
-          <!--
-            The trigger, not only the timestamp: §10.4bis asks this screen for « le
-            dernier SIGHUP », and the reconciler also runs every minute — so a bare
-            time is almost always the timer, and an operator who has just sent a
-            signal cannot tell whether it landed.
-          -->
+          <!-- The trigger matters: the timer runs every minute, so a bare time hides whether a SIGHUP landed. -->
           <p>
             {{
               t("console.reconciliation.lastPass", {
@@ -93,12 +75,7 @@ onMounted(() => {
               })
             }}
           </p>
-          <!--
-            The one actionable line: a binding by `email` or `oidc_sub` grants
-            nothing until that person logs in once (§14.1, M1.8). Without a place
-            to see it, the symptom is "alice cannot see the channel" with nothing
-            to connect it to.
-          -->
+          <!-- Bindings by email/oidc_sub grant nothing until first login (§14.1). -->
           <p
             v-if="platform.gitops.pending.length"
             class="text-copper"
@@ -208,8 +185,7 @@ onMounted(() => {
                 <td class="p-2 font-mono">{{ policy.channels.join(", ") }}</td>
                 <td class="p-2">{{ policy.scopes.join(", ") }}</td>
                 <td class="p-2">
-                  <!-- §11: a channel-scoped policy wins, and that is the first
-                       thing to look at when one "should" match and does not. -->
+                  <!-- A channel-scoped policy wins (§11). -->
                   <Badge :variant="policy.channel_scoped ? 'secondary' : 'muted'">
                     {{ policy.channel_scoped ? t("console.policies.scoped") : t("console.policies.global") }}
                   </Badge>
@@ -250,11 +226,7 @@ onMounted(() => {
                 class="border-t border-rule"
               >
                 <td class="p-2 font-medium">{{ letter.channel }}</td>
-                <!--
-                  The destination in full: the first thing an operator needs is
-                  where to go and look, and the sink id carries it by construction
-                  (§7.1bis — it is derived from where the sink points).
-                -->
+                <!-- The sink id carries the destination (§7.1bis). -->
                 <td class="p-2 font-mono break-all">{{ letter.sink }}</td>
                 <td class="p-2">{{ letter.attempts }}</td>
                 <td class="p-2 text-status-failure">{{ letter.last_error }}</td>

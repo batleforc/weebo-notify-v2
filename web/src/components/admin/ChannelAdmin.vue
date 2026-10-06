@@ -1,10 +1,7 @@
 <script setup lang="ts">
 /**
- * Channels: create, tune, share, delete (§10.4, §8).
- *
- * A managed channel gets no controls: config owns it (§11) and an API call would
- * be undone at the next reconciliation. Authorisation is the server's call — the
- * screen offers the controls and renders the refusal (§5.1).
+ * Channels: create, tune, share, delete (§10.4, §8). Managed channels get no
+ * controls (§11); the server authorises (§5.1).
  */
 import { ChevronDown, ChevronRight, Plus, Trash2 } from "@lucide/vue";
 import { ref } from "vue";

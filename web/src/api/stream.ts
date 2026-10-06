@@ -1,22 +1,6 @@
 /**
- * The live stream (design §8.1), read with `fetch` rather than `EventSource`.
- *
- * # Why not `EventSource`
- *
- * `EventSource` cannot send an `Authorization` header. Every workaround for that
- * is worse than reading the body ourselves: a token in the query string ends up in
- * access logs and browser history, and a cookie would hand the API the CSRF
- * surface §5.1 exists to avoid. So the stream is a `fetch` whose body is decoded
- * here, which also means:
- *
- *   * `Last-Event-ID` is sent explicitly on reconnect, so a resume replays exactly
- *     what was missed — the one recovery mechanism the design has (§8.1);
- *   * the reconnect policy is ours (backoff, jitter, a status the UI can show)
- *     rather than the browser's three-second default;
- *   * a `401` mid-stream refreshes the token and reconnects instead of dying.
- *
- * What is given up is the browser's automatic reconnect, which is reimplemented
- * below and needed to be anyway, because the token has to be refreshed with it.
+ * The live stream (§8.1), read with `fetch` because `EventSource` can't send an
+ * `Authorization` header. Reconnect, `Last-Event-ID` resume and backoff are ours.
  */
 
 import { useSession } from "@/auth/session";
@@ -33,13 +17,7 @@ export interface Frame {
   data: string;
 }
 
-/**
- * An incremental SSE decoder.
- *
- * Stateful because a chunk boundary lands wherever TCP decides: half a frame now
- * and the rest in 40 ms is normal, and a parser that assumed whole frames would
- * drop events under exactly the load where they matter.
- */
+/** Incremental SSE decoder: chunks split frames anywhere. */
 export function createFrameParser(): (chunk: string) => Frame[] {
   let buffer = "";
 
@@ -68,8 +46,7 @@ function decodeBlock(block: string): Frame | null {
   const data: string[] = [];
 
   for (const line of block.split("\n")) {
-    // A line starting with a colon is a comment — that is what the 25-second
-    // keep-alive is (§8.1). It carries no id, so it never moves the cursor.
+    // Comment lines are the 25 s keep-alive (§8.1); they never move the cursor.
     if (line === "" || line.startsWith(":")) {
       continue;
     }
@@ -96,14 +73,9 @@ function decodeBlock(block: string): Frame | null {
 /** What the shell shows next to the channel list. */
 export type StreamStatus = "connecting" | "live" | "reconnecting" | "offline";
 
-export interface StreamHandlers {
-  /** One event, already parsed. */
+export interface StreamOptions {
   onEvent: (event: StreamEvent) => void;
-  /** Connection state, for the indicator in the shell. */
   onStatus?: (status: StreamStatus) => void;
-}
-
-export interface StreamOptions extends StreamHandlers {
   /** Narrow to these channels. Empty means everything the caller may read. */
   channels?: string[];
   /** Where to resume from on the very first connection. */
@@ -120,22 +92,10 @@ export interface Stream {
 /** Backoff, capped: a server coming back must not be met with a thundering herd. */
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
-/**
- * Silence after which a connection is presumed dead.
- *
- * The server sends a keep-alive every 25 s (§8.1), so two missed ones is not a
- * quiet channel — it is a socket that died without a FIN (laptop sleep, a NAT
- * that forgot us), on which `read()` would otherwise wait for ever while the
- * indicator says "live".
- */
+/** Two missed 25 s keep-alives (§8.1): the socket died without a FIN. */
 export const IDLE_MS = 60_000;
 
-/**
- * Open the stream and keep it open.
- *
- * The returned handle is the only way to stop it; everything else — token
- * refresh, resume, backoff — is handled inside.
- */
+/** Open the stream and keep it open; refresh, resume and backoff are internal. */
 export function openStream(options: StreamOptions): Stream {
   const session = useSession();
   const controller = new AbortController();
@@ -150,8 +110,7 @@ export function openStream(options: StreamOptions): Stream {
 
   /** Cuts a backoff short: set while `connect` is waiting to retry. */
   let wake: (() => void) | null = null;
-  // Back online, or the tab shown again: whatever the backoff was waiting out has
-  // probably passed, and the person looking at the screen should not wait 30 s.
+  // Online again or tab visible: skip the rest of the backoff.
   const nudge = () => {
     if (document.visibilityState === "visible") {
       wake?.();
@@ -167,8 +126,7 @@ export function openStream(options: StreamOptions): Stream {
 
         const token = await session.bearer();
         if (!token) {
-          // No session left; the router is about to send us to the provider and
-          // reconnecting in a loop would only burn a request per second doing it.
+          // No session: the router is about to redirect to the provider.
           status("offline");
           return;
         }
@@ -198,11 +156,7 @@ export function openStream(options: StreamOptions): Stream {
             status("offline");
             return;
           }
-          // Exactly one immediate retry, and then never again without backoff.
-          // A `401` that survives a successful refresh is not a stale token — it
-          // is clock skew, a revoked account, an audience mismatch — and retrying
-          // it immediately in a loop is a client hammering its own API as fast as
-          // the network allows, refreshing a token every round.
+          // One immediate retry only: a 401 after a fresh token is not staleness.
           if (refreshed) {
             throw new Error("still refused after a refresh");
           }
@@ -222,8 +176,7 @@ export function openStream(options: StreamOptions): Stream {
         if (closed || controller.signal.aborted) {
           return;
         }
-        // An ordinary end of stream and a network failure look the same from
-        // here, and are handled the same: wait, then resume from the cursor.
+        // End of stream or network failure: both back off and resume.
         console.debug("stream interrupted, reconnecting", error);
       }
 
@@ -253,8 +206,7 @@ export function openStream(options: StreamOptions): Stream {
     let idle: ReturnType<typeof setTimeout> | undefined;
     const watch = () => {
       clearTimeout(idle);
-      // Cancelling makes the pending `read()` resolve `done`, which is the
-      // ordinary end-of-stream path: back off, then resume from the cursor.
+      // Cancelling resolves `read()` as done: the ordinary reconnect path.
       idle = setTimeout(() => void reader.cancel().catch(() => {}), IDLE_MS);
     };
 

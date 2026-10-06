@@ -1,11 +1,4 @@
-/**
- * The half of the palette a test can answer for.
- *
- * What it *offers*, in what order, and on which keystroke — pure functions, pinned
- * below. What it *looks like* is a different question with a different instrument:
- * the workspace has a real browser now (§12.4), and what it showed the first time
- * anybody pointed it here is written at the top of `CommandPalette.vue`.
- */
+/** What the palette offers, in what order, on which keystroke. */
 
 import { describe, expect, it } from "vitest";
 

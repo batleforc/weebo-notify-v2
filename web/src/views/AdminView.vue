@@ -1,24 +1,7 @@
 <script setup lang="ts">
 /**
- * Channels, devices, API keys and service accounts (§10.4, §5.2, §5.2bis).
- *
- * Four lists on one screen because they are one question — *what can act as me, or
- * for my team, and under what rules* — and four screens would hide that. §10.4bis's
- * platform console is a different thing entirely: it is instance-wide and is M4.
- *
- * # The secret is shown once, and the screen says so before it is minted
- *
- * §5.2: only the hash is stored, so a key that is not copied now is a key that has
- * to be revoked and recreated. Saying that *after* showing it would be an apology;
- * saying it on the button is a warning.
- *
- * # The screen does not decide who may edit a policy
- *
- * §5.1: authorisation is derived per request from the token, never held locally, so
- * this view offers the controls and renders the refusal if one comes back. What it
- * *does* hide is what the data itself settles: a managed channel gets no controls at
- * all, because config owns it (§11) and an API call would be undone at the next
- * reconciliation.
+ * Channels, devices, API keys and service accounts (§10.4, §5.2, §5.2bis). The
+ * server authorises every request (§5.1); only managed rows (§11) hide controls.
  */
 import { KeyRound, Plus, Trash2 } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
@@ -65,9 +48,7 @@ const newKeyAccount = ref("");
 const newKeyChannel = ref("");
 const newAccountId = ref("");
 
-// A disabled account cannot authenticate a key minted for it (§5.2, T25): a
-// picker that offered one anyway would let the form succeed and the first use
-// fail, with nothing on this screen explaining why.
+// A disabled account can't authenticate a key minted for it (§5.2, T25).
 const activeAccounts = computed(() =>
   accounts.value.filter((account) => !account.disabled_at),
 );
@@ -102,13 +83,7 @@ async function act(work: () => Promise<unknown>): Promise<void> {
   }
 }
 
-/**
- * Mint a key **owned by a service account**, never by the person clicking.
- *
- * That is §5.2's rule made into a UI: a team bot on a human's key dies the day
- * that human is offboarded. The screen therefore asks which bot the key acts as,
- * and a personal key stays a deliberate act somewhere else.
- */
+/** Keys are owned by a service account, never the clicking human (§5.2). */
 async function mintKey(): Promise<void> {
   if (!newKeyAccount.value || !newKeyChannel.value.trim()) {
     return;
@@ -123,7 +98,7 @@ async function mintKey(): Promise<void> {
       },
       throwOnError: true,
     });
-    // The one moment this value exists outside the caller's hands (§5.2).
+    // Shown once (§5.2).
     minted.value = answer.data.secret;
     newKeyLabel.value = "";
   });

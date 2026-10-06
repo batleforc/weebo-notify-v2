@@ -24,9 +24,7 @@ beforeEach(() => {
 
 describe("fetching an attachment's thumbnail", () => {
   it("goes through the API client rather than through the img tag", async () => {
-    // The same bug `lib/avatar.ts` exists to avoid: this route is authenticated
-    // by the `Authorization` header alone (§5.1, zero cookies), which an
-    // `<img>` cannot send.
+    // Header-authenticated route (§5.1): an `<img>` can't fetch it.
     thumbnail.mockResolvedValue({ data: new Blob(["png"]) });
 
     const url = await thumbnailObjectUrl("att_01J");
@@ -68,9 +66,7 @@ describe("fetching an attachment's thumbnail", () => {
   });
 
   it("answers null rather than throwing when nothing was ever derived", async () => {
-    // Design D30: an unsupported source, an upload that never arrived, and a
-    // caller who cannot see the notification all answer the same 404 — a row
-    // with no thumbnail must not take the rest of the inbox down with it.
+    // D30: any 404 just means no thumbnail.
     thumbnail.mockResolvedValue({ error: { status: 404 } });
 
     expect(await thumbnailObjectUrl("att_01J")).toBeNull();

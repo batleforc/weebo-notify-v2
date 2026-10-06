@@ -1,13 +1,5 @@
 <script setup lang="ts">
-/**
- * The revision timeline (§2.2, §10.3).
- *
- * The point of the panel: not "here is the message" but "here is what changed and
- * when". Each row highlights the diff against the previous revision — `status:
- * info → failure` is what an on-call person opened this to read — and answers are
- * folded into the same chronology, because "who acknowledged, and before or after
- * it failed" is the same question.
- */
+/** The revision timeline (§2.2, §10.3): each row's diff against the previous one, with answers interleaved. */
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -39,6 +31,16 @@ interface Entry {
   changes: string[];
 }
 
+const DIFFS: [
+  "status" | "state" | "priority",
+  string,
+  (r: TimelineRevision) => string,
+][] = [
+  ["status", "statusChanged", (r) => lookOf(r.status).label],
+  ["state", "stateChanged", (r) => stateLabel(r.state)],
+  ["priority", "priorityChanged", (r) => priorityLabel(r.priority)],
+];
+
 const entries = computed<Entry[]>(() => {
   const timeline: Entry[] = [];
 
@@ -46,29 +48,15 @@ const entries = computed<Entry[]>(() => {
     const previous = props.revisions[position - 1];
     const changes: string[] = [];
     if (previous) {
-      if (previous.status !== revision.status) {
-        changes.push(
-          t("notification.revisionTimeline.statusChanged", {
-            from: lookOf(previous.status).label,
-            to: lookOf(revision.status).label,
-          }),
-        );
-      }
-      if (previous.state !== revision.state) {
-        changes.push(
-          t("notification.revisionTimeline.stateChanged", {
-            from: stateLabel(previous.state),
-            to: stateLabel(revision.state),
-          }),
-        );
-      }
-      if (previous.priority !== revision.priority) {
-        changes.push(
-          t("notification.revisionTimeline.priorityChanged", {
-            from: priorityLabel(previous.priority),
-            to: priorityLabel(revision.priority),
-          }),
-        );
+      for (const [field, key, label] of DIFFS) {
+        if (previous[field] !== revision[field]) {
+          changes.push(
+            t(`notification.revisionTimeline.${key}`, {
+              from: label(previous),
+              to: label(revision),
+            }),
+          );
+        }
       }
       if (previous.content.title !== revision.content.title) {
         changes.push(t("notification.revisionTimeline.titleChanged"));

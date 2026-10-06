@@ -1,8 +1,4 @@
-/**
- * The palette's behaviour against the server, which is where it can go wrong in
- * ways nobody sees: a stale answer overwriting a fresh one, or a keystroke per
- * request burning §8.2's search quota.
- */
+/** Palette vs. server: stale answers must not win, keystrokes must not each cost a search (§8.2). */
 
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,9 +76,7 @@ describe("asking the server", () => {
   });
 
   it("ignores an older answer that lands after a newer one", async () => {
-    // The bug this prevents is invisible in a fast network and permanent in a slow
-    // one: the results for `etc` arriving after the results for `etcd` would leave
-    // the wrong list under the cursor.
+    // `etc` answering after `etcd` must not overwrite it.
     let resolveFirst: (value: unknown) => void = () => {};
     searchMock
       .mockImplementationOnce(

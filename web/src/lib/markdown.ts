@@ -1,26 +1,7 @@
 /**
- * Markdown rendering, under the rule §2.3 sets: **raw HTML is never interpreted**.
- *
- * The threat is concrete and stated in §10.3: a channel's publishers can be less
- * trustworthy than its readers. A CI job publishes a body containing whatever a
- * branch name or a test failure put in it, and the people reading it hold an
- * access token in memory.
- *
- * Three gates, and each one alone would be a defence:
- *
- *   1. markdown-it runs with `html: false`, so a `<script>` in the source comes out
- *      as text rather than as a tag;
- *   2. the result goes through DOMPurify anyway, because "the parser cannot emit
- *      HTML" is a property of a dependency and dependencies get upgraded;
- *   3. links are restricted to `http(s)` — no `javascript:`, no `data:` — and open
- *      in a new tab with `noopener`, so a notification cannot navigate the app.
- *
- * The strict CSP §10.3 asks for is the fourth gate. It used to be owed by "the
- * server that serves this bundle", which in this repository is nothing at all — so
- * it now travels with the bundle instead: `lib/csp.ts` builds it and the Vite config
- * stamps it into `index.html` (ADR-0019). What a meta policy cannot carry —
- * `frame-ancestors`, `report-to` — is still the deployment's, and says so in the
- * hardening page.
+ * Markdown with raw HTML never interpreted (§2.3, §10.3). Gates: markdown-it
+ * `html: false`, DOMPurify anyway, http(s)-only links opening with `noopener`.
+ * The CSP (`lib/csp.ts`) is the fourth.
  */
 
 import DOMPurify from "dompurify";
@@ -61,7 +42,6 @@ markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
   return defaultLinkOpen(tokens, index, options, env, self);
 };
 
-/** Render a notification body to sanitised HTML. */
 export function renderMarkdown(source: string): string {
   return DOMPurify.sanitize(markdown.render(source), {
     ALLOWED_TAGS: [
@@ -90,9 +70,7 @@ export function renderMarkdown(source: string): string {
       "td",
     ],
     ALLOWED_ATTR: ["href", "target", "rel", "data-blocked"],
-    // Images are not in the list on purpose: §2.3 gives a notification one
-    // `image` field, which the client renders itself and can size. An `<img>`
-    // hidden in a body is an uncontrolled request to a third party.
+    // No images: a notification has its own `image` field (§2.3).
     FORBID_TAGS: ["style", "img", "svg", "iframe", "form", "input"],
   });
 }

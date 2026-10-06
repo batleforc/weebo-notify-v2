@@ -1,14 +1,4 @@
-/**
- * Authorization Code + PKCE, the parts that are pure functions (design §5.1).
- *
- * PKCE (RFC 7636) is what makes a public client safe without a secret: the app
- * keeps a random `code_verifier`, sends only its SHA-256 hash to the provider, and
- * presents the verifier when redeeming the code. An attacker who intercepts the
- * redirect gets a code they cannot exchange.
- *
- * Everything here uses the Web Crypto API — no dependency, and no way to
- * accidentally end up with `Math.random()` where an unguessable value was meant.
- */
+/** Authorization Code + PKCE (RFC 7636, §5.1), pure functions on Web Crypto. */
 
 /** Base64url without padding, the encoding OAuth asks for. */
 export function base64url(bytes: Uint8Array): string {
@@ -29,13 +19,7 @@ export function randomToken(length = 32): string {
   return base64url(bytes);
 }
 
-/**
- * The `code_challenge` for a verifier, using S256.
- *
- * The `plain` method exists in the RFC and is never used here: it puts the
- * verifier itself in a URL that ends up in browser history and proxy logs, which
- * is the attack PKCE was written to close.
- */
+/** S256 only: `plain` would put the verifier in URLs and logs. */
 export async function challengeOf(verifier: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -68,15 +52,7 @@ export async function beginAuthorization(returnTo: string): Promise<{
   return { pending, challenge: await challengeOf(pending.verifier) };
 }
 
-/**
- * The claims the frontend reads out of an id token.
- *
- * Read, not trusted: the token this comes from was minted for the server, and the
- * server re-validates it against JWKS on every single request (§5.1). What is
- * decoded here decides what to draw — a display name, a group-gated menu item —
- * never what is allowed. An authorisation decision made in a browser is a
- * suggestion.
- */
+/** Claims read for display only; the server validates the token on every request (§5.1). */
 export interface IdentityClaims {
   sub: string;
   name?: string;

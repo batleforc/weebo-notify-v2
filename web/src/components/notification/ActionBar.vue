@@ -1,14 +1,7 @@
 <script setup lang="ts">
 /**
- * The buttons at the foot of a notification (§2.3, §10.3).
- *
- * Order is display priority and comes from the server — the array is rendered as
- * it arrives, never re-sorted, because the publisher decided what matters.
- *
- * Each kind gets the variant §10.3 assigns it, and each one means something
- * different on the wire: `view` is client-side only and produces no interaction,
- * `ack` and `choice` are keyed and idempotent, `reply` is free text, and `silence`
- * is a preference rather than an answer.
+ * Notification buttons (§2.3, §10.3), in server order, never re-sorted. `view` is
+ * client-only; `ack`/`choice` are keyed and idempotent; `silence` is a preference.
  */
 import { BellOff, Check, ExternalLink, Send } from "@lucide/vue";
 import { computed, ref } from "vue";
