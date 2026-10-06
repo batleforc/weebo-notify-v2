@@ -16,7 +16,7 @@ pub use state::ApiState;
 
 /// The request and response shapes that exist only at this boundary (ADR-0013).
 pub mod dto {
-    pub use crate::routes::accounts::CreateAccountBody;
+    pub use crate::routes::accounts::{CreateAccountBody, UserCard, UserQuery};
     pub use crate::routes::channels::{AddMemberBody, ChannelPolicyBody, CreateChannelBody};
     pub use crate::routes::compat::{
         Alert, AlertmanagerBody, CompatQuery, GotifyBody, GotifyMessage, NtfyBody, NtfyMessage,

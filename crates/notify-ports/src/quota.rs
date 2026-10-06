@@ -67,3 +67,20 @@ pub trait RateLimiter: Send + Sync {
         now: OffsetDateTime,
     ) -> PortResult<Allowance>;
 }
+
+/// Live stream connections counted across every replica (§8.2). A lease its replica
+/// stops renewing expires, so a killed replica cannot lock anyone out for long.
+#[async_trait::async_trait]
+pub trait StreamLeases: Send + Sync {
+    /// Take one of `max` leases for `principal` on `replica`; `None` when all are held.
+    async fn acquire(
+        &self,
+        principal: &str,
+        replica: &str,
+        max: usize,
+    ) -> PortResult<Option<String>>;
+    /// Give one back.
+    async fn release(&self, lease: &str) -> PortResult<()>;
+    /// Extend every lease `replica` holds, and drop whatever expired anywhere.
+    async fn renew(&self, replica: &str) -> PortResult<()>;
+}

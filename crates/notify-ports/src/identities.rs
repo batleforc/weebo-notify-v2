@@ -23,6 +23,9 @@ pub trait UserRepository: Send + Sync {
 
     /// Create on first login, or refresh the claims of an existing user. Protecting
     /// locally edited fields is the use case's job (§2.4).
+    /// Up to `limit` users whose name or email contains `text`, case-insensitively.
+    async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>>;
+
     async fn upsert(&self, user: &User) -> PortResult<()>;
 }
 

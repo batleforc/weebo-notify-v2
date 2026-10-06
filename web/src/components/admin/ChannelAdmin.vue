@@ -4,17 +4,25 @@
  * controls (§11); the server authorises (§5.1).
  */
 import { ChevronDown, ChevronRight, Plus, Trash2 } from "@lucide/vue";
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 import {
   addMember,
   createChannel,
   deleteChannel,
+  listAccounts,
   removeMember,
+  searchUsers,
   updateChannel,
 } from "@/api/generated";
-import type { Channel, Principal, Scope } from "@/api/generated/types.gen";
+import type {
+  Channel,
+  Principal,
+  Scope,
+  ServiceAccount,
+  UserCard,
+} from "@/api/generated/types.gen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +48,48 @@ const member = ref<{
   kind: "user",
   id: "",
   scopes: ["subscribe"],
+});
+
+/** The person picker: search by name or email; a pasted `usr_…` id works too. */
+const query = ref("");
+const people = ref<UserCard[]>([]);
+const bots = ref<ServiceAccount[]>([]);
+let debounce: ReturnType<typeof setTimeout> | undefined;
+
+function personLabel(person: UserCard): string {
+  return person.display_name ?? person.email ?? person.id;
+}
+
+function search(text: string): void {
+  query.value = text;
+  member.value.id = /^usr_/i.test(text.trim()) ? text.trim() : "";
+  clearTimeout(debounce);
+  if (text.trim().length < 2) {
+    people.value = [];
+    return;
+  }
+  debounce = setTimeout(async () => {
+    const found = await searchUsers({ query: { q: text.trim() } });
+    people.value = found.data ?? [];
+  }, 250);
+}
+
+function pick(person: UserCard): void {
+  member.value.id = person.id;
+  query.value = personLabel(person);
+  people.value = [];
+}
+
+function setKind(kind: "user" | "service_account"): void {
+  member.value.kind = kind;
+  member.value.id = "";
+  query.value = "";
+  people.value = [];
+}
+
+onMounted(async () => {
+  const accounts = await listAccounts();
+  bots.value = (accounts.data ?? []).filter((a) => !a.disabled_at);
 });
 
 function toggle(channel: Channel): void {
@@ -128,6 +178,7 @@ function add(channel: Channel): void {
       throwOnError: true,
     });
     member.value.id = "";
+    query.value = "";
   });
 }
 
@@ -228,10 +279,44 @@ function destroy(channel: Channel): void {
               <form class="space-y-2" @submit.prevent="add(channel)">
                 <div class="grid gap-2 sm:grid-cols-[auto_1fr]">
                   <div class="seg" role="group">
-                    <button type="button" :aria-pressed="member.kind === 'user'" @click="member.kind = 'user'">user</button>
-                    <button type="button" :aria-pressed="member.kind === 'service_account'" @click="member.kind = 'service_account'">bot</button>
+                    <button type="button" :aria-pressed="member.kind === 'user'" @click="setKind('user')">{{ t("admin.channels.person") }}</button>
+                    <button type="button" :aria-pressed="member.kind === 'service_account'" @click="setKind('service_account')">bot</button>
                   </div>
-                  <Input v-model="member.id" :placeholder="member.kind === 'user' ? 'usr_…' : 'bot-argocd'" :aria-label="t('admin.channels.memberId')" />
+                  <div v-if="member.kind === 'user'" class="relative">
+                    <Input
+                      :model-value="query"
+                      :placeholder="t('admin.channels.personPlaceholder')"
+                      :aria-label="t('admin.channels.memberId')"
+                      autocomplete="off"
+                      @update:model-value="search"
+                    />
+                    <ul
+                      v-if="people.length"
+                      class="absolute z-10 mt-1 w-full border border-rule-strong bg-popover p-1 text-sm"
+                      role="listbox"
+                    >
+                      <li v-for="person in people" :key="person.id">
+                        <button
+                          type="button"
+                          role="option"
+                          class="flex w-full flex-col px-2 py-1.5 text-left hover:bg-ground-raised"
+                          @click="pick(person)"
+                        >
+                          <span>{{ personLabel(person) }}</span>
+                          <span v-if="person.email && person.display_name" class="text-xs text-ink-dim">{{ person.email }}</span>
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
+                  <select
+                    v-else
+                    v-model="member.id"
+                    class="h-9 border border-rule-strong bg-ground-sunk px-3 text-sm pointer-coarse:h-11"
+                    :aria-label="t('admin.channels.memberId')"
+                  >
+                    <option value="">{{ t("admin.keys.accountPlaceholder") }}</option>
+                    <option v-for="bot in bots" :key="bot.id" :value="bot.id">{{ bot.display_name || bot.id }}</option>
+                  </select>
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
                   <div class="seg" role="group" :aria-label="t('settings.keys.scope')">

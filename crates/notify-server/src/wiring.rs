@@ -70,6 +70,8 @@ pub(crate) struct Application {
     pub transports: TransportRegistry,
     /// The registry `GET /metrics` serves (design §13).
     pub metrics: Arc<dyn notify_ports::Metrics>,
+    /// This process's name in the stream-lease table; it renews what it holds.
+    pub replica: String,
 }
 
 impl core::fmt::Debug for Application {
@@ -190,11 +192,20 @@ impl Application {
             .and_then(|settings| settings.audience.clone())
             .unwrap_or_else(|| "weebo-notify".to_owned());
 
+        // Unique per process: pods often all run as PID 1, so the hostname and a timestamp join it.
+        let replica = format!(
+            "{}-{}-{}",
+            std::env::var("HOSTNAME").unwrap_or_default(),
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        );
         let state = ApiState {
             bus: bus.clone(),
             metrics: metrics.clone(),
-            // Per-process by design (§8.2), so it starts empty.
-            streams: Arc::new(notify_http_actix::StreamSlots::new()),
+            streams: Arc::new(notify_http_actix::StreamSlots::clustered(
+                Arc::new(store.clone()),
+                replica.clone(),
+            )),
             authenticate: {
                 let base = Authenticate::new(
                     verifier,
@@ -396,6 +407,7 @@ impl Application {
             application_server_key,
 
             accounts: ListServiceAccounts::new(repository.clone()),
+            users: notify_app::SearchUsers::new(repository.clone()),
             create_account: CreateServiceAccount::new(
                 repository.clone(),
                 repository.clone(),
@@ -478,6 +490,7 @@ impl Application {
             reconciliation_log,
             transports,
             metrics,
+            replica,
         })
     }
 }

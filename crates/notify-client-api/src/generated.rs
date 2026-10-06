@@ -8361,6 +8361,51 @@ off the events because events are identical for every reader.*/
 channels are omitted).*/
         pub unread: i64,
     }
+    ///A person, as the member picker shows them.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A person, as the member picker shows them.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id"
+    ///  ],
+    ///  "properties": {
+    ///    "display_name": {
+    ///      "description": "Their display name, when known.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "email": {
+    ///      "description": "Their email, when the identity provider released one.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "id": {
+    ///      "description": "Their id, which `POST /channels/{channel}/members` takes.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct UserCard {
+        ///Their display name, when known.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        ///Their email, when the identity provider released one.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub email: ::std::option::Option<::std::string::String>,
+        ///Their id, which `POST /channels/{channel}/members` takes.
+        pub id: ::std::string::String,
+    }
     ///A human, created on first OIDC login.
     ///
     /// <details><summary>JSON schema</summary>
@@ -11473,6 +11518,53 @@ Sends a `GET` request to `/api/v1/unread`
         match response.status().as_u16() {
             200u16 => ResponseValue::from_response(response).await,
             401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Find people to add to a channel (at most 10). Not available to API keys of bots
+
+Sends a `GET` request to `/api/v1/users`
+
+Arguments:
+- `q`: Part of a name or an email; at least two characters.
+*/
+    pub async fn search_users<'a>(
+        &'a self,
+        q: &'a str,
+    ) -> Result<ResponseValue<::std::vec::Vec<types::UserCard>>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/users", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("q", &q))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "search_users",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

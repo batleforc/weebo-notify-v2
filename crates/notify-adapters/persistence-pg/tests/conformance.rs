@@ -3096,6 +3096,87 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn users_are_found_by_name_or_email_with_wildcards_matched_literally() {
+        let store = store!();
+        let (id, _) = user();
+        let tag = id.to_string().to_lowercase();
+        let person = User::from_claims(
+            id,
+            &format!("sub-{tag}"),
+            Some(&format!("{tag}@weebo.poc")),
+            Some("Zoë 100% Uptime"),
+            now(),
+        )
+        .unwrap();
+        UserRepository::upsert(&store, &person).await.unwrap();
+
+        let by_mail = UserRepository::lookup(&store, &tag.to_uppercase(), 10)
+            .await
+            .unwrap();
+        assert_eq!(by_mail.len(), 1);
+        let by_name = UserRepository::lookup(&store, "100%", 10).await.unwrap();
+        assert!(by_name.iter().any(|u| u.id == id));
+        let literal = UserRepository::lookup(&store, "1_0%", 10).await.unwrap();
+        assert!(!literal.iter().any(|u| u.id == id), "`_` is not a wildcard");
+    }
+
+    #[tokio::test]
+    async fn stream_leases_cap_a_principal_across_replicas_and_expire_unrenewed() {
+        let store = store!();
+        let me = format!("user:{}", UserId::generate());
+        let you = format!("user:{}", UserId::generate());
+
+        // Two replicas share one count.
+        let a = notify_ports::StreamLeases::acquire(&store, &me, "replica-a", 2)
+            .await
+            .unwrap()
+            .unwrap();
+        notify_ports::StreamLeases::acquire(&store, &me, "replica-b", 2)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            notify_ports::StreamLeases::acquire(&store, &me, "replica-a", 2)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            notify_ports::StreamLeases::acquire(&store, &you, "replica-a", 2)
+                .await
+                .unwrap()
+                .is_some(),
+            "per principal"
+        );
+
+        notify_ports::StreamLeases::release(&store, &a)
+            .await
+            .unwrap();
+        assert!(
+            notify_ports::StreamLeases::acquire(&store, &me, "replica-b", 2)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // A replica that died stops renewing: its leases lapse and free the slots.
+        sqlx::query("UPDATE stream_leases SET expires_at = now() - interval '1 second' WHERE principal = $1")
+            .bind(&me)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        notify_ports::StreamLeases::renew(&store, "replica-a")
+            .await
+            .unwrap();
+        assert!(
+            notify_ports::StreamLeases::acquire(&store, &me, "replica-a", 1)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
     async fn critical_t22_only_one_replica_leads_a_job_at_a_time() {
         let store = store!();
         let first = PgLeaderElection::new(store.pool().clone());

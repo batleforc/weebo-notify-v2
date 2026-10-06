@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
-use notify_domain::{DomainError, Origin, Principal, ServiceAccount, ServiceAccountId};
+use notify_domain::{DomainError, Origin, Principal, ServiceAccount, ServiceAccountId, User};
 use notify_ports::{
-    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, ServiceAccountRepository, actions,
+    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, ServiceAccountRepository,
+    UserRepository, actions,
 };
 
 use crate::authz::Caller;
@@ -34,6 +35,40 @@ impl ListServiceAccounts {
     /// is a public identity (its name authors revisions), and carries no secret.
     pub async fn execute(&self, _caller: &Caller) -> Result<Vec<ServiceAccount>, Failure> {
         Ok(self.accounts.list().await?)
+    }
+}
+
+/// `GET /api/v1/users?q=` — the member picker. People only: a bot has no use for a directory.
+#[derive(Clone)]
+pub struct SearchUsers {
+    users: Arc<dyn UserRepository>,
+}
+
+impl core::fmt::Debug for SearchUsers {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SearchUsers").finish_non_exhaustive()
+    }
+}
+
+impl SearchUsers {
+    /// At most this many matches: a picker, not an export.
+    pub const LIMIT: u32 = 10;
+
+    #[must_use]
+    pub fn new(users: Arc<dyn UserRepository>) -> Self {
+        Self { users }
+    }
+
+    /// Users whose name or email contains `text`; fewer than two characters matches nobody.
+    pub async fn execute(&self, caller: &Caller, text: &str) -> Result<Vec<User>, Failure> {
+        if !matches!(caller.principal, Principal::User { .. }) {
+            return Err(Failure::Domain(DomainError::NotAPerson));
+        }
+        let text = text.trim();
+        if text.chars().count() < 2 {
+            return Ok(Vec::new());
+        }
+        Ok(self.users.lookup(text, Self::LIMIT).await?)
     }
 }
 
@@ -438,5 +473,38 @@ mod tests {
 
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].display_name.as_deref(), Some("ArgoCD"));
+    }
+
+    #[tokio::test]
+    async fn people_find_people_and_bots_are_refused() {
+        let f = fixture();
+        let now = time::OffsetDateTime::now_utc();
+        let alice = User::from_claims(
+            f.alice,
+            "alice",
+            Some("alice@weebo.poc"),
+            Some("Alice Martin"),
+            now,
+        )
+        .unwrap();
+        UserRepository::upsert(&f.store, &alice).await.unwrap();
+        let search = SearchUsers::new(Arc::new(f.store.clone()));
+
+        let found = search.execute(&caller(f.bob), "martin").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, f.alice);
+        assert!(
+            search
+                .execute(&caller(f.bob), "m")
+                .await
+                .unwrap()
+                .is_empty(),
+            "two characters minimum"
+        );
+
+        let bot = Caller::member(Principal::ServiceAccount {
+            id: ServiceAccountId::parse("bot-argocd").unwrap(),
+        });
+        assert!(search.execute(&bot, "martin").await.is_err());
     }
 }

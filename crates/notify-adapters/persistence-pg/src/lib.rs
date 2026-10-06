@@ -25,6 +25,7 @@ use notify_ports::{PortError, PortResult};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 pub use leader::PgLeaderElection;
+pub use quota::LEASE_RENEW;
 
 /// The migrations this adapter owns, embedded so an image needs nothing else.
 pub static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");

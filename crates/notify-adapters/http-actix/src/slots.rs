@@ -1,11 +1,12 @@
-//! The ceiling on live connections one principal may hold (design §8.2).
-//! Counts connections held at once (not a `RateLimiter` window), per replica (D23): the
-//! resource defended is this process's memory and sockets.
+//! The ceiling on live connections one principal may hold (design §8.2): counted
+//! locally (this process's memory and sockets) and, when clustered, across every
+//! replica through [`StreamLeases`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use notify_domain::{Principal, limits::MAX_STREAMS_PER_PRINCIPAL};
+use notify_ports::StreamLeases;
 
 /// Advisory `Retry-After` for a refused client: a slot frees whenever somebody closes a tab.
 pub(crate) const RETRY_AFTER_SECONDS: u32 = 30;
@@ -15,19 +16,65 @@ pub(crate) const RETRY_AFTER_SECONDS: u32 = 30;
 pub(crate) const MAX_STREAMS_PER_REPLICA: usize = 10_000;
 
 /// The live connections this replica is holding, per principal.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct StreamSlots {
     /// Absent means zero, so the map stays the size of the connected population.
     held: Mutex<HashMap<Principal, usize>>,
     /// Sum of `held`, kept so `acquire` is O(1); updated under the same lock.
     total: Mutex<usize>,
+    /// The instance-wide count, and this replica's name in it.
+    cluster: Option<(Arc<dyn StreamLeases>, String)>,
+}
+
+impl std::fmt::Debug for StreamSlots {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamSlots")
+            .field("total", &self.held_total())
+            .field("clustered", &self.cluster.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl StreamSlots {
-    /// A registry holding nothing.
+    /// A registry holding nothing, counting this replica only.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Also count across replicas: `replica` names this process in `leases`.
+    #[must_use]
+    pub fn clustered(leases: Arc<dyn StreamLeases>, replica: String) -> Self {
+        Self {
+            cluster: Some((leases, replica)),
+            ..Self::default()
+        }
+    }
+
+    /// Take the instance-wide lease for a local `slot`; `false` means refuse with `429`.
+    /// A store outage fails open: the local ceiling still protects this process.
+    pub async fn lease(&self, slot: &mut StreamSlot) -> bool {
+        let Some((leases, replica)) = &self.cluster else {
+            return true;
+        };
+        let principal = slot.principal.reference();
+        match leases
+            .acquire(&principal, replica, MAX_STREAMS_PER_PRINCIPAL)
+            .await
+        {
+            Ok(Some(id)) => {
+                slot.lease = Some((Arc::clone(leases), id));
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "stream lease store unavailable; admitting on the local ceiling"
+                );
+                true
+            }
+        }
     }
 
     /// Take a slot for `principal` before serving; `None` means refuse with `429`.
@@ -58,6 +105,7 @@ impl StreamSlots {
         Some(StreamSlot {
             slots: Arc::clone(self),
             principal: principal.clone(),
+            lease: None,
         })
     }
 
@@ -104,15 +152,31 @@ impl StreamSlots {
 
 /// One held connection; released on drop, the only construct covering every exit
 /// (disconnect, abort, error) so no slot leaks.
-#[derive(Debug)]
 pub struct StreamSlot {
     slots: Arc<StreamSlots>,
     principal: Principal,
+    lease: Option<(Arc<dyn StreamLeases>, String)>,
+}
+
+impl std::fmt::Debug for StreamSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamSlot")
+            .field("principal", &self.principal)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for StreamSlot {
     fn drop(&mut self) {
         self.slots.release(&self.principal);
+        if let Some((leases, id)) = self.lease.take() {
+            // Best effort: a missed release expires with the lease TTL.
+            tokio::spawn(async move {
+                if let Err(error) = leases.release(&id).await {
+                    tracing::warn!(?error, "could not release a stream lease");
+                }
+            });
+        }
     }
 }
 
@@ -341,5 +405,31 @@ mod ceiling_tests {
 
         drop(long_lived);
         assert_eq!(slots.held_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_ceiling_holds_across_replicas_and_a_drop_gives_the_lease_back() {
+        let leases = Arc::new(notify_ports::test_utils::TestStreamLeases::new());
+        let a = Arc::new(StreamSlots::clustered(leases.clone(), "a".to_owned()));
+        let b = Arc::new(StreamSlots::clustered(leases.clone(), "b".to_owned()));
+        let me = somebody();
+
+        let mut held = Vec::new();
+        for i in 0..MAX_STREAMS_PER_PRINCIPAL {
+            let slots = if i % 2 == 0 { &a } else { &b };
+            let mut slot = slots.acquire(&me).unwrap();
+            assert!(slots.lease(&mut slot).await);
+            held.push(slot);
+        }
+
+        // Each replica is under the ceiling locally; the instance is not.
+        let mut extra = b.acquire(&me).unwrap();
+        assert!(!b.lease(&mut extra).await);
+
+        held.pop();
+        tokio::task::yield_now().await;
+        assert_eq!(leases.held(), MAX_STREAMS_PER_PRINCIPAL - 1);
+        let mut again = a.acquire(&me).unwrap();
+        assert!(a.lease(&mut again).await);
     }
 }

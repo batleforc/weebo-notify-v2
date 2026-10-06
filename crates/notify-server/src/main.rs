@@ -241,6 +241,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         },
         store.clone(),
     ));
+    let leases = actix_web::rt::spawn(renew_leases(store.clone(), application.replica));
 
     tracing::info!(%bind, "weebo-notify is listening");
     let outcome = server.await;
@@ -248,6 +249,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     // Stop jobs while the runtime lives: dropping a sqlx connection after it aborts the process.
     // This also releases the leader lock immediately (§11).
     jobs.abort();
+    leases.abort();
     let _ = jobs.await;
     pump.abort();
     let _ = pump.await;
@@ -518,6 +520,17 @@ async fn background(
         draining,
         reconcile_loop(reconciling)
     );
+}
+
+/// Every replica, not only the leader, keeps its own stream leases alive (§8.2).
+async fn renew_leases(store: notify_persistence_pg::PgStore, replica: String) {
+    let mut tick = every(notify_persistence_pg::LEASE_RENEW);
+    loop {
+        tick.tick().await;
+        if let Err(error) = notify_ports::StreamLeases::renew(&store, &replica).await {
+            tracing::warn!(?error, "could not renew stream leases");
+        }
+    }
 }
 
 /// Reconciliation on the timer and on `SIGHUP`, in one loop so passes never interleave.

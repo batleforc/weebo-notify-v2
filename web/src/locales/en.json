@@ -174,7 +174,9 @@
       "addMember": "Add",
       "removeMember": "Remove",
       "delete": "Delete channel",
-      "deleteConfirm": "Delete channel {id} and everything in it? This cannot be undone."
+      "deleteConfirm": "Delete channel {id} and everything in it? This cannot be undone.",
+      "person": "Person",
+      "personPlaceholder": "name or email"
     },
     "devices": {
       "title": "Devices",

@@ -11,7 +11,7 @@ use notify_app::{
     ManageMembers, PostReceipt, PresignAttachment, PublishNotification, ReadAttachment,
     ReadAttachmentThumbnail, ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts,
     ReadReconciliation, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd,
+    RevokeDevice, SearchNotifications, SearchUsers, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd,
     SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_fs::FsAttachments;
@@ -145,6 +145,8 @@ pub struct ApiState {
 
     /// `GET /serviceaccounts`.
     pub accounts: ListServiceAccounts,
+    /// `GET /users`.
+    pub users: SearchUsers,
     /// `POST /serviceaccounts`.
     pub create_account: CreateServiceAccount,
     /// `DELETE /serviceaccounts/{id}`.

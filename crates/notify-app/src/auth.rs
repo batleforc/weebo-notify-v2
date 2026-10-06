@@ -340,6 +340,10 @@ mod tests {
             self.inner.find_by_email(email).await
         }
 
+        async fn lookup(&self, text: &str, limit: u32) -> notify_ports::PortResult<Vec<User>> {
+            self.inner.lookup(text, limit).await
+        }
+
         async fn upsert(&self, user: &User) -> notify_ports::PortResult<()> {
             self.writes
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

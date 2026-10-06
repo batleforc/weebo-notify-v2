@@ -3825,6 +3825,66 @@
         ]
       }
     },
+    "/api/v1/users": {
+      "get": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Find people to add to a channel (at most 10). Not available to API keys of bots.",
+        "operationId": "search_users",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Part of a name or an email; at least two characters.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The matches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UserCard"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a person",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/users/me/avatar": {
       "put": {
         "tags": [
@@ -7791,6 +7851,33 @@
             "format": "int64",
             "description": "How many of its notifications this principal has not read; never zero (such\nchannels are omitted).",
             "minimum": 0
+          }
+        }
+      },
+      "UserCard": {
+        "type": "object",
+        "description": "A person, as the member picker shows them.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their display name, when known."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their email, when the identity provider released one."
+          },
+          "id": {
+            "type": "string",
+            "description": "Their id, which `POST /channels/{channel}/members` takes."
           }
         }
       },

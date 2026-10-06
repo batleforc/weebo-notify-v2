@@ -2,9 +2,9 @@
 //! history and audit, and its keys are revoked in the same call (T25).
 
 use actix_web::{delete, get, post, web};
-use notify_domain::{ServiceAccount, ServiceAccountId};
+use notify_domain::{ServiceAccount, ServiceAccountId, User};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::extract::Authenticated;
 use crate::problem::{ApiError, Problem};
@@ -21,6 +21,58 @@ pub struct CreateAccountBody {
     /// What it is for, for whoever finds it in an audit log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// A person, as the member picker shows them.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserCard {
+    /// Their id, which `POST /channels/{channel}/members` takes.
+    pub id: String,
+    /// Their display name, when known.
+    pub display_name: Option<String>,
+    /// Their email, when the identity provider released one.
+    pub email: Option<String>,
+}
+
+impl From<User> for UserCard {
+    fn from(user: User) -> Self {
+        Self {
+            id: user.id.to_string(),
+            display_name: user.display_name,
+            email: user.email,
+        }
+    }
+}
+
+/// What to look for.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct UserQuery {
+    /// Part of a name or an email; at least two characters.
+    pub q: String,
+}
+
+/// Find people to add to a channel (at most 10). Not available to API keys of bots.
+#[utoipa::path(
+    get,
+    path = "/users",
+    tag = "identity",
+    params(UserQuery),
+    responses(
+        (status = 200, description = "The matches", body = Vec<UserCard>),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not a person", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[get("/users")]
+pub(crate) async fn search_users(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    query: web::Query<UserQuery>,
+) -> Result<web::Json<Vec<UserCard>>, ApiError> {
+    let users = state.users.execute(&caller.0, &query.q).await?;
+    Ok(web::Json(users.into_iter().map(UserCard::from).collect()))
 }
 
 /// Every service account on this instance.

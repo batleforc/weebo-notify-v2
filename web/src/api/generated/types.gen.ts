@@ -2092,6 +2092,24 @@ export type UnreadCount = {
 };
 
 /**
+ * A person, as the member picker shows them.
+ */
+export type UserCard = {
+    /**
+     * Their display name, when known.
+     */
+    display_name?: string | null;
+    /**
+     * Their email, when the identity provider released one.
+     */
+    email?: string | null;
+    /**
+     * Their id, which `POST /channels/{channel}/members` takes.
+     */
+    id: string;
+};
+
+/**
  * A human, created on first OIDC login.
  */
 export type UserId = string;
@@ -4245,6 +4263,40 @@ export type UnreadResponses = {
 };
 
 export type UnreadResponse = UnreadResponses[keyof UnreadResponses];
+
+export type SearchUsersData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * Part of a name or an email; at least two characters.
+         */
+        q: string;
+    };
+    url: '/api/v1/users';
+};
+
+export type SearchUsersErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * Not a person
+     */
+    403: Problem;
+};
+
+export type SearchUsersError = SearchUsersErrors[keyof SearchUsersErrors];
+
+export type SearchUsersResponses = {
+    /**
+     * The matches
+     */
+    200: Array<UserCard>;
+};
+
+export type SearchUsersResponse = SearchUsersResponses[keyof SearchUsersResponses];
 
 export type SetAvatarData = {
     /**

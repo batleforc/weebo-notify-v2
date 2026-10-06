@@ -78,6 +78,30 @@ test("an admin creates and deletes a channel from the UI", async ({ page }) => {
   await expect(page.getByRole("navigation").getByText(id)).toHaveCount(0);
 });
 
+test("a channel manager adds a person found by name", async ({ page }) => {
+  const http = await client(await signIn(page));
+  const channel = await freshChannel(http);
+  await page.goto("/admin");
+  await page
+    .getByRole("main")
+    .getByRole("button", { name: new RegExp(channel) })
+    .click();
+
+  await page
+    .getByRole("textbox", { name: /member id|identifiant du membre/i })
+    .fill("alice");
+  await page.getByRole("option", { name: /alice/i }).first().click();
+  await page.getByRole("button", { name: /^\s*(add|ajouter)\s*$/i }).click();
+
+  const res = await http.get(`/api/v1/channels/${channel}`);
+  const members = (await res.json()).members as {
+    principal: { kind: string };
+  }[];
+  expect(
+    members.filter((m) => m.principal.kind === "user").length,
+  ).toBeGreaterThan(0);
+});
+
 test("@mobile the bottom tab bar reaches settings and the theme applies", async ({
   page,
 }) => {

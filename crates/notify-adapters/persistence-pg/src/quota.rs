@@ -1,7 +1,7 @@
 //! Rate limits counted in the database (design §8.2, T14), so the limit holds across replicas.
 //! A fixed window: the §8.2 burst allowance covers what a sliding window would smooth.
 
-use notify_ports::{Allowance, PortResult, Quota, RateLimiter};
+use notify_ports::{Allowance, PortResult, Quota, RateLimiter, StreamLeases};
 use time::{Duration, OffsetDateTime};
 
 use crate::PgStore;
@@ -108,6 +108,76 @@ fn floor_to_window(now: OffsetDateTime) -> OffsetDateTime {
     now.replace_nanosecond(0)
         .unwrap_or(now)
         .saturating_sub(Duration::seconds(seconds))
+}
+
+/// How often a replica should call [`StreamLeases::renew`]; leases live 90 s unrenewed.
+pub const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[async_trait::async_trait]
+impl StreamLeases for PgStore {
+    async fn acquire(
+        &self,
+        principal: &str,
+        replica: &str,
+        max: usize,
+    ) -> PortResult<Option<String>> {
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| fail("stream lease", e))?;
+        // Serialises one principal's concurrent connects; other principals don't wait.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(principal)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| fail("stream lease", e))?;
+        let (held,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM stream_leases WHERE principal = $1 AND expires_at > now()",
+        )
+        .bind(principal)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| fail("stream lease", e))?;
+        if usize::try_from(held).unwrap_or(usize::MAX) >= max {
+            return Ok(None);
+        }
+        let (id,): (String,) = sqlx::query_as(
+            "INSERT INTO stream_leases (principal, replica, expires_at)
+             VALUES ($1, $2, now() + interval '90 seconds') RETURNING id::text",
+        )
+        .bind(principal)
+        .bind(replica)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| fail("stream lease", e))?;
+        tx.commit().await.map_err(|e| fail("stream lease", e))?;
+        Ok(Some(id))
+    }
+
+    async fn release(&self, lease: &str) -> PortResult<()> {
+        sqlx::query("DELETE FROM stream_leases WHERE id = $1::uuid")
+            .bind(lease)
+            .execute(self.pool())
+            .await
+            .map_err(|e| fail("stream lease", e))?;
+        Ok(())
+    }
+
+    async fn renew(&self, replica: &str) -> PortResult<()> {
+        sqlx::query(
+            "UPDATE stream_leases SET expires_at = now() + interval '90 seconds' WHERE replica = $1",
+        )
+        .bind(replica)
+        .execute(self.pool())
+        .await
+        .map_err(|e| fail("stream lease", e))?;
+        sqlx::query("DELETE FROM stream_leases WHERE expires_at < now()")
+            .execute(self.pool())
+            .await
+            .map_err(|e| fail("stream lease", e))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

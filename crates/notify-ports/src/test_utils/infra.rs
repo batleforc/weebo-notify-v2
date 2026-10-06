@@ -15,7 +15,7 @@ use crate::clock::Clock;
 use crate::error::{PortError, PortResult};
 use crate::identities::{KeyGenerator, SecretHasher};
 use crate::leader::{LeaderElection, LeaderGuard};
-use crate::quota::{Allowance, Quota, RateLimiter};
+use crate::quota::{Allowance, Quota, RateLimiter, StreamLeases};
 use crate::sinks::{SinkDelivery, SinkDispatcher, SinkOutcome};
 use crate::tokens::{
     FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,
@@ -635,6 +635,56 @@ impl KeyGenerator for CountingKeyGenerator {
         let prefix = ApiKeyPrefix::parse(&format!("k{index:07}"))
             .expect("a counter under 10^7 always renders as eight alphanumerics");
         (prefix, format!("test-secret-{index}"))
+    }
+}
+
+// --- Stream leases --------------------------------------------------------
+
+/// Cluster stream leases in memory: one shared instance stands for two replicas.
+#[derive(Debug, Clone, Default)]
+pub struct TestStreamLeases {
+    held: Arc<Mutex<Vec<(String, String)>>>,
+    next: Arc<Mutex<u64>>,
+}
+
+impl TestStreamLeases {
+    /// No lease held.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many leases are held, all principals together.
+    pub fn held(&self) -> usize {
+        lock(&self.held).len()
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamLeases for TestStreamLeases {
+    async fn acquire(
+        &self,
+        principal: &str,
+        _replica: &str,
+        max: usize,
+    ) -> PortResult<Option<String>> {
+        let mut held = lock(&self.held);
+        if held.iter().filter(|(_, p)| p == principal).count() >= max {
+            return Ok(None);
+        }
+        let mut next = lock(&self.next);
+        *next += 1;
+        let id = next.to_string();
+        held.push((id.clone(), principal.to_owned()));
+        Ok(Some(id))
+    }
+
+    async fn release(&self, lease: &str) -> PortResult<()> {
+        lock(&self.held).retain(|(id, _)| id != lease);
+        Ok(())
+    }
+
+    async fn renew(&self, _replica: &str) -> PortResult<()> {
+        Ok(())
     }
 }
 

@@ -24,7 +24,9 @@ pub mod read;
 pub mod sinks;
 pub mod sync;
 
-pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
+pub use accounts::{
+    CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts, SearchUsers,
+};
 pub use attachments::{
     Attachments, PresignAttachment, ReadAttachment, ReadAttachmentThumbnail,
     is_allowed_attachment_type, normalised_content_type,

@@ -39,16 +39,23 @@ struct Connected {
 impl Connected {
     /// Take a slot and start counting, or refuse with the `429` §8.2 asks for, before
     /// any backlog work.
-    fn open(
+    async fn open(
         state: &ApiState,
         caller: &Caller,
         transport: notify_ports::StreamKind,
     ) -> Result<Self, ApiError> {
-        let slot = state.streams.acquire(&caller.principal).ok_or_else(|| {
+        let refused = || {
             ApiError::from(notify_ports::Failure::RateLimited {
                 retry_after_seconds: crate::slots::RETRY_AFTER_SECONDS,
             })
-        })?;
+        };
+        let mut slot = state
+            .streams
+            .acquire(&caller.principal)
+            .ok_or_else(refused)?;
+        if !state.streams.lease(&mut slot).await {
+            return Err(refused());
+        }
 
         state.metrics.stream_opened(transport);
         Ok(Self {
@@ -222,7 +229,7 @@ pub(crate) async fn stream(
         .map(ToOwned::to_owned);
 
     // First, so the one refusal that should cost nothing never touches the store.
-    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::Sse)?;
+    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::Sse).await?;
     let credential = credential_of(&request)?;
     let mut connection =
         Connection::open(&state, caller.0, &params, last_event_id.as_deref()).await?;
@@ -326,7 +333,7 @@ pub(crate) async fn websocket(
 ) -> Result<HttpResponse, ApiError> {
     let params = params.into_inner();
     // Before the handshake, as for SSE.
-    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::WebSocket)?;
+    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::WebSocket).await?;
     let credential = credential_of(&request)?;
     let mut connection = Connection::open(&state, caller.0, &params, None).await?;
     let mut pokes = state.bus.subscribe().await?;

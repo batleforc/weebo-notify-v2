@@ -80,6 +80,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(profile::update_profile)
             .service(profile::set_avatar)
             .service(profile::read_avatar)
+            .service(accounts::search_users)
             .service(accounts::list_accounts)
             .service(accounts::create_account)
             .service(accounts::deactivate_account)

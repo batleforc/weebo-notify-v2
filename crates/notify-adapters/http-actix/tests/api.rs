@@ -295,6 +295,7 @@ impl Harness {
             application_server_key: Some(APPLICATION_SERVER_KEY.to_owned()),
 
             accounts: ListServiceAccounts::new(Arc::new(store.clone())),
+            users: notify_app::SearchUsers::new(Arc::new(store.clone())),
             create_account: CreateServiceAccount::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),

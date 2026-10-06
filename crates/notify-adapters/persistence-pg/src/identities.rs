@@ -33,6 +33,28 @@ impl UserRepository for PgStore {
         self.one_user("WHERE lower(email) = lower($1)", email).await
     }
 
+    async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>> {
+        // `%`/`_` in the input are matched literally.
+        let pattern = format!(
+            "%{}%",
+            text.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let rows = sqlx::query(
+            "SELECT id, oidc_subject, email, display_name, timezone, locale, \
+             overridden_fields, avatar, created_at FROM users \
+             WHERE display_name ILIKE $1 OR email ILIKE $1 \
+             ORDER BY lower(coalesce(display_name, email, id)) LIMIT $2",
+        )
+        .bind(pattern)
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("user", error))?;
+        rows.iter().map(hydrate_user).collect()
+    }
+
     async fn upsert(&self, user: &User) -> PortResult<()> {
         let overridden: Vec<String> = user
             .profile

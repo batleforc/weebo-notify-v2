@@ -22,6 +22,6 @@ pub use clock::TestClock;
 pub use infra::{
     CountingKeyGenerator, InMemoryAttachments, InMemoryReplayGuard, RecordingSinkDispatcher,
     StaticFederationVerifier, StaticSinkRegistry, StaticTokenVerifier, StubSecretHasher,
-    TestLeaderElection, TestRateLimiter,
+    TestLeaderElection, TestRateLimiter, TestStreamLeases,
 };
 pub use store::InMemory;

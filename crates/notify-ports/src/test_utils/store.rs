@@ -1382,6 +1382,23 @@ impl UserRepository for InMemory {
             .cloned())
     }
 
+    async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>> {
+        let needle = text.to_lowercase();
+        let hit = |field: &Option<String>| {
+            field
+                .as_deref()
+                .is_some_and(|value| value.to_lowercase().contains(&needle))
+        };
+        Ok(self
+            .state()
+            .users
+            .iter()
+            .filter(|user| hit(&user.display_name) || hit(&user.email))
+            .take(limit as usize)
+            .cloned()
+            .collect())
+    }
+
     async fn upsert(&self, user: &User) -> PortResult<()> {
         let mut state = self.state();
         match state

@@ -174,7 +174,9 @@
       "addMember": "Ajouter",
       "removeMember": "Retirer",
       "delete": "Supprimer le canal",
-      "deleteConfirm": "Supprimer le canal {id} et tout son contenu ? C'est irréversible."
+      "deleteConfirm": "Supprimer le canal {id} et tout son contenu ? C'est irréversible.",
+      "person": "Personne",
+      "personPlaceholder": "nom ou e-mail"
     },
     "devices": {
       "title": "Devices",
