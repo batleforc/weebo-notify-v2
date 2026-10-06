@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { i18n } from "@/i18n";
 import {
-  accentOf,
   authorLabel,
   isLoud,
   lookOf,
@@ -44,11 +43,9 @@ describe("lookOf", () => {
   });
 });
 
-describe("accentOf", () => {
-  it("only accents the loud end of the scale", () => {
-    expect(accentOf("urgent")).toContain("priority-urgent");
-    expect(accentOf("high")).toContain("priority-high");
-    expect(accentOf("default")).toContain("transparent");
+describe("isLoud", () => {
+  it("only singles out the loud end of the scale", () => {
+    expect(isLoud("high")).toBe(true);
     expect(isLoud("default")).toBe(false);
     expect(isLoud("urgent")).toBe(true);
   });

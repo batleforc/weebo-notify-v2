@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 const classes = computed(() =>
-  cn("font-semibold leading-none tracking-tight", props.class),
+  cn("pixel text-base font-bold uppercase leading-none", props.class),
 );
 </script>
 

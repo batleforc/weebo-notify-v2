@@ -61,15 +61,19 @@ JWKS on every request; an authorisation decision made in a browser is a suggesti
 
 ## Colour is a token, never a value
 
-Two layers: the shadcn semantic tokens the vendored components speak, and the
-business tokens above them — `--status-*`, `--priority-*`, `--state-*`. A row never
-says "red", it says "failure", and what failure looks like is decided in
-`src/styles/theme.css` and nowhere else.
+The visual world is described in [`DESIGN.md`](https://github.com/batleforc/weebo-notify-v2/blob/main/DESIGN.md):
+a sibling of BatleHub's "Proof Sheet" — Monofolio palette on paper and near-black,
+square corners, hairline rules, Silkscreen + JetBrains Mono, no shadow. Every value
+lives in `src/styles/theme.css`: world tokens (`--ink`, `--signal`, `--copper`, …),
+the shadcn vocabulary mapped onto them, and the business tokens — `--status-*`,
+`--priority-*`, `--state-*`. A row never says "red", it says "failure".
 
-That is the one blocking rule in a front-end review (§10.6). It is what keeps the
-`monofolio` swap a token file rather than a fork. Status is also never colour alone —
-every status carries an icon, because an incident feed that reads as "grey circle" to
-one reader in twelve is an incident that did not get reported.
+Status is never colour alone: the lifecycle is drawn as a pixel matrix
+(`StatusDot.vue` — coarse 2×2 while running, a fine 3×3 whose pattern names the
+status once closed) next to its word.
+
+The layout is responsive by structure: sidebar · list · detail above `lg`, a top bar,
+bottom tab bar and full-screen detail below it, 44px touch targets on coarse pointers.
 
 ## Notification bodies are hostile input
 

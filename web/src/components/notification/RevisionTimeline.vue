@@ -116,21 +116,21 @@ function describe(answer: InteractionRecord): string {
 </script>
 
 <template>
-  <ol class="relative space-y-3 border-l border-border pl-4">
+  <ol class="relative space-y-4 border-l border-dashed border-rule pl-5">
     <li
       v-for="(entry, position) in entries"
       :key="`${entry.kind}-${entry.revision?.seq ?? entry.answer?.id}-${position}`"
       class="relative"
     >
       <span
-        class="absolute -left-[1.3rem] top-0.5 flex size-4 items-center justify-center rounded-full bg-background"
+        class="absolute -left-[1.6rem] top-0.5 flex size-4 items-center justify-center bg-background"
       >
         <StatusDot
           v-if="entry.revision"
           :status="entry.revision.status"
           :state="entry.revision.state"
         />
-        <span v-else class="size-2 rounded-full bg-muted-foreground" aria-hidden="true" />
+        <span v-else class="size-1.5 bg-ink-dim" aria-hidden="true" />
       </span>
 
       <div class="flex flex-wrap items-baseline gap-x-2 text-sm">
@@ -138,7 +138,7 @@ function describe(answer: InteractionRecord): string {
           <span class="font-medium">
             {{ t("notification.revisionTimeline.revisionHeading", { seq: entry.revision.seq }) }}
           </span>
-          <span :class="['text-xs', lookOf(entry.revision.status).color]">
+          <span :class="['meta', lookOf(entry.revision.status).color]">
             {{ lookOf(entry.revision.status).label }} ·
             {{ stateLabel(entry.revision.state) }}
           </span>
@@ -149,7 +149,7 @@ function describe(answer: InteractionRecord): string {
         </span>
 
         <Tooltip>
-          <span class="cursor-default text-xs text-muted-foreground">
+          <span class="cursor-default text-xs text-ink-dim">
             {{ ago(entry.at) }}
           </span>
           <template #content>{{ exact(entry.at) }}</template>
@@ -158,11 +158,11 @@ function describe(answer: InteractionRecord): string {
 
       <p
         v-if="entry.revision"
-        class="text-xs text-muted-foreground"
+        class="text-xs text-ink-dim"
       >
         {{ t("notification.revisionTimeline.authoredBy", { author: authorLabel(entry.revision.author) }) }}
         <template v-if="entry.changes.length">
-          — <span class="text-foreground">{{ entry.changes.join(", ") }}</span>
+          — <span class="text-ink">{{ entry.changes.join(", ") }}</span>
         </template>
       </p>
     </li>

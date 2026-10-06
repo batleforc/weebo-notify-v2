@@ -9,14 +9,13 @@
  *     because §7.2bis words those two differently on purpose;
  *   * refused — the problem's `code` decided the message (§8).
  */
-import { Check, Copy, Eye, Link2 } from "@lucide/vue";
+import { Check, Copy, Eye } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HoverCard } from "@/components/ui/hover-card";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ago, exact } from "@/lib/format";
@@ -115,29 +114,29 @@ watch(
     <!-- Nothing selected. -->
     <div
       v-if="!detail.id"
-      class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center text-sm text-muted-foreground"
+      class="flex h-full flex-col items-center justify-center gap-3 p-10 text-center"
     >
-      <Link2 class="size-5" />
-      <p>{{ t("notification.detail.emptyTitle") }}</p>
-      <p class="text-xs">{{ t("notification.detail.emptyHint") }}</p>
+      <div class="dot-field h-10 w-40" aria-hidden="true" />
+      <p class="text-sm text-ink">{{ t("notification.detail.emptyTitle") }}</p>
+      <p class="max-w-[40ch] text-xs text-ink-dim">{{ t("notification.detail.emptyHint") }}</p>
     </div>
 
-    <div v-else-if="detail.loading" class="space-y-3 p-4">
-      <Skeleton class="h-5 w-2/3" />
+    <div v-else-if="detail.loading" class="space-y-3 p-5">
+      <Skeleton class="h-6 w-2/3" />
       <Skeleton class="h-3 w-1/3" />
-      <Skeleton class="h-20 w-full" />
+      <Skeleton class="h-24 w-full" />
       <Skeleton class="h-3 w-1/2" />
     </div>
 
-    <div v-else-if="detail.gone" class="space-y-2 p-6 text-sm">
-      <p class="font-medium">
+    <div v-else-if="detail.gone" class="m-5 space-y-3 border border-rule-strong px-6 py-10 text-sm">
+      <p class="pixel text-base font-bold uppercase">
         {{
           detail.gone === "expired"
             ? t("notification.detail.expiredTitle")
             : t("notification.detail.deletedTitle")
         }}
       </p>
-      <p class="text-muted-foreground">
+      <p class="max-w-[64ch] text-ink-dim">
         {{
           detail.gone === "expired"
             ? t("notification.detail.expiredBody")
@@ -149,25 +148,21 @@ watch(
       </Button>
     </div>
 
-    <div v-else-if="detail.error" class="space-y-2 p-6 text-sm">
-      <p class="font-medium text-destructive">{{ detail.error }}</p>
-      <Button
-        variant="outline"
-        size="sm"
-        @click="detail.id && detail.open(detail.id)"
-      >
+    <div v-else-if="detail.error" class="m-5 space-y-3 border border-signal px-6 py-10 text-sm">
+      <p class="text-signal">{{ detail.error }}</p>
+      <Button variant="outline" size="sm" @click="detail.id && detail.open(detail.id)">
         {{ t("notification.detail.retry") }}
       </Button>
     </div>
 
     <template v-else-if="head && detail.notification">
-      <header class="space-y-2 p-4">
+      <header class="space-y-3 px-5 pb-4 pt-5">
         <!-- `pr-10` clears `AppLayout`'s absolutely-positioned mobile close button
              (`right-2 top-2`, `xl:hidden`): without it, this row's own trailing
              button sits in the exact same corner under `xl`. -->
-        <div class="flex items-start gap-2 pr-10 xl:pr-0">
-          <StatusDot :status="head.status" :state="head.state" class="mt-1" />
-          <h2 class="flex-1 text-base font-semibold leading-snug">
+        <div class="flex items-start gap-3 pr-12 xl:pr-0">
+          <StatusDot :status="head.status" :state="head.state" class="mt-1.5" />
+          <h2 class="flex-1 text-xl leading-snug [overflow-wrap:anywhere]" data-selectable>
             {{ head.content.title }}
           </h2>
           <Tooltip>
@@ -187,17 +182,19 @@ watch(
         </div>
 
         <div class="flex flex-wrap items-center gap-1.5 text-xs">
-          <Badge variant="secondary">
-            {{ channels.nameOf(detail.notification.channel) }}
-          </Badge>
           <Badge variant="outline" :class="lookOf(head.status).color">
             {{ lookOf(head.status).label }}
           </Badge>
-          <Badge variant="muted">{{ stateLabel(head.state) }}</Badge>
-          <Badge variant="muted">
+          <Badge variant="outline" :class="head.state === 'closed' ? '' : 'border-copper text-copper'">
+            {{ stateLabel(head.state) }}
+          </Badge>
+          <Badge variant="secondary">
+            {{ channels.nameOf(detail.notification.channel) }}
+          </Badge>
+          <Badge variant="outline">
             {{ t("notification.detail.priorityBadge", { priority: priorityLabel(head.priority) }) }}
           </Badge>
-          <Badge v-if="detail.notification.external_id" variant="muted">
+          <Badge v-if="detail.notification.external_id" variant="muted" class="[overflow-wrap:anywhere]">
             {{ detail.notification.external_id }}
           </Badge>
           <HoverCard v-if="showsReceipts">
@@ -222,7 +219,7 @@ watch(
                   total inventé à partir des membres stockés dirait « tout le
                   monde l'a vue » sur un canal que toute une équipe peut lire.
                 -->
-                <p v-if="detail.audience === null" class="text-muted-foreground">
+                <p v-if="detail.audience === null" class="text-ink-dim">
                   {{ t("notification.detail.noGroupTotal") }}
                 </p>
 
@@ -236,18 +233,18 @@ watch(
                     <time
                       :datetime="reader.at"
                       :title="exact(reader.at)"
-                      class="shrink-0 text-muted-foreground"
+                      class="shrink-0 text-ink-dim"
                     >
                       {{ ago(reader.at) }}
                     </time>
                   </li>
                 </ul>
-                <p v-else class="text-muted-foreground">
+                <p v-else class="text-ink-dim">
                   {{ t("notification.detail.notOpenedYet") }}
                 </p>
 
                 <!-- Delivery stays folded: it counts screens, not readers (§10.3). -->
-                <p class="border-t border-border pt-2 text-muted-foreground">
+                <p class="border-t border-rule pt-2 text-ink-dim">
                   {{
                     t("notification.detail.deviceCount", {
                       count: detail.readership?.delivered_devices ?? 0,
@@ -259,7 +256,7 @@ watch(
           </HoverCard>
         </div>
 
-        <p class="text-xs text-muted-foreground">
+        <p class="text-xs leading-relaxed text-ink-dim">
           {{ t("notification.detail.createdAt", { at: exact(detail.notification.created_at) }) }}
           <template v-if="detail.notification.closed_at">
             {{ t("notification.detail.closedAt", { at: exact(detail.notification.closed_at) }) }}
@@ -270,11 +267,9 @@ watch(
         </p>
       </header>
 
-      <Separator />
-
-      <section class="space-y-3 p-4">
+      <section class="space-y-4 border-t border-rule px-5 py-5">
         <Markdown v-if="head.content.body" :source="head.content.body" />
-        <p v-else class="text-sm italic text-muted-foreground">
+        <p v-else class="text-sm text-ink-dim">
           {{ t("notification.detail.noBody") }}
         </p>
 
@@ -295,10 +290,8 @@ watch(
         />
       </section>
 
-      <Separator />
-
-      <section class="space-y-3 p-4">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <section class="space-y-3 border-t border-rule px-5 py-5">
+        <h3 class="meta">
           {{ t("notification.detail.timelineHeading", { count: detail.revisions.length }) }}
         </h3>
         <RevisionTimeline

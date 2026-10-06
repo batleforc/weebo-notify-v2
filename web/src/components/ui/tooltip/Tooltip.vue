@@ -30,7 +30,7 @@ withDefaults(defineProps<{ side?: "top" | "right" | "bottom" | "left" }>(), {
         <TooltipContent
           :side="side"
           :side-offset="6"
-          class="z-50 max-w-xs rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md"
+          class="z-50 max-w-xs border border-rule-strong bg-popover px-2 py-1 text-xs text-popover-foreground"
         >
           <slot name="content" />
         </TooltipContent>

@@ -72,28 +72,28 @@ async function toggle(): Promise<void> {
         keypath="settings.push.description"
         tag="p"
         scope="global"
-        class="text-muted-foreground"
+        class="text-ink-dim"
       >
         <template #device>
           <strong>{{ t("settings.push.descriptionDevice") }}</strong>
         </template>
       </i18n-t>
 
-      <p v-if="!status" class="text-muted-foreground">
+      <p v-if="!status" class="text-ink-dim">
         {{ t("settings.push.checking") }}
       </p>
 
-      <p v-else-if="!status.supported" class="text-muted-foreground">
+      <p v-else-if="!status.supported" class="text-ink-dim">
         {{ t("settings.push.unsupported") }}
       </p>
 
-      <p v-else-if="!status.available" class="text-muted-foreground">
+      <p v-else-if="!status.available" class="text-ink-dim">
         {{ t("settings.push.unavailable") }}
       </p>
 
       <p
         v-else-if="status.permission === 'denied'"
-        class="text-muted-foreground"
+        class="text-ink-dim"
       >
         {{ t("settings.push.denied") }}
       </p>
@@ -103,10 +103,10 @@ async function toggle(): Promise<void> {
           <component :is="status.enabled ? BellOff : BellRing" class="size-4" />
           {{ status.enabled ? t("settings.push.disable") : t("settings.push.enable") }}
         </Button>
-        <span v-if="busy" class="text-xs text-muted-foreground">…</span>
+        <span v-if="busy" class="text-xs text-ink-dim">…</span>
       </div>
 
-      <p v-if="error" class="text-xs text-destructive">{{ error }}</p>
+      <p v-if="error" class="text-xs text-signal">{{ error }}</p>
     </CardContent>
   </Card>
 </template>

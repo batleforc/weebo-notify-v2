@@ -63,7 +63,7 @@ watch(
 <template>
   <div
     v-if="resolving"
-    class="h-32 w-full max-w-sm animate-pulse rounded-md border border-border bg-muted"
+    class="h-32 w-full max-w-sm border border-rule bg-ground-raised"
     aria-hidden="true"
   />
 
@@ -71,11 +71,11 @@ watch(
     v-else-if="src && !failed"
     :src="src"
     alt=""
-    class="max-h-64 rounded-md border border-border object-contain"
+    class="max-h-72 border border-rule object-contain"
     @error="failed = true"
   />
 
-  <p v-else class="text-xs italic text-muted-foreground">
+  <p v-else class="text-xs text-ink-dim">
     {{ t("notification.image.failed") }}
   </p>
 </template>

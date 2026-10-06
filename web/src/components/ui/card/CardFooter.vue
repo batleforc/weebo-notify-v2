@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 const classes = computed(() =>
-  cn("flex flex-wrap items-center gap-2 p-4 pt-0", props.class),
+  cn("flex flex-wrap items-center gap-2 px-0 pb-5 pt-0", props.class),
 );
 </script>
 

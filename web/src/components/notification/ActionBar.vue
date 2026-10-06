@@ -107,7 +107,7 @@ function send(): void {
         @click="emit('act', { type: 'ack', key: action.key }, action.key)"
       >
         <Check v-if="acked.has(action.key)" />
-        {{ acked.has(action.key) ? `${action.label} ✓` : action.label }}
+        {{ action.label }}
       </Button>
 
       <div
@@ -116,7 +116,7 @@ function send(): void {
         role="group"
         :aria-label="action.label"
       >
-        <span class="mr-1 text-xs text-muted-foreground">{{ action.label }}</span>
+        <span class="meta mr-1">{{ action.label }}</span>
         <Button
           v-for="option in action.options"
           :key="option.key"
@@ -138,14 +138,13 @@ function send(): void {
       <div v-else-if="action.type === 'reply'" class="flex w-full items-center gap-2">
         <Input
           v-model="reply"
-          class="h-8 flex-1"
+          class="h-9 flex-1"
           :placeholder="action.placeholder ?? action.label"
           :disabled="acting !== null"
           @keydown.enter.prevent="send"
         />
         <Button
-          variant="ghost"
-          size="sm"
+          variant="outline"
           :disabled="acting !== null || !reply.trim()"
           @click="send"
         >
@@ -156,7 +155,7 @@ function send(): void {
 
       <DropdownMenu v-else-if="action.type === 'silence'">
         <template #trigger>
-          <Button variant="ghost" size="sm" :disabled="acting !== null">
+          <Button variant="outline" size="sm" :disabled="acting !== null">
             <BellOff />
             {{ action.label }}
           </Button>

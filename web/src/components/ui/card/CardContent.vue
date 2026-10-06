@@ -4,7 +4,7 @@ import { computed, type HTMLAttributes } from "vue";
 import { cn } from "@/lib/utils";
 
 const props = defineProps<{ class?: HTMLAttributes["class"] }>();
-const classes = computed(() => cn("p-4 pt-0", props.class));
+const classes = computed(() => cn("px-0 pb-5 pt-0", props.class));
 </script>
 
 <template>

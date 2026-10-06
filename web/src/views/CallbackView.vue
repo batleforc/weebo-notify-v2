@@ -35,12 +35,12 @@ onMounted(async () => {
 <template>
   <main class="flex min-h-dvh items-center justify-center p-6 text-sm">
     <div v-if="failure" class="max-w-md space-y-3 text-center">
-      <p class="font-medium text-destructive">{{ t("callback.failed") }}</p>
-      <p class="text-muted-foreground">{{ failure }}</p>
+      <p class="font-medium text-signal">{{ t("callback.failed") }}</p>
+      <p class="text-ink-dim">{{ failure }}</p>
       <Button variant="outline" size="sm" @click="router.replace('/login')">
         {{ t("callback.retry") }}
       </Button>
     </div>
-    <p v-else class="text-muted-foreground">{{ t("callback.inProgress") }}</p>
+    <p v-else class="text-ink-dim">{{ t("callback.inProgress") }}</p>
   </main>
 </template>

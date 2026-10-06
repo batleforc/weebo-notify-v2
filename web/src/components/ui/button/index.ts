@@ -2,40 +2,30 @@ import { cva, type VariantProps } from "class-variance-authority";
 
 export { default as Button } from "./Button.vue";
 
-/**
- * shadcn's button, vendored (ADR-0004).
- *
- * Every colour here is a semantic token — no `bg-blue-500` anywhere — which is the
- * one blocking rule of a front-end review (§10.6): it is what makes the
- * `monofolio` swap a token file rather than a fork.
- */
+/** shadcn's button, vendored (ADR-0004), redrawn in the proof-sheet grammar:
+ * square, 1px rule, uppercase tracked mono; crimson fill only on the one action. */
 export const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,box-shadow,transform] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex shrink-0 select-none items-center justify-center gap-2 whitespace-nowrap border text-xs font-medium uppercase tracking-[0.08em] transition-colors disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        // The one variant the design singles out for the brand's glow (§10.6): a
-        // primary action is the thing on a screen most worth drawing the eye to,
-        // and `shadow-md` now resolves to `--elevation-md` (theme.css) rather than
-        // Tailwind's stock grey — a real glow in dark, a firm shadow in light. The
-        // 1px hover lift + baseline-on-press pairing mirrors the source system's
-        // own primary-button spec.
         default:
-          "bg-primary text-primary-foreground shadow-md hover:bg-primary/90 hover:-translate-y-px active:translate-y-0",
+          "border-primary bg-primary text-primary-foreground disabled:border-rule-strong disabled:bg-transparent disabled:text-ink-dim disabled:opacity-100 hover:shadow-[0_0_0_2px_var(--ground),0_0_0_3px_var(--signal)] active:translate-x-[-2px] active:shadow-[3px_0_0_var(--signal-ink),6px_0_0_var(--signal)]",
         destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+          "border-signal text-signal hover:bg-signal hover:text-primary-foreground",
         outline:
-          "border border-border bg-background hover:bg-accent hover:text-accent-foreground",
+          "border-rule-strong bg-transparent text-ink-dim hover:border-ink-dim hover:text-ink aria-pressed:border-copper aria-pressed:text-ink",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "hover:bg-accent hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 hover:underline",
+          "border-rule-strong bg-ground-raised text-ink hover:border-ink-dim",
+        ghost:
+          "border-transparent text-ink-dim hover:bg-ground-raised hover:text-ink",
+        link: "border-transparent normal-case tracking-normal text-signal underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        lg: "h-10 rounded-md px-8",
-        icon: "size-9",
+        default: "h-9 px-4",
+        sm: "h-8 px-3",
+        lg: "h-11 px-6",
+        icon: "size-9 pointer-coarse:size-11",
       },
     },
     defaultVariants: {

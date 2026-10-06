@@ -47,6 +47,6 @@ watch(
     v-if="src"
     :src="src"
     alt=""
-    class="h-10 w-10 shrink-0 rounded-md border border-border object-cover"
+    class="size-10 shrink-0 border border-rule object-cover"
   />
 </template>

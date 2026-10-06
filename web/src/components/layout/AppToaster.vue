@@ -35,21 +35,19 @@ function open(url: string | undefined, id: string): void {
     they reach a pause, which is the same courtesy the visual version extends.
   -->
   <div
-    class="pointer-events-none fixed inset-x-3 bottom-3 z-50 flex flex-col gap-2 sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-90"
+    class="pointer-events-none fixed inset-x-3 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-50 flex flex-col gap-2 sm:inset-x-auto sm:right-4 sm:w-90 lg:bottom-4"
     role="region"
     aria-live="polite"
     :aria-label="t('toaster.region')"
   >
     <TransitionGroup
-      enter-active-class="transition duration-200 ease-out"
-      enter-from-class="translate-y-2 opacity-0"
-      leave-active-class="transition duration-150 ease-in"
-      leave-to-class="translate-y-1 opacity-0"
+      leave-active-class="transition-opacity duration-150"
+      leave-to-class="opacity-0"
     >
       <div
         v-for="toast in toasts.items"
         :key="toast.id"
-        class="pointer-events-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
+        class="resolve pointer-events-auto border border-rule-strong bg-popover p-3 text-popover-foreground"
         @mouseenter="toasts.hold(toast.id)"
         @mouseleave="toasts.release(toast.id)"
         @focusin="toasts.hold(toast.id)"
@@ -61,17 +59,17 @@ function open(url: string | undefined, id: string): void {
             class="min-w-0 flex-1 cursor-pointer text-left"
             @click="open(toast.url, toast.id)"
           >
-            <p class="truncate text-sm font-medium">{{ toast.title }}</p>
+            <p class="truncate text-sm font-bold">{{ toast.title }}</p>
             <p
               v-if="toast.body"
-              class="mt-0.5 line-clamp-2 text-xs text-muted-foreground"
+              class="mt-0.5 line-clamp-2 text-xs text-ink-dim"
             >
               {{ toast.body }}
             </p>
           </button>
           <button
             type="button"
-            class="shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground"
+            class="shrink-0 p-1 text-ink-dim hover:text-ink"
             :aria-label="t('toaster.close')"
             @click="toasts.dismiss(toast.id)"
           >

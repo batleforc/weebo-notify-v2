@@ -61,10 +61,6 @@ const claimed = computed(
   () => new Set<ProfileField>(profile.value?.overridden ?? []),
 );
 
-const detailPositionLabel = computed(() =>
-  t(`settings.appearance.detailPosition.${ui.detailPosition}`),
-);
-
 /**
  * The avatar, as an object URL.
  *
@@ -314,18 +310,69 @@ onMounted(() => {
   void channels.load();
   void loadCliKeys();
 });
+
+const origin = window.location.origin;
+
+/** The browser's own install offer, when it makes one (Chromium only). */
+const installPrompt = ref<{ prompt: () => Promise<unknown> } | null>(null);
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  installPrompt.value = event as unknown as { prompt: () => Promise<unknown> };
+});
+
+async function install(): Promise<void> {
+  await installPrompt.value?.prompt();
+  installPrompt.value = null;
+}
+
+const appearance = computed(() => [
+  {
+    label: t("settings.appearance.themeLabel"),
+    current: ui.theme,
+    set: (v: string) => {
+      ui.theme = v as typeof ui.theme;
+    },
+    options: (["system", "light", "dark"] as const).map((value) => ({
+      value,
+      label: t(`settings.appearance.themes.${value}`),
+    })),
+  },
+  {
+    label: t("settings.appearance.densityLabel"),
+    current: ui.density,
+    set: (v: string) => {
+      ui.density = v as typeof ui.density;
+    },
+    options: (["compact", "comfortable"] as const).map((value) => ({
+      value,
+      label: t(`settings.appearance.densities.${value}`),
+    })),
+  },
+  {
+    label: t("settings.appearance.detailLabel"),
+    current: ui.detailPosition,
+    set: (v: string) => {
+      ui.detailPosition = v as typeof ui.detailPosition;
+    },
+    options: (["right", "left", "under"] as const).map((value) => ({
+      value,
+      label: t(`settings.appearance.detailPosition.${value}`),
+    })),
+  },
+]);
 </script>
 
 <template>
-  <div class="h-full space-y-4 overflow-y-auto p-6">
-    <h1 class="text-lg font-semibold">{{ t("settings.title") }}</h1>
+  <div class="h-full overflow-y-auto">
+    <div class="mx-auto max-w-3xl px-4 pb-16 pt-6 sm:px-8 sm:pt-10">
+    <h1 class="display mb-6 uppercase">{{ t("settings.title") }}</h1>
 
-    <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+    <p v-if="error" class="text-sm text-signal">{{ error }}</p>
 
     <Card>
       <CardHeader>
         <CardTitle>{{ t("settings.profile.title") }}</CardTitle>
-        <p class="text-sm text-muted-foreground">
+        <p class="text-sm text-ink-dim">
           {{ t("settings.profile.description") }}
         </p>
       </CardHeader>
@@ -336,11 +383,11 @@ onMounted(() => {
             v-if="avatarUrl"
             :src="avatarUrl"
             alt=""
-            class="size-16 rounded-full border border-border object-cover"
+            class="size-16 border border-rule object-cover"
           />
           <div
             v-else
-            class="flex size-16 items-center justify-center rounded-full border border-dashed border-border text-xs text-muted-foreground"
+            class="flex size-16 items-center justify-center border border-dashed border-rule text-xs text-ink-dim"
           >
             {{ t("settings.profile.noAvatar") }}
           </div>
@@ -350,7 +397,7 @@ onMounted(() => {
               <Upload />
               {{ t("settings.profile.changeAvatar") }}
             </Button>
-            <p class="text-xs text-muted-foreground">
+            <p class="text-xs text-ink-dim">
               {{ t("settings.profile.avatarHint") }}
             </p>
           </div>
@@ -408,7 +455,7 @@ onMounted(() => {
             placeholder="Europe/Paris"
             :disabled="loading || saving"
           />
-          <span class="text-xs text-muted-foreground">
+          <span class="text-xs text-ink-dim">
             {{ t("settings.profile.timezoneHint") }}
           </span>
         </label>
@@ -431,23 +478,13 @@ onMounted(() => {
               {{ t("settings.profile.releaseToIdp") }}
             </Button>
           </span>
-          <div class="flex gap-1">
-            <Button
-              :variant="ui.locale === 'fr' ? 'secondary' : 'outline'"
-              size="sm"
-              :disabled="loading || saving"
-              @click="setLocale('fr')"
-            >
+          <div class="seg max-w-xs" role="group" :aria-label="t('settings.locale.title')">
+            <button type="button" :aria-pressed="ui.locale === 'fr'" :disabled="loading || saving" @click="setLocale('fr')">
               {{ t("settings.locale.fr") }}
-            </Button>
-            <Button
-              :variant="ui.locale === 'en' ? 'secondary' : 'outline'"
-              size="sm"
-              :disabled="loading || saving"
-              @click="setLocale('en')"
-            >
+            </button>
+            <button type="button" :aria-pressed="ui.locale === 'en'" :disabled="loading || saving" @click="setLocale('en')">
               {{ t("settings.locale.en") }}
-            </Button>
+            </button>
           </div>
         </div>
 
@@ -461,24 +498,39 @@ onMounted(() => {
       <CardHeader>
         <CardTitle>{{ t("settings.appearance.title") }}</CardTitle>
       </CardHeader>
-      <CardContent class="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" @click="ui.cycleTheme()">
-          {{ t("settings.appearance.theme", { theme: ui.theme }) }}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          @click="ui.density = ui.density === 'compact' ? 'comfortable' : 'compact'"
-        >
-          {{ t("settings.appearance.density", { density: ui.density }) }}
-        </Button>
-        <Button variant="outline" size="sm" @click="ui.cycleDetailPosition()">
-          {{ t("settings.appearance.detail", { position: detailPositionLabel }) }}
-        </Button>
+      <CardContent class="space-y-4">
+        <div v-for="group in appearance" :key="group.label" class="grid gap-2 sm:grid-cols-[10rem_1fr] sm:items-center">
+          <span class="meta">{{ group.label }}</span>
+          <div class="seg" role="group" :aria-label="group.label">
+            <button
+              v-for="option in group.options"
+              :key="option.value"
+              type="button"
+              :aria-pressed="group.current === option.value"
+              @click="group.set(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+        <p class="text-xs text-ink-dim">{{ t("settings.appearance.detailHint") }}</p>
       </CardContent>
-      <p class="px-6 pb-4 -mt-2 text-xs text-muted-foreground">
-        {{ t("settings.appearance.detailHint") }}
-      </p>
+    </Card>
+
+    <!-- §10.4 "Apps": the other clients, and how to reach them from here. -->
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t("settings.apps.title") }}</CardTitle>
+        <p class="max-w-[64ch] text-sm text-ink-dim">{{ t("settings.apps.description") }}</p>
+      </CardHeader>
+      <CardContent class="space-y-3 text-sm">
+        <p class="meta">{{ t("settings.apps.cli") }}</p>
+        <code class="block select-all border border-rule bg-ground-sunk p-3 text-xs [overflow-wrap:anywhere]">notify login --web-url {{ origin }}</code>
+        <template v-if="installPrompt">
+          <p class="meta pt-2">{{ t("settings.apps.pwa") }}</p>
+          <Button variant="outline" size="sm" @click="install">{{ t("settings.apps.install") }}</Button>
+        </template>
+      </CardContent>
     </Card>
 
     <!-- Web Push is a browser's; the desktop shell notifies natively (§10bis). -->
@@ -489,21 +541,21 @@ onMounted(() => {
     <Card>
       <CardHeader>
         <CardTitle>{{ t("settings.keys.title") }}</CardTitle>
-        <p class="text-sm text-muted-foreground">
+        <p class="text-sm text-ink-dim">
           {{ t("settings.keys.description") }}
         </p>
       </CardHeader>
       <CardContent class="space-y-3">
-        <p v-if="cliKeyError" class="text-sm text-destructive">{{ cliKeyError }}</p>
+        <p v-if="cliKeyError" class="text-sm text-signal">{{ cliKeyError }}</p>
 
         <!-- Montré une fois, jamais réaffiché : seul le hachage est conservé
              (§5.2), exactement la même règle que pour une clé de bot. -->
-        <Card v-if="cliKeyMinted" class="border-status-warning">
+        <Card v-if="cliKeyMinted" class="border border-copper p-4">
           <CardContent class="space-y-2 pt-4">
-            <p class="text-sm text-muted-foreground">
+            <p class="text-sm text-ink-dim">
               {{ t("settings.keys.mintedHint") }}
             </p>
-            <code class="block break-all rounded-md bg-muted p-3 text-xs">{{
+            <code class="block select-all border border-rule bg-ground-sunk p-3 text-xs [overflow-wrap:anywhere]">{{
               cliKeyMinted
             }}</code>
             <Button variant="outline" size="sm" @click="cliKeyMinted = null">
@@ -516,7 +568,7 @@ onMounted(() => {
           <Input v-model="cliKeyLabel" :placeholder="t('settings.keys.labelPlaceholder')" />
 
           <div class="space-y-1">
-            <p class="text-xs font-medium text-muted-foreground">
+            <p class="text-xs font-medium text-ink-dim">
               {{ t("settings.keys.channels") }}
             </p>
             <label
@@ -531,13 +583,13 @@ onMounted(() => {
               />
               {{ channel.display_name || channel.id }}
             </label>
-            <p v-if="!channels.all.length" class="text-xs text-muted-foreground">
+            <p v-if="!channels.all.length" class="text-xs text-ink-dim">
               {{ t("settings.keys.noChannels") }}
             </p>
           </div>
 
           <div class="space-y-1">
-            <p class="text-xs font-medium text-muted-foreground">
+            <p class="text-xs font-medium text-ink-dim">
               {{ t("settings.keys.scope") }}
             </p>
             <label
@@ -566,12 +618,12 @@ onMounted(() => {
         <div
           v-for="key in cliKeys"
           :key="key.id"
-          class="flex items-center justify-between gap-2 border-b border-border pb-2 text-sm last:border-0"
+          class="rule-row flex flex-wrap items-center justify-between gap-2 py-2 text-sm last:border-0"
         >
           <span class="min-w-0">
             <code class="text-xs">{{ key.prefix }}…</code>
             <span class="ml-2">{{ key.label ?? t("settings.keys.unnamed") }}</span>
-            <span class="ml-2 text-xs text-muted-foreground">
+            <span class="ml-2 text-xs text-ink-dim">
               {{
                 key.last_used_at
                   ? t("settings.keys.lastUsed", { at: exact(key.last_used_at) })
@@ -601,10 +653,10 @@ onMounted(() => {
         <CardTitle>{{ t("settings.session.title") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-2 text-sm">
-        <p class="text-muted-foreground">
+        <p class="text-ink-dim">
           {{ t("settings.session.connectedAs", { name: session.displayName }) }}
         </p>
-        <p v-if="session.groups.length" class="text-xs text-muted-foreground">
+        <p v-if="session.groups.length" class="text-xs text-ink-dim">
           {{ t("settings.session.groups", { groups: session.groups.join(", ") }) }}
         </p>
         <Button variant="outline" size="sm" @click="session.logout()">
@@ -612,5 +664,6 @@ onMounted(() => {
         </Button>
       </CardContent>
     </Card>
+    </div>
   </div>
 </template>

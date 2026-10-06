@@ -52,6 +52,15 @@ const list = ref<HTMLElement | null>(null);
 const cursor = ref(0);
 
 const groups = computed(() => inbox.groups);
+const liveCount = computed(
+  () => groups.value.filter((g) => g.head.head.state !== "closed").length,
+);
+const title = computed(() => {
+  const channel = route.params.channel;
+  return typeof channel === "string"
+    ? channels.nameOf(channel)
+    : t("sidebar.channels.all");
+});
 
 /**
  * How late a row reached this client (§7.2).
@@ -126,52 +135,55 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
+    <header class="flex items-end justify-between gap-3 border-b border-rule px-4 pb-3 pt-4 sm:px-5">
+      <div class="min-w-0">
+        <h1 class="pixel truncate text-2xl font-bold uppercase">{{ title }}</h1>
+        <p class="meta mt-1 tabular-nums">
+          {{ t("inbox.summary", { total: groups.length, live: liveCount }) }}
+        </p>
+      </div>
+      <span v-if="isFiltered" class="meta shrink-0 text-copper">{{ t("inbox.filtered") }}</span>
+    </header>
+
     <!-- §10.5: the separator is how an arrival announces itself. -->
     <button
       v-if="inbox.pendingCount"
       type="button"
-      class="flex items-center justify-center gap-2 border-b border-border bg-accent/50 py-2 text-xs font-medium transition-colors hover:bg-accent"
+      class="meta flex items-center justify-center gap-2 border-b border-rule-strong bg-ground-raised py-2 text-ink hover:bg-ground-sunk"
       @click="inbox.revealPending()"
     >
       <RefreshCw class="size-3.5" />
       {{ t("inbox.newNotifications", { count: inbox.pendingCount }, inbox.pendingCount) }}
     </button>
 
-    <div ref="list" class="min-h-0 flex-1 overflow-y-auto">
-      <div v-if="inbox.loading" class="space-y-1 p-3">
-        <Skeleton v-for="index in 6" :key="index" class="h-12 w-full" />
+    <div ref="list" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div v-if="inbox.loading" class="space-y-px">
+        <Skeleton v-for="index in 6" :key="index" class="h-16 w-full" />
       </div>
 
-      <div
-        v-else-if="inbox.error"
-        class="flex flex-col items-center gap-3 p-10 text-center text-sm"
-      >
-        <p class="text-destructive">{{ inbox.error }}</p>
-        <Button variant="outline" size="sm" @click="inbox.load()">
+      <div v-else-if="inbox.error" class="m-4 border border-signal px-6 py-10 text-center sm:m-5">
+        <p class="pixel text-base font-bold uppercase text-signal">{{ t("inbox.errorTitle") }}</p>
+        <p class="mx-auto mt-2 max-w-[64ch] text-sm text-ink-dim">{{ inbox.error }}</p>
+        <Button variant="outline" size="sm" class="mt-4" @click="inbox.load()">
           {{ t("inbox.retry") }}
         </Button>
       </div>
 
       <!-- An empty inbox is not an error, and neither is a filter that matches
            nothing — §10.4 asks for those to read differently. -->
-      <div
-        v-else-if="!groups.length"
-        class="flex flex-col items-center gap-2 p-10 text-center text-sm text-muted-foreground"
-      >
-        <InboxIcon class="size-6" />
+      <div v-else-if="!groups.length" class="m-4 border border-rule-strong px-6 py-10 text-center sm:m-5">
+        <InboxIcon class="mx-auto size-6 text-ink-dim" />
         <template v-if="isFiltered">
-          <p>{{ t("inbox.emptyFiltered.title") }}</p>
-          <p class="text-xs">{{ t("inbox.emptyFiltered.hint") }}</p>
+          <p class="pixel mt-3 text-base font-bold uppercase">{{ t("inbox.emptyFiltered.title") }}</p>
+          <p class="mx-auto mt-2 max-w-[64ch] text-sm text-ink-dim">{{ t("inbox.emptyFiltered.hint") }}</p>
         </template>
         <template v-else>
-          <p>{{ t("inbox.emptyDefault.title") }}</p>
-          <p class="text-xs">
-            {{ t("inbox.emptyDefault.hint") }}
-          </p>
+          <p class="pixel mt-3 text-base font-bold uppercase">{{ t("inbox.emptyDefault.title") }}</p>
+          <p class="mx-auto mt-2 max-w-[64ch] text-sm text-ink-dim">{{ t("inbox.emptyDefault.hint") }}</p>
         </template>
       </div>
 
-      <ul v-else class="divide-y divide-border">
+      <ul v-else>
         <li v-for="group in groups" :key="group.head.id" :data-row="group.head.id">
           <NotificationRow
             :row="group.head"
@@ -184,7 +196,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         </li>
       </ul>
 
-      <div v-if="inbox.hasMore" class="p-3">
+      <div v-if="inbox.hasMore" class="p-4">
         <Button
           variant="outline"
           size="sm"

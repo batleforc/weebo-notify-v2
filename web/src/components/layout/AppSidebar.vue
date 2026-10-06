@@ -14,10 +14,7 @@ import {
   Inbox,
   Monitor,
   Moon,
-  MousePointerClick,
-  Radio,
   Sun,
-  WifiOff,
   X,
 } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
@@ -30,7 +27,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
@@ -44,6 +40,7 @@ import { useConsole } from "@/stores/console";
 import { emptyFilters, useInbox } from "@/stores/inbox";
 import { useUi } from "@/stores/ui";
 import { useUnread } from "@/stores/unread";
+import Wordmark from "./Wordmark.vue";
 
 const channels = useChannels();
 const inbox = useInbox();
@@ -229,218 +226,148 @@ const connection = computed(() => {
   switch (inbox.status) {
     case "live":
       return {
-        icon: Radio,
         label: t("sidebar.connection.live"),
         class: "text-status-success",
       };
     case "connecting":
     case "reconnecting":
       return {
-        icon: Radio,
         label: t("sidebar.connection.reconnecting"),
-        class: "text-status-warning animate-pulse",
+        class: "text-copper",
       };
     default:
-      return {
-        icon: WifiOff,
-        label: t("sidebar.connection.offline"),
-        class: "text-muted-foreground",
-      };
+      return { label: t("sidebar.connection.offline"), class: "text-ink-dim" };
   }
 });
 </script>
 
 <template>
-  <nav
-    class="flex h-full min-h-0 flex-col gap-3 p-3 text-sm"
-    :aria-label="t('sidebar.aria')"
-  >
-    <div class="cyber-grid -m-3 mb-0 flex items-center justify-between gap-2 border-b p-3">
-      <RouterLink
-        to="/"
-        class="font-mono text-sm font-semibold tracking-tight hover:opacity-80"
-      >
-        weebo<span class="cyber-text-glow text-primary">-notify</span>
+  <nav class="flex h-full min-h-0 flex-col text-sm" :aria-label="t('sidebar.aria')">
+    <div class="flex items-center justify-between gap-2 border-b border-rule px-4 py-3">
+      <RouterLink to="/" class="hover:opacity-80">
+        <Wordmark />
       </RouterLink>
       <Tooltip side="right">
-        <span :class="['flex items-center gap-1 text-xs', connection.class]">
-          <component :is="connection.icon" class="size-3.5" />
-          <span class="sr-only sm:not-sr-only">{{ connection.label }}</span>
+        <span :class="['meta inline-flex items-center gap-1.5', connection.class]">
+          <span class="size-1.5 bg-current" aria-hidden="true" />
+          {{ connection.label }}
         </span>
-        <template #content>
-          {{ t("sidebar.connection.tooltip") }}
-        </template>
+        <template #content>{{ t("sidebar.connection.tooltip") }}</template>
       </Tooltip>
     </div>
 
-    <Separator />
+    <section class="min-h-0 flex-1 overflow-y-auto py-3">
+      <h2 class="meta px-4 pb-2">{{ t("sidebar.channels.title") }}</h2>
 
-    <section class="min-h-0 flex-1 space-y-1 overflow-y-auto">
-      <h2 class="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {{ t("sidebar.channels.title") }}
-      </h2>
-
-      <div v-if="channels.loading" class="space-y-1 p-1">
+      <div v-if="channels.loading" class="space-y-1 px-4">
         <Skeleton v-for="index in 3" :key="index" class="h-7 w-full" />
       </div>
 
-      <p v-else-if="channels.error" class="px-1 text-xs text-destructive">
-        {{ channels.error }}
-      </p>
+      <p v-else-if="channels.error" class="px-4 text-xs text-signal">{{ channels.error }}</p>
 
-      <p
-        v-else-if="!channels.all.length"
-        class="px-1 text-xs text-muted-foreground"
-      >
+      <p v-else-if="!channels.all.length" class="px-4 text-xs text-ink-dim">
         {{ t("sidebar.channels.empty") }}
       </p>
 
-      <!--
-        Everything, and the way back out of a channel. Present even when no channel
-        is open so the list always says which of the two you are looking at, rather
-        than leaving "no channel highlighted" to mean it.
-      -->
-      <Button
-        v-if="channels.all.length"
-        :variant="openChannelId === null ? 'secondary' : 'ghost'"
-        size="sm"
-        class="w-full justify-start gap-2 font-normal"
-        :aria-current="openChannelId === null ? 'page' : undefined"
-        @click="openAllChannels"
-      >
-        <Inbox class="text-muted-foreground" />
-        <span class="truncate">{{ t("sidebar.channels.all") }}</span>
-      </Button>
-
-      <Button
-        v-for="channel in channels.all"
-        :key="channel.id"
-        :variant="openChannelId === channel.id ? 'secondary' : 'ghost'"
-        size="sm"
-        class="w-full justify-start gap-2 font-normal"
-        :aria-current="openChannelId === channel.id ? 'page' : undefined"
-        @click="openChannel(channel.id)"
-      >
-        <Hash class="text-muted-foreground" />
-        <span class="truncate">{{ channel.display_name || channel.id }}</span>
-        <Badge v-if="channel.origin === 'managed'" variant="muted" class="ml-auto">
-          {{ t("sidebar.channels.managed") }}
-        </Badge>
-        <!--
-          A number and not a dot: §10.3's "jamais la couleur seule" applies here
-          too, and "3 non lues" is what a screen reader must say — the digits alone
-          would be read as a bare number next to a channel name.
-          `ml-auto` only when no `managed` badge already took it, so the two never
-          fight over the right edge.
-        -->
-        <Badge
-          v-if="unread.countOf(channel.id) > 0"
-          variant="default"
-          :class="channel.origin === 'managed' ? '' : 'ml-auto'"
-          :aria-label="unreadLabel(unread.countOf(channel.id))"
+      <template v-else>
+        <button
+          type="button"
+          class="bay-item"
+          :aria-current="openChannelId === null ? 'page' : undefined"
+          @click="openAllChannels"
         >
-          {{ unread.countOf(channel.id) }}
-        </Badge>
-      </Button>
+          <Inbox class="size-4 shrink-0" />
+          <span class="truncate">{{ t("sidebar.channels.all") }}</span>
+        </button>
+
+        <button
+          v-for="channel in channels.all"
+          :key="channel.id"
+          type="button"
+          class="bay-item"
+          :aria-current="openChannelId === channel.id ? 'page' : undefined"
+          @click="openChannel(channel.id)"
+        >
+          <Hash class="size-4 shrink-0" />
+          <span class="min-w-0 flex-1 truncate">{{ channel.display_name || channel.id }}</span>
+          <span
+            v-if="channel.origin === 'managed'"
+            class="meta text-[0.625rem]"
+            :title="t('sidebar.channels.managed')"
+          >gitops</span>
+          <span
+            v-if="unread.countOf(channel.id) > 0"
+            class="min-w-5 bg-signal px-1 text-center text-[0.6875rem] font-bold tabular-nums text-primary-foreground"
+            :aria-label="unreadLabel(unread.countOf(channel.id))"
+          >{{ unread.countOf(channel.id) }}</span>
+        </button>
+      </template>
     </section>
 
-    <Separator />
-
-    <section class="shrink-0 space-y-2">
+    <section class="shrink-0 border-t border-rule px-4 py-3">
       <Collapsible v-model:open="filtersOpen">
-        <div class="flex w-full items-center justify-between gap-2 px-1">
-          <button
-            type="button"
-            class="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-          >
+        <div class="flex w-full items-center justify-between gap-2">
+          <button type="button" class="meta flex items-center gap-1 hover:text-ink">
             <ChevronDown v-if="filtersOpen" class="size-3.5" />
             <ChevronRight v-else class="size-3.5" />
             {{ t("sidebar.filters.title") }}
           </button>
-          <Button
-            v-if="filtered"
-            variant="link"
-            size="sm"
-            class="h-auto p-0 text-xs"
-            @click.stop="clear"
-          >
+          <Button v-if="filtered" variant="link" size="sm" class="h-auto p-0 text-xs" @click.stop="clear">
             {{ t("sidebar.filters.clearAll") }}
           </Button>
         </div>
 
         <template #content>
-          <div class="space-y-2 pt-2">
-            <div class="flex flex-wrap gap-1 px-1">
-              <Button
+          <div class="space-y-3 pt-3">
+            <div class="seg" role="group" :aria-label="t('sidebar.filters.title')">
+              <button
                 v-for="state in STATES"
                 :key="state"
-                :variant="filters.state.includes(state) ? 'secondary' : 'outline'"
-                size="sm"
-                class="h-6 px-2 text-xs font-normal"
+                type="button"
                 :aria-pressed="filters.state.includes(state)"
                 @click="toggleState(state)"
               >
                 {{ stateLabel(state) }}
-              </Button>
+              </button>
             </div>
 
-            <div class="flex flex-wrap gap-1 px-1">
-              <Button
+            <div class="seg" role="group">
+              <button
                 v-for="status in STATUSES"
                 :key="status"
-                :variant="filters.status.includes(status) ? 'secondary' : 'outline'"
-                size="sm"
-                :class="[
-                  'h-6 gap-1 px-2 text-xs font-normal',
-                  filters.status.includes(status) ? lookOf(status).color : '',
-                ]"
+                type="button"
                 :aria-pressed="filters.status.includes(status)"
                 @click="toggleStatus(status)"
               >
-                <component :is="lookOf(status).icon" class="size-3" />
                 {{ lookOf(status).label }}
-              </Button>
+              </button>
             </div>
 
-            <div class="flex flex-wrap gap-1 px-1">
-              <Button
+            <div class="seg" role="group">
+              <button
                 v-for="priority in PRIORITIES"
                 :key="priority"
-                :variant="filters.minPriority === priority ? 'secondary' : 'outline'"
-                size="sm"
-                class="h-6 px-2 text-xs font-normal"
+                type="button"
                 :aria-pressed="filters.minPriority === priority"
                 @click="setPriority(priority)"
               >
-                ≥ {{ priorityLabel(priority) }}
-              </Button>
+                ≥{{ priorityLabel(priority) }}
+              </button>
             </div>
 
-            <div class="flex flex-wrap gap-1 px-1">
-              <Button
-                :variant="filters.hasActions === true ? 'secondary' : 'outline'"
-                size="sm"
-                class="h-6 gap-1 px-2 text-xs font-normal"
-                :aria-pressed="filters.hasActions === true"
-                @click="toggleHasActions"
-              >
-                <MousePointerClick class="size-3" />
+            <div class="seg" role="group">
+              <button type="button" :aria-pressed="filters.hasActions === true" @click="toggleHasActions">
                 {{ t("sidebar.filters.hasActions") }}
-              </Button>
+              </button>
             </div>
 
-            <div class="space-y-1 px-1">
+            <div class="space-y-2">
               <div v-if="filters.tags.length" class="flex flex-wrap gap-1">
-                <Badge
-                  v-for="tag in filters.tags"
-                  :key="tag"
-                  variant="muted"
-                  class="gap-1 font-normal"
-                >
+                <Badge v-for="tag in filters.tags" :key="tag" variant="muted" class="gap-1">
                   {{ tag }}
                   <button
                     type="button"
-                    class="rounded-sm hover:text-foreground"
+                    class="hover:text-ink"
                     :aria-label="t('sidebar.filters.removeTag', { tag })"
                     @click="removeTag(tag)"
                   >
@@ -453,19 +380,19 @@ const connection = computed(() => {
                 <Input
                   v-model="tagInput"
                   :placeholder="t('sidebar.filters.tagPlaceholder')"
-                  class="h-7 text-xs"
+                  class="h-8 text-xs"
                   :aria-label="t('sidebar.filters.tagAriaLabel')"
                   @keydown="onTagKeydown"
                 />
                 <div
                   v-if="tagSuggestions.length"
-                  class="absolute z-10 mt-1 w-full rounded-md border border-border bg-popover p-1 text-xs shadow-md"
+                  class="absolute z-10 mt-1 w-full border border-rule-strong bg-popover p-1 text-xs"
                 >
                   <button
                     v-for="suggestion in tagSuggestions"
                     :key="suggestion"
                     type="button"
-                    class="block w-full rounded-sm px-2 py-1 text-left hover:bg-accent"
+                    class="block w-full px-2 py-1.5 text-left hover:bg-ground-raised"
                     @click="addTag(suggestion)"
                   >
                     {{ suggestion }}
@@ -478,65 +405,28 @@ const connection = computed(() => {
       </Collapsible>
     </section>
 
-    <div class="shrink-0 space-y-2">
-      <Separator />
-      <div class="flex flex-wrap items-center gap-1 px-1">
-        <RouterLink
-          to="/settings"
-          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-        >
-          {{ t("sidebar.nav.settings") }}
-        </RouterLink>
-        <RouterLink
-          to="/admin"
-          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-        >
-          {{ t("sidebar.nav.admin") }}
-        </RouterLink>
-        <!--
-          Shown only where the server says so (§10.4bis). The answer comes from one
-          probe rather than from a flag on the session: the role is derived per
-          request from the token's groups (§14.2), so the API is the only thing that
-          can answer, and a copy kept here could drift from it.
-        -->
-        <RouterLink
-          v-if="platform.allowed"
-          to="/console"
-          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-        >
-          {{ t("sidebar.nav.platform") }}
-        </RouterLink>
-        <RouterLink
-          to="/"
-          class="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-        >
-          {{ t("sidebar.nav.inbox") }}
-        </RouterLink>
+    <div class="shrink-0 space-y-3 border-t border-rule px-4 py-3">
+      <!-- Console shows only where the server says so (§10.4bis). -->
+      <div class="seg [&>*]:basis-[calc(50%-1px)]">
+        <RouterLink to="/">{{ t("sidebar.nav.inbox") }}</RouterLink>
+        <RouterLink to="/settings">{{ t("sidebar.nav.settings") }}</RouterLink>
+        <RouterLink to="/admin">{{ t("sidebar.nav.admin") }}</RouterLink>
+        <RouterLink v-if="platform.allowed" to="/console">{{ t("sidebar.nav.platform") }}</RouterLink>
       </div>
-      <div class="flex items-center justify-between gap-2 px-1">
-        <span class="min-w-0 truncate text-xs text-muted-foreground">
-          {{ session.displayName }}
-        </span>
+      <div class="flex items-center justify-between gap-2">
+        <span class="min-w-0 truncate text-xs text-ink-dim">{{ session.displayName }}</span>
         <div class="flex items-center gap-1">
           <Tooltip>
-            <Button variant="ghost" size="icon" class="size-7" @click="ui.cycleTheme()">
-              <!-- Each icon is the theme a click switches *to*, matching the
-                   dark → light → system → dark order `cycleTheme` follows. -->
-              <Sun v-if="ui.theme === 'dark'" class="size-3.5" />
-              <Monitor v-else-if="ui.theme === 'light'" class="size-3.5" />
-              <Moon v-else class="size-3.5" />
+            <Button variant="ghost" size="icon" class="size-8" @click="ui.cycleTheme()">
+              <!-- The icon is the theme a click switches *to*. -->
+              <Sun v-if="ui.theme === 'dark'" />
+              <Monitor v-else-if="ui.theme === 'light'" />
+              <Moon v-else />
               <span class="sr-only">{{ t("sidebar.session.toggleTheme") }}</span>
             </Button>
-            <template #content>
-              {{ t("sidebar.session.themeTooltip", { theme: ui.theme }) }}
-            </template>
+            <template #content>{{ t("sidebar.session.themeTooltip", { theme: ui.theme }) }}</template>
           </Tooltip>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="h-7 px-2 text-xs"
-            @click="session.logout()"
-          >
+          <Button variant="ghost" size="sm" @click="session.logout()">
             {{ t("sidebar.session.logout") }}
           </Button>
         </div>

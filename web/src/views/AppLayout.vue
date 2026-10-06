@@ -7,7 +7,7 @@
  * folds away behind a button and the detail takes the whole screen when something
  * is open, which is the mobile behaviour §10.4 asks for.
  */
-import { Menu, X } from "@lucide/vue";
+import { Inbox, Menu, Search, Settings, X } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
@@ -15,6 +15,7 @@ import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppToaster from "@/components/layout/AppToaster.vue";
 import CommandPalette from "@/components/layout/CommandPalette.vue";
 import PushPrompt from "@/components/layout/PushPrompt.vue";
+import Wordmark from "@/components/layout/Wordmark.vue";
 import NotificationDetail from "@/components/notification/NotificationDetail.vue";
 import { Button } from "@/components/ui/button";
 import { onDeepLink } from "@/lib/deeplink";
@@ -75,6 +76,17 @@ const DETAIL_ROUTES = ["notification", "channel-notification"];
 const routeChannel = computed(() =>
   typeof route.params.channel === "string" ? route.params.channel : null,
 );
+
+const isInbox = computed(() => INBOX_ROUTES.includes(String(route.name ?? "")));
+
+function tabClass(active: boolean): string {
+  return cn(
+    "relative flex h-14 flex-col items-center justify-center gap-1 text-[0.625rem] uppercase tracking-[0.08em]",
+    active ? "text-ink" : "text-ink-dim",
+    active &&
+      "after:absolute after:inset-x-6 after:top-0 after:h-0.5 after:bg-signal",
+  );
+}
 
 const showDetailPane = computed(() =>
   INBOX_ROUTES.includes(String(route.name ?? "")),
@@ -231,6 +243,13 @@ onBeforeUnmount(() => {
   unread.stop();
 });
 
+watch(
+  () => route.fullPath,
+  () => {
+    sidebarOpen.value = false;
+  },
+);
+
 /** `/n/<id>` — and `/c/<channel>/n/<id>` — are permalinks: opening one must open
  * the panel (§10.4). */
 watch(
@@ -298,17 +317,16 @@ function closeDetail(): void {
 <template>
   <CommandPalette />
 
-  <div class="grid h-dvh grid-rows-[auto_minmax(0,1fr)] lg:grid-rows-1">
-    <!-- Narrow viewports get a bar; wide ones do not need one, the sidebar is
-         always there. -->
+  <div class="grid h-dvh grid-rows-[auto_minmax(0,1fr)_auto] lg:grid-rows-1">
+    <!-- Narrow viewports get a bar; wide ones have the sidebar. -->
     <header
-      class="flex items-center gap-2 border-b border-border px-3 py-2 lg:hidden"
+      class="safe-top flex items-center justify-between gap-2 border-b border-rule px-3 py-2 lg:hidden"
     >
-      <Button variant="ghost" size="icon" @click="sidebarOpen = !sidebarOpen">
-        <Menu />
-        <span class="sr-only">{{ t("sidebar.aria") }}</span>
+      <RouterLink to="/" class="px-1"><Wordmark /></RouterLink>
+      <Button variant="ghost" size="icon" @click="palette.toggle()">
+        <Search />
+        <span class="sr-only">{{ t("layout.search") }}</span>
       </Button>
-      <span class="text-sm font-semibold">{{ t("app.name") }}</span>
     </header>
 
     <!--
@@ -329,12 +347,12 @@ function closeDetail(): void {
     -->
     <div
       v-if="sidebarOpen"
-      class="fixed inset-0 z-30 bg-black/50 lg:hidden"
+      class="fixed inset-0 z-30 bg-ground/80 lg:hidden"
       aria-hidden="true"
       @click="sidebarOpen = false"
     />
 
-    <div class="grid min-h-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
+    <div class="grid min-h-0 lg:grid-cols-[17rem_minmax(0,1fr)]">
       <!--
         `cn` and not a plain array, and that is the whole fix rather than a tidy-up.
         Both `bg-card/40` and `bg-card` used to land on this element at once, and an
@@ -347,9 +365,9 @@ function closeDetail(): void {
       <div
         :class="
           cn(
-            'min-h-0 border-r border-border bg-card/40',
+            'min-h-0 border-r border-rule bg-ground-sunk',
             sidebarOpen
-              ? 'absolute inset-y-0 left-0 z-40 w-64 bg-card shadow-lg lg:static lg:shadow-none'
+              ? 'safe-top fixed inset-y-0 left-0 z-40 w-[min(20rem,85vw)] border-r-rule-strong lg:static lg:w-auto'
               : 'hidden lg:block',
           )
         "
@@ -377,10 +395,10 @@ function closeDetail(): void {
             v-if="detail.id"
             :class="
               cn(
-                'min-h-0 border-border bg-background',
+                'min-h-0 border-rule bg-background',
                 detailStacked
                   ? 'border-t'
-                  : 'fixed inset-0 z-30 border-l xl:static xl:z-auto',
+                  : 'safe-top fixed inset-0 z-30 border-l xl:static xl:z-auto',
                 detailPositionClass,
               )
             "
@@ -394,9 +412,9 @@ function closeDetail(): void {
               dismiss the pane, which on a touch device is no way at all.
             -->
             <Button
-              variant="ghost"
+              variant="outline"
               size="icon"
-              class="absolute right-2 top-2 z-10 xl:hidden"
+              class="absolute right-3 top-3 z-10 bg-ground xl:hidden"
               @click="closeDetail"
             >
               <X />
@@ -406,7 +424,7 @@ function closeDetail(): void {
           </div>
           <div
             v-else
-            class="hidden min-h-0 border-l border-border xl:block"
+            class="hidden min-h-0 border-l border-rule xl:block"
             :class="detailPositionClass"
           >
             <NotificationDetail />
@@ -414,6 +432,37 @@ function closeDetail(): void {
         </template>
       </div>
     </div>
+
+    <!-- Phone and tablet: the four places a thumb goes, always in reach. -->
+    <nav
+      class="safe-bottom grid grid-cols-4 border-t border-rule-strong bg-ground-sunk lg:hidden"
+      :aria-label="t('layout.tabs')"
+    >
+      <RouterLink to="/" :class="tabClass(isInbox)" :aria-current="isInbox ? 'page' : undefined">
+        <Inbox class="size-5" />
+        <span>{{ t("sidebar.nav.inbox") }}</span>
+        <span
+          v-if="unread.total > 0"
+          class="absolute right-[calc(50%-1.5rem)] top-1.5 min-w-4 bg-signal px-1 text-center text-[0.625rem] font-bold leading-4 text-primary-foreground"
+        >{{ unread.total > 99 ? "99+" : unread.total }}</span>
+      </RouterLink>
+      <button type="button" :class="tabClass(sidebarOpen)" :aria-expanded="sidebarOpen" @click="sidebarOpen = !sidebarOpen">
+        <Menu class="size-5" />
+        <span>{{ t("layout.channels") }}</span>
+      </button>
+      <button type="button" :class="tabClass(false)" @click="palette.toggle()">
+        <Search class="size-5" />
+        <span>{{ t("layout.search") }}</span>
+      </button>
+      <RouterLink
+        to="/settings"
+        :class="tabClass(route.name === 'settings')"
+        :aria-current="route.name === 'settings' ? 'page' : undefined"
+      >
+        <Settings class="size-5" />
+        <span>{{ t("sidebar.nav.settings") }}</span>
+      </RouterLink>
+    </nav>
   </div>
 
   <!-- Outside the grid above, deliberately: it is `position: fixed` and reads

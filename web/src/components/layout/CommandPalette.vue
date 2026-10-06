@@ -157,9 +157,9 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
 <template>
   <DialogRoot :open="palette.open" @update:open="(value) => !value && palette.hide()">
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-50 bg-black/50" />
+      <DialogOverlay class="fixed inset-0 z-50 bg-ground/80" />
       <DialogContent
-        class="fixed left-1/2 top-[15vh] z-50 w-[min(40rem,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
+        class="fixed left-1/2 top-[calc(env(safe-area-inset-top)+0.75rem)] z-50 w-[min(40rem,calc(100vw-1.5rem))] -translate-x-1/2 overflow-hidden border border-rule-strong bg-popover text-popover-foreground sm:top-[15vh]"
         :aria-label="t('commandPalette.ariaLabel')"
         @keydown.down.prevent="move(1)"
         @keydown.up.prevent="move(-1)"
@@ -169,7 +169,7 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
           ref="input"
           :value="palette.query"
           type="text"
-          class="w-full border-b border-border bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
+          class="w-full border-b border-rule-strong bg-ground-sunk px-4 py-3.5 text-[0.9375rem] outline-none placeholder:text-ink-dim"
           :placeholder="t('commandPalette.searchPlaceholder')"
           role="combobox"
           aria-controls="palette-results"
@@ -187,14 +187,14 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
         >
           <p
             v-if="palette.error"
-            class="px-3 py-2 text-sm text-destructive"
+            class="px-3 py-2 text-sm text-signal"
             role="alert"
           >
             {{ palette.error }}
           </p>
 
           <div v-for="entry in groups" :key="entry.group" class="py-1">
-            <p class="px-3 py-1 text-xs uppercase tracking-wide text-muted-foreground">
+            <p class="meta px-3 py-1">
               {{ entry.title }}
             </p>
             <button
@@ -204,18 +204,18 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
               type="button"
               role="option"
               :aria-selected="row.index === active"
-              class="flex w-full items-center gap-2 rounded-md border-l-2 px-3 py-2 text-left text-sm"
+              class="flex min-h-10 w-full items-center gap-2 border-l px-3 py-2 text-left text-sm"
               :class="
                 row.index === active
-                  ? 'border-primary bg-accent font-medium text-accent-foreground'
-                  : 'border-transparent hover:bg-accent/50'
+                  ? 'border-signal bg-ground-raised font-bold text-ink'
+                  : 'border-transparent text-ink-dim hover:bg-ground-raised hover:text-ink'
               "
               @click="choose(row.item)"
             >
               <span class="truncate">{{ row.item.label }}</span>
               <span
                 v-if="row.item.hint && row.item.hint !== row.item.label"
-                class="ml-auto truncate text-xs text-muted-foreground"
+                class="ml-auto truncate text-xs text-ink-dim"
               >
                 {{ row.item.hint }}
               </span>
@@ -224,13 +224,13 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
 
           <p
             v-if="walk.length === 0 && !palette.searching"
-            class="px-3 py-6 text-center text-sm text-muted-foreground"
+            class="px-3 py-6 text-center text-sm text-ink-dim"
           >
             {{ t("commandPalette.empty") }}
           </p>
           <p
             v-else-if="palette.searching"
-            class="px-3 py-2 text-xs text-muted-foreground"
+            class="px-3 py-2 text-xs text-ink-dim"
           >
             {{ t("commandPalette.searching") }}
           </p>

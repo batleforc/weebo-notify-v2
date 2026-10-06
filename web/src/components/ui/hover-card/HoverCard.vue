@@ -35,7 +35,7 @@ withDefaults(
         :side="side"
         :align="align"
         :side-offset="6"
-        class="z-50 w-72 rounded-md border border-border bg-popover p-3 text-popover-foreground shadow-md"
+        class="z-50 w-72 border border-rule-strong bg-popover p-4 text-popover-foreground"
       >
         <slot name="content" />
       </HoverCardContent>

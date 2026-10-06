@@ -13,14 +13,9 @@ import { useRoute, useRouter } from "vue-router";
 
 import { openExternal } from "@/auth/loopback";
 import { useSession } from "@/auth/session";
+import Wordmark from "@/components/layout/Wordmark.vue";
+import StatusDot from "@/components/notification/StatusDot.vue";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 const session = useSession();
 const route = useRoute();
@@ -28,6 +23,22 @@ const router = useRouter();
 const { t } = useI18n();
 
 const failure = ref<string | null>(null);
+
+const STEPS = [
+  { state: "open", status: "info", word: t("state.open"), class: "text-ink" },
+  {
+    state: "working",
+    status: "info",
+    word: t("state.working"),
+    class: "text-copper",
+  },
+  {
+    state: "closed",
+    status: "success",
+    word: t("status.success"),
+    class: "text-status-success",
+  },
+] as const;
 const going = ref(false);
 
 async function signIn(): Promise<void> {
@@ -84,69 +95,60 @@ async function retry(): Promise<void> {
 </script>
 
 <template>
-  <main class="flex min-h-dvh items-center justify-center p-6">
-    <Card class="w-full max-w-sm">
-      <CardHeader>
-        <CardTitle>{{ t("app.name") }}</CardTitle>
-        <p class="text-sm text-muted-foreground">
-          {{ t("login.tagline") }}
-        </p>
-      </CardHeader>
+  <main class="grid min-h-dvh grid-rows-[1fr_auto] lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <section class="flex items-center px-6 py-12 sm:px-10 lg:px-16">
+      <div class="w-full max-w-md space-y-8">
+        <Wordmark large />
 
-      <CardContent class="space-y-3">
-        <p v-if="session.expired" class="text-sm text-muted-foreground">
-          {{ t("login.expired") }}
-        </p>
-        <p v-if="failure" class="text-sm text-destructive">{{ failure }}</p>
-      </CardContent>
+        <div class="space-y-3">
+          <h1 class="display uppercase">{{ t("login.headline") }}</h1>
+          <p class="max-w-[52ch] text-sm text-ink-dim">{{ t("login.tagline") }}</p>
+        </div>
 
-      <!--
-        `flex-col`: the footer stacks these rather than sitting them side by side,
-        so the second button reads as the smaller thing to do after the first one
-        failed, not as an equal alternative to it.
-      -->
-      <CardFooter class="flex-col items-stretch">
-        <Button class="w-full" :disabled="going" @click="signIn">
-          <LogIn />
-          {{ going ? t("login.redirecting") : t("login.signIn") }}
-        </Button>
+        <!-- The mechanism, shown: one notification, three revisions. -->
+        <ol class="border-y border-rule" aria-hidden="true">
+          <li v-for="step in STEPS" :key="step.state + step.status" class="rule-row flex items-center gap-3 py-2.5 last:border-b-0">
+            <StatusDot :status="step.status" :state="step.state" />
+            <span class="min-w-0 flex-1 truncate text-sm">deploy api · #4812</span>
+            <span :class="['meta', step.class]">{{ step.word }}</span>
+          </li>
+        </ol>
 
-        <!--
-          Shown while a desktop sign-in is *pending* as well as after a failure, and
-          the pending half is the one that matters: that is the state with no way
-          out. `going` disables the button above, nothing has failed yet, and the
-          shell sits on a spinner for the five minutes `oauth.rs` gives the listener
-          — which is exactly how long a browser that never opened takes to look like
-          a broken app.
+        <div class="space-y-3">
+          <p v-if="session.expired" class="text-sm text-copper">{{ t("login.expired") }}</p>
+          <p v-if="failure" class="text-sm text-signal">{{ failure }}</p>
 
-          Never disabled by `going`, for the same reason: the whole point is to be
-          clickable while an attempt is in flight.
-        -->
-        <Button
-          v-if="failure || session.pendingAuthorizeUrl"
-          variant="outline"
-          class="w-full"
-          @click="retry"
-        >
-          <RotateCcw />
-          {{
-            session.pendingAuthorizeUrl ? t("login.reopen") : t("login.retry")
-          }}
-        </Button>
+          <Button size="lg" class="w-full" :disabled="going" @click="signIn">
+            <LogIn />
+            {{ going ? t("login.redirecting") : t("login.signIn") }}
+          </Button>
 
-        <!--
-          The last resort, and deliberately selectable text rather than a link: if
-          no launcher works, this is the only way through, and the shell must not be
-          the thing that navigates to it (its own window is the app, not a tab to
-          spend on somebody else's login page — `auth/loopback.ts`).
-        -->
-        <p
-          v-if="session.pendingAuthorizeUrl"
-          class="w-full select-all break-all text-xs text-muted-foreground"
-        >
-          {{ session.pendingAuthorizeUrl }}
-        </p>
-      </CardFooter>
-    </Card>
+          <!-- Also while a desktop sign-in is pending: that state has no other way out. -->
+          <Button v-if="failure || session.pendingAuthorizeUrl" variant="outline" class="w-full" @click="retry">
+            <RotateCcw />
+            {{ session.pendingAuthorizeUrl ? t("login.reopen") : t("login.retry") }}
+          </Button>
+
+          <!-- Last resort: selectable text, never navigated to by the shell. -->
+          <p v-if="session.pendingAuthorizeUrl" class="select-all text-xs text-ink-dim [overflow-wrap:anywhere]">
+            {{ session.pendingAuthorizeUrl }}
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- The plate: the mark at poster scale, texture only where no text can land. -->
+    <aside class="relative hidden items-center justify-center border-l border-rule lg:flex" aria-hidden="true">
+      <div class="dot-field absolute inset-0 opacity-60" />
+      <div class="relative grid grid-cols-3 gap-6 bg-ground p-10">
+        <span v-for="i in 9" :key="i" :class="['size-16', i === 5 ? 'bg-signal' : 'bg-ink']" />
+      </div>
+    </aside>
+
+    <footer class="flex items-center gap-4 border-t border-rule px-6 py-3 sm:px-10 lg:col-span-2">
+      <span class="meta">OIDC · PKCE</span>
+      <span class="dot-field h-3 flex-1" aria-hidden="true" />
+      <span class="meta">self-hosted</span>
+    </footer>
   </main>
 </template>

@@ -47,19 +47,6 @@ export function stateLabel(state: State): string {
   return i18n.global.t(`state.${state}`);
 }
 
-/** The border accent on the left of a row — priority, discretely (§10.3). */
-const PRIORITY_ACCENT: Record<Priority, string> = {
-  min: "border-l-transparent",
-  low: "border-l-transparent",
-  default: "border-l-transparent",
-  high: "border-l-priority-high",
-  urgent: "border-l-priority-urgent",
-};
-
-export function accentOf(priority: Priority): string {
-  return PRIORITY_ACCENT[priority] ?? PRIORITY_ACCENT.default;
-}
-
 export function priorityLabel(priority: Priority): string {
   return i18n.global.t(`priority.${priority}`);
 }
