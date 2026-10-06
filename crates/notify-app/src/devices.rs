@@ -1,9 +1,5 @@
-//! Devices: enrolling, listing and revoking (design §8).
-//!
-//! M1 needs devices for one reason — a sync cursor has to belong to something — so
-//! this is the minimum that supports the stream and the backlog. Push transports
-//! are enrollable from the start because their invariant (a relayed transport must
-//! arrive with a key) belongs at enrolment rather than at the first delivery.
+//! Devices: enrolling, listing and revoking (§8). A relayed push transport must
+//! arrive with a key, checked at enrolment.
 
 use std::sync::Arc;
 
@@ -27,7 +23,6 @@ impl core::fmt::Debug for EnrolDevice {
 }
 
 impl EnrolDevice {
-    /// Wire it.
     #[must_use]
     pub fn new(
         devices: Arc<dyn DeviceRepository>,
@@ -41,11 +36,7 @@ impl EnrolDevice {
         }
     }
 
-    /// Enrol a device for the calling principal.
-    ///
-    /// The owner is taken from the caller, never from the request: enrolling a
-    /// device "for" somebody else would be a way to point their notifications at
-    /// your own push endpoint.
+    /// Enrol a device for the calling principal; the owner always comes from the caller.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -64,12 +55,8 @@ impl EnrolDevice {
         )?;
 
         self.devices.upsert(&device).await?;
-        // The moment a device is enrolled is the moment a group-only channel
-        // binding needs somewhere offline to reach: without this, `delivery_targets`
-        // never sees an owner whose access is only `channel_group_access` (§11).
-        //
-        // Not from an API key, whose groups are empty by construction: that would
-        // erase what the owner's last real login recorded.
+        // Record the owner's groups so group-only bindings reach this device offline (§11).
+        // Membership only: a key's empty groups would erase the snapshot.
         if caller.grant == Grant::Membership {
             self.devices
                 .remember_groups(&caller.principal, &caller.groups, now)
@@ -103,14 +90,12 @@ impl core::fmt::Debug for ListDevices {
 }
 
 impl ListDevices {
-    /// Wire it.
     #[must_use]
     pub fn new(devices: Arc<dyn DeviceRepository>) -> Self {
         Self { devices }
     }
 
-    /// The caller's own devices, revoked ones included so a device list can show
-    /// what was revoked and when.
+    /// The caller's own devices, revoked ones included.
     pub async fn execute(&self, caller: &Caller) -> Result<Vec<Device>, Failure> {
         Ok(self.devices.list_for(&caller.principal).await?)
     }
@@ -131,7 +116,6 @@ impl core::fmt::Debug for RevokeDevice {
 }
 
 impl RevokeDevice {
-    /// Wire it.
     #[must_use]
     pub fn new(
         devices: Arc<dyn DeviceRepository>,
@@ -151,8 +135,7 @@ impl RevokeDevice {
             return Ok(false);
         };
         if device.owner != caller.principal {
-            // Same answer as "no such device": a stranger does not get to enumerate
-            // somebody else's hardware.
+            // Same answer as "no such device".
             return Ok(false);
         }
 
@@ -250,8 +233,7 @@ mod tests {
             None,
         )
         .unwrap();
-        // Alice is not a named member — only the group grants her access, exactly
-        // like `[[channels.managed.access]] oidc_group` in config/dev.toml.
+        // Only the group grants alice access.
         channel.upsert_group(GroupBinding::new("infra-admins", vec![Scope::Subscribe]).unwrap());
         fixture.store.seed_channel(channel);
 

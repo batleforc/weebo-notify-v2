@@ -1,32 +1,12 @@
-//! The notification itself: a lifecycle object, not a message (design §2.2).
+//! The notification: a lifecycle object, not a message (§2.2).
 //!
 //! ```text
 //! open ⇄ working ──▶ closed(status) ──▶ reopenable
 //! ```
 //!
-//! Four rules carry most of the weight, and each one exists because of a concrete
-//! failure it prevents:
-//!
-//! * **Presence of `state` at creation decides the type.** With it, the
-//!   notification has a lifecycle and cannot expire while it is still running — a
-//!   two-day incident stays visible for two days. Without it, the notification is
-//!   *simple*: born closed, ageing from creation, which is what a fire-and-forget
-//!   `curl` wants.
-//! * **A closed notification stays writable.** A CI re-run pushes onto the same
-//!   `external_id` and reopens it; the retention clock is suspended again and
-//!   restarts from zero at the next close.
-//! * **Last write wins.** Concurrent publishers — retries, parallel jobs — do not
-//!   need to coordinate. The server stamps a monotonic `seq` on arrival and the
-//!   current state is the one carried by the highest `seq`. No `If-Match`, no lost
-//!   update to arbitrate: the whole history is kept and doubles as the audit trail.
-//! * **Revisions are capped.** The 1 001st is refused and the notification is left
-//!   intact and readable (design §8.2) — a publisher in a loop degrades its own
-//!   notification, not the channel.
-//!
-//! This type holds the *head* revision and the counters, not the full history.
-//! Loading a thousand revisions to append the thousand-and-first would be a strange
-//! thing to make the hot path do; the timeline is a query, served straight from the
-//! events table (ADR-0012).
+//! A `state` at creation makes it a lifecycle notification (no expiry while live);
+//! closed ones stay writable and reopen; last write (highest server `seq`) wins;
+//! revisions are capped (§8.2). Only the head revision is held; history lives in the event log.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -77,10 +57,7 @@ pub enum Status {
     Cancelled,
 }
 
-/// How loudly a notification asks for attention (design §2.2).
-///
-/// `Urgent` does not bypass a user's do-not-disturb unless that user opted in:
-/// the recipient decides what may wake them, never the publisher (design §7.4).
+/// How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,7 +74,7 @@ pub enum Priority {
     Urgent,
 }
 
-/// Which of the two publishing shapes produced this notification (design §2.2).
+/// Which of the two publishing shapes produced this notification (§2.2).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -108,8 +85,7 @@ pub enum NotificationKind {
     Simple,
 }
 
-/// Why a notification stopped existing, as broadcast in a `tombstone` event
-/// (design §8.1).
+/// Why a notification stopped existing, as broadcast in a `tombstone` event (§8.1).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -128,10 +104,9 @@ pub struct Revision {
     pub id: RevisionId,
     /// The notification it belongs to.
     pub notification_id: NotificationId,
-    /// Server-assigned, monotonic within the notification, starting at 1. The
-    /// arbiter of last-write-wins.
+    /// Server-assigned, monotonic within the notification, starting at 1; the last-write-wins arbiter.
     pub seq: u32,
-    /// The principal that published it (design §5).
+    /// The principal that published it (§5).
     pub author: Author,
     /// When the server received it — the server's clock, not the publisher's.
     #[serde(with = "time::serde::rfc3339")]
@@ -146,16 +121,12 @@ pub struct Revision {
     pub content: Content,
 }
 
-/// A revision as a publisher submits it: everything optional except the content.
-///
-/// An absent field means "leave it as it is" on an update, and takes the channel
-/// default on a creation. That is what lets a CI job push `state=closed,
-/// status=success` without restating the title, the tags and the buttons.
+/// A revision as a publisher submits it; absent fields keep the head's value on
+/// update and take channel defaults on creation.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Deserialize)]
 pub struct RevisionDraft {
-    /// Lifecycle position. Its presence at creation is what makes the notification
-    /// a lifecycle one (design §2.2).
+    /// Lifecycle position; present at creation makes it a lifecycle notification (§2.2).
     #[serde(default)]
     pub state: Option<State>,
     /// Status.
@@ -164,7 +135,7 @@ pub struct RevisionDraft {
     /// Priority.
     #[serde(default)]
     pub priority: Option<Priority>,
-    /// Retention, resolved against the channel policy (design §7.2bis).
+    /// Retention, resolved against the channel policy (§7.2bis).
     #[serde(default)]
     pub ttl: Option<Ttl>,
     /// The content itself, flattened into the same JSON object.
@@ -195,11 +166,8 @@ impl RevisionDraft {
     }
 }
 
-/// The result of writing to a notification: the revision that was recorded, and
-/// what the channel policy did to the requested retention.
-///
-/// The resolution travels back to the publisher because a clamp they cannot see is
-/// a clamp they will report as a bug (scenario T6).
+/// The result of writing to a notification: the recorded revision and the
+/// applied retention, reported so clamps are visible (T6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
     /// The revision as recorded, with its assigned `seq`.
@@ -216,7 +184,7 @@ pub struct Notification {
     pub id: NotificationId,
     /// The channel it lives in.
     pub channel: ChannelId,
-    /// The publisher's own identifier, when it upserted by one (design §2.2).
+    /// The publisher's own identifier, when it upserted by one (§2.2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_id: Option<ExternalId>,
     /// Which publishing shape created it.
@@ -225,31 +193,24 @@ pub struct Notification {
     pub head: Revision,
     /// Highest `seq` assigned. The next revision gets `last_seq + 1`.
     pub last_seq: u32,
-    /// How many revisions have been recorded. Equal to `last_seq` unless the
-    /// aggregate was rehydrated from a partial history.
+    /// How many revisions have been recorded (equals `last_seq` unless rehydrated partially).
     pub revision_count: u32,
     /// When the first revision landed.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
-    /// When it last closed, and therefore when its retention clock started.
-    /// `None` while it is live — which is exactly why a running incident cannot
-    /// expire (design §7.2bis).
+    /// When it last closed, starting its retention clock; `None` while live (§7.2bis).
     #[serde(with = "time::serde::rfc3339::option", default)]
     pub closed_at: Option<OffsetDateTime>,
     /// Retention as resolved by the channel policy.
     pub ttl: Ttl,
-    /// Set on deletion; the row survives long enough to broadcast a tombstone and
-    /// to keep sync cursors honest (design §7.2bis).
+    /// Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).
     #[serde(with = "time::serde::rfc3339::option", default)]
     pub deleted_at: Option<OffsetDateTime>,
 }
 
 impl Notification {
-    /// Publish the first revision.
-    ///
-    /// `external_id` is `Some` when this came through the idempotent upsert route
-    /// (design §8). The caller supplies `now` — the domain never reads a clock, it
-    /// is told the time (the `Clock` port, design §4).
+    /// Publish the first revision. `external_id` is `Some` on the idempotent upsert
+    /// route (§8); `now` comes from the `Clock` port (§4).
     pub fn create(
         id: NotificationId,
         channel: ChannelId,
@@ -259,8 +220,6 @@ impl Notification {
         now: OffsetDateTime,
         policy: &ChannelPolicy,
     ) -> Result<(Self, Written)> {
-        // The whole type distinction, in one line: a publisher that named a state
-        // is describing something with a life; one that did not is sending a message.
         let kind = if draft.state.is_some() {
             NotificationKind::Lifecycle
         } else {
@@ -288,9 +247,7 @@ impl Notification {
             channel,
             external_id,
             kind,
-            // A simple notification is born closed, so its clock starts now. That
-            // single assignment is what makes retention uniform: expiry is always
-            // measured from `closed_at`, whatever the kind.
+            // Simple notifications are born closed: expiry is always measured from `closed_at`.
             closed_at: (state == State::Closed).then_some(now),
             created_at: now,
             last_seq: 1,
@@ -309,10 +266,7 @@ impl Notification {
         ))
     }
 
-    /// Record another revision.
-    ///
-    /// Absent fields inherit from the current head, so an update can be as small as
-    /// `{"state":"closed","status":"success"}`.
+    /// Record another revision; absent fields inherit from the head.
     pub fn revise(
         &mut self,
         draft: RevisionDraft,
@@ -320,8 +274,7 @@ impl Notification {
         now: OffsetDateTime,
         policy: &ChannelPolicy,
     ) -> Result<Written> {
-        // Expired counts as gone even before the sweep tombstones it: a revision
-        // there would land on a notification no reader can see any more.
+        // Expired counts as gone even before the sweep tombstones it.
         if self.is_gone(now) {
             return Err(DomainError::NotificationGone);
         }
@@ -329,8 +282,7 @@ impl Notification {
             return Err(DomainError::RevisionLimitReached { max: MAX_REVISIONS });
         }
 
-        // Only re-resolve retention when the publisher asked; otherwise the value
-        // already agreed with the channel stands.
+        // Only re-resolve retention when the publisher asked.
         let retention = match draft.ttl {
             Some(_) => policy.ttl.resolve(draft.ttl)?,
             None => TtlResolution {
@@ -338,8 +290,7 @@ impl Notification {
                 clamped_from: None,
             },
         };
-        // Absent content keeps what the head says (design §2.2), which is what makes
-        // `{"state": "closed", "status": "success"}` a complete revision.
+        // Absent content keeps what the head says (§2.2).
         let content: Content = draft.content.inheriting(&self.head.content).try_into()?;
 
         let revision = Revision {
@@ -363,15 +314,8 @@ impl Notification {
         })
     }
 
-    /// Fold a revision into the current state, last-write-wins.
-    ///
-    /// Used both by [`Self::revise`] and when rehydrating from storage. A revision
-    /// with a `seq` below the current head is still counted — it happened — but it
-    /// does not change what the notification currently says (scenario T3).
-    ///
-    /// Replay in `seq` order for exact `closed_at` timestamps: out of order, the
-    /// final state is still correct, but the moment the retention clock started is
-    /// only as accurate as the order it was told about.
+    /// Fold a revision into the current state, last-write-wins (T3). Stale `seq`s are
+    /// counted but change nothing; replay in `seq` order for exact `closed_at`.
     pub fn apply(&mut self, revision: &Revision) {
         self.revision_count = self.revision_count.saturating_add(1);
 
@@ -384,16 +328,13 @@ impl Notification {
         self.head = revision.clone();
 
         match revision.state {
-            // Closing starts the retention clock. Already-closed stays where it
-            // was: amending a status must not silently extend retention.
+            // Closing starts the retention clock; amending a closed status must not extend it.
             State::Closed if was_live => self.closed_at = Some(revision.received_at),
             State::Closed => {}
-            // Reopening suspends it again, and it restarts from zero at the next
-            // close (design §2.2, scenario T2).
+            // Reopening suspends it; it restarts at the next close (§2.2, T2).
             State::Open | State::Working => {
                 self.closed_at = None;
-                // A simple notification that gets reopened has, by definition,
-                // acquired a life.
+                // A reopened simple notification has acquired a life.
                 self.kind = NotificationKind::Lifecycle;
             }
         }
@@ -417,10 +358,7 @@ impl Notification {
         self.head.priority
     }
 
-    /// When this notification becomes eligible for purge.
-    ///
-    /// `None` means "not yet, and possibly never": either it is still live, or the
-    /// channel granted it unbounded retention.
+    /// When this notification becomes eligible for purge; `None` while live or kept forever.
     #[must_use]
     pub fn expires_at(&self) -> Option<OffsetDateTime> {
         let closed_at = self.closed_at?;
@@ -440,31 +378,14 @@ impl Notification {
         self.deleted_at.is_some() || self.is_expired(now)
     }
 
-    /// Delete it. Idempotent: deleting twice keeps the first timestamp, so a
-    /// retried request cannot move a tombstone.
+    /// Delete it; idempotent, keeping the first timestamp.
     pub fn delete(&mut self, now: OffsetDateTime) {
         self.deleted_at.get_or_insert(now);
     }
 
-    /// Close it on the publisher's behalf, because nothing has happened to it for
-    /// longer than its channel allows (design §7.2bis, [`CloseAfter`]).
-    ///
-    /// Returns whether this changed anything, so a sweep does not write a row and
-    /// announce a closure it did not perform.
-    ///
-    /// # Why this is not a revision
-    ///
-    /// Every other state change is one, and has an author, because somebody asked
-    /// for it. Nobody asked for this one: it is the absence of anybody asking, for
-    /// a week. Minting a revision would mean minting a principal to sign it — a
-    /// system identity that would then exist everywhere principals do, in the
-    /// audit log and in every client's author rendering, to express "no author".
-    ///
-    /// So the history stays honest: the last revision still records that the
-    /// publisher said `open`, because they did, and `EventPayload::Closure` is what
-    /// says the server closed it afterwards. What changes here is the aggregate's
-    /// current state, which is the thing that was never true — a notification
-    /// nobody will ever touch again is not open.
+    /// Close it on the publisher's behalf after inactivity (§7.2bis, [`CloseAfter`]),
+    /// returning whether anything changed. Not a revision: nobody authored it, and
+    /// `EventPayload::Closure` announces it instead.
     ///
     /// [`CloseAfter`]: crate::CloseAfter
     pub fn close(&mut self, at: OffsetDateTime) -> bool {
@@ -472,10 +393,7 @@ impl Notification {
             return false;
         }
         self.head.state = State::Closed;
-        // Same rule as [`Self::apply`]'s: closing is what starts the retention
-        // clock, and it starts now rather than at the last revision — retention is
-        // measured from the moment a notification stopped being live, and that
-        // moment is this one.
+        // Retention runs from the moment it stopped being live: now.
         self.closed_at = Some(at);
         true
     }
@@ -494,7 +412,6 @@ mod tests {
     use crate::ttl::TtlPolicy;
 
     fn now() -> OffsetDateTime {
-        // A fixed instant: the domain is told the time, so the tests can pick one.
         OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap()
     }
 
@@ -530,7 +447,7 @@ mod tests {
         ContentDraft::titled("deploy prod")
     }
 
-    // --- T1 · Birth (design §3.4) -----------------------------------------
+    // --- T1 · Birth -------------------------------------------------------
 
     #[test]
     fn critical_t1_a_publish_without_state_is_born_closed_and_ages_from_creation() {
@@ -594,8 +511,7 @@ mod tests {
         );
     }
 
-    /// A sweep that announced a closure it did not perform would emit an event and
-    /// a log line for every already-closed row it looked at, every pass, forever.
+    /// Closing an already-closed notification must report no change.
     #[test]
     fn closing_an_already_closed_notification_changes_nothing() {
         let at = now();
@@ -800,8 +716,7 @@ mod tests {
         let mut notification = create(RevisionDraft::lifecycle(State::Open, with_buttons), at);
         assert_eq!(notification.head.content.actions.len(), 1);
 
-        // The next revision carries no actions at all: the buttons are gone, not
-        // merged with what came before (design §2.3).
+        // The next revision carries no actions: replaced, not merged (§2.3).
         notification
             .revise(
                 RevisionDraft::simple(content()),

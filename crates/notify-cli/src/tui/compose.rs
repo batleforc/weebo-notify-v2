@@ -1,40 +1,13 @@
-//! A guided "compose a notification" form (design §9.2).
-//!
-//! # Why a form exists at all
-//!
-//! The only path to `notify publish` from inside the TUI used to be typing
-//! `:publish -c … -t … --action type:label:arg …` — a mini-DSL nobody
-//! discovers by looking at the screen. This form is a guided front end over
-//! exactly the same [`crate::publish::Content`] the CLI's own `publish`
-//! subcommand fills in, ending in the same [`crate::publish::publish`] call —
-//! a fix to either path is picked up by both surfaces, the same guarantee
-//! the `:` line's parity mechanism already gives the rest of the TUI.
-//!
-//! # Two interaction primitives, not a text-editor widget
-//!
-//! Every field is reached by moving focus (`j`/`k`, never wrapping, same rule
-//! as everywhere else in the TUI) and acted on with one verb, `activate`
-//! (`Enter`). What `activate` does depends on the field: it toggles typing
-//! mode on a text field, appends a tag/action draft to its list, or — on the
-//! `Submit` row, a real field rather than a separate global key — reports
-//! that the form should be sent. Fields whose value is one of a fixed set
-//! (the channel, the three enum pickers) are **cyclable** instead: `h`/`l`
-//! step them on a second axis, so field navigation is never overloaded with
-//! changing a value.
-//!
-//! A full multi-line body editor is out of scope here — `body` is one
-//! physical line. Anyone who needs more still has `:publish -b -` (stdin) or
-//! the raw `:` line; this form is the fast path for the common case, not a
-//! replacement for the grammar underneath it.
+//! A guided "compose a notification" form (§9.2) filling the same [`crate::publish::Content`]
+//! and [`crate::publish::publish`] call as the CLI. `j`/`k` move focus, `Enter` activates,
+//! `h`/`l` cycle the fixed-choice fields. Body is one line; `:publish` covers the rest.
 
 use clap::ValueEnum as _;
 use notify_client_core::types::Channel;
 
 use crate::publish::{self, PriorityArg, StateArg, StatusArg};
 
-/// One field of the form, in display/focus order. `Submit` is a real row —
-/// reaching it with `j`/`k` and activating it is the only way to send the
-/// form, rather than a separate global keybinding to remember.
+/// One field of the form, in display/focus order; activating `Submit` is the only way to send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldRef {
     Channel,
@@ -75,8 +48,7 @@ impl FieldRef {
         }
     }
 
-    /// Whether `h`/`l` change this field's value — the channel and the three
-    /// enum pickers, never the free-text ones.
+    /// Whether `h`/`l` change this field's value (the channel and the three enum pickers).
     const fn cyclable(self) -> bool {
         matches!(
             self,
@@ -88,18 +60,15 @@ impl FieldRef {
 /// What [`ComposeForm::activate`] means the caller should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComposeActivation {
-    /// Handled entirely inside the form — an edit toggle, a tag/action
-    /// appended. Nothing further for the caller to do.
+    /// Handled inside the form (edit toggle, tag/action appended).
     Handled,
-    /// The typed action DSL was invalid; the draft is left as-is so it can
-    /// be corrected rather than retyped.
+    /// The typed action was invalid; the draft is kept for correction.
     Rejected(String),
     /// The `Submit` row was activated: build a [`publish::Content`] and send it.
     Submit,
 }
 
-/// One row of the popup: what [`ComposeForm::rows`] hands to `render.rs` so
-/// the drawing code stays a pure function of already-computed strings.
+/// One row of the popup, pre-formatted so `render.rs` stays pure.
 pub(crate) struct ComposeRow {
     pub label: &'static str,
     pub value: String,
@@ -107,17 +76,13 @@ pub(crate) struct ComposeRow {
     pub is_submit: bool,
 }
 
-/// The guided form itself. Fields mirror [`publish::Content`] one for one
-/// (minus `ttl`/`image`, left to the `:` line — see the module doc), plus the
-/// channel picker `Content` has no equivalent for, since the CLI takes that
-/// as a separate flag rather than part of the body.
+/// The guided form: fields mirror [`publish::Content`] (minus `ttl`/`image`), plus a channel picker.
 #[derive(Debug, Clone)]
 pub(crate) struct ComposeForm {
     focused: usize,
     editing: bool,
     channel: usize,
-    /// Snapshotted at construction: the channel list cannot change while a
-    /// modal owns the keyboard, so there is nothing to keep in sync.
+    /// Snapshotted at construction: the channel list can't change while the modal is open.
     channel_count: usize,
     title: String,
     body: String,
@@ -125,9 +90,7 @@ pub(crate) struct ComposeForm {
     tag_draft: String,
     actions: Vec<String>,
     action_draft: String,
-    /// `None` is "unset" — every one of these is optional on `Content`, and
-    /// a picker that could not say "leave it alone" would force a choice
-    /// the CLI itself never requires.
+    /// `None` is "unset": every one of these is optional on `Content`.
     state: Option<usize>,
     status: Option<usize>,
     priority: Option<usize>,
@@ -164,9 +127,7 @@ impl ComposeForm {
         FIELDS[self.focused]
     }
 
-    /// Move focus between fields. Never wraps — holding the key at either
-    /// end must not loop back round, the same rule `App::move_selection`
-    /// already follows for every other list in the TUI.
+    /// Move focus between fields (never wraps).
     pub(crate) fn move_focus(&mut self, delta: i32) {
         self.focused = if delta.is_negative() {
             self.focused.saturating_sub(delta.unsigned_abs() as usize)
@@ -175,8 +136,7 @@ impl ComposeForm {
         };
     }
 
-    /// Step a cyclable field's value. A no-op on any other field, so `h`/`l`
-    /// need not be gated by the caller on which field happens to be focused.
+    /// Step a cyclable field's value; a no-op on other fields.
     pub(crate) fn cycle(&mut self, delta: i32) {
         match self.field() {
             FieldRef::Channel => cycle_index(&mut self.channel, delta, self.channel_count),
@@ -221,10 +181,7 @@ impl ComposeForm {
                 if self.editing {
                     let candidate = self.action_draft.trim();
                     if !candidate.is_empty() {
-                        // Validated inline, with `publish::parse_action` itself — not
-                        // a second copy of the `type:label:arg` grammar — so a typo
-                        // is caught here rather than at submit time, without the
-                        // draft being lost.
+                        // Validated with `publish::parse_action` itself, so a typo is caught without losing the draft.
                         if let Err(error) = publish::parse_action(candidate) {
                             return ComposeActivation::Rejected(error.to_string());
                         }
@@ -240,8 +197,7 @@ impl ComposeForm {
         ComposeActivation::Handled
     }
 
-    /// A typed character, while editing a text field. Ignored outside edit
-    /// mode and on cyclable fields, so the caller need not gate the call.
+    /// A typed character while editing a text field; ignored otherwise.
     pub(crate) fn push_char(&mut self, character: char) {
         if !self.editing {
             return;
@@ -284,10 +240,7 @@ impl ComposeForm {
         }
     }
 
-    /// Build a [`publish::Content`] from the current fields, or say in French
-    /// why not. Pure — no `Session`, exactly like the CLI's own argument
-    /// parsing; the one impure step (`--image`) stays inside
-    /// `Content::into_revision`, which this does not touch (§9.3).
+    /// Build a [`publish::Content`] from the fields, or say in French why not (pure, §9.3).
     pub(crate) fn to_content(
         &self,
         channels: &[Channel],
@@ -301,9 +254,7 @@ impl ComposeForm {
             return Err("un titre est nécessaire pour publier".to_owned());
         }
 
-        // Re-validated here too, not just on append: cheap, and it catches a
-        // change to `parse_action` before it reaches the server rather than
-        // after.
+        // Re-validated here too: cheap, and catches parser changes before the server does.
         for raw in &self.actions {
             publish::parse_action(raw).map_err(|error| error.to_string())?;
         }
@@ -326,8 +277,7 @@ impl ComposeForm {
         ))
     }
 
-    /// What the popup draws — one row per field, values already formatted as
-    /// strings so `render.rs` stays a pure function of them.
+    /// What the popup draws: one pre-formatted row per field.
     pub(crate) fn rows(&self, channels: &[Channel]) -> Vec<ComposeRow> {
         FIELDS
             .iter()
@@ -357,8 +307,7 @@ impl ComposeForm {
     }
 }
 
-/// Accepted entries plus whatever is still being typed, so the draft is
-/// visible before it is appended rather than only after.
+/// Accepted entries plus the draft still being typed.
 fn joined(accepted: &[String], draft: &str) -> String {
     let mut value = accepted.join(", ");
     if !draft.is_empty() {
@@ -388,9 +337,7 @@ fn cycle_index(index: &mut usize, delta: i32, len: usize) {
     };
 }
 
-/// Cycle `None → Some(0) → … → Some(len - 1)` and back, never past either
-/// end — modelled as one extra position (`0`) ahead of the `len` real
-/// variants, so the existing clamped-stepping shape covers "unset" for free.
+/// Cycle `None → Some(0) → … → Some(len - 1)`, clamped at both ends.
 fn cycle_option(index: &mut Option<usize>, delta: i32, len: usize) {
     if len == 0 {
         return;

@@ -1,79 +1,26 @@
-//! Web Push: RFC 8030 delivery, RFC 8291 encryption, RFC 8292 identification
-//! (design §6.2, §6.3, §7.1).
-//!
-//! The first production transport, and the one with the least crypto to write —
-//! which is the point of §6.2's table. On this path the payload is protected by
-//! **RFC 8291 alone**: the browser holds the key pair internally and never exposes
-//! it to JavaScript, so there is no application key on the web at all. The sealed
-//! box of §6.2 exists only for the relayed transports (UnifiedPush, APNs), where a
-//! third party we do not control carries the bytes and the browser's guarantee does
-//! not apply.
-//!
-//! # What is taken from a library, and why that library
-//!
-//! The content encryption is `web-push-native`'s — `aes128gcm`, ECDH over P-256,
-//! HKDF — taken **without its `vapid` feature**. Two reasons, and the first decided
-//! it: the obvious crate, `web-push`, reaches `ece` which reaches **OpenSSL**, the C
-//! toolchain this workspace refused for the server in M1 so that the image builds
-//! from a plain `cargo build` and the Tauri cross-compilations of M5–M7 stay
-//! possible. `web-push-native` is `RustCrypto` throughout. The second is that its
-//! `vapid` feature pulls a second JWT library into a workspace that already has one;
-//! the identification header below is signed with `jsonwebtoken`, the same crate
-//! `notify-oidc` verifies with.
-//!
-//! It costs one thing, written here rather than discovered later: `web-push-native`
-//! is built against **p256 0.13** while the workspace is on 0.14, so this crate
-//! pins 0.13 for the types it hands across that boundary. Both versions were already
-//! in the lockfile, so nothing new is duplicated — but a future upgrade has to move
-//! them together.
-//!
-//! # The payload is a contract with the service worker
-//!
-//! Nothing in the OpenAPI document describes a push payload — it is not an HTTP
-//! response — so [`Envelope`] is where that contract lives. A service worker
-//! switches on `kind` and renders. Changing it is a wire break with every installed
-//! client, exactly as changing §8.1 would be.
+//! Web Push: RFC 8030 delivery, RFC 8291 encryption, RFC 8292 VAPID (design §6.2, §7.1).
+//! Crypto is `web-push-native` (pure `RustCrypto`, no OpenSSL), pinned to p256 0.13 — upgrade both together.
+//! [`Envelope`] is the wire contract with the service worker: changing it breaks installed clients.
 
 use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use notify_domain::{ChannelId, Device, NotificationId, Priority};
-use notify_ports::{
-    PortError, PortResult, PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport,
-};
+use notify_ports::{PortError, PortResult, PushBody, PushMessage, PushOutcome, PushTransport};
 use p256::pkcs8::DecodePrivateKey as _;
 use serde::Serialize;
 
-/// The most plaintext one push may carry.
-///
-/// RFC 8291 guarantees a push service accepts at least 4096 octets of *encrypted*
-/// payload. `aes128gcm` frames that with 86 octets — a 16-octet salt, the 4-octet
-/// record size, the 1-octet key-id length, the 65-octet ephemeral public key and the
-/// 16-octet tag — plus one octet of padding delimiter, leaving 4009. Rounded down,
-/// because being one byte over the line costs a `413` from a relay that will not
-/// explain itself, and the caller degrades to a poke long before it matters.
+/// Max plaintext: RFC 8291's 4096 encrypted octets minus 87 of `aes128gcm` framing, rounded down.
 const MAX_PAYLOAD: usize = 4_000;
 
-/// How long a push may sit in the service's queue before it is dropped.
-///
-/// Four hours rather than the twelve most examples use: a notification nobody has
-/// seen after four hours is one the inbox will show when the app next opens, and a
-/// push arriving half a day late is noise pretending to be news.
+/// Queue lifetime at the push service; older than this, the inbox shows it on next open anyway.
 const TTL: Duration = Duration::from_secs(4 * 3_600);
 
-/// How long a VAPID signature stays valid.
-///
-/// RFC 8292 caps this at 24 hours. Twelve is used here so a clock a few hours out
-/// still produces something a relay accepts, without minting a token that outlives
-/// the day it was issued.
+/// VAPID token lifetime: half RFC 8292's 24h cap, so a skewed clock is still accepted.
 const VAPID_VALIDITY: Duration = Duration::from_secs(12 * 3_600);
 
-/// Why a transport could not be built (design §11, `[push.webpush]`).
-///
-/// Its own type rather than a [`PortError`]: this is an operator's mistake found at
-/// startup, and the composition root wants a sentence to print, not a category the
-/// fan-out would have to classify.
+/// Why a transport could not be built: an operator mistake found at startup (design §11).
 #[derive(Debug, thiserror::Error)]
 pub enum WebPushSetup {
     /// The contact is not a scheme a push service accepts.
@@ -87,10 +34,7 @@ pub enum WebPushSetup {
     Client(#[source] reqwest::Error),
 }
 
-/// What a service worker receives, once the browser has decrypted it.
-///
-/// Tagged, and the tag is the same word [`PushMessage`] uses: a client that can read
-/// the stream reads this with the same `switch`.
+/// What a service worker receives once decrypted; tagged like [`PushMessage`].
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Envelope {
@@ -100,8 +44,7 @@ pub enum Envelope {
         channel: ChannelId,
         /// Which notification.
         notification_id: NotificationId,
-        /// The content, when it fitted. Absent means this was a poke: wake up, fetch
-        /// over TLS, then display (design §6.3).
+        /// The content, when it fitted; absent means a poke — fetch over TLS (§6.3).
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<serde_json::Value>,
     },
@@ -127,9 +70,7 @@ impl Envelope {
                 channel: channel.clone(),
                 notification_id: *notification_id,
                 content: match body {
-                    // Spliced back as JSON rather than nested as an array of
-                    // integers: the bytes *are* a serialised `Content`, and a client
-                    // reading `content.title` should not have to reassemble it.
+                    // The bytes are a serialised `Content`: splice as JSON, not a byte array.
                     PushBody::Payload { bytes, .. } => serde_json::from_slice(bytes).ok(),
                     PushBody::Poke => None,
                 },
@@ -147,11 +88,7 @@ impl Envelope {
 pub struct WebPushConfig {
     /// The VAPID private key, PEM-encoded P-256.
     pub private_key_pem: String,
-    /// Who to contact about this server: `mailto:…` or `https://…`.
-    ///
-    /// RFC 8292 makes it the `sub` claim, and push services refuse a signature
-    /// without one — it is how a relay reaches an operator whose server has started
-    /// misbehaving, so there is no sensible default to invent.
+    /// Operator contact (`mailto:…` or `https://…`), the required RFC 8292 `sub` claim.
     pub contact: String,
 }
 
@@ -159,8 +96,7 @@ pub struct WebPushConfig {
 pub struct WebPush {
     http: reqwest::Client,
     signing: jsonwebtoken::EncodingKey,
-    /// The uncompressed public point, base64url — the `k=` of the VAPID header and
-    /// the `applicationServerKey` a browser subscribes with. Rendered once.
+    /// Uncompressed public point, base64url: VAPID `k=` and the `applicationServerKey`.
     public_key: String,
     contact: String,
 }
@@ -179,10 +115,7 @@ impl WebPush {
     ///
     /// # Errors
     ///
-    /// Fails if the key is not a P-256 private key this build can read, or the
-    /// contact is not a scheme a push service accepts — both at startup rather than
-    /// at the first push. An operator finding out about a malformed key because
-    /// somebody's phone stayed silent is the failure this refuses.
+    /// Fails at startup if the key is not a readable P-256 key or the contact scheme is wrong.
     pub fn new(config: &WebPushConfig) -> Result<Self, WebPushSetup> {
         use p256::elliptic_curve::sec1::ToEncodedPoint as _;
 
@@ -190,8 +123,7 @@ impl WebPush {
             return Err(WebPushSetup::Contact);
         }
 
-        // Read twice on purpose, and it is cheap: `jsonwebtoken` signs, `p256`
-        // renders the public point, and neither exposes what the other needs.
+        // Read twice: `jsonwebtoken` signs, `p256` renders the public point.
         let secret = read_key(&config.private_key_pem)?;
         let signing = jsonwebtoken::EncodingKey::from_ec_pem(config.private_key_pem.as_bytes())
             .map_err(|_| WebPushSetup::Key)?;
@@ -199,10 +131,7 @@ impl WebPush {
         let point = secret.public_key().to_encoded_point(false);
 
         Ok(Self {
-            // The endpoint is the subscriber's choice, so the client refuses what
-            // `check_push_endpoint` refuses, once more after DNS: a redirect or a
-            // name resolving inside the network is the same request forgery as an
-            // IP literal (design §6.2).
+            // SSRF guard: the endpoint is subscriber-chosen, so no redirects and public IPs only (§6.2).
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
@@ -216,19 +145,12 @@ impl WebPush {
     }
 
     /// The `applicationServerKey` a browser needs to subscribe (RFC 8292).
-    ///
-    /// Public by definition — it is what identifies this server *to* the push
-    /// service, and every subscriber holds a copy.
     #[must_use]
     pub fn public_key(&self) -> &str {
         &self.public_key
     }
 
-    /// The `Authorization: vapid t=…, k=…` header for one endpoint.
-    ///
-    /// The audience is the *origin* of the endpoint and not the endpoint itself:
-    /// RFC 8292 scopes a signature to a push service, so it is one signature per
-    /// origin rather than one per subscription.
+    /// The `Authorization: vapid t=…, k=…` header; RFC 8292 scopes it to the endpoint's origin.
     fn authorization(&self, endpoint: &url::Url, now: u64) -> PortResult<String> {
         #[derive(Serialize)]
         struct Vapid<'a> {
@@ -274,23 +196,19 @@ impl PushTransport for WebPush {
             auth,
         } = &device.transport
         else {
-            // The registry dispatches by name, so reaching here means a device whose
-            // stored transport disagrees with the name it enrolled under.
+            // The registry dispatches by name, so this is a stored-transport mismatch.
             return Err(PortError::corrupt(
                 "device.transport",
                 "not a Web Push subscription",
             ));
         };
 
-        // Enrolment checked it, but a row written before that check existed did not
-        // go through it — and an IP literal never reaches the resolver below.
+        // Re-checked for rows predating enrolment validation; IP literals bypass the resolver.
         if notify_domain::check_push_endpoint(endpoint).is_err() {
             return Ok(PushOutcome::Expired);
         }
 
-        // A subscription whose keys cannot be read will never work again, and the
-        // relay is not going to say so. Reported as expired rather than failed, which
-        // revokes the device instead of retrying it until the notification does.
+        // Unreadable keys never recover: expire (revoke) rather than retry.
         let (Ok(subscriber), Ok(secret)) = (decode_key(p256dh), decode_auth(auth)) else {
             return Ok(PushOutcome::Expired);
         };
@@ -319,9 +237,7 @@ impl PushTransport for WebPush {
 
         Ok(match response {
             Ok(response) => outcome(response.status().as_u16()),
-            // The relay was unreachable. A routine outcome on a flaky network and a
-            // metric rather than an error: `Err` is for this transport being
-            // unusable, which a dropped connection is not.
+            // Unreachable relay is a metric, not an `Err` (which means the transport is unusable).
             Err(_) => PushOutcome::Failed {
                 reason: "unreachable",
             },
@@ -329,10 +245,7 @@ impl PushTransport for WebPush {
     }
 }
 
-/// A resolver that only ever hands back public addresses.
-///
-/// ponytail: duplicated in `notify-push-unifiedpush`; a shared crate if a third
-/// transport ever dials an address a user picked.
+/// A resolver that only ever hands back public addresses (duplicated in `notify-push-unifiedpush`).
 struct PublicOnly;
 
 impl reqwest::dns::Resolve for PublicOnly {
@@ -350,27 +263,7 @@ impl reqwest::dns::Resolve for PublicOnly {
     }
 }
 
-/// Web Push as a dispatcher, so this crate's own tests reach it through the trait
-/// the fan-out uses rather than through the concrete type.
-#[async_trait::async_trait]
-impl PushDispatcher for WebPush {
-    async fn dispatch(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
-        self.deliver(device, message).await
-    }
-}
-
-/// A VAPID key for tests, built rather than pasted.
-///
-/// A PEM literal in a source file is exactly what `task audit` (trivy) and the
-/// gitleaks pre-commit hook exist to catch, and the honest way past them is not to
-/// allowlist the path — an exception written for a *test* key would go on covering
-/// the file the day a real one lands in it. So the key is derived from a fixed
-/// scalar: deterministic, valid, and not a secret in any sense a scanner or a reader
-/// could confuse with one.
-///
-/// A feature rather than a `#[cfg(test)]` helper because the composition root needs
-/// the same key to test that it reads one (`notify-server`), and the convention for
-/// that in this workspace is `notify-ports/test-utils`.
+/// A VAPID key for tests, derived from a fixed scalar so no PEM literal trips secret scanners.
 #[cfg(any(test, feature = "test-utils"))]
 #[must_use]
 pub fn test_vapid_key() -> String {
@@ -388,23 +281,14 @@ pub fn test_vapid_key() -> String {
         .to_string()
 }
 
-/// Read a P-256 private key in either PEM form an operator is likely to have.
-///
-/// PKCS#8 (`BEGIN PRIVATE KEY`) is what `openssl genpkey` writes and what most
-/// tooling produces; SEC1 (`BEGIN EC PRIVATE KEY`) is what `openssl ecparam` does.
-/// Accepting one and refusing the other would be a support question rather than a
-/// decision.
+/// Read a P-256 private key as PKCS#8 or SEC1 PEM.
 fn read_key(pem: &str) -> Result<p256::SecretKey, WebPushSetup> {
     p256::SecretKey::from_pkcs8_pem(pem)
         .or_else(|_| pem.parse::<p256::SecretKey>())
         .map_err(|_| WebPushSetup::Key)
 }
 
-/// How a push service's answer maps onto [`PushOutcome`].
-///
-/// The distinction that matters is `Expired`: `404` and `410` mean the subscription
-/// is gone, and the right response is to revoke the device rather than retry it
-/// until the notification expires.
+/// Map a push service status to [`PushOutcome`]; `404`/`410` mean revoke, not retry.
 const fn outcome(status: u16) -> PushOutcome {
     match status {
         200..=299 => PushOutcome::Delivered,
@@ -422,11 +306,7 @@ const fn outcome(status: u16) -> PushOutcome {
     }
 }
 
-/// The `Urgency` header of RFC 8030 §5.3.
-///
-/// A push service uses it to decide what may wait for a device to wake. It is a hint
-/// about batching, not a way past a recipient's do-not-disturb — that was applied
-/// before this transport was reached (design §7.4).
+/// The RFC 8030 §5.3 `Urgency` batching hint; do-not-disturb was already applied (§7.4).
 const fn urgency(message: &PushMessage) -> &'static str {
     match message.priority() {
         Priority::Min => "very-low",
@@ -465,11 +345,7 @@ mod tests {
     /// A subscriber's `auth`: sixteen octets, base64url, as a browser hands it out.
     const AUTH: &str = "tBHItJI5svbpez7KI4CCXg";
 
-    /// A subscriber's `p256dh`.
-    ///
-    /// Derived from a real key rather than pasted, because a string that only looks
-    /// like a point makes [`decode_key`] fail and every delivery test then passes by
-    /// taking the `Expired` shortcut — proving nothing about the encryption.
+    /// A real subscriber `p256dh`, so delivery tests exercise encryption, not the `Expired` shortcut.
     fn subscriber_key() -> String {
         use p256::elliptic_curve::sec1::ToEncodedPoint as _;
         let point = read_key(&test_vapid_key())
@@ -658,8 +534,7 @@ mod tests {
     #[tokio::test]
     async fn a_relay_that_cannot_be_reached_is_a_metric_and_not_an_error() {
         let transport = WebPush::new(&config()).unwrap();
-        // A name that never resolves (RFC 6761): the request fails before the
-        // socket, which also means the encryption above it ran for real.
+        // RFC 6761 name: fails before the socket, after encryption ran.
         let unreachable = device_with(&subscriber_key(), "https://push.invalid/push");
 
         let outcome = transport

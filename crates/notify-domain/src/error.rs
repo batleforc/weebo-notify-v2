@@ -1,21 +1,9 @@
-//! The single error type the domain rejects with, and its stable wire code.
-//!
-//! Every rejection carries a `code` that is part of the public contract: it goes
-//! into the `code` field of the `application/problem+json` body (design §8) and is
-//! consumed *as an identifier* by the CLI, the TUI and the web client to pick a
-//! user-facing message. Renaming a code is therefore a breaking API change —
-//! adding one is not.
-//!
-//! The domain deliberately does not know about HTTP. It exposes a coarse
-//! [`ErrorKind`] instead, and the HTTP adapter maps that to a status code, so the
-//! mapping lives in exactly one place without dragging the web vocabulary into the
-//! notification model.
+//! The domain's single error type. Each `code` is public contract (problem+json,
+//! §8): renaming one is a breaking change. [`ErrorKind`] lets transports map statuses.
 
 use thiserror::Error;
 
-/// The coarse category of a rejection, so a transport can map it to its own
-/// vocabulary (HTTP status, exit code, gRPC status…) without matching on every
-/// variant.
+/// The coarse category of a rejection, for transports to map to their own vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
     /// The input is malformed or violates an invariant — HTTP 422.
@@ -43,16 +31,14 @@ pub enum DomainError {
         field: &'static str,
     },
 
-    /// A field was present but contained nothing once sanitised (design §2.3):
-    /// a title made only of ANSI escapes is an empty title.
+    /// A field contained nothing once sanitised (§2.3).
     #[error("`{field}` is empty once sanitised")]
     Empty {
         /// Dotted path of the offending field.
         field: &'static str,
     },
 
-    /// A text field is longer than its documented ceiling. Measured in characters,
-    /// not bytes — the limit users are told about is the one they can count.
+    /// A text field is longer than its ceiling, in characters.
     #[error("`{field}` is {actual} characters long, the maximum is {max}")]
     TooLong {
         /// Dotted path of the offending field.
@@ -94,37 +80,32 @@ pub enum DomainError {
         actual: usize,
     },
 
-    /// The 1 000-revision ceiling was hit (design §8.2): the notification stays
-    /// intact and readable, only further revisions are refused.
+    /// The 1 000-revision ceiling was hit (§8.2); only further revisions are refused.
     #[error("this notification already has {max} revisions — publish a new one")]
     RevisionLimitReached {
         /// Documented ceiling.
         max: u32,
     },
 
-    /// `ttl = 0` means "keep forever", which a channel must opt into explicitly
-    /// (design §7.2bis).
+    /// `ttl = 0` (keep forever) needs the channel's explicit opt-in (§7.2bis).
     #[error("infinite retention is not enabled on this channel")]
     InfiniteTtlNotAllowed,
 
-    /// Two actions claim the same key, so an interaction on that key would be
-    /// ambiguous.
+    /// Two actions claim the same key.
     #[error("two actions share the key `{key}`")]
     DuplicateActionKey {
         /// The colliding key.
         key: String,
     },
 
-    /// An interaction referenced an action the current revision does not offer.
-    /// Expected after a revision replaced the action set (design §2.3).
+    /// An interaction referenced an action the current revision does not offer (§2.3).
     #[error("this notification has no action with the key `{key}`")]
     UnknownActionKey {
         /// The key that was looked up.
         key: String,
     },
 
-    /// The interaction kind does not match the action kind, e.g. a reply on an
-    /// `ack` button.
+    /// The interaction kind does not match the action kind (e.g. a reply on `ack`).
     #[error("action `{key}` does not accept a {attempted} interaction")]
     ActionKindMismatch {
         /// The action key that was targeted.
@@ -142,17 +123,14 @@ pub enum DomainError {
         option: String,
     },
 
-    /// A `view` action pointed somewhere other than the web (design §2.3): a
-    /// notification must never be able to hand a client a `javascript:` or
-    /// `file:` URL to open.
+    /// A `view` action pointed at a non-http(s) URL (§2.3).
     #[error("`{scheme}:` links are not allowed in a view action — http(s) only")]
     UrlSchemeNotAllowed {
         /// The scheme that was refused.
         scheme: String,
     },
 
-    /// A group-scoped silence with no duration would mute a whole group forever
-    /// by accident (design §2.3).
+    /// A group-scoped silence needs a duration (§2.3).
     #[error("a group-scoped silence must carry a duration")]
     SilenceGroupNeedsDuration,
 
@@ -160,42 +138,23 @@ pub enum DomainError {
     #[error("this notification no longer exists")]
     NotificationGone,
 
-    /// The dead letter is not there to requeue — already requeued, or purged
-    /// (design §7.1bis, `POST /admin/dlq/{id}/requeue`).
-    ///
-    /// Its own variant rather than [`Self::NotificationGone`], which it otherwise
-    /// resembles: a console branching on `notification.gone` would show "this
-    /// notification is gone" for a delivery whose notification is perfectly alive.
-    /// Same category, different sentence.
+    /// The dead letter is not there to requeue (already requeued, or purged).
     #[error("this dead letter is no longer in the queue")]
     DeadLetterGone,
 
-    /// The object is declared in GitOps config, which owns its shape (design §11).
-    ///
-    /// Its own variant rather than a [`Self::Malformed`] because the request is not
-    /// malformed at all — it is understood, and refused by policy. That distinction
-    /// is what a client branches on: `origin.managed` says "go and change the
-    /// config", where `field.malformed` says "you typed it wrong".
+    /// The object is managed by GitOps config (§11): change the config, not the request.
     #[error("`{what}` is managed by GitOps — change it in config")]
     ManagedByConfig {
         /// What was being changed, e.g. `channel.policy`.
         what: &'static str,
     },
 
-    /// The credential presented is not valid: a bad signature, an unknown key, a
-    /// wrong secret, a malformed header.
-    ///
-    /// One variant for all of them on purpose. Telling a caller *which* turns the
-    /// endpoint into an oracle — "unknown prefix" versus "wrong secret" says which
-    /// guesses landed on a real key. The log records the detail; the response does
-    /// not.
+    /// The credential presented is not valid. Deliberately one variant for every
+    /// cause so the endpoint is not an oracle; the detail goes to the log.
     #[error("the credential presented is not valid")]
     InvalidCredential,
 
-    /// The API key presented has passed its `expires_at`.
-    ///
-    /// Distinct from [`Self::ApiKeyRevoked`] so a client can say "your key expired,
-    /// here is how to rotate it" rather than a flat 401 (design §5.2, scenario T12).
+    /// The API key presented has passed its `expires_at` (§5.2, T12).
     #[error("this API key expired")]
     ApiKeyExpired,
 
@@ -203,51 +162,32 @@ pub enum DomainError {
     #[error("this API key was revoked")]
     ApiKeyRevoked,
 
-    /// The service account behind this request is deactivated (design §5.2bis).
+    /// The service account behind this request is deactivated (§5.2bis).
     #[error("this service account is deactivated")]
     ServiceAccountDisabled,
 
-    /// The principal is authenticated but does not hold the required scope in the
-    /// channel it is reaching for (design §5.2).
-    ///
-    /// Deliberately says *what* was missing and not *who* holds it: membership of a
-    /// channel you are not in is not information you get to enumerate.
+    /// The principal lacks the required scope in that channel (§5.2); never says who holds it.
     #[error("this principal does not hold `{scope}` in that channel")]
     ScopeMissing {
         /// The scope that would have been needed.
         scope: &'static str,
     },
 
-    /// The endpoint describes a person, and this caller is not one (design §2.4).
-    ///
-    /// A service account has a profile of its own but no *settings* to edit, and a
-    /// channel key is anonymous by construction (§5.2) — there is nobody to
-    /// describe. Its own code rather than a scope refusal, because "you lack a
-    /// right" and "there is no such thing to have" send a client down different
-    /// paths: the first is worth asking an admin about, the second never will be.
+    /// The endpoint describes a person and this caller is not one (§2.4).
     #[error("this principal has no profile of its own")]
     NotAPerson,
 
-    /// The instance-wide platform role is required and this caller does not hold it
-    /// (design §5.4, scenario T30).
-    ///
-    /// Its own code rather than [`Self::ScopeMissing`], because they are answers to
-    /// different questions: a missing scope is about *one channel* and is fixed by
-    /// its manager, whereas this one is instance-wide, comes from GitOps only, and
-    /// no API path can grant it. Telling a client to go ask for a scope would send
-    /// them somewhere nobody can help.
+    /// The instance-wide platform role is required (§5.4, T30); only GitOps grants it.
     #[error("this action needs the platform role")]
     NotPlatformAdmin,
 
-    /// The action changes a person's own account — their profile, their settings,
-    /// the channels they create — and the credential is a key or a CI token rather
-    /// than that person's session. Fixed by logging in, not by asking for a scope.
+    /// The action needs a person's own session, not a key or a CI token.
     #[error("this action needs a person's own session, not a key or a CI token")]
     SessionRequired,
 }
 
 impl DomainError {
-    /// The stable wire code. Part of the public API contract — see the module docs.
+    /// The stable wire code; part of the public API contract.
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
@@ -377,9 +317,7 @@ mod tests {
 
     #[test]
     fn the_code_table_is_the_contract() {
-        // Clients match on these strings to choose what to tell a user. Renaming
-        // one is a breaking API change, so it has to be a deliberate edit here
-        // rather than a rename that quietly rides along with a refactor.
+        // Clients match on these strings: renaming one is a breaking change.
         let codes: Vec<&str> = every_variant().iter().map(DomainError::code).collect();
 
         assert_eq!(
@@ -412,9 +350,7 @@ mod tests {
 
     #[test]
     fn only_the_shared_field_codes_are_reused() {
-        // Two rejections may share a code only when they genuinely mean the same
-        // thing to a client — "some field was wrong" carries its detail in the
-        // message, not in the code.
+        // Codes are shared only when they mean the same thing to a client.
         let mut codes: Vec<&str> = every_variant().iter().map(DomainError::code).collect();
         let total = codes.len();
         codes.sort_unstable();

@@ -1,8 +1,4 @@
-//! What the mock remembers between requests, and how it mints tokens.
-//!
-//! All of it in memory and none of it durable: restarting the mock logs everyone
-//! out, which is the correct behaviour for a provider whose whole database is a
-//! committed TOML file.
+//! What the mock remembers between requests (in memory only: a restart logs everyone out).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError, RwLock};
@@ -18,14 +14,10 @@ use ulid::Ulid;
 use crate::config::{Client, Identities, User};
 use crate::keys::{KeyError, Keys};
 
-/// How long a login page stays valid once `/authorize` has rendered it. Long
-/// enough to type a password, short enough that an abandoned tab is not a grant
-/// waiting to be picked up.
+/// How long a login page stays valid once `/authorize` has rendered it.
 const REQUEST_TTL_SECS: i64 = 600;
 
-/// How long an authorization code lives. RFC 6749 says "maximum of 10 minutes";
-/// a code travels from a redirect straight into a token call, so one minute is
-/// already generous.
+/// How long an authorization code lives (RFC 6749 allows up to 10 minutes).
 const CODE_TTL_SECS: i64 = 60;
 
 /// A parsed, validated `/authorize` request waiting for someone to log in.
@@ -61,8 +53,7 @@ pub(crate) struct Tokens {
     pub(crate) scope: String,
 }
 
-/// Why a token request was refused. These map onto the OAuth error codes, because
-/// a client that only ever sees `invalid_request` learns nothing.
+/// Why a token request was refused, mapped onto the OAuth error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GrantRefusal {
     /// The code or refresh token is unknown, spent or expired.
@@ -90,8 +81,7 @@ impl Mock {
     ///
     /// # Errors
     ///
-    /// Fails only if the signing key cannot be derived, which would be a bug in
-    /// this crate rather than anything the caller did.
+    /// Fails only if the signing key cannot be derived (a bug in this crate).
     pub fn new(identities: Identities) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Self {
             identities,
@@ -131,13 +121,8 @@ impl Mock {
             .map(ToOwned::to_owned)
     }
 
-    /// Park a validated `/authorize` request and return the handle the login form
-    /// posts back.
-    ///
-    /// The handle is opaque on purpose: the alternative is echoing `state`,
-    /// `redirect_uri` and the challenge back into hidden form fields, and a page
-    /// that reflects attacker-controlled strings is a habit worth not forming even
-    /// in a mock.
+    /// Park a validated `/authorize` request and return the opaque handle the login form posts
+    /// back (so the page never reflects attacker-controlled strings).
     pub(crate) fn begin(&self, request: AuthRequest) -> String {
         let id = Ulid::new().to_string();
         let mut requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
@@ -148,8 +133,7 @@ impl Mock {
         id
     }
 
-    /// Look a parked request back up, leaving it in place so a mistyped password
-    /// can be retried on the same page.
+    /// Look a parked request back up, leaving it in place so a mistyped password can be retried.
     pub(crate) fn pending(&self, id: &str) -> Option<AuthRequest> {
         let requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
 
@@ -188,11 +172,7 @@ impl Mock {
         Some((code, request))
     }
 
-    /// Exchange a code for tokens.
-    ///
-    /// The code is removed before anything else is checked, so a replay of a valid
-    /// code fails even when the verifier is right — a code is used once or not at
-    /// all.
+    /// Exchange a code for tokens; the code is spent before any check, so a replay always fails.
     pub(crate) fn redeem_code(
         &self,
         code: &str,
@@ -217,11 +197,7 @@ impl Mock {
         self.issue(&grant)
     }
 
-    /// Exchange a refresh token for a fresh token set.
-    ///
-    /// The old refresh token is spent and a new one issued — the rotation Authentik
-    /// performs, so a client that mishandles it breaks here rather than against a
-    /// real provider (§3.2 `oidc-compat`).
+    /// Exchange a refresh token for a fresh set, rotating it as Authentik does (§3.2 `oidc-compat`).
     pub(crate) fn redeem_refresh(&self, token: &str) -> Result<Tokens, GrantRefusal> {
         let grant = self
             .refresh
@@ -234,8 +210,7 @@ impl Mock {
         self.issue(&grant)
     }
 
-    /// Mint the token set a grant is owed, and a replacement refresh token when the
-    /// grant asked for offline access.
+    /// Mint the token set a grant is owed, plus a refresh token for offline access.
     fn issue(&self, grant: &Grant) -> Result<Tokens, GrantRefusal> {
         let user = self
             .identities
@@ -253,13 +228,10 @@ impl Mock {
 
         let mut id_token = self.claims(user, grant, issued_at, client.id_token_ttl_secs);
         if let Some(nonce) = &grant.nonce {
-            // Bound to the browser session that started the flow; without it a
-            // stolen id token can be replayed into a different login.
+            // Binds the id token to the browser session that started the flow.
             id_token["nonce"] = json!(nonce);
         }
 
-        // A signing failure here is a bug in the mock, not a bad request, but the
-        // caller still deserves a refusal rather than a hung connection.
         let access_token = signer.sign(&access).map_err(|error| {
             tracing::error!(%error, "the mock could not sign an access token");
             GrantRefusal::UnknownGrant
@@ -315,9 +287,7 @@ impl Mock {
             "email_verified": user.email_verified,
         });
 
-        // Absent, not empty. A provider with no groups mapping emits no claim at
-        // all, and the server has to survive that (T29) — sending `[]` would quietly
-        // paper over the case this identity exists to test.
+        // Absent, not empty: the server must survive a provider with no groups mapping (T29).
         if !user.groups.is_empty() {
             claims["groups"] = json!(user.groups);
         }
@@ -352,11 +322,7 @@ pub(crate) fn challenge_for(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-/// Drop everything that has expired.
-///
-/// Called on insert rather than on a timer: a dev provider that leaks a map entry
-/// per login would still be running fine a week later, and a background task to
-/// prevent that is more machinery than the problem deserves.
+/// Drop everything that has expired (on insert, no background task needed for a dev provider).
 fn prune<T>(entries: &mut HashMap<String, T>, expiry: impl Fn(&T) -> i64) {
     let cutoff = now();
     entries.retain(|_, entry| expiry(entry) > cutoff);

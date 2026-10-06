@@ -1,11 +1,5 @@
-//! The caller's own profile (design §2.4, §8).
-//!
-//! `/users/me/profile` and never `/users/{id}/profile`: §2.4 is explicit that no
-//! endpoint reads somebody else's, and the path is where that decision is visible.
-//! A profile reaches other people **embedded** — as the `author` of a revision, in
-//! a member list, beside a receipt — which is what mechanically enforces "visible
-//! only through a shared channel". Adding a lookup route later means redoing that
-//! analysis rather than adding a handler.
+//! The caller's own profile (design §2.4, §8). Only `/users/me`: other people's profiles
+//! are only ever seen embedded (author, member list, receipt).
 
 use actix_web::{HttpRequest, HttpResponse, get, put, web};
 use notify_domain::limits::MAX_AVATAR_BYTES;
@@ -17,26 +11,15 @@ use crate::extract::Authenticated;
 use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
 
-/// A partial edit of the caller's profile.
-///
-/// Every field is doubly optional on the wire, and the two levels mean different
-/// things — this is the whole reason the body is not just a `Profile`:
-///
-/// * **absent** — leave the field exactly as it is;
-/// * **`null`** — hand the field back to the identity provider, so the next login
-///   refreshes it;
-/// * **a value** — claim it, and stop later logins from overwriting it (§2.4).
-///
-/// Without the middle case there is no way back: somebody who typed a display name
-/// once would be maintaining it by hand forever.
+/// A partial edit of the caller's profile: an absent field is left alone, `null` hands it
+/// back to the identity provider, a value claims it against later logins (§2.4).
 #[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct ProfileBody {
     /// The name shown next to everything this person publishes.
     #[serde(default, deserialize_with = "written")]
     #[schema(value_type = Option<String>)]
     pub display_name: Option<FieldEdit>,
-    /// An IANA name such as `Europe/Paris`, validated against the real database.
-    /// It is the default quiet hours are resolved in (§7.4).
+    /// An IANA name such as `Europe/Paris`; the default timezone for quiet hours (§7.4).
     #[serde(default, deserialize_with = "written")]
     #[schema(value_type = Option<String>)]
     pub timezone: Option<FieldEdit>,
@@ -46,16 +29,7 @@ pub struct ProfileBody {
     pub locale: Option<FieldEdit>,
 }
 
-/// Tell "absent" and "explicitly null" apart.
-///
-/// Without this, serde collapses both onto the outer `None` — `#[serde(default)]`
-/// fills in the absent case and a literal `null` deserialises to the very same
-/// value. The endpoint would then have no way to express "hand this field back to
-/// the identity provider" (§2.4), and a `null` would silently mean "leave it as it
-/// is": the opposite of what the caller asked for.
-///
-/// serde only calls this when the key is present, so reaching it at all means the
-/// field was written — whatever it was written as.
+/// Tell "absent" from "explicitly null": serde only calls this when the key is present.
 fn written<'de, D>(deserializer: D) -> Result<Option<FieldEdit>, D::Error>
 where
     D: Deserializer<'de>,
@@ -94,15 +68,7 @@ pub(crate) async fn read_profile(
     Ok(web::Json(state.profile.execute(&caller.0).await?))
 }
 
-/// The body of an avatar upload: the image bytes, nothing wrapping them.
-///
-/// Nothing reads it: the handler takes `web::Bytes` directly. It exists so the
-/// document has a name for "raw bytes".
-///
-/// A named schema rather than an inline one because the wire type has to be
-/// `string` with `format: binary` — that is how OpenAPI spells "raw bytes", and a
-/// generator that reads anything else refuses the document outright rather than
-/// guessing (which is what `Vec<u8>` did: an array of integers).
+/// The body of an avatar upload: the raw image bytes (`format: binary`).
 #[derive(Debug, ToSchema)]
 #[schema(value_type = String, format = Binary)]
 pub struct AvatarUpload(
@@ -114,11 +80,7 @@ pub struct AvatarUpload(
     Vec<u8>,
 );
 
-/// Replace your own avatar.
-///
-/// The body is the image itself rather than a multipart form: there is exactly one
-/// field, and a multipart parser is a parser more on a path that already decodes
-/// user-supplied media (§15).
+/// Replace your own avatar; the body is the image itself, not a multipart form.
 #[utoipa::path(
     put,
     path = "/users/me/avatar",
@@ -144,9 +106,7 @@ pub(crate) async fn set_avatar(
     request: HttpRequest,
     payload: web::Payload,
 ) -> Result<web::Json<Profile>, ApiError> {
-    // The ceiling is checked here as well as in the decoder, and both are wanted:
-    // this one stops reading the moment the body passes it, the other one is the
-    // rule the port promises whatever calls it.
+    // Checked here too so reading stops as soon as the body passes the ceiling.
     let body = match payload.to_bytes_limited(MAX_AVATAR_BYTES).await {
         Ok(Ok(body)) => body,
         Ok(Err(_)) => {
@@ -205,8 +165,7 @@ pub(crate) async fn read_avatar(
 
     Ok(crate::routes::served_bytes(&mut HttpResponse::Ok())
         .content_type(object.content_type)
-        // Immutable: replacing an avatar mints a new id (§2.4), so a cached one can
-        // never be stale — and an inbox renders the same face on every row.
+        // Immutable: replacing an avatar mints a new id (§2.4).
         .insert_header(("cache-control", "private, max-age=86400, immutable"))
         .body(object.bytes))
 }

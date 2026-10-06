@@ -3,20 +3,14 @@ version: "3"
 # Task echoes multi-line scripts verbatim; the scripts below print what matters themselves.
 silent: true
 
-# Architecture Decision Records (design §3.3).
-#
-# ADRs are IMMUTABLE: an accepted ADR is never rewritten, it is superseded by a new
-# one ("Superseded by: ADR-00NN"). Write one when a decision is expensive to reverse
-# or was actually debated — not for every library pick.
-#
-# This convention is meant to be promoted back into the weebo-base template.
+# Architecture Decision Records (§3.3): immutable once accepted, superseded by a new one.
 
 vars:
   ADR_DIR: docs/content/docs/adr
 
 tasks:
   default:
-    desc: 'Create the next numbered ADR from the MADR template — usage: task adr -- "sealed box per device"'
+    desc: 'Create the next numbered ADR from the MADR template (task adr -- "sealed box per device").'
     cmds:
       - cmd: |
           set -eu
@@ -27,11 +21,7 @@ tasks:
             exit 2
           fi
           mkdir -p '{{.ADR_DIR}}'
-          # The leading zeros are stripped before the addition, and that is not
-          # cosmetic: shell arithmetic reads `0014` as OCTAL, so the next record
-          # after ADR-0014 came out numbered 0013 and quietly collided with an
-          # existing one. `0008` and `0009` are not even valid octal, which would
-          # have failed outright the day the count reached them.
+          # Strip leading zeros: shell arithmetic reads `0014` as octal.
           last=$(ls '{{.ADR_DIR}}' 2>/dev/null | grep -oE '^[0-9]{4}' | sort -n | tail -1 | sed 's/^0*//' || true)
           next=$(printf '%04d' $(( ${last:-0} + 1 )))
           slug=$(printf '%s' "$title" \

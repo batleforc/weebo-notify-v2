@@ -1,8 +1,4 @@
-//! `notify publish` and `notify update` — the two ingestion paths, at a prompt.
-//!
-//! Thin by rule (design §9.3): everything here is argument parsing and rendering.
-//! Anything that decides something belongs in `notify-client-core`, because the TUI
-//! and the Tauri shell will want it too.
+//! `notify publish` and `notify update`: argument parsing and rendering only (§9.3).
 
 use std::io::Read as _;
 
@@ -17,18 +13,15 @@ use crate::{CliError, OutputFormat};
 /// The fields both commands share.
 #[derive(Debug, Args)]
 pub(crate) struct Content {
-    /// Headline. Required when creating; leave it out on an update to keep the one
-    /// that is there.
+    /// Headline. Required when creating; omit on an update to keep the current one.
     #[arg(long, short = 't')]
     pub title: Option<String>,
 
-    /// Markdown body. `-` reads it from stdin, which is what makes
-    /// `cmd | notify publish -c ci-infra -t "…" -b -` work.
+    /// Markdown body; `-` reads it from stdin.
     #[arg(long, short = 'b')]
     pub body: Option<String>,
 
-    /// Lifecycle position. Supplying it at creation is what makes the notification
-    /// a lifecycle one rather than fire-and-forget (design §2.2).
+    /// Lifecycle position; supplying it at creation makes the notification a lifecycle one (§2.2).
     #[arg(long, value_enum)]
     pub state: Option<StateArg>,
 
@@ -48,7 +41,7 @@ pub(crate) struct Content {
     #[arg(long = "tag")]
     pub tags: Vec<String>,
 
-    /// A button, as `type:label:argument`. Repeat the flag for several, up to five.
+    /// A button, as `type:label:argument`. Repeat for several, up to five.
     ///
     /// `view:Runbook:https://…` opens a link, `ack:Ack:incident` acknowledges,
     /// `reply:Comment:Notes…` asks for text (the placeholder is optional).
@@ -60,20 +53,8 @@ pub(crate) struct Content {
     pub image: Option<std::path::PathBuf>,
 }
 
-/// One `--action` flag.
-///
-/// # Why a colon-separated string rather than repeated typed flags
-///
-/// Because the alternative is `--action-type view --action-label Runbook
-/// --action-url …` repeated five times, with nothing tying a triple together and
-/// nothing stopping a half-written one. §9.1 sketches this spelling, and it is the
-/// one that survives being written inside a CI YAML on one line.
-///
-/// Split into **three** parts at most, so the argument may contain colons — which
-/// it always does, since the common case is a URL. A *label* containing a colon is
-/// the case this cannot express, and it is the right one to give up: a button
-/// caption is short and a publisher can rename it, whereas a URL cannot be rewritten
-/// to avoid its scheme.
+/// One `--action` flag, split into at most three parts so the argument (usually a URL) may
+/// contain colons; a label cannot.
 pub(crate) fn parse_action(raw: &str) -> Result<Action, CliError> {
     let mut parts = raw.splitn(3, ':');
     let kind = parts.next().unwrap_or_default();
@@ -91,9 +72,7 @@ pub(crate) fn parse_action(raw: &str) -> Result<Action, CliError> {
             let url = argument.ok_or_else(|| {
                 CliError::Usage(format!("`--action {raw}`: a `view` button needs a URL"))
             })?;
-            // Not validated here beyond being present: the server checks the scheme
-            // at ingestion and the client checks it again before opening (§2.3), and
-            // a third opinion in the CLI would be a third place to disagree.
+            // The scheme is checked by the server and by the opening client (§2.3).
             Ok(Action::View {
                 label,
                 url: url.to_owned(),
@@ -115,10 +94,7 @@ pub(crate) fn parse_action(raw: &str) -> Result<Action, CliError> {
             label,
             placeholder: argument.map(ToOwned::to_owned),
         }),
-        // Refused rather than half-supported: a `choice` carries a list of options
-        // and a `silence` a scope and a duration, and flattening either into one
-        // colon-separated field would invent a syntax this document does not have.
-        // They go through the API, where the shape is the schema's (§2.3).
+        // `choice` and `silence` need structured fields; they go through the API (§2.3).
         "choice" | "silence" => Err(CliError::Usage(format!(
             "`--action {raw}`: `{kind}` carries more than a label and one argument, \
              so it has no flag spelling — publish it through the API (§2.3)"
@@ -130,15 +106,7 @@ pub(crate) fn parse_action(raw: &str) -> Result<Action, CliError> {
     }
 }
 
-/// Turn a file into what a payload carries: inline, or an uploaded reference.
-///
-/// # The cap decides which, and the caller never has to
-///
-/// §2.3 allows an inline image up to 48 KiB and says that past it a publisher
-/// uploads an attachment instead. Both are `--image ./graph.png` here: below the
-/// cap the bytes travel in the payload, above it they go to the bucket and the
-/// payload carries the id. Making a person know which side of 48 KiB their
-/// screenshot falls on would be exposing an implementation limit as a flag.
+/// Turn a file into what a payload carries: inline under the 48 KiB cap (§2.3), uploaded above it.
 async fn resolve_image(
     session: &Session,
     channel: &str,
@@ -158,12 +126,8 @@ async fn resolve_image(
     }
 }
 
-/// Parse every `--action` flag into what a revision carries.
-///
-/// `None` and not an empty list when there are no flags: §2.3 replaces the actions
-/// **wholesale** on every revision, so an empty `Some` would *clear* the buttons of
-/// a notification being revised for an unrelated reason — which is exactly what
-/// `notify update --status success` does all day in CI.
+/// Parse every `--action` flag; `None` without flags, since §2.3 replaces actions wholesale
+/// and an empty list would clear them on an unrelated update.
 fn fold_actions(raw: &[String]) -> Result<Option<Actions>, CliError> {
     if raw.is_empty() {
         return Ok(None);
@@ -204,9 +168,7 @@ fn read_image(path: &std::path::Path) -> Result<Inlined, CliError> {
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
         Some("gif") => "image/gif",
-        // Guessed from the name and not from the bytes, deliberately: the server
-        // is the one that decides what it accepts, and a CLI sniffing magic numbers
-        // would be a second opinion that can differ from the one that matters.
+        // Guessed from the name: the server decides what it accepts.
         other => {
             return Err(CliError::Usage(format!(
                 "{}: unsupported image extension {}",
@@ -219,8 +181,7 @@ fn read_image(path: &std::path::Path) -> Result<Inlined, CliError> {
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let uri = format!("data:{media_type};base64,{encoded}");
 
-    // Measured on the URI and not on the file: the cap is on what travels in the
-    // payload, and base64 is a third larger than what it encodes.
+    // The cap is on the base64 URI that travels, not the file.
     if uri.len() > MAX_DATA_URI_BYTES {
         return Ok(Inlined::TooBig {
             bytes,
@@ -231,17 +192,11 @@ fn read_image(path: &std::path::Path) -> Result<Inlined, CliError> {
     Ok(Inlined::Small(Image::DataUri { uri }))
 }
 
-/// What §2.3 allows inline. Mirrors `notify_domain::limits::MAX_DATA_URI_BYTES`,
-/// which the CLI does not depend on.
+/// What §2.3 allows inline (mirrors `notify_domain::limits::MAX_DATA_URI_BYTES`).
 const MAX_DATA_URI_BYTES: usize = 48 * 1024;
 
 impl Content {
-    /// Turn the flags into a revision, reading stdin and uploading if asked to.
-    ///
-    /// Takes the session because `--image` may have to reach the bucket first
-    /// (§6.1). That is the one thing in this file that is not pure parsing, and it
-    /// is here rather than in `notify-client-core` only as a *sequence* — the two
-    /// calls it makes both live down there (§9.3).
+    /// Turn the flags into a revision, reading stdin and uploading `--image` if needed (§6.1).
     pub(crate) async fn into_revision(
         self,
         session: &Session,
@@ -320,8 +275,7 @@ pub(crate) async fn update(
 fn render(published: &Published, output: OutputFormat) -> Result<String, CliError> {
     match output {
         OutputFormat::Json => {
-            // Whole response, verbatim: a script that wants a field should not have
-            // to hope the CLI happened to print it.
+            // The whole response, verbatim.
             serde_json::to_string_pretty(published)
                 .map_err(|error| CliError::Api(format!("could not render the response: {error}")))
         }
@@ -336,8 +290,7 @@ fn render(published: &Published, output: OutputFormat) -> Result<String, CliErro
                 published.cursor,
             );
 
-            // A clamp the publisher cannot see is a clamp they will report as a bug
-            // (design §7.2bis, scenario T6).
+            // Surface a clamp the publisher couldn't otherwise see (§7.2bis, T6).
             if let Some(requested) = &published.retention.clamped_from {
                 use std::fmt::Write as _;
 
@@ -345,8 +298,7 @@ fn render(published: &Published, output: OutputFormat) -> Result<String, CliErro
                     out,
                     "\n  ttl       {} — clamped from the {} you asked for",
                     published.retention.ttl,
-                    // `Deref<Target = String>` is progenitor's rendering of a
-                    // string newtype; there is no `Display` to reach for.
+                    // progenitor's string newtype derefs to `String` but has no `Display`.
                     **requested
                 );
             }
@@ -361,11 +313,8 @@ fn render(published: &Published, output: OutputFormat) -> Result<String, CliErro
     }
 }
 
-/// The constrained values, as clap sees them.
-///
-/// One variant per server-side value, and the mapping below is exhaustive: adding a
-/// state to the domain fails to compile here until the CLI learns it, which is the
-/// only way the two stay in step (design §9.1).
+/// The constrained values as clap sees them; the mapping is exhaustive so a new domain value
+/// fails to compile here (§9.1).
 macro_rules! value_enum {
     ($name:ident => $target:path { $($variant:ident),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -396,8 +345,6 @@ mod tests {
 
     #[test]
     fn a_view_button_keeps_the_colons_in_its_url() {
-        // The whole reason the split is bounded at three: the common argument is a
-        // URL, and a URL always contains the colon of its scheme.
         let action = parse_action("view:Voir le run:https://forge.example/runs/42").unwrap();
 
         assert!(matches!(
@@ -409,8 +356,7 @@ mod tests {
 
     #[test]
     fn an_ack_without_a_key_is_refused_rather_than_defaulted() {
-        // A generated key would make the button idempotent per *invocation* instead
-        // of per user, which is the opposite of what §2.3 promises.
+        // A generated key would make the button idempotent per invocation, not per user (§2.3).
         assert!(parse_action("ack:Ack").is_err());
         assert!(parse_action("ack:Ack:incident-4521").is_ok());
     }
@@ -458,8 +404,6 @@ mod tests {
 
     #[test]
     fn no_action_flag_leaves_the_buttons_alone() {
-        // `Some(vec![])` would *clear* the buttons of a notification revised for an
-        // unrelated reason, because §2.3 replaces them wholesale.
         assert!(fold_actions(&[]).unwrap().is_none());
         assert_eq!(
             fold_actions(&["view:Run:https://example.com".to_owned()])
@@ -477,8 +421,7 @@ mod tests {
         let path = dir.join("big.png");
         std::fs::write(&path, vec![0u8; 64 * 1024]).unwrap();
 
-        // Past the cap it is not a refusal any more: the bytes come back so the
-        // caller can put them in the bucket instead (§2.3).
+        // Past the cap the bytes come back for the bucket (§2.3).
         assert!(matches!(read_image(&path).unwrap(), Inlined::TooBig { .. }));
         std::fs::remove_dir_all(&dir).ok();
     }

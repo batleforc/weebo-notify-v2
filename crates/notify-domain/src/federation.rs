@@ -1,35 +1,6 @@
-//! CI/CD federation: trading a forge's ID token for a short-lived grant
-//! (design §5.3).
-//!
-//! The point of the whole mechanism is that **no long-lived secret lives in CI**.
-//! A job already holds an OIDC token minted by its forge, saying who it is —
-//! `repo:weebo/infra:ref:refs/heads/main` — and an operator declares in GitOps
-//! which of those subjects may publish where. Nothing is stored on the CI side, so
-//! nothing can leak from it.
-//!
-//! # What this module is, and what it is not
-//!
-//! It is the *decision*: given claims somebody else vouched for, and the policies
-//! this instance was configured with, what may this job do? Verifying the token's
-//! signature against the issuer's JWKS is an adapter's job (the `FederationVerifier`
-//! port), and minting the resulting access token is the application's. Keeping the
-//! three apart is what lets every rule below be tested without a network.
-//!
-//! # The three hardening rules, and why each exists
-//!
-//! Scenario T11 (design §3.4) names them, and each is a way the obvious
-//! implementation is wrong:
-//!
-//! * **the audience is checked** — a token minted for another service, by an issuer
-//!   we do trust, for a subject we do trust, is still not a token for us. Without
-//!   this, any service sharing the forge becomes a way in;
-//! * **subject globs are anchored** — `repo:weebo/*` must not match
-//!   `repo:weebo-evil/x`. A `starts_with` on the prefix before the `*` does exactly
-//!   that, which is why matching happens against the whole string;
-//! * **a token is exchanged once** — the `jti` is remembered until the token's own
-//!   expiry, so a leaked ID token is worth one exchange rather than fifteen minutes
-//!   of them. That store lives behind a port; what is here is the rule that the
-//!   `jti` must exist at all.
+//! CI/CD federation (§5.3): deciding what a forge-vouched job may do. Signature
+//! checks are the adapter's job. T11 hardening: the audience must name us, subject
+//! globs are anchored, and a `jti` is required so a token is exchanged once.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -38,14 +9,10 @@ use crate::channel::Scope;
 use crate::error::{DomainError, Result};
 use crate::ids::ChannelId;
 
-/// The claims an adapter has verified against an issuer's JWKS.
-///
-/// Everything here has already been proven to come from the issuer; nothing here
-/// has been proven to be *allowed*, which is what [`TrustPolicy`] decides.
+/// Claims verified against an issuer's JWKS; [`TrustPolicy`] decides what they allow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederatedClaims {
-    /// Who vouched for it. Compared to a policy's issuer as an exact string: an
-    /// issuer is an identity, not a pattern.
+    /// Who vouched for it, matched exactly against a policy's issuer.
     pub issuer: String,
     /// What the job says it is — `repo:weebo/infra:ref:refs/heads/main`.
     pub subject: String,
@@ -53,43 +20,27 @@ pub struct FederatedClaims {
     pub audiences: Vec<String>,
     /// The token's own id, remembered until `expires_at` so it cannot be replayed.
     pub jti: Option<String>,
-    /// When the incoming token stops being valid. Bounds how long the `jti` has to
-    /// be remembered: past it, a replay would fail on expiry anyway.
+    /// When the incoming token stops being valid, bounding how long the `jti` is remembered.
     pub expires_at: OffsetDateTime,
 }
 
-/// One `[[trust_policy]]` block, or one `[[channels.managed.publishers]]` block
-/// (design §11).
-///
-/// The two are the same thing at different scopes, which is why they are one type:
-/// a channel-scoped block is a policy whose channel list is that one channel, and
-/// §11 makes it win over a global one.
+/// One `[[trust_policy]]` or `[[channels.managed.publishers]]` block (§11); the
+/// channel-scoped kind wins over global ones.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustPolicy {
     /// The issuer this policy trusts. Exact match.
     pub issuer: String,
     /// The subject pattern, matched **anchored** — see [`Pattern`].
     pub subject: Pattern,
-    /// Which channels it grants, by pattern. `ci-*` is a policy for every channel
-    /// whose name starts with `ci-`, and nothing else.
+    /// Which channels it grants, by pattern (`ci-*`).
     pub channels: Vec<Pattern>,
     /// What it grants there.
     pub scopes: Vec<Scope>,
-    /// Whether this policy came from a channel's own `publishers` block.
-    ///
-    /// Carried rather than inferred: §11 makes channel-scoped policies win, and a
-    /// decision that reads "the narrower one wins" would be a different rule that
-    /// happens to agree most of the time.
+    /// Whether this policy came from a channel's own `publishers` block (§11).
     pub channel_scoped: bool,
 }
 
-/// A glob matched against a whole string.
-///
-/// Deliberately tiny — one `*`, meaning "any run of characters including none" —
-/// and deliberately **anchored at both ends**. A general glob library would bring
-/// `?`, character classes and `**`, none of which any configuration here has asked
-/// for, and each of which is another way to write a pattern that matches more than
-/// its author believed.
+/// A glob with a single `*` wildcard, anchored at both ends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Pattern {
@@ -101,11 +52,7 @@ impl Pattern {
     ///
     /// # Errors
     ///
-    /// An empty pattern, or a bare `*`: both would grant everything the surrounding
-    /// policy can express, and an operator who means that should have to be unable
-    /// to have meant something else. Neither has a legitimate use here — a policy
-    /// trusting every subject of an issuer is a policy trusting whoever can open a
-    /// pull request against it.
+    /// An empty pattern or a bare `*`, which would trust everything.
     pub fn parse(raw: &str) -> Result<Self> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -130,12 +77,8 @@ impl Pattern {
         })
     }
 
-    /// Whether `candidate` matches, **as a whole**.
-    ///
-    /// This is the T11 clause: `repo:weebo/*` matches `repo:weebo/infra` and
-    /// `repo:weebo/` but never `repo:weebo-evil/x`, because the prefix comparison
-    /// is followed by a suffix comparison rather than by nothing. The two halves are
-    /// also checked not to overlap, so `ab*ba` does not match `aba` twice over.
+    /// Whether `candidate` matches as a whole (T11): `repo:weebo/*` never matches
+    /// `repo:weebo-evil/x`, and prefix and suffix may not overlap.
     #[must_use]
     pub fn matches(&self, candidate: &str) -> bool {
         match self.raw.split_once('*') {
@@ -178,10 +121,9 @@ impl core::fmt::Display for Pattern {
 /// What an exchange yields: the channels and scopes a job may use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederatedGrant {
-    /// The issuer that vouched for the job, kept so the minted token and the audit
-    /// log can say where the authority came from.
+    /// The issuer that vouched for the job, kept for the minted token and audit log.
     pub issuer: String,
-    /// The subject, which becomes the `CiJob` principal (design §5.1).
+    /// The subject, which becomes the `CiJob` principal (§5.1).
     pub subject: String,
     /// Channel patterns the job may act on, and with which scopes.
     pub allowances: Vec<Allowance>,
@@ -210,7 +152,7 @@ impl FederatedGrant {
     }
 }
 
-/// The set of policies this instance was configured with (design §11).
+/// The set of policies this instance was configured with (§11).
 #[derive(Debug, Clone, Default)]
 pub struct TrustPolicies {
     policies: Vec<TrustPolicy>,
@@ -223,12 +165,7 @@ impl TrustPolicies {
         Self { policies }
     }
 
-    /// What was configured, for the platform console to display (design §10.4bis).
-    ///
-    /// Read-only by construction, and that is the whole story a console can tell
-    /// about these: they come from GitOps (§11) and no API path edits them. A screen
-    /// showing them is answering "what did we deploy", which is exactly the question
-    /// somebody has after a pipeline is refused.
+    /// What was configured, read-only, for the platform console (§10.4bis).
     #[must_use]
     pub fn configured(&self) -> &[TrustPolicy] {
         &self.policies
@@ -238,20 +175,9 @@ impl TrustPolicies {
     ///
     /// # Errors
     ///
-    /// Refuses, in this order and deliberately:
-    ///
-    /// 1. **a token not minted for us** — before any policy is consulted, so that a
-    ///    misdirected token is never answered with "no matching policy", which would
-    ///    invite the operator to write one;
-    /// 2. **a token with no `jti`** — it cannot be remembered, so it cannot be
-    ///    prevented from being replayed, and accepting it would make the anti-replay
-    ///    rule opt-out by omission;
-    /// 3. **no policy matching** — issuer *and* anchored subject.
-    ///
-    /// Channel-scoped policies (§11) are collected ahead of global ones, and when
-    /// any channel-scoped policy matches, the global ones are **dropped**: a
-    /// channel that names its publishers has said who they are, and a broad global
-    /// policy must not quietly widen it.
+    /// In order: a token not minted for us (before policies, so it never reads as
+    /// "no matching policy"), a token without `jti`, then no issuer+subject match.
+    /// When any channel-scoped policy matches, global ones are dropped (§11).
     pub fn decide(&self, claims: &FederatedClaims, audience: &str) -> Result<FederatedGrant> {
         if !claims.audiences.iter().any(|one| one == audience) {
             return Err(DomainError::Malformed {
@@ -337,7 +263,7 @@ mod tests {
         }
     }
 
-    // --- T11 · the anchored glob (design §3.4) ---------------------------
+    // --- T11 · the anchored glob ------------------------------------------
 
     #[test]
     fn critical_t11_a_wildcard_is_anchored_at_both_ends() {

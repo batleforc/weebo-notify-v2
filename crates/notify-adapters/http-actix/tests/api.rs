@@ -1,10 +1,5 @@
-//! The HTTP surface, exercised end to end against the in-memory doubles.
-//!
-//! No container and no identity provider: the whole application is wired here the
-//! way the composition root wires it, with `notify-ports/test-utils` standing in
-//! for the adapters. What is under test is the adapter's own job — status codes,
-//! problem bodies, query parsing, and the fact that nothing reaches a use case
-//! without a caller.
+//! The HTTP surface end to end against the in-memory doubles: status codes, problem
+//! bodies, query parsing, and that nothing reaches a use case without a caller.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,6 +10,7 @@
 use std::sync::Arc;
 
 use actix_web::{App, http::StatusCode, test, web};
+use base64::Engine as _;
 use notify_app::{
     Attribution, Authenticate, Authorizer, BrowseAudit, ChannelInventory, CountUnread,
     CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
@@ -59,9 +55,7 @@ impl Harness {
     )]
     fn new() -> (Self, ApiState) {
         let clock = TestClock::new();
-        // The store hides what is gone "as of now", and its now has to be this one:
-        // `InMemory::new()` reads a clock of its own, and a store whose calendar
-        // runs ahead of the use cases' reports every closed notification as expired.
+        // The store must share this clock, or closed notifications read as expired.
         let store = InMemory::with_clock(clock.clone());
         let tokens = StaticTokenVerifier::with_clock(Arc::new(clock.clone()));
         let limiter = TestRateLimiter::default();
@@ -87,18 +81,13 @@ impl Harness {
             Arc::new(clock.clone()),
         );
 
-        // The same store answers for users and service accounts, so a publish made
-        // through this harness carries the display name the profile holds (§2.4).
         let attribution = Attribution::new(Arc::new(store.clone()), Arc::new(store.clone()));
 
         let state = ApiState {
             bus: Arc::new(store.clone()),
-            // Nothing here asserts on a number, so the harness measures nothing —
-            // the exporter is exercised where it lives (`notify-metrics-prometheus`)
-            // and the recording sites are two lines each.
+            // Measured where the exporter lives (`notify-metrics-prometheus`).
             metrics: Arc::new(notify_ports::NoMetrics),
-            // Real, unlike the metrics: this one refuses requests, so a harness
-            // that stubbed it would test a server that has no ceiling.
+            // Real: it refuses requests, so stubbing it would test a server with no ceiling.
             streams: Arc::new(notify_http_actix::StreamSlots::new()),
             authenticate: Authenticate::new(
                 Arc::new(tokens.clone()),
@@ -109,8 +98,6 @@ impl Harness {
                 Arc::new(StubSecretHasher),
                 Arc::new(clock.clone()),
             )
-            // A fixed group name so `alice_as_platform_admin` below has something
-            // to grant — no other test in this harness had ever needed the role.
             .with_platform_admins(vec!["platform-admins".to_owned()]),
             publish: PublishNotification::new(
                 Arc::new(store.clone()),
@@ -174,8 +161,7 @@ impl Harness {
                 Arc::new(store.clone()),
                 get,
             ),
-            // No `[federation]` in the harness: the exchange answers 501, which is
-            // what a deployment that does not federate is supposed to do.
+            // No `[federation]`: the exchange answers 501.
             exchange: None,
             audit: BrowseAudit::new(Arc::new(store.clone())),
             inventory: ChannelInventory::new(Arc::new(store.clone())),
@@ -185,8 +171,7 @@ impl Harness {
                 Arc::new(clock.clone()),
             ),
             trust_policies: ListTrustPolicies::new(notify_app::LivePolicies::default()),
-            // Never reconciled in the harness, which is a state the console has to
-            // render: `null` and not zeroes (§10.4bis).
+            // Never reconciled: the console must render `null`, not zeroes (§10.4bis).
             reconciliation: ReadReconciliation::new(ReconciliationLog::new()),
             dlq: notify_app::ListDeadLetters::new(Arc::new(store.clone())),
             requeue: notify_app::RequeueDeadLetter::new(
@@ -218,10 +203,7 @@ impl Harness {
                 Arc::new(store.clone()),
                 authorizer.clone(),
             ),
-            // No filesystem backend in this fixture — the in-memory double behind
-            // `attachments` above stands in for whichever store is configured, and
-            // the two `attachments_fs` routes are exercised against a real
-            // `FsAttachments` in their own test module instead.
+            // `attachments_fs` routes are tested against a real `FsAttachments` below.
             attachments_fs: None,
             sync: SyncBacklog::new(
                 Arc::new(store.clone()),
@@ -310,8 +292,6 @@ impl Harness {
                 fanout.clone(),
             ),
 
-            // A deployment that runs Web Push, so `GET /push/webpush` has something
-            // to answer; the test for the other case builds its own state.
             application_server_key: Some(APPLICATION_SERVER_KEY.to_owned()),
 
             accounts: ListServiceAccounts::new(Arc::new(store.clone())),
@@ -327,9 +307,7 @@ impl Harness {
                 Arc::new(clock.clone()),
             ),
 
-            // No `[cli]` in the harness: `GET /cli` answers 501, which is what a
-            // deployment that does not serve the binary is supposed to do. The
-            // test for the other case sets its own.
+            // No `[cli]`: `GET /cli` answers 501.
             cli_binary: None,
             cli_digest: None,
         };
@@ -346,9 +324,7 @@ impl Harness {
 
     /// Register alice, give her a token, and put her in a channel she can publish to.
     async fn with_alice_in(&self, channel: &str) -> ChannelId {
-        // Through `from_claims` rather than a literal: it is the constructor the
-        // login path uses, so the profile starts out following the provider exactly
-        // as it would in production.
+        // `from_claims`, as the login path does, so the profile follows the provider.
         let user = User::from_claims(
             self.alice,
             "alice",
@@ -390,9 +366,7 @@ impl Harness {
         id
     }
 
-    /// A second token for the same alice, this one carrying the group
-    /// `Authenticate` is wired to treat as platform-admin (§5.4, D24) — no other
-    /// test in this harness had ever needed the role.
+    /// A second token for alice carrying the platform-admin group (§5.4, D24).
     fn alice_as_platform_admin(&self) {
         self.tokens.register(
             "alice-admin-token",
@@ -422,9 +396,7 @@ macro_rules! service {
 const AUTH: (&str, &str) = ("Authorization", "Bearer alice-token");
 const ADMIN_AUTH: (&str, &str) = ("Authorization", "Bearer alice-admin-token");
 
-/// A stand-in for what the composition root derives from the VAPID key. Not a real
-/// point: nothing here decodes it, and the property under test is that it reaches a
-/// browser unchanged.
+/// A stand-in VAPID key; nothing decodes it, it only has to reach the browser unchanged.
 const APPLICATION_SERVER_KEY: &str = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkFbx4gpXYm";
 
 #[actix_web::test]
@@ -608,8 +580,7 @@ async fn publishing_into_a_channel_you_are_not_in_says_nothing_about_whether_it_
         answers.push((status, problem["code"].clone()));
     }
 
-    // A channel that exists but is not yours and one that does not exist have to be
-    // indistinguishable, or the endpoint enumerates the instance.
+    // Not yours and nonexistent must be indistinguishable, or ids can be enumerated.
     assert_eq!(answers[0], answers[1]);
     assert_eq!(answers[0].0, StatusCode::FORBIDDEN);
     assert_eq!(answers[0].1, "scope.missing");
@@ -857,10 +828,7 @@ async fn deleting_a_notification_twice_is_not_an_error_the_client_has_to_handle(
     assert_eq!(problem["code"], "notification.gone");
 }
 
-/// Read whatever an open stream has produced so far, then stop waiting.
-///
-/// A stream response never ends on its own — that is the point of it — so a test
-/// that called `read_body` would hang until the keep-alive outlived the runtime.
+/// Read whatever an open stream has produced so far, then stop waiting (it never ends).
 async fn read_available(response: actix_web::dev::ServiceResponse) -> String {
     use actix_web::body::MessageBody as _;
 
@@ -892,8 +860,7 @@ async fn the_stream_replays_the_backlog_with_the_cursor_as_the_event_id() {
     let published: Value = test::call_and_read_body_json(&app, request).await;
     let cursor = published["cursor"].as_str().unwrap();
 
-    // Resume from before everything: the connection must catch up first and go live
-    // second, or a client that reconnects loses whatever landed in between.
+    // Catch up first, go live second, or a reconnect loses what landed in between.
     let request = test::TestRequest::get()
         .uri("/api/v1/stream")
         .insert_header(AUTH)
@@ -968,8 +935,7 @@ async fn a_stream_frame_says_which_channel_it_belongs_to() {
         .to_request();
     let body = read_available(test::call_service(&app, request).await).await;
 
-    // The data line is the whole event (design §8.1), so a client that has never
-    // seen this notification can file it without a follow-up request.
+    // The data line is the whole event (design §8.1), channel included.
     let data = body
         .lines()
         .find_map(|line| line.strip_prefix("data: "))
@@ -985,9 +951,7 @@ async fn a_stream_frame_says_which_channel_it_belongs_to() {
 
 #[actix_web::test]
 async fn a_stream_frame_says_whether_the_reader_was_meant_to_be_left_alone() {
-    // D22: the server holds the preference and applies the rule, so it answers the
-    // question once — per reader, on the event. Every client that decided this for
-    // itself was another copy of a rule to keep in step, and there were three.
+    // D22: the server applies the DND rule per reader, on the event.
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
@@ -1030,15 +994,13 @@ async fn a_stream_frame_says_whether_the_reader_was_meant_to_be_left_alone() {
         frame["muted_by_dnd"], true,
         "the reader is in a quiet period, and the server is what knows it: {frame}"
     );
-    // The event still arrives, whole. §7.4 suppresses the *popup*, never the
-    // stream: an open client is a deliberate choice to look.
+    // The event still arrives whole: §7.4 suppresses the popup, never the stream.
     assert_eq!(frame["payload"]["title"], "etcd degraded");
 }
 
 #[actix_web::test]
 async fn a_stream_frame_outside_a_quiet_period_carries_no_flag_at_all() {
-    // Absent rather than false: the field is skipped when it is not true, so a
-    // client written before it existed parses the frame unchanged.
+    // Absent rather than false, so older clients parse the frame unchanged.
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
@@ -1069,11 +1031,7 @@ async fn a_stream_frame_outside_a_quiet_period_carries_no_flag_at_all() {
 
 #[actix_web::test]
 async fn a_reader_cannot_hold_more_connections_than_section_8_2_allows() {
-    // The ceiling reaching an actual client. §8.2 publishes "connexions SSE/WS par
-    // user: 20" and nothing enforced it: both transports served every connection
-    // asked for. The registry is unit-tested next door; what this adds is that the
-    // handler consults it, and that a refusal is the `429` with the `Retry-After`
-    // §8.2 names rather than a stream that opens and stays silent.
+    // §8.2's ceiling reaches the handler, and refusal is a `429` with `Retry-After`.
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
@@ -1086,9 +1044,7 @@ async fn a_reader_cannot_hold_more_connections_than_section_8_2_allows() {
         test::call_service(app, request).await
     };
 
-    // Held, not dropped: each response owns the receiving half of its stream, so
-    // letting one go would hand its slot straight back and the twenty-first would
-    // fit. Holding them is what makes this a test of the ceiling.
+    // Held, not dropped: dropping a response would hand its slot straight back.
     let mut held = Vec::new();
     for n in 0..notify_domain::limits::MAX_STREAMS_PER_PRINCIPAL {
         let response = open(&app).await;
@@ -1115,9 +1071,7 @@ async fn a_reader_cannot_hold_more_connections_than_section_8_2_allows() {
 
 #[actix_web::test]
 async fn the_websocket_shares_the_connection_ceiling_with_the_stream() {
-    // One ceiling for both, as §8.2 writes it ("connexions SSE/WS"). Two counters
-    // would mean forty, and a client that alternates transports would never be
-    // refused by either.
+    // One ceiling for both transports (§8.2), not twenty each.
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
@@ -1168,8 +1122,7 @@ async fn a_stream_ends_when_its_token_expires() {
     let response = test::call_service(&app, request).await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    // The body only ends when the server closes the stream; well before the
-    // five-minute re-check, since the token itself says when.
+    // The body ends when the token expires, well before the periodic re-check.
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
         actix_web::body::to_bytes(response.into_body()),
@@ -1192,9 +1145,7 @@ async fn a_stream_needs_a_credential_like_everything_else() {
 
 #[actix_web::test]
 async fn whoami_answers_with_the_callers_own_id() {
-    // What a client needs to name itself as the `owner` of something it is about
-    // to create — a personal API key, in particular — without the browser ever
-    // learning it any other way (the OIDC `sub` claim is a different identifier).
+    // What a client needs to name itself as an `owner` (the OIDC `sub` is different).
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
@@ -1259,8 +1210,7 @@ async fn a_profile_edit_claims_the_field_and_a_null_hands_it_back() {
     assert_eq!(profile["display_name"], "alice");
     assert_eq!(profile["locale"], "fr-FR");
 
-    // An explicit null hands the field back to the provider rather than blanking
-    // it — the way out of a name somebody typed once (§2.4).
+    // An explicit null hands the field back to the provider (§2.4).
     let request = test::TestRequest::put()
         .uri("/api/v1/users/me/profile")
         .insert_header(AUTH)
@@ -1283,8 +1233,7 @@ async fn an_avatar_is_decoded_and_resized_before_it_is_ever_stored() {
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
 
-    // A 900×300 JPEG: neither square nor PNG, so what comes back proves the bytes
-    // were processed rather than passed through (§2.4).
+    // A 900×300 JPEG, so the answer proves the bytes were processed (§2.4).
     let source = {
         let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(900, 300));
         let mut out = std::io::Cursor::new(Vec::new());
@@ -1419,8 +1368,7 @@ async fn a_service_account_is_created_listed_and_deactivated() {
         StatusCode::NO_CONTENT
     );
 
-    // Deactivated, not deleted: it stays listed so the revisions naming it still
-    // resolve, with the date it stopped being able to act.
+    // Deactivated, not deleted: still listed so revisions naming it resolve.
     let request = test::TestRequest::get()
         .uri("/api/v1/serviceaccounts")
         .insert_header(AUTH)
@@ -1442,8 +1390,7 @@ async fn patching_a_policy_touches_only_what_the_body_names() {
         .to_request();
     let channel: Value = test::call_and_read_body_json(&app, request).await;
 
-    // `2d` and not `48h`: a duration is normalised to its largest whole unit on the
-    // way back out, which is the same value said the shortest way.
+    // `2d`, not `48h`: durations come back in their largest whole unit.
     assert_eq!(channel["policy"]["ttl"]["max"], "2d");
     assert_eq!(
         channel["policy"]["ttl"]["default"], "1w",
@@ -1451,8 +1398,7 @@ async fn patching_a_policy_touches_only_what_the_body_names() {
     );
     assert_eq!(channel["policy"]["receipts_enabled"], false);
 
-    // `"0"` lifts it. Sending `null` would be the shape no generated client can
-    // express, which is why the API does not ask for one.
+    // `"0"` lifts it; the API never asks for `null`.
     let request = test::TestRequest::patch()
         .uri("/api/v1/channels/ci-infra")
         .insert_header(AUTH)
@@ -1469,9 +1415,7 @@ async fn patching_a_policy_touches_only_what_the_body_names() {
 
 #[actix_web::test]
 async fn critical_t15_a_payload_over_the_ceiling_is_refused_with_413() {
-    // T15's first half at the surface a publisher meets. The domain refuses it; what
-    // this pins is the **status code** §8.2 promises — a publisher retrying a 500
-    // forever because a 413 was mapped wrong is the failure worth a test.
+    // T15: the status code §8.2 promises, so publishers do not retry a 500 forever.
     let (harness, state) = Harness::new();
     harness.with_alice_in("cluster-ovh-1").await;
 
@@ -1482,9 +1426,7 @@ async fn critical_t15_a_payload_over_the_ceiling_is_refused_with_413() {
         .set_json(json!({
             "channel": "cluster-ovh-1",
             "title": "far too much",
-            // Multi-byte on purpose: the body limit counts characters, this one
-            // counts bytes, and the gap between the two is where an oversized
-            // payload gets through.
+            // Multi-byte on purpose: the body limit counts characters, this one bytes.
             "body": "é".repeat(16 * 1024),
             "image": {
                 "kind": "data_uri",
@@ -1505,9 +1447,7 @@ async fn critical_t15_a_payload_over_the_ceiling_is_refused_with_413() {
 
 #[actix_web::test]
 async fn critical_t15_a_presign_over_the_ceiling_is_refused_before_it_is_signed() {
-    // T15's second half. Refused **before** signing: a signature handed out for an
-    // upload the bucket will reject is a round trip and a confusing error, and the
-    // ceiling is ours to enforce rather than the store's to discover.
+    // T15's second half: refused before signing.
     let (harness, state) = Harness::new();
     harness.with_alice_in("cluster-ovh-1").await;
 
@@ -1544,10 +1484,8 @@ fn path_and_query(url: &Url) -> String {
 
 #[actix_web::test]
 async fn fs_bytes_round_trip_through_the_unauthenticated_upload_and_download_routes() {
-    // ADR-0022: unlike the S3 pair (`critical_t15_a_presign_over_the_ceiling_is_
-    // refused_before_it_is_signed` above), these two routes carry bytes rather than
-    // hand out a bucket URL, and take no `Authorization` header at all — the token
-    // in the query string is the only credential.
+    // ADR-0022: these routes carry bytes and take no `Authorization`; the query token
+    // is the only credential.
     let (fs, _dir) = fs_store();
     let (_harness, mut state) = Harness::new();
     state.attachments_fs = Some(Arc::new(fs.clone()));
@@ -1590,12 +1528,8 @@ async fn fs_bytes_round_trip_through_the_unauthenticated_upload_and_download_rou
 
 #[actix_web::test]
 async fn a_presign_for_an_image_does_not_authorise_uploading_markup() {
-    // The regression test for the content-type bypass: the presign use case
-    // allowlists `image/png`, and the token used to bind only (purpose, id, expiry).
-    // A caller approved for an image could therefore PUT `text/html` and have the
-    // download route serve it back with that type — attacker-controlled markup on
-    // this origin, past an allowlist that had been satisfied with a different
-    // answer. The content type is inside the signature now, so this is a mismatch.
+    // The content type is inside the signature, so a token for `image/png` cannot
+    // upload `text/html` to be served back from this origin.
     let (fs, _dir) = fs_store();
     let (_harness, mut state) = Harness::new();
     state.attachments_fs = Some(Arc::new(fs.clone()));
@@ -1616,8 +1550,7 @@ async fn a_presign_for_an_image_does_not_authorise_uploading_markup() {
         .to_request();
     let response = test::call_service(&app, smuggled).await;
 
-    // 415 and not 403: the allowlist is checked before the token, so the answer does
-    // not depend on holding a valid credential.
+    // 415, not 403: the allowlist is checked before the token.
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     assert!(
         fs.get(signed_upload.id).await.unwrap().is_none(),
@@ -1627,9 +1560,7 @@ async fn a_presign_for_an_image_does_not_authorise_uploading_markup() {
 
 #[actix_web::test]
 async fn an_allowlisted_type_the_presign_did_not_approve_is_still_refused() {
-    // The narrower half of the same hole, and the one an allowlist alone would miss:
-    // `image/gif` is perfectly uploadable, just not under a token signed for
-    // `image/png`. Only the signature can tell these apart.
+    // `image/gif` is allowlisted, just not under a token signed for `image/png`.
     let (fs, _dir) = fs_store();
     let (_harness, mut state) = Harness::new();
     state.attachments_fs = Some(Arc::new(fs.clone()));
@@ -1656,9 +1587,7 @@ async fn an_allowlisted_type_the_presign_did_not_approve_is_still_refused() {
 
 #[actix_web::test]
 async fn a_content_type_wearing_parameters_still_matches_what_was_signed() {
-    // The other direction: the honest client. `image/png; charset=binary` is the
-    // same type wearing decoration, and normalising at both ends is what keeps it
-    // from being refused for punctuation.
+    // The honest client: `image/png; charset=binary` is normalised at both ends.
     let (fs, _dir) = fs_store();
     let (_harness, mut state) = Harness::new();
     state.attachments_fs = Some(Arc::new(fs.clone()));
@@ -1693,8 +1622,7 @@ async fn a_content_type_wearing_parameters_still_matches_what_was_signed() {
 
 #[actix_web::test]
 async fn served_bytes_carry_nosniff_and_a_download_disposition() {
-    // Defence in depth behind the signature: even a store that somehow held an
-    // unexpected type must not have it rendered by a browser following the URL.
+    // Defence in depth: a stored unexpected type must not render in a browser.
     let (fs, _dir) = fs_store();
     let (_harness, mut state) = Harness::new();
     state.attachments_fs = Some(Arc::new(fs.clone()));
@@ -1843,9 +1771,7 @@ async fn fs_download_of_an_id_that_was_never_uploaded_is_a_404_even_with_a_valid
 
 #[actix_web::test]
 async fn fs_routes_answer_501_on_a_deployment_running_no_filesystem_backend() {
-    // The default `Harness` — same as every other test in this file — runs the
-    // in-memory double, not `FsAttachments`, which is the ordinary S3 deployment's
-    // shape as far as `attachments_fs` is concerned: `None`.
+    // The default harness has no `FsAttachments`, like an S3 deployment.
     let (_harness, state) = Harness::new();
     let app = service!(state);
 
@@ -1865,8 +1791,6 @@ async fn fs_routes_answer_501_on_a_deployment_running_no_filesystem_backend() {
 
 #[actix_web::test]
 async fn a_channel_can_be_read_by_id_rather_than_hunted_for_in_a_page() {
-    // §8 has listed this route since M1 and no build served it: a client wanting
-    // one channel had to walk `GET /channels` until it found it.
     let (harness, state) = Harness::new();
     harness.with_alice_in("cluster-ovh-1").await;
 
@@ -1891,9 +1815,7 @@ async fn a_channel_can_be_read_by_id_rather_than_hunted_for_in_a_page() {
 
 #[actix_web::test]
 async fn reading_a_channel_you_are_not_in_says_nothing_about_whether_it_exists() {
-    // The rule `Authorizer` holds everywhere else, checked on the new door: the
-    // answer for "not yours" and for "not there" has to be the same one, or this
-    // route becomes the cheapest way to enumerate an instance.
+    // "Not yours" and "not there" must answer the same, or this enumerates the instance.
     let (harness, state) = Harness::new();
     harness.with_alice_in("cluster-ovh-1").await;
 
@@ -1959,8 +1881,7 @@ async fn patching_a_managed_channel_is_refused_like_deleting_one() {
 
 #[actix_web::test]
 async fn a_policy_the_channel_could_not_publish_under_is_refused() {
-    // `forever` on a channel that does not allow it would fail every publish from
-    // now on, a long way from the request that caused it.
+    // `forever` where not allowed would fail every later publish, far from the cause.
     let (harness, state) = Harness::new();
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
@@ -2021,6 +1942,10 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
         "/api/v1/avatars/{id}",
         "/api/v1/serviceaccounts",
         "/api/v1/serviceaccounts/{id}",
+        "/api/v1/compat/gotify/message",
+        "/api/v1/compat/ntfy",
+        "/api/v1/compat/ntfy/{channel}",
+        "/api/v1/compat/alertmanager/{channel}",
     ] {
         assert!(
             paths.iter().any(|path| path.as_str() == expected),
@@ -2031,13 +1956,8 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
 
 #[actix_web::test]
 async fn every_operation_design_8_lists_is_served_and_not_only_its_path() {
-    // The test above checks *paths*, and that is how `GET /channels/{channel}` went
-    // missing for four milestones: `PATCH` and `DELETE` registered the same path, so
-    // the list was satisfied while the read §8 promises was served by nothing.
-    //
-    // This one is method-aware, and it is maintained by hand from §8 on purpose —
-    // that list is prose, so the only way it can fail a build is if somebody copies
-    // it here. Copying it here is the cheap half; noticing was the expensive half.
+    // Method-aware, unlike the test above (a shared path hid a missing `GET`);
+    // maintained by hand from §8.
     let (_, api) = App::new()
         .into_utoipa_app()
         .configure(notify_http_actix::configure)
@@ -2096,6 +2016,11 @@ async fn every_operation_design_8_lists_is_served_and_not_only_its_path() {
         ("get", "/api/v1/admin/dlq"),
         ("post", "/api/v1/admin/dlq/{id}/requeue"),
         ("get", "/api/v1/admin/reconciliation"),
+        ("post", "/api/v1/compat/gotify/message"),
+        ("post", "/api/v1/compat/ntfy"),
+        ("post", "/api/v1/compat/ntfy/{channel}"),
+        ("put", "/api/v1/compat/ntfy/{channel}"),
+        ("post", "/api/v1/compat/alertmanager/{channel}"),
     ] {
         let item = api.paths.paths.get(path).unwrap_or_else(|| {
             unreachable!("§8 lists {method} {path} and no route serves that path")
@@ -2255,9 +2180,7 @@ async fn a_do_not_disturb_is_set_on_the_caller_who_never_had_to_name_themselves(
     harness.with_alice_in("ci-infra").await;
     let app = service!(state);
 
-    // An empty body is a complete one: the subject is not something a caller says,
-    // and requiring it would mean a client that does not know its own id could not
-    // build a request at all.
+    // An empty body is complete: the subject is the caller.
     let request = test::TestRequest::put()
         .uri("/api/v1/preferences/dnd")
         .insert_header(AUTH)
@@ -2287,8 +2210,7 @@ async fn a_window_the_timezone_database_does_not_know_is_refused() {
         .to_request();
     let response = test::call_service(&app, request).await;
 
-    // Refused at the door: accepted here, it becomes a notification that never
-    // arrives in six months with nothing to connect the two.
+    // Refused at the door rather than becoming a notification that never arrives.
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
@@ -2338,8 +2260,7 @@ async fn a_deployment_without_web_push_says_so_instead_of_inventing_a_key() {
         .to_request();
     let response = test::call_service(&app, request).await;
 
-    // The same answer every unconfigured capability gives (§14.3), so a PWA can
-    // skip the subscription rather than retry a key that will never come.
+    // Like every unconfigured capability (§14.3), so a PWA can skip subscribing.
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 }
 
@@ -2355,8 +2276,7 @@ async fn a_deployment_without_the_cli_section_says_so_instead_of_downloading_not
         .to_request();
     let response = test::call_service(&app, request).await;
 
-    // The same answer every unconfigured capability gives (§14.3) — no `[cli]`
-    // section means this deployment does not serve the binary.
+    // Like every unconfigured capability (§14.3).
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 }
 
@@ -2383,4 +2303,189 @@ async fn an_authenticated_caller_downloads_the_configured_cli_binary() {
     );
     let body = test::read_body(response).await;
     assert_eq!(body, "not really a binary, but bytes");
+}
+
+// --- Gotify / ntfy / Alertmanager compatibility ------------------------------
+
+/// Mint a publish key over `channels` and hand back its secret.
+macro_rules! mint_key {
+    ($app:expr, $harness:expr, $channels:expr) => {{
+        let request = test::TestRequest::post()
+            .uri("/api/v1/apikeys")
+            .insert_header(AUTH)
+            .set_json(json!({
+                "owner": { "owner": "user", "id": $harness.alice.to_string() },
+                "scopes": ["publish"],
+                "channels": $channels,
+            }))
+            .to_request();
+        let minted: Value = test::call_and_read_body_json(&$app, request).await;
+        minted["secret"].as_str().unwrap().to_owned()
+    }};
+}
+
+/// The newest notification in the caller's inbox.
+macro_rules! newest {
+    ($app:expr) => {{
+        let request = test::TestRequest::get()
+            .uri("/api/v1/notifications")
+            .insert_header(AUTH)
+            .to_request();
+        let page: Value = test::call_and_read_body_json(&$app, request).await;
+        page["items"][0].clone()
+    }};
+}
+
+#[actix_web::test]
+async fn gotify_publishes_with_a_query_token_into_the_keys_only_channel() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("homelab").await;
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["homelab"]);
+
+    let request = test::TestRequest::post()
+        .uri(&format!("/api/v1/compat/gotify/message?token={key}"))
+        .set_json(json!({ "title": "Backup", "message": "done", "priority": 8 }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["appid"], 0);
+    assert_eq!(body["title"], "Backup");
+    assert!(body["id"].is_u64());
+
+    let head = &newest!(app)["head"];
+    assert_eq!(head["content"]["body"], "done");
+    assert_eq!(head["priority"], "high");
+}
+
+#[actix_web::test]
+async fn gotify_with_a_multi_channel_key_needs_a_channel() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("homelab").await;
+    harness.with_alice_in("media").await;
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["homelab", "media"]);
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/compat/gotify/message")
+        .insert_header(("X-Gotify-Key", key.as_str()))
+        .set_form([("message", "hello")])
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Multipart, as in Gotify's own `curl -F` examples.
+    let request = test::TestRequest::post()
+        .uri("/api/v1/compat/gotify/message?channel=media")
+        .insert_header(("X-Gotify-Key", key.as_str()))
+        .insert_header(("Content-Type", "multipart/form-data; boundary=XyZ"))
+        .set_payload(
+            "--XyZ\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nPlex\r\n\
+             --XyZ\r\nContent-Disposition: form-data; name=\"message\"\r\n\r\nhello\r\n--XyZ--\r\n",
+        )
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let newest = newest!(app);
+    assert_eq!(newest["channel"], "media");
+    assert_eq!(newest["head"]["content"]["title"], "Plex");
+    assert_eq!(newest["head"]["content"]["body"], "hello");
+}
+
+#[actix_web::test]
+async fn ntfy_reads_the_body_and_headers_with_basic_auth() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("homelab").await;
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["homelab"]);
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!(":{key}"));
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/compat/ntfy/homelab")
+        .insert_header(("Authorization", format!("Basic {basic}")))
+        .insert_header(("Title", "Disk full"))
+        .insert_header(("Priority", "max"))
+        .insert_header(("Tags", "disk, nas"))
+        .insert_header(("Click", "https://nas.local"))
+        .set_payload("98% used")
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["event"], "message");
+    assert_eq!(body["topic"], "homelab");
+
+    let head = &newest!(app)["head"];
+    assert_eq!(head["content"]["title"], "Disk full");
+    assert_eq!(head["content"]["body"], "98% used");
+    assert_eq!(head["content"]["tags"], json!(["disk", "nas"]));
+    assert_eq!(head["content"]["actions"][0]["type"], "view");
+    assert_eq!(head["priority"], "urgent");
+}
+
+#[actix_web::test]
+async fn ntfy_json_publishes_to_its_topic_and_refuses_a_foreign_one() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("homelab").await;
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["homelab"]);
+
+    let request = test::TestRequest::post()
+        .uri(&format!("/api/v1/compat/ntfy?token={key}"))
+        .set_json(json!({ "topic": "homelab", "message": "up", "priority": 2 }))
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(newest!(app)["head"]["priority"], "low");
+
+    let request = test::TestRequest::post()
+        .uri(&format!("/api/v1/compat/ntfy/elsewhere?token={key}"))
+        .set_payload("nope")
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[actix_web::test]
+async fn alertmanager_opens_then_closes_one_notification_per_fingerprint() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("alerts").await;
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["alerts"]);
+
+    for status in ["firing", "resolved"] {
+        let request = test::TestRequest::post()
+            .uri("/api/v1/compat/alertmanager/alerts")
+            .insert_header(("Authorization", format!("Bearer {key}")))
+            .set_json(json!({
+                "version": "4",
+                "status": status,
+                "alerts": [{
+                    "status": status,
+                    "labels": { "alertname": "NodeDown", "severity": "critical", "job": "node" },
+                    "annotations": { "summary": "node-1 unreachable", "description": "no scrape for 5m" },
+                    "fingerprint": "a1b2c3",
+                }],
+            }))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK, "{status}");
+    }
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/notifications")
+        .insert_header(AUTH)
+        .to_request();
+    let page: Value = test::call_and_read_body_json(&app, request).await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    let notification = &page["items"][0];
+    assert_eq!(notification["external_id"], "a1b2c3");
+    let head = &notification["head"];
+    assert_eq!(head["content"]["title"], "NodeDown: node-1 unreachable");
+    assert_eq!(head["state"], "closed");
+    assert_eq!(head["status"], "success");
+    assert_eq!(head["priority"], "urgent");
 }

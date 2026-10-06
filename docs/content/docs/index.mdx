@@ -13,12 +13,12 @@ Most notification servers accept a string and forget it. Here a notification is
 
 ```bash
 # Start of a CI pipeline
-curl -X PUT "$NOTIFY_URL/api/v1/channels/ci-infra/notifications/run-4521" \
+curl -X PUT "$WNK_URL/api/v1/channels/ci-infra/notifications/run-4521" \
   -H "Authorization: Bearer $WNK_CHANNEL_KEY" \
   -d '{ "title": "Pipeline infra #4521", "state": "open", "status": "info" }'
 
 # The end of it — same id, a new revision, not a second notification
-curl -X PUT "$NOTIFY_URL/api/v1/channels/ci-infra/notifications/run-4521" \
+curl -X PUT "$WNK_URL/api/v1/channels/ci-infra/notifications/run-4521" \
   -H "Authorization: Bearer $WNK_CHANNEL_KEY" \
   -d '{ "state": "closed", "status": "success" }'
 ```

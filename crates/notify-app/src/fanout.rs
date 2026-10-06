@@ -1,38 +1,7 @@
-//! What happens after a write lands.
-//!
-//! Three things, in this order and for different reasons:
-//!
-//! 1. **Poke the bus.** Every replica holds its own stream connections, so every
-//!    replica has to learn about the write. The poke carries an id and a cursor,
-//!    never a payload (ADR-0008).
-//! 2. **Push to devices that are not listening.** Filtered by the recipient's own
-//!    silence *and* do-not-disturb — the server is where "stop notifying me" is
-//!    enforced, so that it holds across every device the person owns (design §2.3,
-//!    §7.4). Only the push is suppressed: the bus poke above still goes out, so a
-//!    client with the app open keeps receiving on its stream and the inbox fills
-//!    normally. An app somebody chose to leave open is not an interruption.
-//! 3. **Queue the channel's outbound sinks** (design §7.1bis). Queued and not sent:
-//!    a webhook is somebody else's server, and putting their latency in front of a
-//!    publisher's answer would make a CI pipeline wait on a consumer it does not
-//!    know exists. The leader drains the queue ([`crate::sinks`]).
-//!
-//! And a fourth, last and optional: **derive an attachment's thumbnail** (design
-//! D30), if the revision shows one and `[attachments]` is configured. Last on
-//! purpose — a bucket fetch and a decode must never sit in front of real-time
-//! delivery for a thumbnail nobody has asked to see yet.
-//!
-//! All four are best-effort by design. A failed poke costs latency and the cursor
-//! catches up; a failed push is recorded and retried by the transport; a sink that
-//! cannot even be *queued* is logged and lost, which is the one honest option left
-//! when the alternative is failing a publish that already succeeded; a thumbnail
-//! that cannot be derived just never exists. None of them may fail the publish
-//! that caused it: a CI job must not see a 500 because somebody's phone is
-//! unreachable.
-//!
-//! Sinks are a channel-level route, so **no per-user filtering applies to them** —
-//! neither silence nor do-not-disturb, both of which belong to a person and their
-//! devices (§7.4). A webhook feeding an incident tracker does not go quiet because
-//! somebody went to bed.
+//! What happens after a write lands: poke the bus (id + cursor, ADR-0008), push to
+//! devices not silenced or in DND (§2.3, §7.4; only the push is suppressed, never the
+//! stream), queue the channel's sinks (§7.1bis, no per-user filtering), then derive a
+//! thumbnail. All best-effort: none may fail the publish that caused it.
 
 use std::sync::Arc;
 
@@ -54,39 +23,24 @@ pub struct Fanout {
     interactions: Arc<dyn InteractionRepository>,
     preferences: Arc<dyn PreferenceRepository>,
     clock: Arc<dyn Clock>,
-    /// The largest payload the configured transports will carry; past it a push
-    /// degrades to a poke and the client fetches over TLS (design §6.3).
-    ///
-    /// It belongs to whoever holds the transports, which is the composition root:
-    /// the figure is a property of what was configured, and a use case has no way
-    /// to know it. Zero on a deployment with no push transport at all, which is the
-    /// right answer rather than a degenerate one — with nothing to carry a payload,
-    /// every message is a poke.
+    /// The largest payload the configured transports will carry; past it a push degrades
+    /// to a poke (§6.3). Zero with no push transport: every message is a poke.
     payload_budget: usize,
-    /// Where a channel's events go besides devices, and the queue they wait in
-    /// (design §7.1bis).
-    ///
-    /// `None` on a deployment that declares no sink at all — which is most of them,
-    /// and the reason this is a separate constructor rather than two more arguments
-    /// every caller would pass empty. An instance with nothing to route does not
-    /// serialise an event to hand it to a queue nobody drains.
+    /// Where a channel's events go besides devices, and their queue (§7.1bis); `None`
+    /// when no sink is declared.
     sinks: Option<Sinks>,
-    /// Where an attachment's bytes live and what derives a thumbnail from them
-    /// (design D30) — `None` on a deployment with no object store, for the same
-    /// reason `sinks` is optional rather than two more required arguments.
+    /// Attachment store and thumbnailer; `None` with no object store.
     thumbnails: Option<Thumbnails>,
 }
 
-/// The two halves of the sink route, held together so they are wired or not wired
-/// as one.
+/// The two halves of the sink route, wired or not as one.
 #[derive(Clone)]
 struct Sinks {
     registry: Arc<dyn SinkRegistry>,
     queue: Arc<dyn SinkQueue>,
 }
 
-/// What deriving a thumbnail needs (design D30), held together for the same
-/// reason [`Sinks`] is: wired or not wired as one.
+/// What deriving a thumbnail needs, wired or not as one.
 #[derive(Clone)]
 struct Thumbnails {
     store: Arc<dyn AttachmentStore>,
@@ -124,11 +78,7 @@ impl Fanout {
         }
     }
 
-    /// Route this channel's events to the configured sinks as well (design §7.1bis).
-    ///
-    /// Called by the composition root when `[[channels.managed.sinks]]` declares
-    /// anything. Left off otherwise, so a publish on an instance with no sink does
-    /// not build a delivery for nobody.
+    /// Route this channel's events to the configured sinks as well (§7.1bis).
     #[must_use]
     pub fn with_sinks(
         mut self,
@@ -139,13 +89,7 @@ impl Fanout {
         self
     }
 
-    /// Derive an attachment's thumbnail after a write as well (design D30).
-    ///
-    /// Called by the composition root whenever `[attachments]` is configured, the
-    /// same shape as [`Fanout::with_sinks`]: an instance with no object store has
-    /// nothing to fetch a source from, and [`Fanout::derive_thumbnail`] answers
-    /// that by doing nothing rather than by every caller passing two `Arc`s to a
-    /// pair of doubles that refuse.
+    /// Derive an attachment's thumbnail after a write as well.
     #[must_use]
     pub fn with_thumbnails(
         mut self,
@@ -163,8 +107,7 @@ impl Fanout {
             cursor,
         };
         if let Err(error) = self.bus.publish(&poke).await {
-            // A dropped poke costs latency, never correctness: the client's cursor
-            // recovers it on the next reconnect (ADR-0008).
+            // A dropped poke costs latency, never correctness: the cursor recovers it (ADR-0008).
             tracing::warn!(
                 ?error,
                 "event bus poke failed; clients will catch up by cursor"
@@ -179,14 +122,8 @@ impl Fanout {
         }
     }
 
-    /// Queue this revision for the channel's outbound sinks (design §7.1bis).
-    ///
-    /// The event is rebuilt here from the same three values the store appended it
-    /// from — the notification, the revision and the cursor it landed on — so a
-    /// consumer sees byte for byte what a client sees on the stream (§8.1). The
-    /// store is not asked for it back: that would be a read per publish to recover
-    /// something this call already holds. A conformance test against a real
-    /// Postgres holds the two shapes together.
+    /// Queue this revision for the channel's outbound sinks (§7.1bis). The event is
+    /// rebuilt from what the store appended it from, so consumers see the stream's bytes.
     pub async fn queue_sinks(
         &self,
         notification: &Notification,
@@ -208,18 +145,14 @@ impl Fanout {
                 id: notification.channel.clone(),
             },
             recorded_at: revision.received_at,
-            // A fact about a delivery, and this is not one: the fan-out builds the
-            // event that goes into the log, and the log is read by everybody
-            // (§7.4, D22).
+            // Per-delivery fact; the log is read by everybody (§7.4).
             muted_by_dnd: false,
             payload: EventPayload::Revision(Box::new(RevisionEvent::new(notification, revision))),
         };
 
         for sink in targets {
             let delivery = SinkDelivery {
-                // One id per sink, not one per publish: `X-Weebo-Delivery` is the
-                // consumer's idempotency key, and two consumers sharing one would
-                // make each other's deduplication wrong.
+                // One id per sink: `X-Weebo-Delivery` is each consumer's idempotency key.
                 delivery_id: DeliveryId::generate(),
                 channel: notification.channel.clone(),
                 sink,
@@ -230,9 +163,7 @@ impl Fanout {
 
             // Due immediately: the wait is the drain interval, not a backoff.
             if let Err(error) = sinks.queue.enqueue(&delivery, self.clock.now()).await {
-                // Nothing better is available here. The publish is already durable,
-                // so failing it would report a write that happened as a write that
-                // did not; the delivery is lost and said so, loudly.
+                // The publish is already durable; the delivery is lost, loudly.
                 tracing::error!(
                     ?error,
                     channel = %notification.channel,
@@ -243,14 +174,8 @@ impl Fanout {
         }
     }
 
-    /// Derive this revision's attachment thumbnail, if it shows one (design D30).
-    ///
-    /// Best-effort in every direction, deliberately: nothing here ever fails the
-    /// write that triggered it. No `[attachments]` configured, an attachment
-    /// whose upload has not landed yet (`get` answers `None`), or one this build
-    /// cannot decode (`thumbnail` answers `Err(ImageRejection)`) — every one of
-    /// those means the row simply shows no image, never that the write that was
-    /// just accepted somehow failed on its way out.
+    /// Derive this revision's attachment thumbnail, if it shows one. Best-effort: no
+    /// store, a missing upload or an undecodable image just means no thumbnail.
     pub async fn derive_thumbnail(&self, revision: &Revision) {
         let Some(thumbnails) = &self.thumbnails else {
             return;
@@ -282,16 +207,8 @@ impl Fanout {
         }
     }
 
-    /// Push a notification to the devices that should hear about it.
-    ///
-    /// Errors are logged, never propagated. Reporting a publish as failed because a
-    /// push relay was unhappy would make a CI pipeline red for somebody else's
-    /// phone.
-    ///
-    /// The middle span of §13's `publish → fanout → push transport`, and the one
-    /// that earns the trace: everything it does is swallowed on purpose, so without
-    /// a span the answer to "the publish succeeded, why did nothing arrive" is a
-    /// warning line somewhere in the log of whichever replica handled it.
+    /// Push a notification to the devices that should hear about it. Errors are logged,
+    /// never propagated; the span is what explains "published but nothing arrived" (§13).
     #[tracing::instrument(
         name = "fanout",
         skip_all,
@@ -310,8 +227,7 @@ impl Fanout {
             if self.stays_quiet(&device, notification).await {
                 continue;
             }
-            // A device with no push transport is reachable only while its client
-            // holds a stream, which the bus poke already covered.
+            // A stream-only device was already covered by the bus poke.
             if matches!(device.transport, PushTransport::Stream) {
                 continue;
             }
@@ -320,8 +236,7 @@ impl Fanout {
             match self.push.dispatch(&device, &message).await {
                 Ok(PushOutcome::Delivered) => {}
                 Ok(PushOutcome::Expired) => {
-                    // The relay says this subscription is gone. Retrying it until
-                    // the notification expires would help nobody.
+                    // The relay says this subscription is gone.
                     let now = self.clock.now();
                     if let Err(error) = self.devices.revoke(device.id, now).await {
                         tracing::warn!(?error, device = %device.id, "could not revoke a dead device");
@@ -337,16 +252,10 @@ impl Fanout {
         }
     }
 
-    /// Whether this device's owner has asked not to be bothered by this — by a
-    /// silence (design §2.3) or by a do-not-disturb (§7.4).
-    ///
-    /// Both are read here rather than in one place because they answer different
-    /// questions about the same moment: a silence is *this notification or this
-    /// group*, a do-not-disturb is *this channel, at this priority, right now*.
-    /// Neither reaches the stream: only the push is suppressed (§7.4).
+    /// Whether the device's owner asked not to be bothered: a silence (§2.3) or a
+    /// do-not-disturb (§7.4). Only the push is suppressed.
     async fn stays_quiet(&self, device: &Device, notification: &Notification) -> bool {
-        // Both are per user; a service account has no attention to protect
-        // (design §5.2bis).
+        // Both are per user; a service account has no attention to protect (§5.2bis).
         let Principal::User { id } = device.owner else {
             return false;
         };
@@ -365,8 +274,7 @@ impl Fanout {
                 }
             }
             Err(error) => {
-                // Failing open would buzz a phone somebody asked to stay quiet.
-                // Failing closed loses one push, which the inbox still holds.
+                // Fail closed: one lost push (the inbox still holds it) beats buzzing a quiet phone.
                 tracing::warn!(?error, "could not read silences; suppressing the push");
                 return true;
             }
@@ -384,10 +292,7 @@ impl Fanout {
         };
 
         if muted {
-            // Counted here and nowhere else: the digest that ends the quiet period
-            // says how many were held back (§7.4), and this is the only moment that
-            // knows one was. Failing to count costs a number in a message; failing
-            // the publish over it would be absurd.
+            // The only moment that knows a push was held back; the closing digest counts them (§7.4).
             if let Err(error) = self.preferences.defer(id, notification.head.status).await {
                 tracing::warn!(?error, "could not record a deferred push for the digest");
             }
@@ -403,10 +308,7 @@ impl Fanout {
             .filter(|bytes| bytes.len() <= max_payload)
             .map_or(PushBody::Poke, |bytes| PushBody::Payload {
                 bytes,
-                // Always false: sealing is the relayed transport's own job, done
-                // against `device.public_key` once it holds the plaintext (design
-                // §6.2, M6) — this flag is the wire shape's placeholder, not a
-                // switch the fan-out ever has a reason to flip.
+                // Sealing is the relayed transport's job, against `device.public_key` (§6.2).
                 sealed: false,
             });
 
@@ -418,11 +320,8 @@ impl Fanout {
         }
     }
 
-    /// Send one device the digest that ends a quiet period (design §7.4).
-    ///
-    /// Here rather than in the job because this is where "talking to a device" lives
-    /// — including the part the job would otherwise duplicate: a relay reporting a
-    /// dead subscription revokes it, whatever the message was.
+    /// Send one device the digest that ends a quiet period (§7.4); a dead subscription
+    /// is revoked here, as for any push.
     pub async fn push_digest(&self, device: &Device, message: &PushMessage) {
         if matches!(device.transport, PushTransport::Stream) {
             return;
@@ -641,8 +540,7 @@ mod tests {
 
     // --- T19 · Do not disturb (design §3.4, §7.4) --------------------------
 
-    /// The clause that matters most, and the one an implementation gets wrong by
-    /// suppressing too much: the push stops, the stream does not.
+    /// The push stops, the stream does not.
     #[tokio::test]
     async fn critical_t19_a_quiet_period_stops_the_push_and_leaves_the_stream_alone() {
         let store = InMemory::new();
@@ -768,8 +666,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_service_account_device_is_never_quieted_by_a_preference() {
-        // A bot has no attention to protect (§5.2bis), so there is nothing to read
-        // and nothing that could suppress its delivery.
+        // A bot has no attention to protect (§5.2bis).
         let store = InMemory::new();
         let clock = TestClock::new();
         let bot = Principal::ServiceAccount {
@@ -842,10 +739,7 @@ mod tests {
         };
         seed(&store, &alice, webpush(), clock.now());
 
-        // What `TransportRegistry::max_payload_bytes` answers when nothing is
-        // configured. Zero is not a degenerate budget: with no transport there is no
-        // payload that fits, and serialising one to hand it to a dispatcher that
-        // will refuse is work nobody asked for.
+        // What `TransportRegistry::max_payload_bytes` answers when nothing is configured.
         fanout_carrying(&store, &clock, 0)
             .push(&notification(&alice, None, clock.now()))
             .await;

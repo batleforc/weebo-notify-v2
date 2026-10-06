@@ -65,18 +65,14 @@ export type Action = {
 };
 
 /**
- * The key an `ack` or `choice` action is addressed by. Interactions are
- * deduplicated per user *and* per key (design §2.3), so it has to be stable
- * across revisions — which is why the publisher chooses it.
+ * The publisher-chosen key an `ack` or `choice` action is addressed by, stable
+ * across revisions (interactions dedup per user and key, §2.3).
  */
 export type ActionKey = string;
 
 /**
- * The action set of one revision: at most [`MAX_ACTIONS`], with unique keys.
- *
- * Order is meaningful — it is display priority. Mobile push transports only
- * surface the first two or three, the rest are reachable by opening the client
- * (design §2.3).
+ * The action set of one revision: at most [`MAX_ACTIONS`] with unique keys, in
+ * display priority order (§2.3).
  */
 export type Actions = Array<Action>;
 
@@ -95,15 +91,47 @@ export type AddMemberBody = {
 };
 
 /**
- * The public half of an API key: everything `GET /apikeys` may show (design §5.2).
- *
- * The secret is returned exactly once, at creation, and is not reconstructible
- * from this — by design and by test (scenario T12).
+ * One alert of an Alertmanager webhook.
+ */
+export type Alert = {
+    /**
+     * `summary` joins the title, `description` is the body.
+     */
+    annotations?: {
+        [key: string]: string;
+    };
+    /**
+     * Upsert key, so a resolution revises the notification its firing created.
+     */
+    fingerprint?: string;
+    /**
+     * `alertname` and `severity` are read; `severity`, `job` and `namespace` become tags.
+     */
+    labels?: {
+        [key: string]: string;
+    };
+    /**
+     * `firing` or `resolved`.
+     */
+    status: string;
+};
+
+/**
+ * The Alertmanager webhook payload; only the fields used here are described.
+ */
+export type AlertmanagerBody = {
+    /**
+     * One notification is upserted per alert.
+     */
+    alerts: Array<Alert>;
+};
+
+/**
+ * The public half of an API key: everything `GET /apikeys` may show (§5.2, T12).
  */
 export type ApiKey = {
     /**
-     * Which channels it may do it in. Empty means none: a key with no channel
-     * list is inert, never universal.
+     * Which channels it may do it in; empty means none.
      */
     channels: Array<ChannelId>;
     /**
@@ -111,8 +139,7 @@ export type ApiKey = {
      */
     created_at: string;
     /**
-     * Optional expiry. Absent is allowed on purpose: rotation is a policy an
-     * operator may want, not one the product imposes (design §5.2).
+     * Optional expiry; rotation is left to operator policy (§5.2).
      */
     expires_at?: string | null;
     /**
@@ -124,26 +151,19 @@ export type ApiKey = {
      */
     label?: string | null;
     /**
-     * Last successful authentication. What makes "is anything still using this?"
-     * answerable before a revocation.
+     * Last successful authentication.
      */
     last_used_at?: string | null;
     /**
-     * Who it acts as (design §5.2).
+     * Who it acts as (§5.2).
      */
     owner: ApiKeyOwner;
     /**
-     * The lookup prefix, indexed so authentication is one indexed read rather
-     * than a hash comparison against every key on the instance.
+     * The indexed lookup prefix used to find the key in one read.
      */
     prefix: ApiKeyPrefix;
     /**
-     * This key's own publish ceiling, overriding the channel's (design §8.2, D24).
-     *
-     * `None` on every key by default — the channel's own `publish_per_minute`
-     * still applies, this only *narrows* it further for one noisy key. Settable
-     * only by a platform-admin (§5.4): a key that could raise its own ceiling
-     * would not be a ceiling.
+     * This key's own publish ceiling, narrowing the channel's (§8.2); set by platform admins only.
      */
     publish_per_minute?: number | null;
     /**
@@ -166,19 +186,13 @@ export type ApiKeyId = string;
  */
 export type ApiKeyLimitBody = {
     /**
-     * The new ceiling, or `null` to remove it and fall back to the channel's own
-     * (design §8.2).
+     * The new ceiling, or `null` to fall back to the channel's own (design §8.2).
      */
     publish_per_minute?: number | null;
 };
 
 /**
- * The owner of an API key, which is what decides who a publish is attributed to
- * (design §5.2).
- *
- * Modelled as its own type rather than as a bare [`Principal`] so that the
- * authentication adapter cannot accidentally mint a `CiJob` principal out of a
- * long-lived key: federation and keys are different doors.
+ * The owner of an API key, which decides publish attribution (§5.2).
  */
 export type ApiKeyOwner = {
     /**
@@ -206,31 +220,12 @@ export type ApiKeyOwner = {
 export type ApiKeyPrefix = string;
 
 /**
- * An uploaded attachment, referenced by a payload rather than embedded in it
- * (design §2.3).
+ * An uploaded attachment, referenced by a payload rather than embedded (§2.3).
  */
 export type AttachmentId = string;
 
 /**
- * Who performed an audited action.
- *
- * # Why this is not just a [`Principal`]
- *
- * §5 has four kinds of principal and every one of them authenticated: a person, a
- * bot, a channel key, a CI job. The reconciler is none of them. It applies a file
- * (§11), at boot or on `SIGHUP`, and nobody "did" that — which is exactly why §13's
- * promise that trust policy changes are journalled had no emitter for so long
- * (D28): there was no honest value to put in this field.
- *
- * Widening it here rather than adding a fifth `Principal` is deliberate. A
- * `Principal` is what publishes, holds a membership and reads a channel; a fifth
- * variant would be representable in all of those, and every match over the four
- * would gain an arm that means "cannot happen". The configuration is an actor of
- * the **audit log** and of nothing else, so it is named here and nowhere else.
- *
- * The wire form stays flat — `{"kind":"user","id":…}` beside `{"kind":
- * "configuration"}` — so a reader that already switches on `kind` gains a case
- * rather than a nesting level.
+ * Who performed an audited action: an authenticated principal, or the GitOps configuration.
  */
 export type AuditActor = Configured | Principal;
 
@@ -243,7 +238,7 @@ export type AuditEntry = {
      */
     action: string;
     /**
-     * Who did it — or [`AuditActor::configuration`] where a file did (§11, D28).
+     * Who did it — or [`AuditActor::configuration`] where a file did (§11).
      */
     actor: AuditActor;
     /**
@@ -252,47 +247,27 @@ export type AuditEntry = {
     at: string;
     channel?: null | ChannelId;
     /**
-     * Extra context: the scopes granted, the previous value.
-     *
-     * Never secrets, never payloads. An audit log that quotes an API key is worse
-     * than no audit log, because it is a credential store nobody thinks of as one.
+     * Extra context such as the scopes granted or the previous value; never secrets or payloads.
      */
     detail?: unknown;
     /**
-     * What it was done to, e.g. an id. Absent when the action has no single
-     * target.
+     * What it was done to, e.g. an id. Absent when the action has no single target.
      */
     target?: string | null;
 };
 
 /**
- * A principal as it is *rendered*: the identity plus the label a client shows
- * next to a revision, an interaction or a receipt (design §2.4, §8.1).
- *
- * Carried alongside events rather than fetched, because there is deliberately no
- * endpoint that reads someone else's profile: embedding it where it is legitimate
- * is what mechanically enforces "visible only through a shared channel"
- * (design §2.4). Profile *management* arrives with M2; M1 only needs to be able
- * to say who published.
+ * A principal plus the display label clients show next to revisions, interactions and receipts (§2.4, §8.1).
  */
 export type Author = Principal & {
     /**
-     * The name to show. Absent for a principal that has no profile — an anonymous
-     * channel key — in which case clients fall back to the reference.
+     * The name to show; absent for principals without a profile (clients fall back to the reference).
      */
     display_name?: string | null;
 };
 
 /**
- * The body of an avatar upload: the image bytes, nothing wrapping them.
- *
- * Nothing reads it: the handler takes `web::Bytes` directly. It exists so the
- * document has a name for "raw bytes".
- *
- * A named schema rather than an inline one because the wire type has to be
- * `string` with `format: binary` — that is how OpenAPI spells "raw bytes", and a
- * generator that reads anything else refuses the document outright rather than
- * guessing (which is what `Vec<u8>` did: an array of integers).
+ * The body of an avatar upload: the raw image bytes (`format: binary`).
  */
 export type AvatarUpload = Blob | File;
 
@@ -305,11 +280,7 @@ export type Channel = {
      */
     display_name?: string | null;
     /**
-     * Access granted to whole identity-provider groups (design §11).
-     *
-     * Resolved against the `groups` claim of the caller's token rather than stored
-     * per user — see [`GroupBinding`]. Defaulted on the wire so a client written
-     * against an older build still parses a channel.
+     * Access granted to whole identity-provider groups (§11), resolved per request.
      */
     group_access?: Array<GroupBinding>;
     /**
@@ -331,11 +302,7 @@ export type Channel = {
 };
 
 /**
- * What the console shows for one channel.
- *
- * Counts rather than lists for members: the console's question is "is this channel
- * configured the way we think", and a name here would put somebody's identity on a
- * screen belonging to a channel they may not share with the reader (§2.4).
+ * What the console shows for one channel; member counts, not names (§2.4).
  */
 export type ChannelCard = {
     /**
@@ -370,23 +337,8 @@ export type ChannelId = string;
  */
 export type ChannelPolicy = {
     /**
-     * How long a lifecycle notification may go without activity before the
-     * server closes it, which is what makes [`ttl`](Self::ttl) apply to one at
-     * all — until a notification closes, its retention clock has not started
-     * (see [`CloseAfter`]).
-     *
-     * Defaulted on the wire like `publish_per_minute` below, and the consequence
-     * is worth stating rather than discovering: a policy stored before this
-     * field existed deserialises to one week, so every channel that predates it
-     * starts closing its abandoned notifications. That is the intent — the
-     * alternative, defaulting old channels to `Never`, would leave exactly the
-     * notifications this was written for untouched forever.
-     * `serde(default)` is for *stored* JSON, where a policy written before this
-     * field existed has to load; `schema(required)` is for the wire, where it is
-     * never absent because the server always serialises it. Without the second,
-     * utoipa reads the first and every generated client gets an `Option` it can
-     * never see as `None` — an unwrap in each of them, forever, for a case that
-     * cannot happen.
+     * How long a lifecycle notification may go without activity before the server
+     * closes it, which starts its TTL (see [`CloseAfter`]).
      */
     close_after: CloseAfter;
     /**
@@ -394,52 +346,23 @@ export type ChannelPolicy = {
      */
     default_priority: Priority;
     /**
-     * This channel's own publish ceiling, per minute, overriding the 600/min of
-     * design §8.2. `None` means the published default applies.
-     *
-     * **GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),
-     * and deliberately absent from the `PATCH /channels/{id}` body: a publisher
-     * who could raise their own channel's ceiling through the API would be a
-     * publisher for whom the ceiling is a suggestion. A dynamic channel has no
-     * configuration file to be named in, so it keeps the default — which is the
-     * right answer rather than a gap, the default being what §8.2 publishes.
-     *
-     * Defaulted on the wire so a policy stored before this field existed still
-     * deserialises; the policy is persisted as JSON, so there is no column and no
-     * migration behind this.
+     * This channel's own publish ceiling per minute, overriding the §8.2 default;
+     * set through GitOps only (§11).
      */
     publish_per_minute?: number | null;
     /**
-     * Whether delivery and read receipts are collected and shown as "seen by
-     * 3/5" (design §7.3). Opt-in: a channel that tells publishers who read what
-     * is a product decision, not a default.
+     * Whether delivery and read receipts are collected and shown as "seen by 3/5" (§7.3); opt-in.
      */
     receipts_enabled: boolean;
     /**
-     * Retention rules (design §7.2bis).
+     * Retention rules (§7.2bis).
      */
     ttl: TtlPolicy;
 };
 
 /**
- * A partial change to a channel's policy (design §8).
- *
- * Absent fields are left alone, which is what makes this a `PATCH` rather than a
- * `PUT`: a client that only wants to lower the TTL ceiling must not have to restate
- * the priority and the receipts flag, and restating them is how two admins on two
- * screens overwrite each other.
- *
- * Lifting a ceiling is spelled `"0"`, not `null`, and that is deliberate. §7.2bis
- * already gives `"0"` the meaning "unbounded" everywhere a duration appears, and a
- * ceiling of *forever* **is** the absence of a ceiling — so there is one spelling
- * rather than two. The alternative, a `null` that means something different from an
- * absent key, is a shape no generated client can express: progenitor renders every
- * optional field with `skip_serializing_if`, so the Rust client could omit the key
- * but never send it null (ADR-0009 promises clients come from the contract, which
- * means the contract may not describe things they cannot say).
- *
- * `allow_forever` is not here on purpose — §7.2bis makes unbounded retention an
- * operator decision, so it stays in configuration.
+ * A partial change to a channel's policy (design §8): absent fields are left alone.
+ * Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.
  */
 export type ChannelPolicyBody = {
     close_after?: null | CloseAfter;
@@ -477,10 +400,7 @@ export type ChoiceOptionKey = string;
 export type CloseAfter = string;
 
 /**
- * The single-valued tag behind [`AuditActor::Configuration`].
- *
- * A one-variant enum rather than a unit struct so that serde and utoipa both emit
- * the `{"kind":"configuration"}` object the flat wire form needs.
+ * The single-valued tag behind [`AuditActor::Configuration`] (an enum so it serialises as `{"kind":"configuration"}`).
  */
 export type Configured = {
     kind: 'configuration';
@@ -495,18 +415,15 @@ export type Content = {
      */
     actions?: Actions;
     /**
-     * Markdown. Raw HTML in it is inert by contract, escaped at render time under
-     * a strict CSP (design §2.3, §10.3).
+     * Markdown; raw HTML is inert, escaped at render time (§2.3, §10.3).
      */
     body?: string | null;
     /**
-     * Client-side grouping key, and the unit a group-scoped silence acts on
-     * (design §2.3).
+     * Client-side grouping key, and the unit a group-scoped silence acts on (§2.3).
      */
     group_key?: string | null;
     /**
-     * Name of a client-side icon, e.g. `cluster`. Clients that do not know it
-     * fall back to their default.
+     * Name of a client-side icon, e.g. `cluster`; unknown names fall back to the default.
      */
     icon?: string | null;
     image?: null | Image;
@@ -516,21 +433,13 @@ export type Content = {
      */
     tags?: Array<string>;
     /**
-     * One line, always present. What a push notification shows when there is room
-     * for nothing else.
+     * One line, always present; what a push shows when there is room for nothing else.
      */
     title: string;
 };
 
 /**
- * What a publisher sends, before validation.
- *
- * Unknown fields are tolerated here, unlike in the nested drafts: this struct is
- * flattened into the publish request alongside the lifecycle fields (`state`,
- * `status`, `ttl`…), and serde cannot reject unknown fields across a flatten.
- * The nested drafts keep the check, which is where it earns its keep — a
- * misspelled `url` in a `view` action would otherwise silently produce a button
- * that goes nowhere.
+ * What a publisher sends, before validation (unknown fields tolerated because it is flattened).
  */
 export type ContentDraft = {
     /**
@@ -556,11 +465,7 @@ export type ContentDraft = {
      */
     tags?: Array<string>;
     /**
-     * See [`Content::title`].
-     *
-     * Optional on the wire, and absent means "leave it alone" on a revision — see
-     * [`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
-     * an absent title is the same refusal an empty one gets.
+     * See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
      */
     title?: string;
 };
@@ -570,7 +475,7 @@ export type ContentDraft = {
  */
 export type CreateAccountBody = {
     /**
-     * What it is for, read by whoever finds it in an audit log in six months.
+     * What it is for, for whoever finds it in an audit log.
      */
     description?: string | null;
     /**
@@ -578,9 +483,7 @@ export type CreateAccountBody = {
      */
     display_name?: string | null;
     /**
-     * The name it will be known by, everywhere it appears — as an `author`, in the
-     * audit log, in a member list. Chosen rather than generated for exactly that
-     * reason (§5.2bis).
+     * The name it will be known by everywhere (author, audit log, member list).
      */
     id: string;
 };
@@ -608,8 +511,7 @@ export type CreateKeyBody = {
      */
     channels: Array<ChannelId>;
     /**
-     * When it stops working. Absent means never, which is a policy choice rather
-     * than a default anybody should reach for.
+     * When it stops working; absent means never.
      */
     expires_at?: string | null;
     /**
@@ -632,11 +534,7 @@ export type CreateKeyBody = {
 export type Cursor = string;
 
 /**
- * A day of the week, as the wire spells it.
- *
- * Its own enum rather than `time::Weekday` because this one is API: `"mon"` is a
- * contract, and the serde representation of somebody else's type is not ours to
- * promise.
+ * A day of the week, as the wire spells it (`"mon"`…).
  */
 export const Day = {
     MON: 'mon',
@@ -649,11 +547,7 @@ export const Day = {
 } as const;
 
 /**
- * A day of the week, as the wire spells it.
- *
- * Its own enum rather than `time::Weekday` because this one is API: `"mon"` is a
- * contract, and the serde representation of somebody else's type is not ours to
- * promise.
+ * A day of the week, as the wire spells it (`"mon"`…).
  */
 export type Day = typeof Day[keyof typeof Day];
 
@@ -686,22 +580,14 @@ export type DeadLetter = {
      */
     last_error: string;
     /**
-     * Which sink it was going to, endpoint included: the first thing an operator
-     * needs is where to go and look.
+     * Which sink it was going to, endpoint included.
      */
     sink: SinkId;
 };
 
 /**
- * One outbound delivery chain, from first attempt to acceptance or dead letter
- * (design §7.1bis).
- *
- * Sent as `X-Weebo-Delivery` and reused across retries — it is the consumer's
- * idempotency key, which is the whole reason it exists. §7.1bis called it a
- * UUID before anything was written, at a point where the only properties that
- * mattered were "unique" and "stable across retries"; a ULID has both, sorts by
- * time in the index the drain reads in order, and is what every other minted id
- * in this product already is.
+ * One outbound delivery chain (§7.1bis), sent as `X-Weebo-Delivery` and reused
+ * across retries as the consumer's idempotency key.
  */
 export type DeliveryId = string;
 
@@ -737,8 +623,7 @@ export type Device = {
      */
     id: DeviceId;
     /**
-     * What the owner calls it in the device list, so revoking the right one does
-     * not require guessing.
+     * What the owner calls it in the device list.
      */
     label: string;
     /**
@@ -746,8 +631,7 @@ export type Device = {
      */
     last_seen_at?: string | null;
     /**
-     * Whose it is. Service accounts hold devices too — logical ones, with no push
-     * transport (design §5.2bis).
+     * Whose it is; service accounts hold logical devices with no push transport (§5.2bis).
      */
     owner: Principal;
     public_key?: null | DevicePublicKey;
@@ -772,15 +656,11 @@ export type DeviceId = string;
 export type DevicePublicKey = string;
 
 /**
- * One user's delivery preferences (design §7.4).
- *
- * Carried whole by the `preference` event of §8.1 rather than as a delta: a client
- * that missed one update would otherwise apply the next to the wrong baseline.
+ * One user's delivery preferences (§7.4), carried whole by the `preference` event (§8.1).
  */
 export type Dnd = {
     /**
-     * Channels that ring anyway — the on-call case: mute everything *except* the
-     * one that matters.
+     * Channels that ring anyway (the on-call case).
      */
     exceptions?: Array<ChannelId>;
     /**
@@ -796,12 +676,7 @@ export type Dnd = {
      */
     until?: string | null;
     /**
-     * Whether `urgent` is allowed through.
-     *
-     * Off by default, and opt-in by the **recipient**: the publisher chooses how
-     * insistent a notification is, the person receiving it chooses what may wake
-     * them (§2.3, §7.4). Note that this never reaches an iOS critical alert — no
-     * entitlement, by decision.
+     * Whether `urgent` is allowed through; the recipient's opt-in (§2.3, §7.4).
      */
     urgent_bypasses?: boolean;
     /**
@@ -811,20 +686,8 @@ export type Dnd = {
 };
 
 /**
- * A do-not-disturb as somebody *states* it: everything except whose it is.
- *
- * The draft/entity split this codebase uses everywhere else ([`ContentDraft`],
- * [`RevisionDraft`]), and here it carries a decision: **the subject is never an
- * input.** A caller states quiet hours and exceptions; the use case decides who
- * they belong to, because it is the only thing that knows.
- *
- * Leaving `user` on the request body was tried and it is worse than misleading —
- * it is *required*, so a client that legitimately does not know its own id cannot
- * build a body at all, and one that guesses gets a deserialisation error about a
- * field the server was going to overwrite.
- *
- * [`ContentDraft`]: crate::content::ContentDraft
- * [`RevisionDraft`]: crate::notification::RevisionDraft
+ * A do-not-disturb as a caller states it; the subject is decided by the use case,
+ * never taken from input.
  */
 export type DndDraft = {
     /**
@@ -850,7 +713,7 @@ export type DndDraft = {
 };
 
 /**
- * How wide a do-not-disturb reaches (design §7.4).
+ * How wide a do-not-disturb reaches (§7.4).
  */
 export type DndScope = {
     kind: 'everything';
@@ -972,12 +835,8 @@ export type Event = (RevisionEvent & {
  */
 export type ExchangeBody = {
     /**
-     * The OIDC ID token the CI runner was given by its forge.
-     *
-     * In the body rather than in `Authorization`, deliberately: it is not a
-     * credential for *this* API — sending it as a bearer would invite a proxy or a
-     * log to treat it as one, and would make this the one endpoint where the
-     * header means something different.
+     * The OIDC ID token the CI runner got from its forge; in the body, since it is not a
+     * credential for this API.
      */
     token: string;
 };
@@ -997,27 +856,68 @@ export type ExpiredWhileAway = {
 };
 
 /**
- * A publisher-supplied identifier used for idempotent upserts: the CI run id,
- * the job name, the incident reference (design §2.2).
- *
- * Looser than a [`Slug`] on purpose — publishers paste values that already exist
- * in their system (`run-4521`, `deploy/prod#88`) and rewriting those would break
- * the idempotency they are reaching for. Only the hygiene rules apply, plus the
- * requirement that nothing was rewritten: an id that changes under sanitisation
- * would silently address a different notification than the caller believes.
+ * A publisher-supplied identifier for idempotent upserts (§2.2), looser than a
+ * [`Slug`]; refused if sanitisation would change it.
  */
 export type ExternalId = string;
 
 /**
- * The scopes everyone in an identity-provider group holds in one channel
- * (design §11, `[[channels.managed.access]] oidc_group`).
- *
- * Deliberately *not* a [`Membership`]: there is no principal to name. Who is in
- * `infra-admins` is a fact the identity provider owns and the token carries, and
- * it changes without anyone telling us. Resolving it at authorisation time is what
- * keeps design §5.1's promise — pure JWKS validation, zero server session — and it
- * is why somebody removed from a group loses access on their next token rather
- * than whenever a reconciler next runs.
+ * A Gotify `POST /message` body, as JSON or a form.
+ */
+export type GotifyBody = {
+    /**
+     * Gotify extras; `client::notification.click.url` becomes a `view` action.
+     */
+    extras?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * The message text.
+     */
+    message: string;
+    /**
+     * Gotify priority: 0-3 low, 4-7 default, 8 high, 9 and above urgent.
+     */
+    priority?: number | null;
+    /**
+     * Title; defaults to the channel id.
+     */
+    title?: string | null;
+};
+
+/**
+ * What Gotify answers, so clients that parse the response keep working.
+ */
+export type GotifyMessage = {
+    /**
+     * Always 0: there are no Gotify applications here.
+     */
+    appid: number;
+    /**
+     * When the server received it (RFC 3339).
+     */
+    date: string;
+    /**
+     * The event-log position of this publish.
+     */
+    id: number;
+    /**
+     * The message text.
+     */
+    message: string;
+    /**
+     * The priority as sent.
+     */
+    priority: number;
+    /**
+     * The title as published.
+     */
+    title: string;
+};
+
+/**
+ * The scopes everyone in an identity-provider group holds in one channel (§11).
+ * Resolved from the token's `groups` claim at request time, never stored per user.
  */
 export type GroupBinding = {
     /**
@@ -1039,26 +939,18 @@ export type Health = {
      */
     status: string;
     /**
-     * Version of the running binary, so an operator can tell replicas apart
-     * during a rolling update.
+     * Version of the running binary, to tell replicas apart during a rolling update.
      */
     version: string;
 };
 
 /**
- * A duration written the way people write them.
- *
- * Deliberately whole-second and single-unit: `"90m"` is fine, `"1h30m"` is not.
- * A notification TTL is a rough intent, not a schedule, and one unit per value
- * keeps the config, the payload and the client display identical.
+ * A whole-second, single-unit duration: `"90m"` is fine, `"1h30m"` is not.
  */
 export type HumanDuration = string;
 
 /**
- * The image shown with a notification.
- *
- * Anything of real size goes to the object store and is referenced, so the
- * payload stays small enough to ride inside a push transport (design §2.3, §6.1).
+ * The image shown with a notification: an uploaded attachment, or a small inline `data:` URI (§2.3, §6.1).
  */
 export type Image = {
     kind: 'attachment';
@@ -1111,7 +1003,7 @@ export type InteractionId = string;
  */
 export type InteractionRecord = {
     /**
-     * Who answered — shown in the timeline and in the stream (design §8.1).
+     * Who answered (§8.1).
      */
     author: Author;
     /**
@@ -1137,25 +1029,17 @@ export type InteractionRecord = {
  */
 export type Membership = {
     /**
-     * Who. Users and service accounts are members in exactly the same way
-     * (design §5.2bis).
+     * Who; users and service accounts are members alike (§5.2bis).
      */
     principal: Principal;
     /**
-     * What they may do. Empty means a member with no rights, which is a
-     * configuration mistake rather than a state the domain needs to model — so it
-     * is refused at construction.
+     * What they may do; never empty.
      */
     scopes: Array<Scope>;
 };
 
 /**
- * A newly minted key — the only time its secret exists outside the caller.
- *
- * A DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no
- * field that could carry a secret, and that is the property worth keeping
- * (scenario T12). The secret lives here, in the one response that returns it, and
- * nowhere else.
+ * A newly minted key: the only response that ever carries its secret (T12).
  */
 export type MintedKey = ApiKey & {
     /**
@@ -1169,8 +1053,7 @@ export type MintedKey = ApiKey & {
  */
 export type MintedToken = {
     /**
-     * The channels it resolved to, so the caller can be told what it actually got
-     * rather than having to decode its own token to find out.
+     * The channels it resolved to.
      */
     channels: Array<ChannelId>;
     /**
@@ -1196,9 +1079,7 @@ export type Notification = {
      */
     channel: ChannelId;
     /**
-     * When it last closed, and therefore when its retention clock started.
-     * `None` while it is live — which is exactly why a running incident cannot
-     * expire (design §7.2bis).
+     * When it last closed, starting its retention clock; `None` while live (§7.2bis).
      */
     closed_at?: string | null;
     /**
@@ -1206,8 +1087,7 @@ export type Notification = {
      */
     created_at: string;
     /**
-     * Set on deletion; the row survives long enough to broadcast a tombstone and
-     * to keep sync cursors honest (design §7.2bis).
+     * Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).
      */
     deleted_at?: string | null;
     external_id?: null | ExternalId;
@@ -1228,8 +1108,7 @@ export type Notification = {
      */
     last_seq: number;
     /**
-     * How many revisions have been recorded. Equal to `last_seq` unless the
-     * aggregate was rehydrated from a partial history.
+     * How many revisions have been recorded (equals `last_seq` unless rehydrated partially).
      */
     revision_count: number;
     /**
@@ -1244,14 +1123,70 @@ export type Notification = {
 export type NotificationId = string;
 
 /**
- * Which of the two publishing shapes produced this notification (design §2.2).
+ * Which of the two publishing shapes produced this notification (§2.2).
  */
 export const NotificationKind = { LIFECYCLE: 'lifecycle', SIMPLE: 'simple' } as const;
 
 /**
- * Which of the two publishing shapes produced this notification (design §2.2).
+ * Which of the two publishing shapes produced this notification (§2.2).
  */
 export type NotificationKind = typeof NotificationKind[keyof typeof NotificationKind];
+
+/**
+ * An ntfy JSON publish, sent to the ntfy root.
+ */
+export type NtfyBody = {
+    /**
+     * A link, published as a `view` action.
+     */
+    click?: string | null;
+    /**
+     * The message text.
+     */
+    message?: string | null;
+    /**
+     * ntfy priority, 1 (min) to 5 (urgent).
+     */
+    priority?: number | null;
+    /**
+     * Tags.
+     */
+    tags?: Array<string>;
+    /**
+     * Title; defaults to the topic.
+     */
+    title?: string | null;
+    /**
+     * The channel to publish into.
+     */
+    topic: string;
+};
+
+/**
+ * What ntfy answers to a publish.
+ */
+export type NtfyMessage = {
+    /**
+     * Always `message`.
+     */
+    event: string;
+    /**
+     * The notification id.
+     */
+    id: string;
+    /**
+     * The message text.
+     */
+    message: string;
+    /**
+     * Unix seconds when the server received it.
+     */
+    time: number;
+    /**
+     * The channel it was published into.
+     */
+    topic: string;
+};
 
 /**
  * Where an object came from, and therefore who may change it.
@@ -1320,16 +1255,7 @@ export type PageRevision = {
 };
 
 /**
- * This user's delivery preferences changed (design §7.4, §8.1).
- *
- * Carries the whole state rather than a delta: a client that missed one of these
- * would otherwise apply the next one to the wrong baseline, and "my phone kept
- * buzzing after I turned on do-not-disturb" is not a bug anybody enjoys chasing.
- *
- * Both halves of "stop notifying me" ride together for the same reason — a client
- * deciding whether to raise a toast asks about the do-not-disturb *and* the
- * silences (§7.4), so shipping them in separate events would give it a moment
- * where it holds one and not the other.
+ * This user's whole delivery preference state, DND and silences together (§7.4, §8.1).
  */
 export type PreferenceEvent = {
     /**
@@ -1351,11 +1277,7 @@ export type PreferenceEvent = {
  */
 export type PresignBody = {
     /**
-     * Where the publisher intends to publish it.
-     *
-     * Required, and it is the authorisation: uploading is a publisher's act, not
-     * something every authenticated principal may do. The attachment itself is not
-     * bound to the channel afterwards (design §6.1).
+     * Where the publisher intends to publish it; requires `publish` there (design §6.1).
      */
     channel: string;
     /**
@@ -1363,8 +1285,7 @@ export type PresignBody = {
      */
     content_length: number;
     /**
-     * The declared media type. Imposed in the signature, so an upload that lies is
-     * refused by the bucket rather than discovered later.
+     * The declared media type, imposed in the signature.
      */
     content_type: string;
 };
@@ -1388,24 +1309,11 @@ export type PresignedDownload = {
  */
 export type PresignedUpload = {
     /**
-     * When the signature stops working. Short: a presigned URL is a bearer
-     * credential, and one that lives for a day is one that leaks into a log for a
-     * day.
+     * When the signature stops working (short-lived: it is a bearer credential).
      */
     expires_at: string;
     /**
-     * Headers the client must send verbatim — they are covered by the signature.
-     *
-     * A map and not a `Vec<(String, String)>`, which is what this was until the
-     * route existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in
-     * JSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a
-     * boolean is not something OpenAPI 3.0 can express, so the Rust client stopped
-     * generating the moment this type reached the document. The same lesson as D1
-     * and D3: a shape no generator can model is not describable, however natural it
-     * reads in Rust (ADR-0009).
-     *
-     * It is also the better shape here — headers are named, not ordered — and
-     * `BTreeMap` keeps the document and the response stable across runs.
+     * Headers the client must send verbatim; they are covered by the signature.
      */
     headers: {
         [key: string]: string;
@@ -1458,10 +1366,7 @@ export type Principal = {
 };
 
 /**
- * How loudly a notification asks for attention (design §2.2).
- *
- * `Urgent` does not bypass a user's do-not-disturb unless that user opted in:
- * the recipient decides what may wake them, never the publisher (design §7.4).
+ * How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).
  */
 export const Priority = {
     MIN: 'min',
@@ -1472,24 +1377,16 @@ export const Priority = {
 } as const;
 
 /**
- * How loudly a notification asks for attention (design §2.2).
- *
- * `Urgent` does not bypass a user's do-not-disturb unless that user opted in:
- * the recipient decides what may wake them, never the publisher (design §7.4).
+ * How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).
  */
 export type Priority = typeof Priority[keyof typeof Priority];
 
 /**
- * The `application/problem+json` body every refusal carries.
- *
- * The field clients are told to match on is `code`, not `status` and certainly not
- * `title` — statuses are coarse and titles are prose that gets reworded. A code is
- * a promise (design §8, `notify-domain`'s error table).
+ * The `application/problem+json` body every refusal carries; clients match on `code`.
  */
 export type Problem = {
     /**
-     * The stable code. Absent only when the failure is ours rather than the
-     * caller's — there is nothing useful to branch on when a database is down.
+     * The stable code to match on; absent only for server-side failures.
      */
     code?: string | null;
     /**
@@ -1505,9 +1402,7 @@ export type Problem = {
      */
     title: string;
     /**
-     * Always `about:blank` for now: the `code` field carries the specificity a
-     * `type` URI usually would, and inventing URIs nobody dereferences is
-     * ceremony.
+     * Always `about:blank`; `code` carries the specificity.
      */
     type: string;
 };
@@ -1526,37 +1421,18 @@ export type Profile = {
      */
     locale?: string | null;
     /**
-     * The fields this person set themselves.
-     *
-     * Public because the API surfaces it: a settings screen has to be able to say
-     * "this one is yours, and this one follows your identity provider", which is
-     * the difference between an editable field and a mysterious one.
+     * The fields this person set themselves, rather than following the identity provider.
      */
     overridden?: Array<ProfileField>;
     /**
-     * An IANA name such as `Europe/Paris`.
-     *
-     * Validated against the real database rather than a shape: this is the default
-     * quiet hours are resolved in (§7.4), so a plausible-looking `Europe/Pris`
-     * accepted today becomes a notification that does not arrive in six months,
-     * with nothing connecting the two.
+     * An IANA timezone name such as `Europe/Paris`, validated against the real database.
      */
     timezone?: string | null;
 };
 
 /**
- * A partial edit of the caller's profile.
- *
- * Every field is doubly optional on the wire, and the two levels mean different
- * things — this is the whole reason the body is not just a `Profile`:
- *
- * * **absent** — leave the field exactly as it is;
- * * **`null`** — hand the field back to the identity provider, so the next login
- * refreshes it;
- * * **a value** — claim it, and stop later logins from overwriting it (§2.4).
- *
- * Without the middle case there is no way back: somebody who typed a display name
- * once would be maintaining it by hand forever.
+ * A partial edit of the caller's profile: an absent field is left alone, `null` hands it
+ * back to the identity provider, a value claims it against later logins (§2.4).
  */
 export type ProfileBody = {
     /**
@@ -1568,17 +1444,13 @@ export type ProfileBody = {
      */
     locale?: string | null;
     /**
-     * An IANA name such as `Europe/Paris`, validated against the real database.
-     * It is the default quiet hours are resolved in (§7.4).
+     * An IANA name such as `Europe/Paris`; the default timezone for quiet hours (§7.4).
      */
     timezone?: string | null;
 };
 
 /**
  * A field of a profile that can be claimed by its owner.
- *
- * Named rather than positional: this set is persisted, and a variant added in the
- * middle of a tuple would silently re-map what people had claimed.
  */
 export const ProfileField = {
     DISPLAY_NAME: 'display_name',
@@ -1588,15 +1460,11 @@ export const ProfileField = {
 
 /**
  * A field of a profile that can be claimed by its owner.
- *
- * Named rather than positional: this set is persisted, and a variant added in the
- * middle of a tuple would silently re-map what people had claimed.
  */
 export type ProfileField = typeof ProfileField[keyof typeof ProfileField];
 
 /**
- * How far along a long-running thing is. Rendered as a bar; the units are the
- * publisher's own (steps, files, percent).
+ * How far along a long-running thing is, in the publisher's own units.
  */
 export type Progress = {
     /**
@@ -1610,11 +1478,7 @@ export type Progress = {
 };
 
 /**
- * `POST /notifications`: a revision, plus the channel it belongs to.
- *
- * The channel is the only thing this shape adds to the upsert body — everything
- * else is the same revision draft, because there is exactly one ingestion shape
- * (design §8.3).
+ * `POST /notifications`: the upsert body's revision draft plus its channel (§8.3).
  */
 export type PublishBody = ContentDraft & {
     priority?: null | Priority;
@@ -1629,11 +1493,7 @@ export type PublishBody = ContentDraft & {
 };
 
 /**
- * What a publish produced.
- *
- * Serialisable because it *is* the stored idempotency response: replaying a key
- * has to give back the same answer, and the only way to be sure of that is to
- * return the same value rather than recompute it.
+ * What a publish produced; also the stored idempotency response, replayed verbatim.
  */
 export type Published = {
     /**
@@ -1649,8 +1509,7 @@ export type Published = {
      */
     replayed: boolean;
     /**
-     * What the channel policy did to the requested retention — a clamp the
-     * publisher cannot see is a clamp they will report as a bug (scenario T6).
+     * What the channel policy did to the requested retention, so a clamp is visible.
      */
     retention: TtlResolution;
     /**
@@ -1697,17 +1556,12 @@ export type PushTransport = {
  */
 export type QuietHours = {
     /**
-     * The days it applies to. **Empty means every day** — the common case, and the
-     * one nobody should have to spell out seven times.
-     *
-     * For a window that crosses midnight the day is the one it **starts** on: a
-     * Friday `22:00–08:00` is the night from Friday to Saturday, which is what a
-     * person means by "Friday night".
+     * The days it applies to (**empty means every day**). A window crossing midnight
+     * belongs to the day it starts on.
      */
     days?: Array<Day>;
     /**
-     * When it ends. May be earlier than `start`, which means the window crosses
-     * midnight.
+     * When it ends; earlier than `start` means the window crosses midnight.
      */
     end: WallClock;
     /**
@@ -1715,8 +1569,7 @@ export type QuietHours = {
      */
     start: WallClock;
     /**
-     * The IANA zone `start` and `end` are read in — the preference's own, never the
-     * device's.
+     * The IANA zone `start` and `end` are read in (the preference's, not the device's).
      */
     timezone: string;
 };
@@ -1727,24 +1580,15 @@ export type QuietHours = {
 export type RawBytes = Blob | File;
 
 /**
- * What "seen by 3/5" unfolds into (design §7.3, §10.3).
- *
- * The number on the badge is the headline; the hover card is the answer to the
- * question the badge provokes — *who*, and *when*. Delivery stays folded underneath
- * as a device count, because "it reached four screens" and "three people read it"
- * are different facts and only the second one is about readership.
+ * The "seen by 3/5" readership: who saw it and when, plus a delivered-device count (§7.3, §10.3).
  */
 export type Readership = {
     /**
-     * How many people could see it, where that is a knowable number.
-     *
-     * `None` on a channel whose access is derived rather than stored — see
-     * [`Readership::of`]. A client shows "vu par 3" then, not "vu par 3/3".
+     * How many people could see it, or `None` when access is group-derived (show "seen by 3").
      */
     audience?: number | null;
     /**
-     * Distinct devices that acknowledged delivery. A receipt without a device is
-     * a logical subscription (design §5.2bis), and a subscription is not a screen.
+     * Distinct devices that acknowledged delivery.
      */
     delivered_devices: number;
     /**
@@ -1754,8 +1598,7 @@ export type Readership = {
 };
 
 /**
- * Readiness answer: the overall verdict plus the per-dependency detail an
- * operator needs to know *which* dependency is holding the replica back.
+ * Readiness answer: the overall verdict plus per-dependency detail.
  */
 export type Readiness = {
     /**
@@ -1842,12 +1685,8 @@ export type Reconciliation = {
      */
     channels: number;
     /**
-     * Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
-     *
-     * The one thing on this screen that is *actionable and quiet otherwise*: such a
-     * binding grants nothing until that person's first login (§14.1, M1.8), and
-     * without a place to see it the symptom is "alice says she cannot see the
-     * channel" with nothing to connect it to.
+     * Bindings by `oidc_sub` or `email` naming somebody who has never logged in, which
+     * grant nothing until that person's first login (§14.1).
      */
     pending: Array<string>;
     /**
@@ -1856,22 +1695,12 @@ export type Reconciliation = {
     removed: number;
     /**
      * What caused this pass — boot, the timer, or `SIGHUP` (§11).
-     *
-     * §10.4bis asks this screen for "le dernier SIGHUP", which a timestamp alone
-     * cannot answer: the reconciler also runs every minute, so `at` is almost
-     * always the timer and an operator who has just sent a signal cannot tell
-     * whether it landed.
      */
     trigger: Trigger;
 };
 
 /**
- * What recording an interaction did.
- *
- * A DTO rather than the domain's [`Recorded`], because the distinction the domain
- * draws — did this change anything worth broadcasting — is exactly what a client
- * needs to hear, and the enum's shape (a tuple variant, a bare id) is not a good
- * JSON contract.
+ * What recording an interaction did: whether anything changed worth broadcasting.
  */
 export type RecordedInteraction = {
     /**
@@ -1886,7 +1715,7 @@ export type RecordedInteraction = {
  */
 export type Revision = {
     /**
-     * The principal that published it (design §5).
+     * The principal that published it (§5).
      */
     author: Author;
     /**
@@ -1910,8 +1739,7 @@ export type Revision = {
      */
     received_at: string;
     /**
-     * Server-assigned, monotonic within the notification, starting at 1. The
-     * arbiter of last-write-wins.
+     * Server-assigned, monotonic within the notification, starting at 1; the last-write-wins arbiter.
      */
     seq: number;
     /**
@@ -1925,11 +1753,8 @@ export type Revision = {
 };
 
 /**
- * A revision as a publisher submits it: everything optional except the content.
- *
- * An absent field means "leave it as it is" on an update, and takes the channel
- * default on a creation. That is what lets a CI job push `state=closed,
- * status=success` without restating the title, the tags and the buttons.
+ * A revision as a publisher submits it; absent fields keep the head's value on
+ * update and take channel defaults on creation.
  */
 export type RevisionDraft = ContentDraft & {
     priority?: null | Priority;
@@ -1939,10 +1764,7 @@ export type RevisionDraft = ContentDraft & {
 };
 
 /**
- * A revision, flattened into the shape the stream publishes (design §8.1).
- *
- * Denormalised on purpose: a client that just reconnected must be able to render
- * a timeline row from one event, without a follow-up request per notification.
+ * A revision, denormalised so a reconnecting client can render it from one event (§8.1).
  */
 export type RevisionEvent = {
     /**
@@ -1959,8 +1781,7 @@ export type RevisionEvent = {
      */
     notification_id: NotificationId;
     /**
-     * The content. Always in the clear: the stream is TLS straight to us, and the
-     * sealed box exists only inside mobile push blobs (design §6.2).
+     * The content, in the clear (TLS stream; sealing only applies to push, §6.2).
      */
     payload: Content;
     /**
@@ -1972,8 +1793,7 @@ export type RevisionEvent = {
      */
     revised_at: string;
     /**
-     * Server-assigned sequence within the notification — the arbiter of
-     * last-write-wins (design §2.2).
+     * Server-assigned sequence within the notification, the last-write-wins arbiter (§2.2).
      */
     seq: number;
     /**
@@ -2006,11 +1826,7 @@ export const Scope = {
 export type Scope = typeof Scope[keyof typeof Scope];
 
 /**
- * A named machine identity (design §5.2bis).
- *
- * The recommended shape for anything durable: a team bot running on a person's
- * key dies the day that person is offboarded, which is a bad way to find out how
- * the deploy notifications worked.
+ * A named machine identity (§5.2bis), the recommended owner for anything durable.
  */
 export type ServiceAccount = {
     /**
@@ -2019,12 +1835,11 @@ export type ServiceAccount = {
     created_at: string;
     created_by?: null | UserId;
     /**
-     * What it is for. Read by whoever finds it in an audit log in six months.
+     * What it is for.
      */
     description?: string | null;
     /**
-     * Set on deactivation. Deactivating revokes its keys and cuts its streams
-     * immediately (design §8, scenario T25) — it is not a soft "please stop".
+     * Set on deactivation, which revokes its keys and cuts its streams immediately (§8, T25).
      */
     disabled_at?: string | null;
     /**
@@ -2036,35 +1851,26 @@ export type ServiceAccount = {
      */
     id: ServiceAccountId;
     /**
-     * GitOps-declared or API-created (design §11).
+     * GitOps-declared or API-created (§11).
      */
     origin: Origin;
 };
 
 /**
- * A service account, named so a timeline can say "published by `bot-argocd`"
- * rather than "published by a key" (design §5.2bis).
+ * A service account, named so a timeline can say who published (§5.2bis).
  */
 export type ServiceAccountId = string;
 
 /**
- * One person, and when they first looked (design §7.3, §10.3).
- *
- * Serialize only, here and on [`Readership`]: a roll is computed and sent, never
- * read back in. Deriving `Deserialize` would describe an input that does not
- * exist, and leave the code that parses it untested for as long as that stays
- * true.
+ * One person and when they first saw the notification (§7.3, §10.3).
  */
 export type Sighting = {
     /**
-     * When they *first* saw it. Somebody who opens a notification on their laptop
-     * and again on their phone read it once, at the first of the two.
+     * When they first saw it, across all their devices.
      */
     at: string;
     /**
-     * Who. Carries the display name where the reader is entitled to it — a hover
-     * card that listed raw identifiers would answer a question nobody asked
-     * (design §2.4).
+     * Who, with a display name where the reader is entitled to it (§2.4).
      */
     author: Author;
 };
@@ -2082,8 +1888,7 @@ export type Silence = {
      */
     target: SilenceTarget;
     /**
-     * When it lifts. `None` only for a notification-scoped silence, which ends
-     * when the notification does.
+     * When it lifts; `None` only for a notification-scoped silence, which ends with the notification.
      */
     until?: string | null;
     /**
@@ -2131,11 +1936,7 @@ export type SilenceTarget = {
 };
 
 /**
- * Which sink of which channel, written as `kind:destination`.
- *
- * Stable across restarts and reconfigurations, free of secrets, and legible in a
- * dead-letter listing — see the module documentation for why it is derived rather
- * than declared.
+ * Which sink of which channel, written as `kind:destination` (never contains secrets).
  */
 export type SinkId = string;
 
@@ -2170,19 +1971,8 @@ export const Status = {
 export type Status = typeof Status[keyof typeof Status];
 
 /**
- * The answer to a catch-up, which is more than a list of events.
- *
- * Two extras carry real product meaning:
- *
- * * `expired` is the "N notifications expired while you were away" counter
- * (design §7.2bis). A message that expired undelivered is deliberately *not* in
- * the backlog — but silently dropping it would leave a user wondering, so the
- * count is reported per channel instead.
- * * `compacted` records how many revisions were folded away (design §7.2). Forty
- * revisions of one deploy become one entry; the number is what lets a client say
- * "38 updates" instead of pretending nothing happened.
- * * `deferred_by_dnd` names the notifications whose lateness was *asked for*
- * (design §7.4), so a client does not badge them "arrived late".
+ * A catch-up page: events plus the per-user expired counts (§7.2bis), the
+ * compaction count (§7.2) and DND-deferred ids (§7.4).
  */
 export type SyncPage = {
     /**
@@ -2190,15 +1980,8 @@ export type SyncPage = {
      */
     compacted: number;
     /**
-     * The notifications on this page that arrived late **on purpose** — a quiet
-     * period was running when they were created (design §7.4).
-     *
-     * Beside the events rather than on them, and that is the decision: an [`Event`]
-     * is addressed to a *channel* and every member of it receives the same bytes,
-     * while this is one person's own preference. Putting it on the event would make
-     * the same event differ per reader, which is exactly what §8.1 promises it does
-     * not — the stream and the backlog carry identical events. It sits here with
-     * `expired` and `compacted`, the other two per-user facts a catch-up reports.
+     * Notifications on this page delayed on purpose by a quiet period (§7.4); kept
+     * off the events because events are identical for every reader.
      */
     deferred_by_dnd?: Array<NotificationId>;
     /**
@@ -2213,14 +1996,12 @@ export type SyncPage = {
 };
 
 /**
- * Why a notification stopped existing, as broadcast in a `tombstone` event
- * (design §8.1).
+ * Why a notification stopped existing, as broadcast in a `tombstone` event (§8.1).
  */
 export const TombstoneReason = { DELETED: 'deleted', EXPIRED: 'expired' } as const;
 
 /**
- * Why a notification stopped existing, as broadcast in a `tombstone` event
- * (design §8.1).
+ * Why a notification stopped existing, as broadcast in a `tombstone` event (§8.1).
  */
 export type TombstoneReason = typeof TombstoneReason[keyof typeof TombstoneReason];
 
@@ -2243,9 +2024,7 @@ export type Trigger = typeof Trigger[keyof typeof Trigger];
  */
 export type TrustPolicyCard = {
     /**
-     * Whether it came from a channel's own `publishers` block, which §11 makes win
-     * over a global one — the thing to look at first when a policy "should" match
-     * and does not.
+     * Whether it came from a channel's own `publishers` block, which wins over a global one (§11).
      */
     channel_scoped: boolean;
     /**
@@ -2272,12 +2051,11 @@ export type TrustPolicyCard = {
 export type Ttl = string;
 
 /**
- * What a channel allows (design §7.2bis, configured per channel in §11).
+ * What retention a channel allows (§7.2bis, configured per channel in §11).
  */
 export type TtlPolicy = {
     /**
-     * Whether `"0"` is accepted. Off by default: unbounded retention is a
-     * deliberate operator decision, not something a publisher can opt into.
+     * Whether `"0"` (keep forever) is accepted; off by default.
      */
     allow_forever: boolean;
     /**
@@ -2307,11 +2085,8 @@ export type UnreadCount = {
      */
     channel: ChannelId;
     /**
-     * How many of its notifications this principal has not read.
-     *
-     * Never zero — a channel with nothing unread is absent from the list rather
-     * than present with a zero, so that "no badge" has one representation instead
-     * of two.
+     * How many of its notifications this principal has not read; never zero (such
+     * channels are omitted).
      */
     unread: number;
 };
@@ -2322,13 +2097,7 @@ export type UnreadCount = {
 export type UserId = string;
 
 /**
- * A time of day on a wall clock, to the minute.
- *
- * Minutes, not seconds: quiet hours are a human intention ("ten in the evening"),
- * and a field nobody will ever set to a non-zero value is a field somebody will
- * eventually set wrong. Stored as minutes since local midnight because that is the
- * form every comparison here wants, and rendered `HH:MM` because that is the form
- * §7.4 writes it in.
+ * A time of day on a wall clock, to the minute, rendered `HH:MM`.
  */
 export type WallClock = string;
 
@@ -2337,16 +2106,13 @@ export type WallClock = string;
  */
 export type WebPushKey = {
     /**
-     * The uncompressed P-256 public point, base64url — passed verbatim as
-     * `applicationServerKey` (RFC 8292).
+     * The uncompressed P-256 public point, base64url: `applicationServerKey` (RFC 8292).
      */
     application_server_key: string;
 };
 
 /**
- * The caller's own id — everything a client needs to name itself as the
- * `owner` of something it is about to create, e.g. a personal API key
- * (design §5.2).
+ * The caller's own id, to name itself as `owner` of e.g. a personal API key (§5.2).
  */
 export type Whoami = {
     /**
@@ -3262,8 +3028,7 @@ export type ChannelInboxData = {
     };
     query?: {
         /**
-         * Comma-separated channel ids. Narrows what the caller may already read; it
-         * can never widen it.
+         * Comma-separated channel ids; narrows what the caller may read, never widens it.
          */
         channels?: string;
         /**
@@ -3271,8 +3036,7 @@ export type ChannelInboxData = {
          */
         state?: string;
         /**
-         * Comma-separated statuses: `success`, `failure`, `warning`, `info`,
-         * `cancelled`.
+         * Comma-separated statuses: `success`, `failure`, `warning`, `info`, `cancelled`.
          */
         status?: string;
         /**
@@ -3288,8 +3052,7 @@ export type ChannelInboxData = {
          */
         group_key?: string;
         /**
-         * Keep only notifications carrying at least one action button (`true`) or
-         * none (`false`). Absent means "do not filter on this".
+         * Only notifications with (`true`) or without (`false`) action buttons; absent = no filter.
          */
         has_actions?: boolean;
         /**
@@ -3396,6 +3159,220 @@ export type DownloadResponses = {
 };
 
 export type DownloadResponse = DownloadResponses[keyof DownloadResponses];
+
+export type AlertmanagerData = {
+    body: AlertmanagerBody;
+    path: {
+        /**
+         * Channel id
+         */
+        channel: string;
+    };
+    query?: {
+        /**
+         * The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+         */
+        token?: string;
+    };
+    url: '/api/v1/compat/alertmanager/{channel}';
+};
+
+export type AlertmanagerErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `publish` scope in that channel
+     */
+    403: Problem;
+    /**
+     * The payload does not validate
+     */
+    422: Problem;
+};
+
+export type AlertmanagerError = AlertmanagerErrors[keyof AlertmanagerErrors];
+
+export type AlertmanagerResponses = {
+    /**
+     * Each alert's notification as it now stands
+     */
+    200: Array<Published>;
+};
+
+export type AlertmanagerResponse = AlertmanagerResponses[keyof AlertmanagerResponses];
+
+export type GotifyData = {
+    body: GotifyBody;
+    path?: never;
+    query?: {
+        /**
+         * The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+         */
+        token?: string;
+        /**
+         * Target channel, required when the key is scoped to more than one.
+         */
+        channel?: string;
+    };
+    url: '/api/v1/compat/gotify/message';
+};
+
+export type GotifyErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `publish` scope in that channel
+     */
+    403: Problem;
+    /**
+     * Invalid payload, or the key spans several channels and no `?channel=` was given
+     */
+    422: Problem;
+};
+
+export type GotifyError = GotifyErrors[keyof GotifyErrors];
+
+export type GotifyResponses = {
+    /**
+     * Published
+     */
+    200: GotifyMessage;
+};
+
+export type GotifyResponse = GotifyResponses[keyof GotifyResponses];
+
+export type NtfyJsonData = {
+    body: NtfyBody;
+    path?: never;
+    query?: {
+        /**
+         * The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+         */
+        token?: string;
+        /**
+         * Target channel, required when the key is scoped to more than one.
+         */
+        channel?: string;
+    };
+    url: '/api/v1/compat/ntfy';
+};
+
+export type NtfyJsonErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `publish` scope in that channel
+     */
+    403: Problem;
+    /**
+     * The payload does not validate
+     */
+    422: Problem;
+};
+
+export type NtfyJsonError = NtfyJsonErrors[keyof NtfyJsonErrors];
+
+export type NtfyJsonResponses = {
+    /**
+     * Published
+     */
+    200: NtfyMessage;
+};
+
+export type NtfyJsonResponse = NtfyJsonResponses[keyof NtfyJsonResponses];
+
+export type NtfyData = {
+    body: string;
+    headers?: {
+        /**
+         * Also `X-Title` or `t`
+         */
+        Title?: string | null;
+        /**
+         * 1-5 or min/low/default/high/urgent (max); also `X-Priority`, `p`
+         */
+        Priority?: string | null;
+        /**
+         * Comma-separated; also `X-Tags`, `ta`
+         */
+        Tags?: string | null;
+        /**
+         * A link, published as a `view` action; also `X-Click`
+         */
+        Click?: string | null;
+    };
+    path: {
+        /**
+         * Channel id (the ntfy topic)
+         */
+        channel: string;
+    };
+    query?: {
+        /**
+         * The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+         */
+        token?: string;
+    };
+    url: '/api/v1/compat/ntfy/{channel}';
+};
+
+export type NtfyErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `publish` scope in that channel
+     */
+    403: Problem;
+    /**
+     * The payload does not validate
+     */
+    422: Problem;
+};
+
+export type NtfyError = NtfyErrors[keyof NtfyErrors];
+
+export type NtfyResponses = {
+    /**
+     * Published
+     */
+    200: NtfyMessage;
+};
+
+export type NtfyResponse = NtfyResponses[keyof NtfyResponses];
+
+export type NtfyPutData = {
+    body: string;
+    path: {
+        /**
+         * Channel id (the ntfy topic)
+         */
+        channel: string;
+    };
+    query?: {
+        /**
+         * The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+         */
+        token?: string;
+    };
+    url: '/api/v1/compat/ntfy/{channel}';
+};
+
+export type NtfyPutResponses = {
+    /**
+     * Published
+     */
+    200: NtfyMessage;
+};
+
+export type NtfyPutResponse = NtfyPutResponses[keyof NtfyPutResponses];
 
 export type ListDevicesData = {
     body?: never;
@@ -3519,8 +3496,7 @@ export type InboxData = {
     path?: never;
     query?: {
         /**
-         * Comma-separated channel ids. Narrows what the caller may already read; it
-         * can never widen it.
+         * Comma-separated channel ids; narrows what the caller may read, never widens it.
          */
         channels?: string;
         /**
@@ -3528,8 +3504,7 @@ export type InboxData = {
          */
         state?: string;
         /**
-         * Comma-separated statuses: `success`, `failure`, `warning`, `info`,
-         * `cancelled`.
+         * Comma-separated statuses: `success`, `failure`, `warning`, `info`, `cancelled`.
          */
         status?: string;
         /**
@@ -3545,8 +3520,7 @@ export type InboxData = {
          */
         group_key?: string;
         /**
-         * Keep only notifications carrying at least one action button (`true`) or
-         * none (`false`). Absent means "do not filter on this".
+         * Only notifications with (`true`) or without (`false`) action buttons; absent = no filter.
          */
         has_actions?: boolean;
         /**
@@ -4158,8 +4132,7 @@ export type StreamData = {
          */
         channels?: string;
         /**
-         * Resume after this cursor. `Last-Event-ID` wins over it when both are sent,
-         * because that one is the browser reconnecting rather than the page asking.
+         * Resume after this cursor; `Last-Event-ID` wins when both are sent.
          */
         cursor?: string;
         /**
@@ -4211,8 +4184,7 @@ export type SyncData = {
          */
         channels?: string;
         /**
-         * Which device is catching up, so its cursor is advanced. Absent for a one-off
-         * caller — `curl /sync` from a shell has no cursor to keep.
+         * Which device is catching up, so its cursor advances; absent for a one-off caller.
          */
         device?: string;
         /**
@@ -4385,8 +4357,7 @@ export type WebsocketData = {
          */
         channels?: string;
         /**
-         * Resume after this cursor. `Last-Event-ID` wins over it when both are sent,
-         * because that one is the browser reconnecting rather than the page asking.
+         * Resume after this cursor; `Last-Event-ID` wins when both are sent.
          */
         cursor?: string;
         /**

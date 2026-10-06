@@ -19,17 +19,13 @@ pub struct SyncParams {
     pub cursor: Option<String>,
     /// Comma-separated channel ids; absent means every channel the caller may read.
     pub channels: Option<String>,
-    /// Which device is catching up, so its cursor is advanced. Absent for a one-off
-    /// caller — `curl /sync` from a shell has no cursor to keep.
+    /// Which device is catching up, so its cursor advances; absent for a one-off caller.
     pub device: Option<String>,
     /// Page size, clamped server-side.
     pub limit: Option<u32>,
 }
 
-/// Replay everything the caller missed.
-///
-/// The same cursor the live stream stamps on each event, so a client that was
-/// offline for a week and one whose connection blipped take this identical path
+/// Replay everything the caller missed, off the same cursor the live stream stamps
 /// (ADR-0001, ADR-0012).
 #[utoipa::path(
     get,
@@ -72,19 +68,14 @@ pub(crate) async fn sync(
     let request = SyncRequest {
         cursor,
         channels,
-        // The page cursor and the sync cursor are the same token, so only the size
-        // half of the page request is meaningful here.
+        // Page and sync cursor are the same token; only the size half matters here.
         page: page(None, params.limit)?,
         device,
     };
 
     let mut page = state.sync.execute(&caller.0, request).await?;
 
-    // The same flag the stream sets, on the same events, so a client that catches
-    // up through `/sync` and one that was connected reach the same conclusion about
-    // the same notification (§7.4, §14.4 D22). `deferred_by_dnd` stays alongside it:
-    // it is the page-level list §7.4 promises for the "arrived late" badge, and this
-    // is the per-event fact a popup decision reads.
+    // The same per-event DND flag the stream sets (§7.4, D22).
     for event in &mut page.events {
         if let notify_ports::EventPayload::Revision(revision) = &event.payload
             && page.deferred_by_dnd.contains(&revision.notification_id)
@@ -93,9 +84,7 @@ pub(crate) async fn sync(
         }
     }
 
-    // How far behind the clients that reconnect are (design §13). Observed here and
-    // not in the stream handlers: those drain the same use case on every poke, and
-    // counting a one-event poke as a backlog would drown the distribution in ones.
+    // Reconnect lag (design §13); not in the stream, where every poke would count as one.
     state.metrics.sync_backlog(page.events.len());
 
     Ok(web::Json(page))

@@ -1,30 +1,6 @@
-//! Image decoding (design §2.4, §2.3, §15).
-//!
-//! This crate is the server's **only** media-decoding surface — a boundary D30
-//! widened from "the avatar" to "the avatar and an attachment's derived
-//! thumbnail", both decoded by the same rules below, which is why it stays one
-//! crate rather than two. The dependency list is explicit about which decoders
-//! exist, and the order of operations is not an implementation detail.
-//!
-//! # The order is the defence
-//!
-//! 1. **Size, before anything is parsed**, where the caller can cheaply enforce
-//!    one — an avatar's 512 KiB ceiling costs a comparison. A thumbnail's source
-//!    has no separate ceiling here: it was already bounded at upload time by
-//!    `MAX_ATTACHMENT_BYTES` (design §8.2), enforced in the presigned URL that
-//!    was the only way those bytes could have reached the bucket.
-//! 2. **Format, from the magic bytes** — not from the `Content-Type` a client sent,
-//!    which is a claim rather than a fact.
-//! 3. **Dimensions, from the header, before a full decode.** This is the
-//!    decompression-bomb defence and it only works here: 30 000 × 30 000 pixels is
-//!    a few kilobytes of PNG and 3.6 GB of decoded RGBA. Checking after decoding
-//!    would mean the allocation already happened.
-//! 4. **Animation, refused.** An animated format is a loop over frames, which is an
-//!    amplification factor on everything above.
-//! 5. **Decode, resize, re-encode.** The re-encode is what strips metadata — an
-//!    avatar taken on a phone carries GPS coordinates in EXIF, and writing a new
-//!    file from the pixels is a stronger promise than deleting the tags we thought
-//!    to look for.
+//! The server's only image-decoding surface: avatars and attachment thumbnails (design §2.3, §2.4, §15).
+//! Order is the defence: size, format from magic bytes, header dimensions (decompression bombs),
+//! no animation, then decode/resize/re-encode (which strips EXIF).
 
 use image::{DynamicImage, ImageFormat, ImageReader};
 use notify_ports::{
@@ -37,49 +13,26 @@ pub const MAX_AVATAR_BYTES: usize = 512 * 1024;
 /// The square an avatar is stored at (design §2.4).
 pub const AVATAR_SIZE: u32 = 256;
 
-/// The square a row's derived thumbnail is stored at (design §2.3, §10.3, D30).
-///
-/// Smaller than the avatar: a thumbnail sits next to a title in a list row,
-/// where §10.3's other furniture (a status dot, badges, timestamps) already
-/// shares the line, rather than filling a settings page on its own.
+/// The square a derived attachment thumbnail is stored at (design §2.3, §10.3).
 pub const THUMBNAIL_SIZE: u32 = 128;
 
-/// The most pixels a source image may claim before it is decoded.
-///
-/// Generous for a photograph — a 24-megapixel camera fits — and far below what it
-/// takes to exhaust a replica. The number that matters is the product, not either
-/// side: a 100 000 × 1 image is as much of a problem as a square one.
-///
-/// Shared between the avatar and the thumbnail: the defence is against decoded
-/// pixel count, which the encoded byte ceiling upstream of each caller does not
-/// bound on its own — a small file can still claim an enormous canvas.
+/// Max pixels a source may claim before decoding (24 MP fits); the product matters, not either side.
 pub const MAX_SOURCE_PIXELS: u64 = 40_000_000;
 
-/// What [`ImageAvatarProcessor`] and [`ImageAttachmentThumbnailer`] share: decode
-/// with the decompression-bomb defence applied, refusing anything this build does
-/// not read.
-///
-/// Not parameterised over which formats are allowed — both callers accept
-/// exactly PNG, JPEG and WebP today, and a thumbnailer that accepted more than
-/// the avatar it shares a decoder with would be a second, silently different
-/// answer to "what does this project decode" (§15).
+/// Decode PNG/JPEG/WebP with the decompression-bomb defence; shared by avatars and thumbnails (§15).
 fn decode_capped(bytes: &[u8], max_source_pixels: u64) -> Result<DynamicImage, ImageRejection> {
-    // The format comes from the bytes. A client's `Content-Type` is a claim, and
-    // a JPEG announced as a PNG must be treated as what it is or refused as what
-    // it claims — never decoded as the other.
+    // Format from the bytes, never the client's `Content-Type`.
     let reader = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|_| ImageRejection::Unsupported)?;
 
     match reader.format() {
         Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP) => {}
-        // Includes GIF, which is refused for being animated in spirit even when
-        // a particular file is not: only static formats are decoded here.
+        // Includes GIF: only static formats are decoded.
         _ => return Err(ImageRejection::Unsupported),
     }
 
-    // The header, and only the header. This is the check that has to happen
-    // before the pixels are allocated.
+    // Header only: must run before the pixels are allocated.
     let (width, height) = reader
         .into_dimensions()
         .map_err(|_| ImageRejection::Corrupt)?;
@@ -94,13 +47,7 @@ fn decode_capped(bytes: &[u8], max_source_pixels: u64) -> Result<DynamicImage, I
         .map_err(|_| ImageRejection::Corrupt)
 }
 
-/// `resize_to_fill` plus the re-encode both processors finish with.
-///
-/// Cropped to the square rather than squashed — a face, or a screenshot's
-/// subject, that arrives 16:9 should not come out oval — and re-encoded as PNG
-/// whatever came in: one output format means one decoder for every client that
-/// renders the result, and lossless means a re-derivation of the same source
-/// does not decay.
+/// Crop to a square and re-encode as lossless PNG, whatever came in.
 fn square_png(decoded: &DynamicImage, size: u32) -> Result<ProcessedImage, ImageRejection> {
     let square = decoded.resize_to_fill(size, size, image::imageops::FilterType::Lanczos3);
 
@@ -115,10 +62,7 @@ fn square_png(decoded: &DynamicImage, size: u32) -> Result<ProcessedImage, Image
     })
 }
 
-/// Run a decode on the blocking pool.
-///
-/// Up to 40 megapixels and a Lanczos3 resize is seconds of CPU; on the async
-/// worker it would freeze every stream and request that worker holds.
+/// Up to 40 MP plus a Lanczos3 resize is seconds of CPU; keep it off async workers.
 async fn off_the_runtime(
     bytes: &[u8],
     run: fn(&[u8]) -> Result<ProcessedImage, ImageRejection>,
@@ -153,22 +97,20 @@ impl ImageAvatarProcessor {
 #[async_trait::async_trait]
 impl AvatarProcessor for ImageAvatarProcessor {
     async fn process(&self, bytes: &[u8]) -> PortResult<Result<ProcessedImage, ImageRejection>> {
-        // Checked before the copy `off_the_runtime` makes, not only inside `run`.
+        // Checked before the copy `off_the_runtime` makes.
         if bytes.len() > MAX_AVATAR_BYTES {
             return Ok(Err(ImageRejection::TooLarge));
         }
         let outcome = off_the_runtime(bytes, Self::run).await?;
         if let Err(rejection) = &outcome {
-            // Refusals are logged at debug: they are ordinary, and a bad upload must
-            // not be a way to fill somebody's log.
+            // Debug: refusals are ordinary and must not be a way to flood logs.
             tracing::debug!(%rejection, "avatar refused");
         }
         Ok(outcome)
     }
 }
 
-/// Derives thumbnails with the same rules `ImageAvatarProcessor` applies,
-/// cropped to [`THUMBNAIL_SIZE`] instead (design §2.3, D30).
+/// Derives thumbnails with the avatar rules, cropped to [`THUMBNAIL_SIZE`] (design §2.3).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageAttachmentThumbnailer;
 
@@ -179,10 +121,7 @@ impl ImageAttachmentThumbnailer {
         Self
     }
 
-    /// Everything except the async wrapper, so the rules are testable directly.
-    ///
-    /// No byte-size ceiling here — see the module docs: the source already
-    /// passed through one, at upload, before this crate ever saw it.
+    /// No byte ceiling: the source was bounded at upload (`MAX_ATTACHMENT_BYTES`).
     fn run(bytes: &[u8]) -> Result<ProcessedImage, ImageRejection> {
         square_png(&decode_capped(bytes, MAX_SOURCE_PIXELS)?, THUMBNAIL_SIZE)
     }
@@ -193,8 +132,7 @@ impl AttachmentThumbnailer for ImageAttachmentThumbnailer {
     async fn thumbnail(&self, bytes: &[u8]) -> PortResult<Result<ProcessedImage, ImageRejection>> {
         let outcome = off_the_runtime(bytes, Self::run).await?;
         if let Err(rejection) = &outcome {
-            // Debug, not warn: an unsupported source (a GIF, say) is an ordinary
-            // outcome nobody is paged for — the row simply shows no thumbnail.
+            // Debug: an unsupported source just means no thumbnail.
             tracing::debug!(%rejection, "attachment thumbnail not derived");
         }
         Ok(outcome)
@@ -229,8 +167,7 @@ mod tests {
 
     #[test]
     fn a_jpeg_is_accepted_and_re_encoded_rather_than_passed_through() {
-        // The re-encode is what strips EXIF, so "the output is a PNG" is the
-        // assertion that metadata cannot have survived (§2.4).
+        // The re-encode strips EXIF, so "output is PNG" proves metadata is gone (§2.4).
         let processed = ImageAvatarProcessor::run(&encoded(400, 400, ImageFormat::Jpeg)).unwrap();
 
         assert_eq!(processed.content_type, "image/png");
@@ -268,15 +205,8 @@ mod tests {
         );
     }
 
-    /// A real, tiny PNG whose header has been rewritten to announce `width` by
-    /// `height`.
-    ///
-    /// This is what a decompression bomb *is*: a small file that claims to be an
-    /// enormous image. Building it by re-encoding a genuinely huge one would spend a
-    /// minute allocating the very gigabytes this rule exists to refuse, and would
-    /// come out over the size ceiling — so the test would pass for the wrong reason.
-    /// Patching a real file keeps every other chunk valid, so what the decoder
-    /// objects to is the size and nothing else.
+    /// A real tiny PNG whose IHDR announces `width` × `height`: a decompression bomb
+    /// without allocating one.
     fn png_claiming(width: u32, height: u32) -> Vec<u8> {
         fn crc32(bytes: &[u8]) -> u32 {
             let mut crc = 0xFFFF_FFFF_u32;
@@ -290,8 +220,7 @@ mod tests {
             !crc
         }
 
-        // 8-byte signature, then the IHDR chunk: 4 length, 4 type, 13 data, 4 CRC.
-        // Width and height are the first two fields of that data.
+        // 8-byte signature, then IHDR: 4 length, 4 type, then width and height.
         let mut png = encoded(1, 1, ImageFormat::Png);
         png[16..20].copy_from_slice(&width.to_be_bytes());
         png[20..24].copy_from_slice(&height.to_be_bytes());
@@ -317,8 +246,7 @@ mod tests {
 
     #[test]
     fn the_bomb_fixture_is_a_png_this_build_would_otherwise_read() {
-        // Guards the test above from rotting into "an unparseable file is refused":
-        // the header has to be valid enough that the dimension check is what runs.
+        // The header must be valid enough that the dimension check is what refuses it.
         let ordinary = png_claiming(64, 64);
 
         let reader = ImageReader::new(std::io::Cursor::new(&ordinary))
@@ -330,14 +258,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_port_returns_a_rejection_rather_than_an_error() {
-        // A caller's bad file is a `422`, not a failure of the world: the port says
-        // so by returning `Ok(Err(_))`.
+        // A bad file is `Ok(Err(_))`, i.e. a `422`.
         let outcome = ImageAvatarProcessor::new().process(b"nope").await.unwrap();
 
         assert!(outcome.is_err());
     }
 
-    // --- The thumbnailer shares the decoder, not just the rules (D30) ----------
+    // --- The thumbnailer shares the decoder ---
 
     #[test]
     fn a_png_comes_back_as_a_128_square_png() {
@@ -351,9 +278,7 @@ mod tests {
         assert_eq!(decoded.height(), THUMBNAIL_SIZE);
     }
 
-    /// A PNG PNG-compression cannot shrink much, unlike `encoded`'s flat colour —
-    /// deflate crushes a single-colour image to a few hundred bytes regardless of
-    /// its dimensions, which would make the size assertion below vacuous.
+    /// A noisy PNG, so deflate cannot make the size assertion vacuous.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "pseudo-noise for a test fixture; the low bytes of the mix are the point"
@@ -375,10 +300,7 @@ mod tests {
 
     #[test]
     fn a_thumbnail_source_is_not_held_to_the_avatar_byte_ceiling() {
-        // The avatar's 512 KiB ceiling is a caller-side check on bytes a stranger
-        // posted; a thumbnail's source came out of this server's own bucket, where
-        // it was already bounded by `MAX_ATTACHMENT_BYTES` at upload time (§8.2).
-        // A source larger than an avatar could ever be must still thumbnail.
+        // The 512 KiB ceiling is avatar-only; larger attachment sources must still thumbnail.
         let oversized_for_an_avatar = noisy_encoded(1_000, 1_000);
         assert!(oversized_for_an_avatar.len() > MAX_AVATAR_BYTES);
 
@@ -397,8 +319,6 @@ mod tests {
 
     #[test]
     fn a_thumbnail_decompression_bomb_is_refused_on_its_header_too() {
-        // The same fixture and the same defence as the avatar's — the whole point
-        // of sharing `decode_capped` rather than writing this check twice.
         let bomb = png_claiming(30_000, 30_000);
 
         assert_eq!(

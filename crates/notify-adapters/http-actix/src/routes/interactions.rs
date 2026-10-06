@@ -12,19 +12,13 @@ use crate::extract::Authenticated;
 use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
 
-/// What recording an interaction did.
-///
-/// A DTO rather than the domain's [`Recorded`], because the distinction the domain
-/// draws — did this change anything worth broadcasting — is exactly what a client
-/// needs to hear, and the enum's shape (a tuple variant, a bare id) is not a good
-/// JSON contract.
+/// What recording an interaction did: whether anything changed worth broadcasting.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RecordedInteraction {
     /// `created`, `unchanged` or `replaced`.
     #[schema(example = "created")]
     pub outcome: &'static str,
-    /// The interaction that now stands. Absent on `unchanged`, where the caller
-    /// already has it.
+    /// The interaction that now stands; absent on `unchanged`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record: Option<InteractionRecord>,
 }
@@ -95,8 +89,7 @@ pub(crate) async fn record(
         .execute(&caller.0, id, body.into_inner())
         .await?;
 
-    // Always 200, never 201: clicking an `ack` twice is one interaction, and a
-    // client that retries must not be told it created a second one.
+    // Always 200: clicking `ack` twice is one interaction.
     Ok(web::Json(recorded.into()))
 }
 
@@ -184,10 +177,7 @@ pub(crate) async fn receipt(
         .execute(&caller.0, body.notification_id, body.kind, body.device)
         .await?;
 
-    // A channel with receipts off is not an error — the client posts them
-    // unconditionally and the channel policy decides (design §7.3). `null` rather
-    // than a 204: one status with a nullable body is one branch for the caller,
-    // and it keeps the generated clients to a single response type.
+    // Receipts off is not an error (§7.3): `null` keeps one status and one response type.
     Ok(web::Json(recorded))
 }
 
@@ -214,7 +204,6 @@ pub(crate) async fn readership(
 ) -> Result<web::Json<Option<Readership>>, ApiError> {
     let id: NotificationId = path.into_inner().parse()?;
 
-    // `null` for the same reason `POST /receipts` answers `null`, and spelled the
-    // same way on purpose: a client that already handles one handles this.
+    // `null`, exactly like `POST /receipts`.
     Ok(web::Json(state.readership.execute(&caller.0, id).await?))
 }

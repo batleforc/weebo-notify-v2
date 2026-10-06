@@ -1,7 +1,4 @@
-//! The bus against a real Postgres.
-//!
-//! Under `mod e2e` so `task test` skips it and `task test:e2e` runs it; without a
-//! database each case reports that it was skipped rather than failing.
+//! The bus against a real Postgres; under `mod e2e`, skipped without a database.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,11 +13,15 @@ mod e2e {
     use notify_ports::{EventBus, Poke};
     use sqlx::postgres::PgPoolOptions;
 
+    fn database_url() -> Option<String> {
+        std::env::var("WNK_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .ok()
+    }
+
     /// A bus on the configured database, or `None` when there is not one.
     async fn bus() -> Option<PgEventBus> {
-        let url = std::env::var("WNK_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .ok()?;
+        let url = database_url()?;
 
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -43,10 +44,7 @@ mod e2e {
         };
     }
 
-    /// Wait for a poke the caller recognises, ignoring whatever else is on the bus.
-    ///
-    /// The channel is instance-wide and the suite runs in parallel, so a test that
-    /// took the first poke it saw would fail whenever another test published first.
+    /// Wait for a specific poke: the channel is instance-wide and tests run in parallel.
     async fn wait_for(
         stream: &mut futures::stream::BoxStream<'static, Poke>,
         wanted: &Poke,
@@ -70,9 +68,7 @@ mod e2e {
         let bus = bus!();
         let mut stream = bus.subscribe().await.unwrap();
 
-        // Including itself is what keeps single-replica and multi-replica
-        // deployments on the same code path — the case that would otherwise only
-        // break in production.
+        // Hearing itself keeps single- and multi-replica deployments on one code path.
         let poke = Poke::Channel {
             id: ChannelId::parse("t-fanout-self").unwrap(),
             cursor: Cursor::from_sequence(1_234),
@@ -91,8 +87,7 @@ mod e2e {
         let mut first = bus.subscribe().await.unwrap();
         let mut second = bus.subscribe().await.unwrap();
 
-        // Two subscriptions stand in for two replicas: each holds its own stream
-        // connections, so each has to learn about every publication.
+        // Two subscriptions stand in for two replicas.
         let poke = Poke::User {
             id: UserId::generate(),
             cursor: Cursor::from_sequence(7),
@@ -117,16 +112,13 @@ mod e2e {
 
         assert!(wait_for(&mut stream, &poke).await);
 
-        // The receiver reads the authoritative row at this cursor rather than
-        // trusting anything the bus carried (ADR-0008).
+        // Receivers read the authoritative row at this cursor (ADR-0008).
         assert_eq!(poke.cursor(), Some(Cursor::from_sequence(99)));
     }
 
     #[tokio::test]
     async fn a_listener_that_loses_its_connection_says_so_and_keeps_listening() {
-        let Ok(url) =
-            std::env::var("WNK_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
-        else {
+        let Some(url) = database_url() else {
             eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
             return;
         };

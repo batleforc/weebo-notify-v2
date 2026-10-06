@@ -1,31 +1,12 @@
-//! What GitOps last applied, so a pass can say what changed (design §11, §13).
-//!
-//! # Why previous state has to be stored at all
-//!
-//! The reconciler applies the whole configuration every pass. It therefore knows
-//! what it is applying and never what *moved* — which is why §13's promise that
-//! trust policy changes are journalled had no emitter (D28). Channels and service
-//! accounts could in principle have been diffed against their live rows; trust
-//! policies could not, since they are read into memory at boot and stored nowhere.
-//!
-//! # Why the declaration and not the entity
-//!
-//! A managed channel's live row drifts for reasons that are not the file: a manager
-//! edits what they are allowed to edit. Diffing against that would report a human's
-//! action as a GitOps change and, worse, would report it on every pass until
-//! somebody reverted it. What §13 asks is whether the *declaration* changed, so the
-//! declaration is what is kept.
+//! What GitOps last applied, so a pass can journal what changed (§11, §13).
+//! Diffs the declaration, not the live row, which managers may legitimately edit.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
 
-/// Which family of declaration a snapshot belongs to.
-///
-/// A closed set for the same reason [`crate::AuditAction`] is one: these strings
-/// reach a database and come back, and a value that can be written but not read is
-/// how `GET /admin/audit` broke once already (M4duovicies).
+/// Which family of declaration a snapshot belongs to (closed: stored and read back).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DeclarationKind {
     /// A `[[trust_policy]]` block — which forge may publish here (§5.3).
@@ -59,27 +40,18 @@ impl core::fmt::Display for DeclarationKind {
 pub struct Declaration {
     /// Identity within its kind: a channel id, an account id, a policy's issuer.
     pub key: String,
-    /// The declaration itself, canonicalised by whoever writes it.
-    ///
-    /// Compared whole. *What* changed inside it belongs in the audit entry's
-    /// `detail`, where a person reads it, and not here, where only equality matters.
+    /// The declaration itself, canonicalised by the writer and compared whole.
     pub snapshot: serde_json::Value,
 }
 
 /// What the reconciler last wrote, per kind.
 #[async_trait::async_trait]
 pub trait DeclarationStore: Send + Sync {
-    /// Everything of one kind.
-    ///
-    /// The whole set and never one key: a pass has to see the declarations that are
-    /// about to disappear, and a lookup can only return the ones that remain.
+    /// Everything of one kind (the whole set, so removals are visible).
     async fn snapshot(&self, kind: DeclarationKind) -> PortResult<Vec<Declaration>>;
 
-    /// Replace the stored set for one kind with what was just applied.
-    ///
-    /// Replace rather than upsert, because removals are half of what this answers:
-    /// an upsert-only store would remember a trust policy that was withdrawn and go
-    /// on reporting it as present for ever.
+    /// Replace the stored set for one kind with what was just applied (not an upsert,
+    /// so removals are forgotten).
     async fn apply(
         &self,
         kind: DeclarationKind,
@@ -88,10 +60,7 @@ pub trait DeclarationStore: Send + Sync {
     ) -> PortResult<()>;
 }
 
-/// What one pass changed, per kind (design §13).
-///
-/// Built by [`diff`], which is where the comparison lives so that both the real
-/// store and the double answer the same question the same way.
+/// What one pass changed, per kind (§13), as computed by [`diff`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
     /// Declared now, absent before.
@@ -102,12 +71,7 @@ pub struct Changes {
     pub removed: Vec<Declaration>,
 }
 
-/// A declaration that moved, and what it moved from.
-///
-/// Both sides, because "a trust policy changed" is not the sentence §13 promises —
-/// an operator at 3am needs to know *what* it changed to, and reconstructing that
-/// from the previous audit entry assumes the previous entry exists, which is false
-/// on the pass right after this table was introduced.
+/// A declaration that moved, with both sides so the audit entry is self-contained.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changed {
     /// What was applied before.
@@ -117,22 +81,15 @@ pub struct Changed {
 }
 
 impl Changes {
-    /// Whether the file moved at all.
-    ///
-    /// A steady instance reconciling every sixty seconds must write **nothing**: an
-    /// audit log that gains a row per minute is one nobody reads after an incident,
-    /// which would undo the point of filling it.
+    /// Whether anything moved; a steady instance must write nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty()
     }
 }
 
-/// Compare what was applied before with what is being applied now.
-///
-/// Ordered by key so that a pass which changes three policies writes three entries
-/// in a stable order, rather than in whatever order a hash map yielded — an audit
-/// log that reorders itself between runs is one that cannot be diffed.
+/// Compare what was applied before with what is applied now, ordered by key so
+/// the audit log is stable across runs.
 #[must_use]
 pub fn diff(before: &[Declaration], now: &[Declaration]) -> Changes {
     use std::collections::BTreeMap;
@@ -185,8 +142,6 @@ mod tests {
     fn an_unchanged_file_produces_nothing() {
         let before = vec![declaration("a", "one"), declaration("b", "two")];
 
-        // The property that keeps this log readable: the reconciler runs every
-        // sixty seconds, and a row per pass would bury the rows that matter.
         assert!(diff(&before, &before.clone()).is_empty());
     }
 
@@ -210,9 +165,6 @@ mod tests {
 
     #[test]
     fn a_first_pass_against_an_empty_store_is_all_additions() {
-        // What a fresh deployment writes: every declaration is new. Deliberately
-        // not special-cased — "the file arrived" is genuinely a set of additions,
-        // and an operator reading the log wants to see what it arrived with.
         let now = vec![declaration("a", "one"), declaration("b", "two")];
 
         let changes = diff(&[], &now);
@@ -228,8 +180,6 @@ mod tests {
 
         let changes = diff(&before, &now);
 
-        // Sorted by key, not by declaration order: two passes over the same file
-        // must produce the same log, or the log cannot be diffed between runs.
         assert_eq!(
             changes
                 .changed

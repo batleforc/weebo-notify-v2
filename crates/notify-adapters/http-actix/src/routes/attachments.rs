@@ -1,12 +1,5 @@
-//! `POST /attachments/presign` and `GET /attachments/{id}` — the way in and out of
-//! the bucket (design §6.1, §8).
-//!
-//! Two routes, one per direction, and neither carries bytes: they go **client →
-//! bucket** and **bucket → client**, never through here (§6.1), so there is no
-//! upload handler to write and no 25 MiB body to hold. What each returns is a
-//! credential with an expiry, which is why every check lives in the use case
-//! behind it rather than anywhere downstream — after the signature the client is
-//! talking to the bucket, not to us.
+//! `POST /attachments/presign` and `GET /attachments/{id}` (design §6.1, §8): signed
+//! credentials only; bytes go client to bucket and back, never through here.
 
 use actix_web::{HttpResponse, get, post, web};
 use notify_domain::{AttachmentId, ChannelId};
@@ -21,14 +14,9 @@ use crate::state::ApiState;
 /// What a client asks to upload.
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct PresignBody {
-    /// Where the publisher intends to publish it.
-    ///
-    /// Required, and it is the authorisation: uploading is a publisher's act, not
-    /// something every authenticated principal may do. The attachment itself is not
-    /// bound to the channel afterwards (design §6.1).
+    /// Where the publisher intends to publish it; requires `publish` there (design §6.1).
     pub(crate) channel: String,
-    /// The declared media type. Imposed in the signature, so an upload that lies is
-    /// refused by the bucket rather than discovered later.
+    /// The declared media type, imposed in the signature.
     pub(crate) content_type: String,
     /// The declared size, checked against §8.2's ceiling **before** signing.
     pub(crate) content_length: u64,
@@ -94,12 +82,8 @@ pub(crate) async fn download(
     Ok(web::Json(state.attachment.execute(&caller.0, id).await?))
 }
 
-/// Fetch the small square derived from an attachment (design §2.3, §10.3, D30).
-///
-/// Bytes and not a signed URL, unlike its sibling above — the reason is the same
-/// one the avatar route documents: a thumbnail renders next to every visible row
-/// of a possibly virtualised list, and a presign per render would mean a signing
-/// round trip per row.
+/// Fetch the small square derived from an attachment (design §2.3, §10.3, D30); bytes
+/// rather than a signed URL, to avoid a signing round trip per rendered row.
 #[utoipa::path(
     get,
     path = "/attachments/{id}/thumbnail",
@@ -125,10 +109,7 @@ pub(crate) async fn thumbnail(
 
     Ok(crate::routes::served_bytes(&mut HttpResponse::Ok())
         .content_type(object.content_type)
-        // Immutable for the same reason the avatar's is: an attachment is never
-        // replaced in place, so a revision showing a different image references a
-        // different id (§2.3) — this id's thumbnail cannot become a different
-        // image later.
+        // Immutable: an attachment is never replaced in place (§2.3).
         .insert_header(("cache-control", "private, max-age=86400, immutable"))
         .body(object.bytes))
 }

@@ -1,57 +1,8 @@
-//! Bounding what an unauthenticated caller can make the KDF spend (design §5.2).
-//!
-//! [`Argon2SecretHasher`](crate::Argon2SecretHasher) is deliberately expensive —
-//! 19 MiB and two passes per call — because that is what makes a stolen database of
-//! hashes survivable. That argument is about an **offline** attacker with the hashes
-//! in hand. It says nothing about the online cost, and the online cost was being
-//! paid on every single API-key request, with no cache and with rate limiting
-//! sitting *inside* the use cases, which is to say after authentication.
-//!
-//! The shape of the problem: the prefix half of `wnk_<prefix>_<secret>` is not a
-//! secret. It is printed at mint, returned by `GET /keys`, and it is the half people
-//! leave visible when they redact a key in a ticket or a screenshot. Anyone holding
-//! one could send garbage secrets against it and force a full Argon2 evaluation per
-//! request, before any limiter ran — a few hundred concurrent connections is enough
-//! to exhaust the blocking pool and push a replica past its memory limit, taking
-//! every live stream on it down too.
-//!
-//! # Two halves, and why neither alone is enough
-//!
-//! **Memoisation** ([`Verdicts`]). `SecretHasher::verify(secret, hash)` is a *pure
-//! function*: the same pair always gives the same answer, so remembering it changes
-//! no semantics whatsoever. This is deliberately a cache of the KDF verdict and
-//! **not** of the authenticated caller — expiry, revocation and service-account
-//! deactivation are still read from the database on every request, so a revoked key
-//! stops working immediately rather than at the end of some TTL. It kills the cheap
-//! version of the attack (the same wrong secret, repeatedly) and, incidentally, the
-//! throughput ceiling for a CI fleet publishing through one key.
-//!
-//! **Admission control** ([`Gate`]). Memoisation does nothing against an attacker
-//! who varies the secret every time, because every guess is a genuine cache miss.
-//! What bounds that is refusing to have more than a handful of evaluations in flight
-//! at once, and shedding rather than queueing without limit once the backlog is
-//! plainly not a burst. Concurrency `× 19 MiB` is then the ceiling on what this
-//! costs, whatever arrives.
-//!
-//! # Why a semaphore rather than `max_blocking_threads`
-//!
-//! The obvious knob is Tokio's blocking pool, whose default of 512 threads is where
-//! the 9.7 GB figure comes from. It is not reachable here: `actix-web` gives each
-//! worker its own `actix-rt` Arbiter with its own current-thread runtime and its own
-//! blocking pool, so there is no single pool to cap — `System::with_tokio_rt` sets
-//! the *system* runtime's, not the workers'. A semaphore in front of the KDF bounds
-//! the same resource without depending on runtime internals, and bounds it more
-//! tightly: it counts the calls we actually care about instead of every blocking
-//! task in the process.
-//!
-//! # What this is not
-//!
-//! It is not a rate limiter, and it is deliberately not keyed on the client address.
-//! Behind an ingress the peer address is the ingress, and the forwarded one is a
-//! header an attacker sets — trusting it without a configured proxy list is how a
-//! limiter becomes a way to frame somebody else. Per-address limiting belongs at the
-//! ingress, where the address is a fact rather than a claim; the chart's production
-//! example and `hardening.mdx` say so.
+//! Bounds what an unauthenticated caller can make the Argon2 KDF spend (design §5.2).
+//! Key prefixes are public, so garbage secrets could force a 19 MiB KDF per request. Two defences:
+//! [`Verdicts`] memoises the pure `verify(secret, hash)` (not the caller: revocation still hits the DB),
+//! and [`Gate`] bounds in-flight evaluations with a semaphore (actix has per-worker blocking pools),
+//! shedding past a queue depth. Not a rate limiter; per-address limiting belongs at the ingress.
 
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -65,34 +16,17 @@ use tokio::sync::Semaphore;
 /// The label overload is reported under, matching `secrets.rs`.
 const WHAT: &str = "hasher";
 
-/// How many verified `(secret, hash)` pairs to remember.
-///
-/// Small: it holds one entry per key actually in use, and an instance with a
-/// thousand live API keys is a large one.
+/// How many verified `(secret, hash)` pairs to remember: one per key in use.
 const VERIFIED_CAPACITY: usize = 1_024;
 
-/// How many rejected pairs to remember.
-///
-/// Larger than the verified cache and, more to the point, **separate** from it. One
-/// cache would let an attacker walk a thousand wrong secrets through it and evict
-/// every legitimate entry, putting the KDF back on the hot path for everybody —
-/// paying for the attack twice. Sized so a flood is absorbed rather than merely
-/// observed.
+/// How many rejected pairs to remember. Separate from the verified cache so a flood of
+/// wrong secrets cannot evict legitimate entries.
 const REJECTED_CAPACITY: usize = 16_384;
 
-/// How deep the queue in front of the KDF may get before calls are shed.
-///
-/// Per permit, so the real ceiling scales with the machine. A legitimate burst is
-/// absorbed — and after the first request per key it does not reach the KDF at all,
-/// because the verdict is cached — while a flood of novel secrets is refused at a
-/// constant cost instead of being queued into a latency collapse.
+/// Max queue depth per permit before shedding: bursts are absorbed, floods refused at constant cost.
 const QUEUE_DEPTH_PER_PERMIT: usize = 8;
 
-/// A `SecretHasher` that makes the expensive one cheap to repeat and impossible to
-/// flood.
-///
-/// Wraps any other, so the test suite's stub stays exactly as cheap as it was and
-/// this type is what production wires around [`crate::Argon2SecretHasher`].
+/// A `SecretHasher` wrapper that memoises verdicts and bounds KDF concurrency; production wraps Argon2.
 #[derive(Debug)]
 pub struct GuardedSecretHasher<H> {
     inner: H,
@@ -101,18 +35,14 @@ pub struct GuardedSecretHasher<H> {
 }
 
 impl<H> GuardedSecretHasher<H> {
-    /// Wrap `inner`, sizing the gate from the machine's parallelism.
-    ///
-    /// One evaluation in flight per core: the KDF is CPU-bound, so more than that
-    /// buys no throughput and costs 19 MiB apiece.
+    /// Wrap `inner`, one evaluation in flight per core (CPU-bound, 19 MiB apiece).
     #[must_use]
     pub fn new(inner: H) -> Self {
         let permits = std::thread::available_parallelism().map_or(4, NonZeroUsize::get);
         Self::with_permits(inner, permits)
     }
 
-    /// Wrap `inner` with an explicit concurrency, for tests that need to provoke the
-    /// shedding path without spawning a core's worth of work.
+    /// Wrap `inner` with an explicit concurrency, for tests of the shedding path.
     #[must_use]
     pub fn with_permits(inner: H, permits: usize) -> Self {
         let permits = permits.max(1);
@@ -126,10 +56,7 @@ impl<H> GuardedSecretHasher<H> {
 
 #[async_trait::async_trait]
 impl<H: SecretHasher> SecretHasher for GuardedSecretHasher<H> {
-    /// Straight through. Hashing happens when a key is *minted*, which is an
-    /// authenticated, deliberate, once-per-key act — there is nothing to memoise
-    /// (every call salts differently, so no two results are equal) and nothing an
-    /// anonymous caller can drive.
+    /// Straight through: minting is authenticated and salted, so nothing to memoise.
     async fn hash(&self, secret: &str) -> PortResult<String> {
         self.inner.hash(secret).await
     }
@@ -141,9 +68,7 @@ impl<H: SecretHasher> SecretHasher for GuardedSecretHasher<H> {
             return Ok(remembered);
         }
 
-        // Held across the call, released on drop — including on the error path, which
-        // is the half that matters: a KDF that starts failing must not leak permits
-        // until nothing can authenticate at all.
+        // Released on drop, including on error, so a failing KDF cannot leak permits.
         let _admitted = self.gate.enter().await?;
 
         let verdict = self.inner.verify(secret, hash).await?;
@@ -171,18 +96,8 @@ impl Verdicts {
         }
     }
 
-    /// Digest the pair rather than keying on it directly.
-    ///
-    /// The presented secret is a live credential; a cache keyed on the plaintext
-    /// would keep thousands of them in memory for as long as the process runs, ready
-    /// to be read out of a core dump. SHA-256 is the right primitive precisely
-    /// because it is *fast* — the expensive KDF is what this cache exists to avoid,
-    /// and its cost buys nothing here: an attacker who could invert this already
-    /// holds the secret.
-    ///
-    /// The stored hash goes in too, so a rotated secret can never inherit the
-    /// verdict of the one it replaced, and the two fields are length-prefixed so no
-    /// pair can be made to digest as another.
+    /// Digest the pair: no plaintext credentials in memory. SHA-256 is fine since inverting it
+    /// already requires the secret. The stored hash is included (length-prefixed) so rotation never inherits.
     fn key(secret: &str, hash: &str) -> [u8; 32] {
         let mut digest = Sha256::new();
         digest.update(
@@ -197,8 +112,7 @@ impl Verdicts {
     }
 
     fn get(&self, key: &[u8; 32]) -> Option<bool> {
-        // `get` promotes the entry, which is the point of an LRU: the keys in active
-        // use stay, and a flood of one-shot guesses ages itself out.
+        // `get` promotes: active keys stay, one-shot guesses age out.
         if let Ok(mut verified) = self.verified.lock()
             && verified.get(key).is_some()
         {
@@ -218,10 +132,7 @@ impl Verdicts {
         } else {
             &self.rejected
         };
-        // A poisoned lock means another thread panicked mid-update. Losing the
-        // memoisation is survivable — the next call simply pays the KDF — whereas
-        // propagating it would turn one panic into an instance that cannot
-        // authenticate anybody.
+        // Survive a poisoned lock: losing memoisation beats being unable to authenticate anyone.
         if let Ok(mut cache) = cache.lock() {
             cache.put(key, ());
         }
@@ -232,8 +143,7 @@ impl Verdicts {
 #[derive(Debug)]
 struct Gate {
     permits: Semaphore,
-    /// In flight plus waiting. Tracked separately because a semaphore's queue is not
-    /// observable, and shedding needs to know how deep it already is.
+    /// In flight plus waiting; a semaphore's queue is not observable.
     pending: AtomicUsize,
     ceiling: usize,
 }
@@ -247,19 +157,11 @@ impl Gate {
         }
     }
 
-    /// Claim a place, or refuse.
-    ///
-    /// Refusing is the *point*: an unbounded wait converts a memory problem into a
-    /// latency problem and calls it a fix, while every waiting request still holds a
-    /// connection and a task. `Unavailable` surfaces as a `503`, which is what this
-    /// is — the process shedding load it has decided not to spend.
-    ///
-    /// The counter is incremented *before* the wait, which is what makes the depth
-    /// reading mean "already asking" rather than "already running".
+    /// Claim a place, or refuse with `Unavailable` (a `503`) rather than wait unbounded.
+    /// The counter is incremented before the wait, so depth means "already asking".
     async fn enter(&self) -> PortResult<Admitted<'_>> {
         let depth = self.pending.fetch_add(1, Ordering::Relaxed);
-        // From here every exit is a drop, so the increment above is undone exactly
-        // once on all three paths: shed, failed acquire, and the happy one.
+        // Every exit from here is a drop, undoing the increment exactly once.
         let pending = Pending {
             counter: &self.pending,
         };
@@ -395,8 +297,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_flood_of_wrong_secrets_cannot_evict_the_verified_ones() {
-        // Otherwise the attack pays twice: once for its own guesses, and again by
-        // putting every legitimate key back on the KDF.
+        // Otherwise a flood would put every legitimate key back on the KDF.
         let hasher = GuardedSecretHasher::new(Counting::default());
         assert!(hasher.verify("right", "$stored$").await.unwrap());
 
@@ -418,8 +319,7 @@ mod tests {
         let hasher = GuardedSecretHasher::new(Counting::default());
         assert!(hasher.verify("right", "$stored$").await.unwrap());
 
-        // Same secret, different stored hash: a different question, so it must be
-        // asked rather than answered from memory.
+        // Different stored hash: a different question.
         assert!(!hasher.verify("right", "$rotated$").await.unwrap());
         assert_eq!(hasher.inner.calls.load(Ordering::Relaxed), 2);
     }
@@ -434,8 +334,7 @@ mod tests {
             1,
         ));
 
-        // One permit, so the ceiling is QUEUE_DEPTH_PER_PERMIT. Fill it with calls
-        // that cannot finish until the semaphore is posted.
+        // One permit, so the ceiling is QUEUE_DEPTH_PER_PERMIT; fill it with blocked calls.
         let mut held = Vec::new();
         for attempt in 0..=QUEUE_DEPTH_PER_PERMIT {
             let hasher = Arc::clone(&hasher);
@@ -468,8 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn minting_is_never_memoised() {
-        // Two calls, two different salts, so a cache here would be wrong as well as
-        // useless — and nothing anonymous can reach it anyway.
+        // Different salts each time: a cache here would be wrong.
         let hasher = GuardedSecretHasher::new(Counting::default());
 
         assert_eq!(hasher.hash("secret").await.unwrap(), "$stub$");

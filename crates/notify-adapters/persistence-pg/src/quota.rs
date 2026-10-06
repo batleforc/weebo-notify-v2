@@ -1,13 +1,5 @@
-//! Rate limits, counted in the database (design §8.2, scenario T14).
-//!
-//! Shared state rather than a counter per process: with several replicas an
-//! in-process counter enforces `n × 60/min` rather than `60/min`, and the limit a
-//! publisher was told about would depend on which replica answered.
-//!
-//! A **fixed window**, not a sliding one. A sliding window costs a row per request
-//! and gives a smoother curve; the burst allowance in §8.2 already covers the edge
-//! this would smooth, and the failure it prevents — a CI job in a retry loop
-//! degrading its own publishing and nobody else's — does not need that precision.
+//! Rate limits counted in the database (design §8.2, T14), so the limit holds across replicas.
+//! A fixed window: the §8.2 burst allowance covers what a sliding window would smooth.
 
 use notify_ports::{Allowance, PortResult, Quota, RateLimiter};
 use time::{Duration, OffsetDateTime};
@@ -18,14 +10,10 @@ use crate::mapping::fail;
 /// Every window is a minute, which is the unit design §8.2 states its limits in.
 const WINDOW: Duration = Duration::minutes(1);
 
-/// The published default for each quota, straight from design §8.2.
-///
-/// A closed match rather than a lookup table: adding a [`Quota`] variant then fails
-/// to compile here until somebody decides what it is worth.
+/// The published default for each quota (design §8.2); a closed match so new variants must decide.
 const fn default_ceiling(quota: &Quota) -> i32 {
     match quota {
-        // 60/min with a burst of 120: the burst is the ceiling, and the steady rate
-        // is what a well-behaved publisher stays under.
+        // 60/min with a burst of 120: the burst is the ceiling.
         Quota::PublishPerKey { .. } => 120,
         // Protects the fan-out rather than the publisher.
         Quota::PublishPerChannel { .. } => 600,
@@ -35,13 +23,7 @@ const fn default_ceiling(quota: &Quota) -> i32 {
     }
 }
 
-/// What this request is actually measured against.
-///
-/// The configured override of design §8.2 wins when there is one, and the default
-/// applies when there is not. Nothing is clamped to the default in either
-/// direction: an operator who writes `publish_per_min = 5000` on a channel meant
-/// to carry a firehose has said so in GitOps (§11), and silently holding them to
-/// 600 would be a limit that lies about itself.
+/// What this request is measured against: the configured override (in either direction), else the default.
 fn ceiling(quota: &Quota, configured: Option<u32>) -> i32 {
     configured
         .and_then(|limit| i32::try_from(limit).ok())
@@ -68,10 +50,7 @@ impl RateLimiter for PgStore {
     ) -> PortResult<Allowance> {
         let window_start = floor_to_window(now);
 
-        // Consumed on the way in, in one statement: a caller that is over the limit
-        // is refused before doing the work rather than after. The conflict branch
-        // resets the counter when the stored window has rolled over, which is what
-        // makes this a fixed window without a sweeper job.
+        // Consumed up front in one statement; the conflict branch resets a rolled-over window.
         let (count, start): (i32, OffsetDateTime) = sqlx::query_as(
             "INSERT INTO rate_limits (quota_key, window_start, count)
              VALUES ($1, $2, 1)
@@ -92,8 +71,7 @@ impl RateLimiter for PgStore {
 
         let ceiling = ceiling(quota, configured);
         if count > ceiling {
-            // Seconds until the window rolls, so `Retry-After` is a fact rather than
-            // a guess a client has to back off around.
+            // Seconds until the window rolls, for an exact `Retry-After`.
             let retry_after = (start + WINDOW - now).whole_seconds().max(1);
 
             return Ok(Allowance::Limited {
@@ -108,11 +86,7 @@ impl RateLimiter for PgStore {
 }
 
 impl PgStore {
-    /// Drop counters whose window has long rolled over.
-    ///
-    /// Not required for correctness — a stale row is reset on its next use — but a
-    /// key that is used once and never again would otherwise stay forever, and this
-    /// table would grow with every API key that ever published.
+    /// Drop counters whose window has long rolled over; housekeeping only.
     ///
     /// # Errors
     ///
@@ -144,11 +118,7 @@ mod tests {
 
     #[test]
     fn every_quota_lands_in_its_own_row() {
-        // Limits are per subject and never global: a noisy publisher must degrade
-        // its own publishing and nobody else's (scenario T14).
-        //
-        // The reference is the key's *id*, never its secret — a quota row keyed on
-        // a credential would put one in a table nobody thinks of as a secret store.
+        // Per subject, never global (T14), and keyed by key id, never its secret.
         let one = key(&Quota::PublishPerKey {
             key: "key_01jqxr8m4n0000000000000001".to_owned(),
         });
@@ -211,10 +181,7 @@ mod tests {
 
     #[test]
     fn a_channel_that_configures_its_own_ceiling_gets_it() {
-        // §8.2: "défauts globaux, surchargeables par canal". The override wins in
-        // both directions — a channel can be given more room than the default as
-        // well as less, because an operator who writes the number has said what
-        // they want and a limit that silently ignores it is worse than no limit.
+        // §8.2: the per-channel override wins in both directions.
         let channel = Quota::PublishPerChannel {
             channel: "ci-infra".to_owned(),
         };
@@ -230,9 +197,7 @@ mod tests {
 
     #[test]
     fn a_configured_ceiling_too_large_for_the_counter_falls_back() {
-        // The counter is an `i32` because that is what the column is. A number past
-        // it is an operator typo, and the published default is a far better answer
-        // than a panic or a silently negative ceiling that refuses everything.
+        // An override past `i32` is a typo: fall back to the default.
         assert_eq!(
             ceiling(
                 &Quota::PublishPerChannel {

@@ -1,8 +1,4 @@
-//! Every operation this adapter promises, against a real directory on disk.
-//!
-//! Unlike `notify-attachments-s3`'s conformance suite, none of this is gated behind
-//! an environment variable: a filesystem needs no external service to stand up, so
-//! this runs on `task test`, on every laptop, with nothing else running.
+//! Every operation this adapter promises, against a real directory; needs no external service.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,8 +11,7 @@ use notify_domain::AttachmentId;
 use notify_ports::{AttachmentStore, UploadRequest};
 use url::Url;
 
-/// The store under test, plus the temp directory it lives in — dropping the latter
-/// early would delete the former's `root` out from under it.
+/// The store under test plus its temp directory, which must outlive it.
 fn store() -> (FsAttachments, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("a temp directory");
     let store = FsAttachments::connect(&FsConfig {
@@ -37,9 +32,7 @@ async fn the_directory_answers_a_health_check() {
 
 #[tokio::test]
 async fn bytes_written_by_the_server_come_back_unchanged() {
-    // The avatar path (§2.4): the one upload that goes through us, so the one that
-    // needs `put`/`get` rather than a presigned URL — same as the S3 suite's
-    // equivalent test.
+    // The avatar path (§2.4) is the one upload through us, so it uses `put`/`get`.
     let (store, _dir) = store();
     let id = AttachmentId::generate();
     let bytes = b"\x89PNG\r\n\x1a\n and then some".to_vec();

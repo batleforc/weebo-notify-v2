@@ -23,24 +23,8 @@ pub struct CreateChannelBody {
     pub display_name: Option<String>,
 }
 
-/// A partial change to a channel's policy (design §8).
-///
-/// Absent fields are left alone, which is what makes this a `PATCH` rather than a
-/// `PUT`: a client that only wants to lower the TTL ceiling must not have to restate
-/// the priority and the receipts flag, and restating them is how two admins on two
-/// screens overwrite each other.
-///
-/// Lifting a ceiling is spelled `"0"`, not `null`, and that is deliberate. §7.2bis
-/// already gives `"0"` the meaning "unbounded" everywhere a duration appears, and a
-/// ceiling of *forever* **is** the absence of a ceiling — so there is one spelling
-/// rather than two. The alternative, a `null` that means something different from an
-/// absent key, is a shape no generated client can express: progenitor renders every
-/// optional field with `skip_serializing_if`, so the Rust client could omit the key
-/// but never send it null (ADR-0009 promises clients come from the contract, which
-/// means the contract may not describe things they cannot say).
-///
-/// `allow_forever` is not here on purpose — §7.2bis makes unbounded retention an
-/// operator decision, so it stays in configuration.
+/// A partial change to a channel's policy (design §8): absent fields are left alone.
+/// Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.
 #[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct ChannelPolicyBody {
     /// The TTL applied when a publisher asks for none, e.g. `7d`.
@@ -49,13 +33,8 @@ pub struct ChannelPolicyBody {
     /// The forced ceiling, e.g. `48h`. `"0"` lifts it.
     #[serde(default)]
     pub max_ttl: Option<Ttl>,
-    /// How long a lifecycle notification may go without activity before the
-    /// server closes it, e.g. `7d`. `"0"` turns it off for this channel.
-    ///
-    /// `"0"` needs no operator opt-in here, unlike `default_ttl`'s: turning this
-    /// off cannot pin an operator's storage, it only leaves the job of closing to
-    /// the publishers — and the retention ceiling still applies the moment they
-    /// do (§7.2bis).
+    /// How long a lifecycle notification may stay inactive before the server closes it,
+    /// e.g. `7d`; `"0"` turns it off for this channel.
     #[serde(default)]
     pub close_after: Option<CloseAfter>,
     /// The priority applied when a publisher asks for none.
@@ -145,10 +124,6 @@ pub(crate) async fn create_channel(
 }
 
 /// One channel: its policy, its members, and where it came from.
-///
-/// Listed by §8 since M1 and served by no build until now — a client wanting one
-/// channel had to walk `GET /channels` until it found it, which works right up to
-/// the page where it does not.
 #[utoipa::path(
     get,
     path = "/channels/{channel}",
@@ -157,8 +132,7 @@ pub(crate) async fn create_channel(
     responses(
         (status = 200, description = "The channel, with its members and policy", body = Channel),
         (status = 401, description = "No usable credential", body = Problem),
-        // 403 and not 404 when it exists but is somebody else's: the two answers are
-        // deliberately the same, because telling them apart enumerates the instance.
+        // 403 rather than 404 for somebody else's channel, so ids cannot be enumerated.
         (status = 403, description = "No `subscribe` scope there, or no such channel", body = Problem),
     ),
     security(("bearer" = []))
@@ -233,8 +207,7 @@ pub(crate) async fn delete_channel(
     let channel = ChannelId::parse(&path.into_inner())?;
     state.delete_channel.execute(&caller.0, &channel).await?;
 
-    // Idempotent by design, so a retried delete is not a 404 the client has to
-    // special-case.
+    // Idempotent, so a retried delete is not a 404.
     Ok(HttpResponse::NoContent().finish())
 }
 

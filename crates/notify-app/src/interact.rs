@@ -27,8 +27,7 @@ pub struct RecordInteraction {
     get: GetNotification,
     clock: Arc<dyn Clock>,
     fanout: Fanout,
-    /// §2.4 names interactions alongside revisions: "Alice a acquitté" and not
-    /// "`usr_01K`… a acquitté".
+    /// Names the author (§2.4): "Alice acknowledged", not a ULID.
     attribution: Attribution,
 }
 
@@ -39,7 +38,6 @@ impl core::fmt::Debug for RecordInteraction {
 }
 
 impl RecordInteraction {
-    /// Wire it.
     #[must_use]
     pub fn new(
         interactions: Arc<dyn InteractionRepository>,
@@ -57,27 +55,20 @@ impl RecordInteraction {
         }
     }
 
-    /// Record it, applying the domain's deduplication rules.
-    ///
-    /// The domain decides *what* the outcome is — created, unchanged, or a pick
-    /// replacing an earlier one — and the repository applies exactly that. Deciding
-    /// twice, once here and once in SQL, is how the two end up disagreeing.
+    /// Record it. The domain decides the outcome (created, unchanged, replaced) and the
+    /// repository applies exactly that, so the two cannot disagree.
     pub async fn execute(
         &self,
         caller: &Caller,
         notification_id: NotificationId,
         interaction: Interaction,
     ) -> Result<Recorded, Failure> {
-        // Interacting is a read-side act: a subscriber may acknowledge, and a
-        // publish-only key may not.
+        // Interacting is a read-side act: a subscriber may acknowledge, a publish-only key may not.
         let notification = self.get.execute(caller, notification_id).await?;
         let author = self.attribution.author(&caller.principal).await;
 
-        // The log is read, decided on, then written — and a double-clicked ack or
-        // two quick picks can both read it before either writes. The loser hits the
-        // unique index; re-reading lets the domain see the winner and decide again
-        // (`Unchanged`, or a pick replacing it), which is the answer T4 promises
-        // whether the requests arrive in sequence or together.
+        // Read-decide-write races (a double-clicked ack): the loser hits the unique index
+        // and re-reads, so the domain decides again against the winner.
         let mut attempts = 0;
         loop {
             attempts += 1;
@@ -119,7 +110,6 @@ impl core::fmt::Debug for ListInteractions {
 }
 
 impl ListInteractions {
-    /// Wire it.
     #[must_use]
     pub fn new(interactions: Arc<dyn InteractionRepository>, get: GetNotification) -> Self {
         Self { interactions, get }
@@ -153,7 +143,6 @@ impl core::fmt::Debug for SilenceNotification {
 }
 
 impl SilenceNotification {
-    /// Wire it.
     #[must_use]
     pub fn new(
         interactions: Arc<dyn InteractionRepository>,
@@ -179,8 +168,7 @@ impl SilenceNotification {
     ) -> Result<Silence, Failure> {
         let notification = self.get.execute(caller, notification_id).await?;
 
-        // Silences are per user and stored per user. A service account has no
-        // attention to protect, so there is nothing sensible to silence for one.
+        // Silences are per user; a service account has no attention to protect.
         let Principal::User { id } = caller.principal else {
             return Err(DomainError::Malformed {
                 field: "silence",
@@ -197,8 +185,7 @@ impl SilenceNotification {
         let silence = Silence::start(id, target, duration, self.clock.now())?;
 
         let cursor = self.interactions.silence(&silence).await?;
-        // Private to this user: their other clients update in real time, nobody
-        // else's does (design §8.1, scenario T26).
+        // Private to this user (§8.1).
         self.fanout.poke_user(id, cursor).await;
         Ok(silence)
     }
@@ -222,7 +209,6 @@ impl core::fmt::Debug for PostReceipt {
 }
 
 impl PostReceipt {
-    /// Wire it.
     #[must_use]
     pub fn new(
         receipts: Arc<dyn ReceiptRepository>,
@@ -242,12 +228,8 @@ impl PostReceipt {
         }
     }
 
-    /// Record a receipt for one of the caller's own devices.
-    ///
-    /// Receipts are not signed (ADR-0005): authenticity rests on the device having
-    /// authenticated. What that requires of *this* layer is the check below — a
-    /// principal may only post receipts for devices it owns. Without it, "unsigned"
-    /// would mean "anybody can claim anybody read anything".
+    /// Record a receipt for one of the caller's own devices. Receipts are unsigned
+    /// (ADR-0005), so the ownership check below is what stops forged readings.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -257,9 +239,7 @@ impl PostReceipt {
     ) -> Result<Option<Receipt>, Failure> {
         let notification = self.get.execute(caller, notification_id).await?;
 
-        // Ownership first, policy second. Claiming somebody else's device is an
-        // attack whether or not this channel happens to collect receipts, and
-        // answering it with a polite `None` would hide it.
+        // Ownership first: claiming another's device is an attack whatever the channel policy.
         if let Some(device_id) = device {
             let owned = self
                 .devices
@@ -275,19 +255,9 @@ impl PostReceipt {
             }
         }
 
-        // Receipts are opt-in per channel (design §7.3) — and what the opt-in governs
-        // is **who is shown** the reading, not whether it happens. §7.3 says it in
-        // those words: "si activé sur le canal : les membres autorisés *voient* « vu
-        // par 3/5 »".
-        //
-        // Reading it as "do not record" is what D27 turned out to be. `receipts_
-        // enabled` defaults to false, so on a default channel nothing was ever
-        // written, and an unread badge counting rows without a `seen` would have sat
-        // at the channel's full size for ever — a number that only grows.
-        //
-        // So a `seen` is always recorded, and only its audience moves. `delivered`
-        // keeps the old gate: it is per device, it feeds nothing but the readership
-        // panel, and nobody's badge depends on it.
+        // The per-channel opt-in (§7.3) governs who is shown a reading, not whether it is
+        // recorded: `seen` is always stored (the unread badge depends on it) and only its
+        // audience moves. `delivered` keeps the gate; no badge depends on it.
         let collects = self
             .channels
             .get(&notification.channel)
@@ -300,10 +270,7 @@ impl PostReceipt {
             if kind == ReceiptKind::Delivered {
                 return Ok(None);
             }
-            // Recorded, and told to nobody but the reader's own connections: the
-            // badge has to drop on the laptop when the phone reads it, while the
-            // other members of a channel that collects nothing must not learn that
-            // anybody read anything.
+            // Recorded, but told only to the reader's own connections.
             Visibility::Reader
         };
 
@@ -324,8 +291,7 @@ impl PostReceipt {
                 self.fanout.poke_channel(&notification, cursor).await;
                 Ok(Some(receipt))
             }
-            // Only the reader learns. `poke_user` and not `poke_channel`, which is
-            // the entire difference between a private read and a published one.
+            // `poke_user`, not `poke_channel`: a private read.
             (Visibility::Reader, Some(cursor)) => {
                 if let Principal::User { id } = caller.principal {
                     self.fanout.poke_user(id, cursor).await;
@@ -337,12 +303,8 @@ impl PostReceipt {
     }
 }
 
-/// `GET /api/v1/notifications/{id}/receipts` — who read it (design §7.3, §10.3).
-///
-/// The badge says "seen by 3/5"; this is what unfolds under it. It exists because
-/// the count cannot be derived client-side: a browser only ever sees the receipts
-/// that arrive on its stream while the panel is open, so anybody who read the
-/// notification yesterday would be invisible.
+/// `GET /api/v1/notifications/{id}/receipts` — who read it (§7.3, §10.3). A client
+/// cannot derive this from its stream, which only shows receipts while it is open.
 #[derive(Clone)]
 pub struct ReadReceipts {
     receipts: Arc<dyn ReceiptRepository>,
@@ -358,7 +320,6 @@ impl core::fmt::Debug for ReadReceipts {
 }
 
 impl ReadReceipts {
-    /// Wire it.
     #[must_use]
     pub fn new(
         receipts: Arc<dyn ReceiptRepository>,
@@ -374,12 +335,8 @@ impl ReadReceipts {
         }
     }
 
-    /// Read the roll, or `None` where the channel does not collect receipts.
-    ///
-    /// `None` rather than an empty roll, and for the same reason [`PostReceipt`]
-    /// answers `None`: "nobody has read this" and "this channel does not record who
-    /// reads things" are different sentences, and rendering the second as "seen by
-    /// 0/5" would be a lie a client cannot detect.
+    /// Read the roll, or `None` where the channel does not collect receipts: "nobody
+    /// read this" and "nobody records reads here" must not render the same.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -394,11 +351,8 @@ impl ReadReceipts {
             return Ok(None);
         }
 
-        // The denominator exists only where it can be counted. A channel that also
-        // grants access by `groups` has readers nothing in this process knows about
-        // (design §14.2), so it has no total — see [`Readership::of`]. Where it does
-        // have one, service accounts are not in it: a bot holding a subscription was
-        // never going to read anything (design §5.2bis).
+        // A total only where it can be counted: group access has readers this process
+        // cannot know (§14.2), and service accounts never read (§5.2bis).
         let audience = channel.group_access.is_empty().then(|| {
             channel
                 .members
@@ -412,25 +366,19 @@ impl ReadReceipts {
         Ok(Some(roll))
     }
 
-    /// Attach display names to the people in the roll (design §2.4).
-    ///
-    /// One read per person rather than a batch: the list is bounded by the humans
-    /// who opened one notification, and a `find_many` on the port would exist for
-    /// this caller alone. If a channel ever gets big enough for that to hurt, the
-    /// port grows — not this loop.
+    /// Attach display names to the people in the roll (§2.4); one read per person, the
+    /// roll being bounded by who opened one notification.
     async fn name(&self, roll: &mut Readership) -> Result<(), Failure> {
         for sighting in &mut roll.seen {
             let Some(id) = sighting.author.principal.as_user() else {
                 continue;
             };
             let Some(user) = self.users.get(id).await? else {
-                // A receipt outliving its user is a broken link, not a broken read:
-                // the reference still says something true about who read it.
+                // A receipt outliving its user keeps its reference.
                 continue;
             };
             if let Some(name) = user.display_name.as_deref() {
-                // A stored name this build refuses to render falls back to the
-                // reference. A hover card is not worth a 500.
+                // A stored name this build refuses to render falls back to the reference.
                 sighting.author = Author::named(sighting.author.principal.clone(), name)
                     .unwrap_or_else(|_| Author::anonymous(sighting.author.principal.clone()));
             }
@@ -889,12 +837,9 @@ mod tests {
         );
     }
 
-    // --- What `receipts_enabled` governs, and what it does not (D27) ------
+    // --- What `receipts_enabled` governs, and what it does not -----------
 
-    /// A second channel with the **default** policy — receipts off.
-    ///
-    /// The default matters: it is what every channel is until an operator says
-    /// otherwise, so this is the ordinary case and not an exotic one.
+    /// A second channel with the default policy: receipts off.
     async fn quiet_channel(fixture: &Fixture) -> Notification {
         let id = ChannelId::parse("cluster-ovh-1").unwrap();
         let mut channel = Channel::dynamic(id.clone(), None).unwrap();
@@ -939,9 +884,7 @@ mod tests {
             .await
             .unwrap();
 
-        // This is the whole of D27. `receipts_enabled` defaults to false, so reading
-        // it as "do not record" left the badge counting every notification for ever
-        // on every default channel — a number that only ever grows.
+        // The default policy must still feed the unread badge.
         let unread = notify_ports::NotificationRepository::unread_counts(
             &fixture.store,
             &fixture.alice,
@@ -968,10 +911,7 @@ mod tests {
             .await
             .unwrap();
 
-        // §7.3's opt-in is about who is *shown* the reading. Broadcasting the receipt
-        // to the channel would tell the other members exactly what the channel opted
-        // out of telling them — the badge would have bought its correctness with a
-        // leak.
+        // The opt-in is about who is shown the reading; broadcasting it would leak.
         let events = notify_ports::EventStore::sync(
             &fixture.store,
             fixture.alice.as_user().unwrap(),
@@ -1004,9 +944,7 @@ mod tests {
         let notification = quiet_channel(&fixture).await;
         let caller = Caller::member(fixture.alice.clone());
 
-        // `delivered` is per device, feeds nothing but the readership panel, and no
-        // badge depends on it — so a channel that collects nothing still collects
-        // nothing. Only `seen` earned the exception.
+        // `delivered` keeps the gate: no badge depends on it.
         assert!(
             fixture
                 .receipt
@@ -1103,8 +1041,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_reader_with_no_profile_is_still_a_reader() {
-        // The user row is missing — nothing seeded it, which is what a receipt
-        // outliving its user looks like. The reference still says something true.
+        // No user row: a receipt outliving its user keeps its reference.
         let fixture = fixture();
         let notification = seed(&fixture, None).await;
         let caller = Caller::member(fixture.alice.clone());

@@ -1,40 +1,19 @@
-//! What the `:` line can suggest, derived from the clap tree (design §9.2).
-//!
-//! §9.2 asks for "complétion contextuelle depuis l'arbre clap", and the emphasis is
-//! on *from the tree*: a list written here would be a second copy of the command
-//! surface, and the day the two disagree the wrong one is the one being read.
-//! Everything below walks [`crate::Cli::command()`], so a subcommand added to the
-//! shell shows up in the TUI without a line of TUI code — the same rule the parser
-//! already follows.
-//!
-//! # Why this is a pure function
-//!
-//! No terminal, no state, no `App`. Completion is "given this prefix, what could
-//! come next", which is a question about a string and a tree, so it is answered in
-//! a function a test can call — and the tests are the only place this logic has
-//! ever been observed, because nobody in this workspace has a terminal.
+//! What the `:` line can suggest, derived from the clap tree (§9.2) so new subcommands
+//! complete without TUI code. Pure, so it is testable without a terminal.
 
 use clap::CommandFactory as _;
 
-/// What could follow the line as typed, in the order they should be offered.
-///
-/// The last word is the one being completed; an empty last word (the line ends in a
-/// space) means "everything that can come here". Flags are offered only once the
-/// caller has typed a `-`, because a bare prompt full of `--output` helps nobody.
+/// What could follow the line as typed, in order. An empty last word means "anything here";
+/// flags are offered only once a `-` is typed.
 #[must_use]
 pub(crate) fn suggestions(line: &str) -> Vec<String> {
     let root = crate::Cli::command();
 
-    // Splitting on spaces rather than with shell rules: completion happens while the
-    // line is being typed, so it is frequently *not* valid shell — an unclosed quote
-    // is the normal state of a line somebody is in the middle of writing.
+    // Split on spaces, not shell rules: a half-typed line often has an unclosed quote.
     let words: Vec<&str> = line.split(' ').collect();
     let (typed, before) = words.split_last().unwrap_or((&"", &[]));
 
-    // Walk down to the command the words name, ignoring anything that is not one:
-    // flags and values are noise for this purpose, and stopping at the first
-    // unknown word is what makes `:publish -c ci-infra <tab>` still complete
-    // against `publish`.
+    // Walk the words that name subcommands, skipping flags and values.
     let mut current = &root;
     for word in before {
         if word.starts_with('-') || word.is_empty() {
@@ -62,8 +41,7 @@ pub(crate) fn suggestions(line: &str) -> Vec<String> {
 
     let mut names: Vec<String> = current
         .get_subcommands()
-        // `help` is a subcommand clap adds to every level, and offering it at every
-        // level is noise: the TUI has its own `?` popup.
+        // `help` at every level is noise; the TUI has its own `?` popup.
         .filter(|candidate| candidate.get_name() != "help")
         .map(|candidate| candidate.get_name().to_owned())
         .filter(|name| name.starts_with(typed))
@@ -72,10 +50,8 @@ pub(crate) fn suggestions(line: &str) -> Vec<String> {
     names
 }
 
-/// The line with the completion applied, or `None` when there is nothing to add.
-///
-/// One candidate completes it. Several complete as far as they agree — the shell
-/// behaviour everybody already has in their fingers, and it never picks for you.
+/// The line with the completion applied, or `None` when there is nothing to add. Several
+/// candidates complete only as far as they agree, like a shell.
 #[must_use]
 pub(crate) fn complete(line: &str) -> Option<String> {
     let candidates = suggestions(line);
@@ -88,8 +64,7 @@ pub(crate) fn complete(line: &str) -> Option<String> {
 
     let head = &line[..line.len() - typed.len()];
     let completed = format!("{head}{shared}");
-    // A single candidate is finished business: add the space that starts the next
-    // word, so `:chan<tab>` lands on `:channel ` ready for `create`.
+    // A single candidate gets the trailing space for the next word.
     Some(if candidates.len() == 1 {
         format!("{completed} ")
     } else {
@@ -153,8 +128,6 @@ mod tests {
 
     #[test]
     fn flags_are_offered_only_once_a_dash_is_typed() {
-        // A prompt that answers a bare tab with twenty flags is a prompt nobody
-        // tabs at twice.
         assert!(suggestions("publish ").iter().all(|s| !s.starts_with('-')));
 
         let flags = suggestions("publish --ch");
@@ -170,8 +143,6 @@ mod tests {
 
     #[test]
     fn a_flag_between_the_words_does_not_lose_the_context() {
-        // `:update -c ci-infra --st<tab>` is the shape a real line has when
-        // somebody wants completion, and walking naively would stop at `-c`.
         let flags = suggestions("update -c ci-infra --sta");
 
         assert!(flags.contains(&"--state".to_owned()));
@@ -185,8 +156,6 @@ mod tests {
 
     #[test]
     fn several_candidates_complete_as_far_as_they_agree_and_no_further() {
-        // `--state` and `--status` share `--stat`, and picking one for the user is
-        // the behaviour a shell has never had.
         assert_eq!(complete("update --st").as_deref(), Some("update --stat"));
     }
 

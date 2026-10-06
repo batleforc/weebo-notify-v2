@@ -1,10 +1,5 @@
-//! API keys: minting, listing, revoking, and a platform-admin's ceiling over one
-//! (design §5.2, §8.2, D24).
-//!
-//! The secret is returned **once**, at creation, and there is no endpoint that can
-//! show it again — only its Argon2 hash is stored. That is enforced by the shape of
-//! the types rather than by discipline: [`notify_domain::ApiKey`] has no field that
-//! could carry it (scenario T12).
+//! API keys: mint, list, revoke, and a platform-admin's per-key ceiling (§5.2, §8.2).
+//! The secret is returned once at creation; only its Argon2 hash is stored.
 
 use std::sync::Arc;
 
@@ -25,11 +20,8 @@ fn refuse() -> Failure {
     DomainError::ScopeMissing { scope: "manage" }.into()
 }
 
-/// Whether `caller` may administer the keys of `account`.
-///
-/// Its creator, or a platform admin. A managed account has no creator — the
-/// configuration owns it (§11) — so for those the caller must also manage every
-/// channel in question, the door that already applied before ownership was checked.
+/// Whether `caller` may administer the keys of `account`: its creator or a platform
+/// admin. A managed account has no creator (§11), so the caller must manage every channel.
 async fn administers_account(
     authorizer: &Authorizer,
     caller: &Caller,
@@ -73,8 +65,7 @@ async fn administers_key(
     if key.principal() == caller.principal {
         return Ok(true);
     }
-    // Administration is a person's session, not another credential (see
-    // `CreateApiKey::execute`).
+    // Administration needs a person's session, not another credential.
     if caller.grant != Grant::Membership {
         return Ok(false);
     }
@@ -133,7 +124,6 @@ impl core::fmt::Debug for CreateApiKey {
 }
 
 impl CreateApiKey {
-    /// Wire it.
     #[must_use]
     pub fn new(
         keys: Arc<dyn ApiKeyRepository>,
@@ -155,11 +145,8 @@ impl CreateApiKey {
         }
     }
 
-    /// Mint one.
-    ///
-    /// The caller must hold, in every channel the key names, at least the scopes the
-    /// key will carry. Without that check, `manage` on one channel would be a way to
-    /// mint publish rights on another.
+    /// Mint one. The caller must hold, in every channel the key names, at least the key's
+    /// scopes, or `manage` on one channel would mint publish rights on another.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -178,16 +165,13 @@ impl CreateApiKey {
             .into());
         }
 
-        // Only a person's own session mints. A key or a CI token minting keys would
-        // turn a one-day or fifteen-minute credential into a permanent one, and
-        // outlive the revocation of the one it came from.
+        // Only a person's session mints: a key minting keys would outlive its own revocation.
         if caller.grant != Grant::Membership {
             return Err(refuse());
         }
 
-        // A personal key is for the caller and nobody else: minting one "for" Bob
-        // would let its holder act as Bob — his sync, his devices, his silences.
-        // A service account's key needs whoever administers that account.
+        // A personal key is for the caller only (otherwise it would let its holder act as
+        // someone else); a service account's key needs whoever administers that account.
         let needs_manage = match &request.owner {
             ApiKeyOwner::User { id } => {
                 if caller.principal != (Principal::User { id: *id }) {
@@ -229,8 +213,7 @@ impl CreateApiKey {
             owner: request.owner,
             scopes: request.scopes,
             channels: request.channels,
-            // Never set at creation, whoever mints the key: only a platform-admin
-            // may narrow it, and only after it exists (§8.2, D24).
+            // Only a platform-admin may narrow it, after creation (§8.2).
             publish_per_minute: None,
             created_at: now,
             expires_at: request.expires_at,
@@ -249,8 +232,7 @@ impl CreateApiKey {
             .record(&AuditEntry {
                 actor: caller.principal.clone().into(),
                 action: actions::APIKEY_CREATED,
-                // The prefix, never the secret. An audit log that quotes a
-                // credential is a credential store nobody thinks of as one.
+                // The prefix, never the secret.
                 target: Some(prefix.to_string()),
                 channel: key.channels.first().cloned(),
                 detail: serde_json::to_value(&key.scopes).ok(),
@@ -280,7 +262,6 @@ impl core::fmt::Debug for ListApiKeys {
 }
 
 impl ListApiKeys {
-    /// Wire it.
     #[must_use]
     pub fn new(
         keys: Arc<dyn ApiKeyRepository>,
@@ -333,7 +314,6 @@ impl core::fmt::Debug for RevokeApiKey {
 }
 
 impl RevokeApiKey {
-    /// Wire it.
     #[must_use]
     pub fn new(
         keys: Arc<dyn ApiKeyRepository>,
@@ -351,20 +331,14 @@ impl RevokeApiKey {
         }
     }
 
-    /// Revoke a key the caller owns or administers.
-    ///
-    /// Whoever it acts as may always revoke it: that keeps the emergency path —
-    /// "this leaked, kill it" — available to the person most likely to notice
-    /// first. A channel's key is also revocable by that channel's managers, and a
-    /// service account's by whoever administers the account; otherwise the admin
-    /// who minted a channel key could never kill it.
+    /// Revoke a key the caller owns or administers. Whoever it acts as may always kill
+    /// it (the "this leaked" path), as may the owning channel's or account's admins.
     pub async fn execute(&self, caller: &Caller, id: ApiKeyId) -> Result<bool, Failure> {
         let Some(key) = self.keys.get(id).await? else {
             return Ok(false);
         };
         if !administers_key(&self.authorizer, self.accounts.as_ref(), caller, &key).await? {
-            // Same answer as "no such key": whether an id exists is not something a
-            // stranger gets to probe.
+            // Same answer as "no such key", so ids cannot be probed.
             return Ok(false);
         }
 
@@ -387,7 +361,7 @@ impl RevokeApiKey {
 }
 
 /// `PATCH /api/v1/apikeys/{id}/limit` — a platform-admin's ceiling on one key's
-/// own publish rate (design §8.2, D24).
+/// publish rate (§8.2).
 #[derive(Clone)]
 pub struct SetApiKeyLimit {
     keys: Arc<dyn ApiKeyRepository>,
@@ -402,7 +376,6 @@ impl core::fmt::Debug for SetApiKeyLimit {
 }
 
 impl SetApiKeyLimit {
-    /// Wire it.
     #[must_use]
     pub fn new(
         keys: Arc<dyn ApiKeyRepository>,
@@ -412,17 +385,9 @@ impl SetApiKeyLimit {
         Self { keys, audit, clock }
     }
 
-    /// Set, or clear (`None`), the caller's chosen key's ceiling.
-    ///
-    /// Platform-admin only, and deliberately not also the key's own owner the way
-    /// [`RevokeApiKey`] is: a key that could raise its own ceiling would not be a
-    /// ceiling. The role check comes before the lookup, unlike `RevokeApiKey`'s
-    /// ownership check — there is no legitimate reason a non-admin would ever ask
-    /// this question about *any* key, including their own, so there is nothing to
-    /// gain by answering "no such key" first.
-    ///
-    /// `None` covers both a missing id and a caller without the role — same
-    /// reasoning as `RevokeApiKey`, a different door.
+    /// Set, or clear (`None`), a key's ceiling. Platform-admin only, never the owner:
+    /// a key that could raise its own ceiling would not be a ceiling.
+    /// `None` covers both a missing id and a caller without the role.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -436,9 +401,7 @@ impl SetApiKeyLimit {
         };
 
         if key.publish_per_minute == publish_per_minute {
-            // Nothing moved: the same rule `UpdateChannel` follows for its own
-            // policy — no write, no audit entry claiming a change that did not
-            // happen.
+            // Nothing moved: no write, no audit entry.
             return Ok(Some(key));
         }
 
@@ -452,9 +415,7 @@ impl SetApiKeyLimit {
                 action: actions::APIKEY_LIMIT_SET,
                 target: Some(key.prefix.to_string()),
                 channel: key.channels.first().cloned(),
-                // The resulting value, not the request body — an audit log is read
-                // to answer "what was it set to" (same reasoning as
-                // `CHANNEL_POLICY_UPDATED`).
+                // The resulting value, not the request body.
                 detail: Some(serde_json::json!({ "publish_per_minute": publish_per_minute })),
                 at: now,
             })
@@ -464,42 +425,15 @@ impl SetApiKeyLimit {
     }
 }
 
-/// The alphabet both halves of a key are drawn from.
-///
-/// Lowercase alphanumeric, which is what `ApiKeyPrefix::parse` accepts and what the
-/// old ULID-derived form happened to produce — so a key still looks like a key. It
-/// deliberately excludes `_`, the separator `PresentedApiKey::parse` splits on.
+/// The alphabet both halves of a key are drawn from: what `ApiKeyPrefix::parse`
+/// accepts, excluding `_`, the separator `PresentedApiKey::parse` splits on.
 const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
-/// How many characters of secret. 52 × log2(36) ≈ **268 bits**, comfortably past the
-/// point where the number stops mattering, and the same length the previous
-/// implementation produced.
+/// Secret length: 52 × log2(36) ≈ 268 bits.
 const SECRET_LEN: usize = 52;
 
-/// Where a key's two halves come from in production: the operating system's CSPRNG,
-/// and nothing else.
-///
-/// A separate generator port exists so tests can be deterministic; this is the real
-/// one.
-///
-/// # Why not the id generator
-///
-/// This used to concatenate two ULIDs and take a slice of a third, on the reasoning
-/// that a ULID already carries 80 bits of randomness. That was true, and it was
-/// still the wrong source: `ApiKeyId::generate()` is the *general-purpose
-/// identifier* constructor, used all over the domain for values that are printed in
-/// URLs and logs. Its contract is uniqueness, not unpredictability.
-///
-/// Nothing was broken — `Ulid::new()` draws from a CSPRNG today — but the coupling
-/// meant a credential's entropy depended on an implementation detail of an id type
-/// that no one editing it would think of as credential material. ULID libraries
-/// commonly offer a *monotonic* mode in which the random tail increments within a
-/// millisecond; adopting it would have made key secrets predictable from published
-/// identifiers, silently and completely. Reading the CSPRNG directly costs three
-/// lines and removes the question.
-///
-/// [`notify_ports::KeyGenerator`] already said the secret "must come from a
-/// cryptographically secure source". This is that, said in code.
+/// Production key generator: the OS CSPRNG directly. Not the id generator, whose
+/// contract is uniqueness, not unpredictability (e.g. a monotonic ULID mode).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OsRngKeyGenerator;
 
@@ -509,10 +443,7 @@ impl KeyGenerator for OsRngKeyGenerator {
         let secret = random_string(SECRET_LEN);
 
         let prefix = ApiKeyPrefix::parse(&prefix).unwrap_or_else(|_| {
-            // Unreachable: every byte of `random_string` is drawn from `ALPHABET`,
-            // which is exactly what `parse` accepts. A fixed fallback would be worse
-            // than a slightly odd prefix, so build a valid one rather than panic —
-            // panicking is denied in this workspace.
+            // Unreachable: every byte comes from `ALPHABET`. Build a valid prefix rather than panic.
             ApiKeyPrefix::parse("00000000").unwrap_or_else(|_| unreachable!())
         });
 
@@ -520,26 +451,17 @@ impl KeyGenerator for OsRngKeyGenerator {
     }
 }
 
-/// `len` characters drawn uniformly from [`ALPHABET`].
-///
-/// Rejection sampling rather than `byte % 36`: 256 is not a multiple of 36, so the
-/// modulo would make the first four letters about 14% likelier than the rest. That
-/// costs a handful of bits on a value whose whole job is to be unguessable, and
-/// discarding the 4 bytes in 256 that fall outside the last whole multiple costs
-/// nothing anybody can measure.
+/// `len` characters drawn uniformly from [`ALPHABET`]; rejection sampling, since
+/// `byte % 36` would bias the first letters.
 fn random_string(len: usize) -> String {
-    // The largest multiple of the alphabet that fits in a byte; anything at or above
-    // it is redrawn.
+    // Largest multiple of the alphabet that fits in a byte; anything above is redrawn.
     const CEILING: u8 = 252; // 36 × 7
 
     let mut out = String::with_capacity(len);
     let mut buffer = [0_u8; 64];
 
     while out.len() < len {
-        // A failure here means the OS could not produce randomness, which is not a
-        // condition a process can sensibly continue through — but this signature
-        // cannot report it, so retry rather than silently emit a weak secret. In
-        // practice `getrandom` on a running Linux kernel does not fail.
+        // The OS could not produce randomness; retry rather than emit a weak secret.
         if getrandom::fill(&mut buffer).is_err() {
             continue;
         }
@@ -1023,7 +945,7 @@ mod tests {
         );
     }
 
-    // --- D24 · a platform-admin's ceiling on one key -----------------------
+    // --- A platform-admin's ceiling on one key -----------------------
 
     #[tokio::test]
     async fn a_platform_admin_sets_a_keys_own_ceiling() {
@@ -1064,8 +986,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_keys_own_owner_cannot_set_its_ceiling() {
-        // The whole point of D24: a self-service ceiling is not a ceiling. Same
-        // caller that minted the key, no platform role.
+        // A self-service ceiling is not a ceiling: the minting caller, no platform role.
         let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
         let caller = Caller::member(fixture.alice.clone());
         let minted = fixture
@@ -1192,8 +1113,6 @@ mod tests {
 
         assert_eq!(first_prefix.as_str().len(), ApiKeyPrefix::LEN);
         assert_ne!(first_secret, second_secret);
-        // Prefixes come from the random tail of a ULID, so two minted in the same
-        // millisecond do not collide.
         assert_ne!(first_prefix, second_prefix);
     }
 }
@@ -1241,9 +1160,7 @@ mod generator_tests {
 
     #[test]
     fn nothing_repeats_across_a_batch() {
-        // The old implementation drew from the id generator, where a monotonic mode
-        // would have made successive values related. Distinctness is the cheap
-        // observable half of "unpredictable".
+        // Distinctness is the cheap observable half of "unpredictable".
         let mut prefixes = HashSet::new();
         let mut secrets = HashSet::new();
         for _ in 0..512 {
@@ -1255,8 +1172,7 @@ mod generator_tests {
 
     #[test]
     fn every_character_of_the_alphabet_is_reachable() {
-        // Guards the rejection sampling: an off-by-one in the ceiling would silently
-        // make part of the alphabet unreachable and cost entropy without failing.
+        // Guards the rejection sampling: an off-by-one would make part of the alphabet unreachable.
         let mut seen = HashSet::new();
         for _ in 0..500 {
             let (_, secret) = OsRngKeyGenerator.generate();

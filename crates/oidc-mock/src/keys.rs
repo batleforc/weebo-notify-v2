@@ -1,13 +1,5 @@
-//! The signing keys the mock publishes.
-//!
-//! Real ES256, not a shortcut: the server verifies these tokens through the same
-//! `notify-oidc` path it uses against Authentik, so a mistake in that path fails in
-//! development rather than in staging.
-//!
-//! Each scalar is derived from its key id rather than being random or committed. A
-//! private key in the repository is a gitleaks finding waiting to happen, and a
-//! random one would give a different JWKS on every restart — which would turn a
-//! browser refresh into a logout. These keys protect nothing.
+//! The mock's ES256 signing keys, verified through the same `notify-oidc` path as production.
+//! Derived from the key id: stable across restarts (no logout on refresh), nothing committed.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -17,8 +9,7 @@ use p256::SecretKey;
 use p256::elliptic_curve::sec1::ToSec1Point as _;
 use p256::pkcs8::{EncodePrivateKey as _, LineEnding};
 
-/// Something went wrong with a key or a signature. Every variant is a bug in the
-/// mock, never a bad request.
+/// A key or signature failure; always a bug in the mock, never a bad request.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum KeyError {
     /// The derived scalar or its encoding was rejected.
@@ -45,7 +36,6 @@ pub(crate) struct Signer {
 
 impl std::fmt::Debug for Signer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The keys themselves are not printable and would be noise anyway.
         f.debug_struct("Signer")
             .field("kid", &self.kid)
             .finish_non_exhaustive()
@@ -98,8 +88,7 @@ impl Signer {
         })
     }
 
-    /// Sign a claim set, naming the key in the header so the server can pick it out
-    /// of the JWKS — which is the whole reason rotation works.
+    /// Sign a claim set, naming the key in the header so the server can pick it from the JWKS.
     pub(crate) fn sign(&self, claims: &serde_json::Value) -> Result<String, KeyError> {
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.kid.clone());
@@ -117,12 +106,7 @@ impl Signer {
     }
 }
 
-/// The active key plus every key it replaced.
-///
-/// Retired keys stay published on purpose: an access token minted a minute before a
-/// rotation must keep verifying until it expires. A provider that drops the old key
-/// immediately logs everyone out, and the E2E suite would be testing that instead of
-/// rotation.
+/// The active key plus every key it replaced, kept published so pre-rotation tokens still verify.
 #[derive(Debug)]
 pub(crate) struct Keys {
     active: Signer,
@@ -162,10 +146,7 @@ impl Keys {
         std::iter::once(&self.active).chain(&self.retired)
     }
 
-    /// Mint a new signing key and retire the current one.
-    ///
-    /// Exposed over HTTP so the auth suite can test key rotation on demand instead
-    /// of waiting for a provider to decide to rotate (T29).
+    /// Mint a new signing key and retire the current one (exposed over HTTP for rotation tests, T29).
     pub(crate) fn rotate(&mut self) -> Result<&str, KeyError> {
         self.generation += 1;
         let fresh = Signer::derive(&format!("{KID_PREFIX}{}", self.generation))?;
@@ -188,8 +169,7 @@ mod tests {
 
     #[test]
     fn the_same_id_always_derives_the_same_key() {
-        // Otherwise every restart of the mock invalidates the tokens the browser is
-        // holding, and a page refresh becomes a logout.
+        // Otherwise every mock restart would log the browser out.
         let first = Signer::derive("weebo-dev-1").unwrap();
         let second = Signer::derive("weebo-dev-1").unwrap();
 

@@ -1,26 +1,6 @@
-//! The identity-provider compatibility matrix (design §3.2, §15, scenario T29).
-//!
-//! Every other test in this crate signs its own tokens, which proves the
-//! verification logic and nothing about the providers people actually run. This one
-//! takes a token from a **live provider** and hands it to the real
-//! [`OidcVerifier`] — discovery, JWKS fetch, `kid` lookup, signature, audience,
-//! issuer, expiry and claim mapping included.
-//!
-//! One body of tests, three providers, selected by `WNK_TEST_OIDC_PROVIDER`:
-//!
-//! | value | what it is | what it is here for |
-//! |---|---|---|
-//! | `mock` (default) | `notify-oidc-mock`, started in-process | the everyday baseline; also proves `task dev:up` yields a login that works |
-//! | `dex` | a container, in CI | strict minimal OIDC that emits **no** `groups` claim — the degradation path (T29) |
-//! | `authentik` | a container, in CI | real behaviour from a provider we did not write |
-//!
-//! # Why this file refuses to skip
-//!
-//! §15 says this matrix is the only independent reading of OIDC the project ever
-//! gets, and that no change to the auth flow ships without it green. A fixture that
-//! quietly did nothing when its provider was missing would turn that sentence into
-//! decoration — a green tick meaning "nothing ran". So naming an external provider
-//! without an issuer to reach **panics, naming the variable it wants**.
+//! The identity-provider compatibility matrix (design §3.2, §15, T29): live-provider tokens through
+//! the real [`OidcVerifier`]. `WNK_TEST_OIDC_PROVIDER` selects `mock` (default, in-process), `dex`
+//! (no `groups` claim) or `authentik`. Never skips: an external provider without an issuer panics.
 
 #![allow(
     clippy::unwrap_used,
@@ -54,8 +34,7 @@ impl Provider {
         match std::env::var("WNK_TEST_OIDC_PROVIDER").as_deref() {
             Ok("dex") => Self::Dex,
             Ok("authentik") => Self::Authentik,
-            // An empty value is what an unset CI variable expands to, and it means
-            // "the default" rather than "something is wrong".
+            // An unset CI variable expands to empty: the default.
             Ok("mock" | "") | Err(_) => Self::Mock,
             Ok(other) => panic!(
                 "WNK_TEST_OIDC_PROVIDER={other} is not a provider this suite knows \
@@ -65,29 +44,13 @@ impl Provider {
         }
     }
 
-    /// Whether this provider is expected to emit a `groups` claim at all.
-    ///
-    /// Dex does not, and that is exactly why it is in the matrix (T29): the
-    /// degradation path has to be exercised by a provider that really behaves that
-    /// way, not by a fixture we wrote to behave that way.
+    /// Whether this provider emits a `groups` claim; Dex does not, exercising the T29 degradation path.
     const fn emits_groups(self) -> bool {
         !matches!(self, Self::Dex)
     }
 
-    /// Whether `sub` happens to be the username this suite signs in with.
-    ///
-    /// Found by running the Dex leg for the first time, which is the whole reason
-    /// D7 was worth closing: the suite asserted `claims.subject == username` on
-    /// every provider, and Dex answers an opaque
-    /// `CiQ5YTFlMDAwMC0…SBWxvY2Fs` — a base64 of its internal id and connector.
-    ///
-    /// **Dex is right and the assertion was wrong.** OIDC makes `sub` opaque and
-    /// provider-chosen; nothing entitles a relying party to read a username out of
-    /// it, and a provider that puts one there is being convenient, not conformant.
-    /// The equality therefore holds only where this suite *arranged* it — the mock,
-    /// whose identities file sets it, and the Authentik blueprint, which maps it —
-    /// and the property the code actually depends on (§5.1: a user is keyed by
-    /// `oidc_subject`) is **stability**, which is asserted for everybody below.
+    /// Whether `sub` is the sign-in username: only where this suite arranged it (mock, Authentik).
+    /// OIDC `sub` is opaque (Dex base64-encodes its id); stability is what is asserted for all.
     const fn subject_is_username(self) -> bool {
         !matches!(self, Self::Dex)
     }
@@ -120,13 +83,7 @@ impl Fixture {
         Self { provider, issuer }
     }
 
-    /// The account this provider knows for the role asked for.
-    ///
-    /// `WNK_TEST_OIDC_USERNAME` overrides it, and that is not a convenience: Dex's
-    /// local connector authenticates on the **email** of a `staticPasswords` entry
-    /// and not on its `username`, so "alice" is not a login there. A difference of
-    /// exactly this kind is what the matrix exists to surface, and hard-coding
-    /// around it would be hiding one.
+    /// The account for `role`; `WNK_TEST_OIDC_USERNAME` overrides it (Dex logs in by email).
     fn username(&self, account: Account) -> String {
         if let Ok(named) = std::env::var("WNK_TEST_OIDC_USERNAME")
             && !named.is_empty()
@@ -135,9 +92,7 @@ impl Fixture {
         }
 
         match (self.provider, account) {
-            // Dex emits no groups for anybody, so its "group-less" case is any
-            // account — asking it for carol would only prove that a user we never
-            // created is absent.
+            // Dex emits no groups, so any account is group-less.
             (Provider::Dex, _) | (_, Account::InGroups) => "alice".to_owned(),
             (_, Account::Groupless) => "carol".to_owned(),
         }
@@ -147,14 +102,9 @@ impl Fixture {
     async fn token_for(&self, account: Account) -> String {
         let username = self.username(account);
         match self.provider {
-            // The mock is ours, so the browser half of the flow is drivable and
-            // worth driving: Authorization Code + PKCE, end to end.
+            // Our mock: drive Authorization Code + PKCE end to end.
             Provider::Mock => sign_in_through_the_browser(&self.issuer, &username).await,
-            // For a third party the browser half is *their* UI — a login form we
-            // would be scraping, not a contract we hold them to. What this matrix is
-            // about is whether our verifier accepts what they mint, so the token
-            // comes from the password grant and the part under test starts at
-            // verification.
+            // Third parties: the password grant, so the test starts at verification.
             _ => password_grant(&self.issuer, &username, self.provider).await,
         }
     }
@@ -171,16 +121,12 @@ fn required(name: &str, provider: Provider) -> String {
     })
 }
 
-/// The mock, on an ephemeral port, told to call itself by the address it got.
-///
-/// Synchronous, but it must be called from inside an actix runtime: the server it
-/// spawns lives on the caller's.
+/// The mock on an ephemeral port; call from inside an actix runtime.
 fn start_local_provider() -> Url {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../dev/oidc-mock/identities.toml");
 
-    // Port 0, then read back what the OS gave us: a fixed port makes two tests
-    // running in parallel fight over it.
+    // Port 0 so parallel tests do not collide.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
     let issuer = Url::parse(&format!(
         "http://{}",
@@ -207,10 +153,7 @@ fn start_local_provider() -> Url {
     issuer
 }
 
-/// Ask the provider where its endpoints are rather than guessing their shape.
-///
-/// Authentik hangs them off `/application/o/<app>/` and Dex off the root; a suite
-/// that assumed either would be testing our assumption instead of their document.
+/// Discover the provider's endpoints rather than guessing their shape.
 async fn discover(issuer: &Url, field: &str) -> String {
     let url = format!(
         "{}/.well-known/openid-configuration",
@@ -231,14 +174,13 @@ async fn discover(issuer: &Url, field: &str) -> String {
 
 /// Walk the browser half of the flow and come back with an access token.
 async fn sign_in_through_the_browser(issuer: &Url, username: &str) -> String {
-    // A fixed verifier: this is a test, and the value only has to survive the two
-    // calls below.
+    // A fixed PKCE verifier is fine in a test.
     let verifier = "an-entirely-unremarkable-code-verifier";
     let challenge = challenge_for(verifier);
     let redirect_uri = "http://localhost:5173/auth/callback";
 
     let http = reqwest::Client::builder()
-        // The flow is driven step by step so each redirect can be asserted on.
+        // Step by step so each redirect can be asserted on.
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("an http client");
@@ -358,20 +300,8 @@ async fn password_grant(issuer: &Url, username: &str, provider: Provider) -> Str
         .to_owned()
 }
 
-/// The secret the password grant should send for this account.
-///
-/// `WNK_TEST_OIDC_PASSWORD_<ACCOUNT>` first, `WNK_TEST_OIDC_PASSWORD` after it.
-///
-/// The per-account variable exists because Authentik's `grant_type=password` is not
-/// RFC 6749's: it shares a handler with `client_credentials`, and the `password` it
-/// authenticates is an app-password **token** belonging to the user rather than the
-/// user's password (`authentik/providers/oauth2/views/token.py`, 2025.6). Tokens are
-/// looked up by key and then checked against the user, so one value cannot stand for
-/// both alice and carol — and this suite needs both, because "carries no groups" is
-/// only worth asserting about somebody who is in none.
-///
-/// Dex, whose password really is a password, sets the plain variable and never sees
-/// the other one.
+/// The password-grant secret: `WNK_TEST_OIDC_PASSWORD_<ACCOUNT>`, then `WNK_TEST_OIDC_PASSWORD`.
+/// Per-account because Authentik's password grant takes a per-user app-password token.
 fn password_for(username: &str, provider: Provider) -> String {
     let per_account = format!(
         "WNK_TEST_OIDC_PASSWORD_{}",
@@ -388,12 +318,7 @@ fn password_for(username: &str, provider: Provider) -> String {
         }
     }
 
-    // Naming both, because which one is missing decides the fix: a provider whose
-    // accounts share a secret wants the second, and one whose accounts each carry
-    // their own — Authentik — wants the first. Falling back to another account's
-    // secret would be worse than this panic: Authentik checks the token against the
-    // user, so it would fail as `invalid_grant`, which reads like a broken
-    // blueprint rather than a variable nobody set.
+    // Name both variables; falling back to another account's secret would fail as `invalid_grant`.
     panic!(
         "WNK_TEST_OIDC_PROVIDER={provider:?} needs a secret for {username}, and \
          neither {per_account} nor WNK_TEST_OIDC_PASSWORD is set. This suite fails \
@@ -416,21 +341,15 @@ fn challenge_for(verifier: &str) -> String {
 /// The verifier as the server wires it, minus the refresh throttle.
 fn verifier(issuer: &Url) -> OidcVerifier {
     let mut config = OidcConfig::new(issuer.clone(), client_id());
-    // The production throttle is a minute, which would make the rotation test below
-    // sleep for one. Everything else about the path is unchanged.
+    // The production throttle (a minute) would make the rotation test sleep.
     config.min_refresh_interval = time::Duration::ZERO;
 
     OidcVerifier::new(config, Arc::new(SystemClock) as Arc<dyn Clock>)
         .expect("the verifier builds against a live issuer")
 }
 
-/// What every provider owes about `sub`, and what only some of them owe.
-///
-/// Non-empty and *stable* is the contract §5.1 relies on: `find_by_subject` is how
-/// a returning human is recognised, so a subject that changed between two logins
-/// would silently mint a second account holding none of the first one's channels.
-/// That is asserted against whatever is running. Equality with the username is
-/// asserted only where this suite arranged it — see [`Provider::subject_is_username`].
+/// What every provider owes about `sub`: non-empty and stable (§5.1 `find_by_subject`).
+/// Username equality only where arranged — see [`Provider::subject_is_username`].
 fn assert_subject(fixture: &Fixture, subject: &str, account: Account) {
     assert!(
         !subject.is_empty(),
@@ -445,11 +364,7 @@ fn assert_subject(fixture: &Fixture, subject: &str, account: Account) {
 
 #[actix_web::test]
 async fn the_subject_is_the_same_on_a_second_login() {
-    // The property `assert_subject` cannot check from one token, and the one that
-    // matters: §5.1 recognises a returning human by `sub` alone. A provider whose
-    // subject moved between logins would mint a second account each time, holding
-    // none of the first one's channels — and the symptom would appear days later,
-    // as "my channels are gone", nowhere near the login that caused it.
+    // A moving `sub` would mint a new account per login (§5.1).
     let fixture = Fixture::start();
 
     let first = verifier(&fixture.issuer)
@@ -496,8 +411,7 @@ async fn a_token_from_a_live_provider_verifies_through_the_production_path() {
 
 #[actix_web::test]
 async fn an_account_with_no_groups_verifies_and_carries_none() {
-    // T29: an issuer that emits no `groups` claim must degrade, not fail — and must
-    // degrade to *nothing granted*, never to a default.
+    // T29: no `groups` claim degrades to nothing granted, never a default.
     let fixture = Fixture::start();
     let token = fixture.token_for(Account::Groupless).await;
 
@@ -520,10 +434,7 @@ async fn a_token_signed_by_a_rotated_key_verifies_after_the_cache_catches_up() {
     let fixture = Fixture::start();
 
     if fixture.provider != Provider::Mock {
-        // Key rotation is not something a third party lets a test trigger. What is
-        // under test here is *our* JWKS cache reacting to an unknown `kid`, and the
-        // mock leg proves that; asserting it against Dex would mean waiting for a
-        // rotation nobody controls.
+        // Rotation cannot be triggered on a third party; the mock leg covers our cache.
         eprintln!(
             "skipping rotation against {:?}: only the mock can be told to rotate on demand",
             fixture.provider

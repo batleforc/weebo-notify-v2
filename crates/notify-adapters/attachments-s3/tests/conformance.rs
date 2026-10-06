@@ -1,14 +1,5 @@
-//! Every operation this adapter issues, against a real S3-compatible store.
-//!
-//! The point is the same one the persistence suite makes: an object store is a
-//! contract with somebody else's implementation, and "it compiles" says nothing
-//! about whether RustFS answers a `HEAD` on a missing key with a 404 or with an
-//! error. §15 says the contract is *S3-compatible* rather than *RustFS*, and the
-//! only way that claim stays true is by running it.
-//!
-//! Everything lives under `mod e2e` so `task test` skips it and `task test:e2e`
-//! runs it. Without `WNK_TEST_S3_ENDPOINT` each case reports that it was skipped
-//! rather than failing, so a laptop with no stack still gets a green `task test`.
+//! Every operation this adapter issues, against a real S3-compatible store (§15).
+//! Under `mod e2e` (run by `task test:e2e`); skipped without `WNK_TEST_S3_ENDPOINT`.
 
 #![allow(
     clippy::unwrap_used,
@@ -62,8 +53,7 @@ mod e2e {
 
     #[tokio::test]
     async fn e2e_bytes_written_by_the_server_come_back_unchanged() {
-        // The avatar path (§2.4): the one upload that goes through us, so the one
-        // that needs `put` and `get` rather than a presigned URL.
+        // The avatar path (§2.4) is the one upload through us, so it uses `put`/`get`.
         let store = store!();
         let id = AttachmentId::generate();
         let bytes = b"\x89PNG\r\n\x1a\n and then some".to_vec();
@@ -83,8 +73,7 @@ mod e2e {
 
     #[tokio::test]
     async fn e2e_a_missing_object_is_an_answer_rather_than_an_error() {
-        // Three calls, one question. Getting this wrong turns the purge job into a
-        // job that fails on exactly the objects it has already cleaned up.
+        // Absent must be a normal answer, or the purge job fails on what it already cleaned.
         let store = store!();
         let never_written = AttachmentId::generate();
 
@@ -108,8 +97,7 @@ mod e2e {
             .await
             .unwrap();
 
-        // Path style, so the bucket is in the path rather than in the hostname —
-        // the addressing every self-hosted store can serve without wildcard DNS.
+        // Path style: no wildcard DNS needed.
         assert!(
             signed.url.path().contains(&signed.id.to_string()),
             "the signed URL must name the object: {}",

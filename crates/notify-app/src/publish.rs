@@ -1,22 +1,6 @@
-//! Writing notifications: the two ingestion paths of design §8.3.
-//!
-//! `POST /notifications` creates; `PUT /channels/{id}/notifications/{external_id}`
-//! upserts. Everything else that publishes — the CLI, the TUI's `:` mode, `curl`,
-//! a CI job — is a wrapper around one of these two. There is no third ingestion
-//! protocol, which is what makes quotas, hygiene and attribution enforceable in one
-//! place.
-//!
-//! # Idempotency, twice over
-//!
-//! The upsert is idempotent **by construction**: the external id is the key, so a
-//! retried CI job produces one notification and two revisions. `POST` has no such
-//! handle, so it takes an `Idempotency-Key` and replays the stored response for 24
-//! hours (scenario T16).
-//!
-//! The upsert also has to survive *concurrency*, not just retries: two parallel
-//! jobs racing on the same external id both find nothing, both insert, and one
-//! loses. Losing is expected — the loser re-reads and revises, which is the same
-//! outcome it would have had a millisecond later.
+//! Writing notifications: `POST` creates (idempotent via `Idempotency-Key`), `PUT`
+//! upserts by external id (§8.3). Every publisher wraps one of these two, so quotas,
+//! hygiene and attribution are enforced in one place.
 
 use std::sync::Arc;
 
@@ -41,11 +25,7 @@ const IDEMPOTENCY_WINDOW: Duration = Duration::hours(24);
 /// How many times an upsert re-reads after losing a race before giving up.
 const UPSERT_ATTEMPTS: usize = 3;
 
-/// What a publish produced.
-///
-/// Serialisable because it *is* the stored idempotency response: replaying a key
-/// has to give back the same answer, and the only way to be sure of that is to
-/// return the same value rather than recompute it.
+/// What a publish produced; also the stored idempotency response, replayed verbatim.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Published {
@@ -53,8 +33,7 @@ pub struct Published {
     pub notification: Notification,
     /// The revision that was just recorded.
     pub revision: Revision,
-    /// What the channel policy did to the requested retention — a clamp the
-    /// publisher cannot see is a clamp they will report as a bug (scenario T6).
+    /// What the channel policy did to the requested retention, so a clamp is visible.
     pub retention: TtlResolution,
     /// Where it landed in the event log.
     pub cursor: Cursor,
@@ -71,9 +50,7 @@ struct Writer {
     clock: Arc<dyn Clock>,
     authorizer: Authorizer,
     fanout: Fanout,
-    /// The name a client shows next to this revision (design §2.4, and the
-    /// reasoning for naming here rather than on the read path is in
-    /// [`crate::attribution`]).
+    /// The name a client shows next to this revision (§2.4, see [`crate::attribution`]).
     attribution: Attribution,
 }
 
@@ -84,24 +61,16 @@ impl core::fmt::Debug for Writer {
 }
 
 impl Writer {
-    /// Check both publish quotas: the key's own budget and the channel's.
-    ///
-    /// Two limits rather than one because they protect different things — a
-    /// runaway publisher should degrade itself, and a channel should survive
-    /// several well-behaved ones (design §8.2, scenario T14).
-    ///
-    /// Takes the loaded [`notify_domain::Channel`] rather than its id because the
-    /// channel's own ceiling lives on its policy (§8.2, `limits` in §11). Both
-    /// callers have already authorised, so the channel is in hand and this costs
-    /// no extra read — which is why the override needed no reordering to honour.
+    /// Check both publish quotas: the key's own budget and the channel's (§8.2). A
+    /// runaway publisher degrades itself; a channel survives several well-behaved ones.
     async fn check_quotas(
         &self,
         caller: &Caller,
         channel: &notify_domain::Channel,
         now: OffsetDateTime,
     ) -> Result<(), Failure> {
-        // Per key when the caller is one, so a ceiling set on one key throttles that
-        // key and not its owner's other keys (§8.2, D24); per principal otherwise.
+        // Per key when the caller is one, so one key's ceiling spares its owner's other
+        // keys (§8.2); per principal otherwise.
         let per_key = Quota::PublishPerKey {
             key: match &caller.grant {
                 Grant::ApiKey { id, .. } => format!("apikey:{id}"),
@@ -112,9 +81,7 @@ impl Writer {
             channel: channel.id.to_string(),
         };
 
-        // A key's own ceiling, if a platform-admin set one (§8.2, D24) — carried on
-        // the grant because that is where the key was already loaded. Membership
-        // and federated callers have no key of their own to narrow, so `None`.
+        // A key's own ceiling, if a platform-admin set one (§8.2).
         let key_limit = match &caller.grant {
             Grant::ApiKey {
                 publish_per_minute, ..
@@ -213,8 +180,7 @@ impl Writer {
         self.fanout
             .queue_sinks(notification, revision, cursor)
             .await;
-        // Last: real-time delivery must not wait on a bucket fetch and a decode
-        // for a thumbnail nobody has asked to see yet (design D30).
+        // Last: real-time delivery must not wait on a thumbnail nobody asked for yet.
         self.fanout.derive_thumbnail(revision).await;
     }
 }
@@ -237,7 +203,6 @@ pub struct PublishRequest {
 }
 
 impl PublishNotification {
-    /// Wire it.
     #[must_use]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
@@ -261,13 +226,8 @@ impl PublishNotification {
         }
     }
 
-    /// Publish.
-    ///
-    /// The root of the trace §13 asks for (`publish → fanout → push transport`) when
-    /// the caller sent no `traceparent`, and its continuation when they did. The
-    /// span carries the channel and nothing from the draft: a trace is read by
-    /// whoever runs the collector, and §13 says the logs never carry a payload —
-    /// there is no reason the spans should.
+    /// Publish. The span carries the channel and nothing from the draft: logs and
+    /// traces never carry a payload (§13).
     #[tracing::instrument(name = "publish", skip_all, fields(channel = %request.channel))]
     pub async fn execute(
         &self,
@@ -308,9 +268,7 @@ impl PublishNotification {
                 what: "idempotency_key",
             })),
             Claim::Fresh => {
-                // The quota is charged only for work that will actually be done:
-                // replaying a response costs nothing, so a retry of a publish that
-                // already succeeded is never answered `429` instead of its replay.
+                // Quota is charged only for real work, so a retried success replays instead of 429.
                 let published = match self.writer.check_quotas(caller, &channel, now).await {
                     Ok(()) => {
                         self.writer
@@ -322,8 +280,7 @@ impl PublishNotification {
                 let published = match published {
                     Ok(published) => published,
                     Err(failure) => {
-                        // Leaving the claim in place would answer the client's
-                        // retry with `InFlight` until the claim lapses.
+                        // Otherwise the client's retry gets `InFlight` until the claim lapses.
                         let _ = self
                             .writer
                             .idempotency
@@ -333,11 +290,8 @@ impl PublishNotification {
                     }
                 };
 
-                // The notification exists now, whatever happens next. Failing the
-                // request because the replay could not be stored would send the
-                // client to retry a publish that succeeded — and once the claim
-                // lapses, that retry publishes twice. So the answer stands; only
-                // the replay is lost.
+                // The notification exists now: failing here would make the client retry (and,
+                // once the claim lapses, publish twice). Only the replay is lost.
                 match serde_json::to_string(&published) {
                     Ok(encoded) => {
                         if let Err(error) = self
@@ -384,7 +338,6 @@ pub struct UpsertRequest {
 }
 
 impl UpsertNotification {
-    /// Wire it.
     #[must_use]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
@@ -408,11 +361,8 @@ impl UpsertNotification {
         }
     }
 
-    /// Create or revise.
-    ///
-    /// Same span as [`PublishNotification::execute`] in every respect but the name,
-    /// and it carries the publisher's own id because that is the thing an operator
-    /// has in hand when they come asking — "the run that failed was `build-4711`".
+    /// Create or revise. The span carries the publisher's external id, what an operator
+    /// has in hand when they come asking.
     #[tracing::instrument(
         name = "upsert",
         skip_all,
@@ -431,11 +381,8 @@ impl UpsertNotification {
             .await?;
         self.writer.check_quotas(caller, &channel, now).await?;
 
-        // Every race this can lose — an insert beaten to the external id, a revision
-        // beaten to the next seq, a notification deleted or expired between the read
-        // and the write — is answered the same way: re-read and go again, which is
-        // the outcome we would have had a moment later. Bounded, so an id under
-        // constant contention fails instead of spinning.
+        // Every lost race (insert, next seq, deleted between read and write) is answered by
+        // re-reading; bounded so constant contention fails instead of spinning.
         for _ in 0..UPSERT_ATTEMPTS {
             let existing = self
                 .writer
@@ -487,12 +434,8 @@ mod tests {
 
     use super::*;
 
-    /// Resolves or refuses every thumbnail the same way, so a test can assert the
-    /// *wiring* in [`Writer::derive_thumbnail`] — a source that exists gets a
-    /// thumbnail stored, a rejection or a missing source does not — without a
-    /// real decoder. `notify-app` cannot depend on `notify-avatars` (an
-    /// adapter), so this stands in for it the same way `InMemoryAttachments`
-    /// stands in for `S3Attachments`.
+    /// Resolves or refuses every thumbnail the same way, standing in for the
+    /// `notify-avatars` adapter so the wiring can be tested without a decoder.
     #[derive(Debug, Clone, Default)]
     struct StubThumbnailer {
         refuse: bool,
@@ -534,16 +477,14 @@ mod tests {
         build(policy, false)
     }
 
-    /// A fixture whose thumbnailer refuses every source, for the branch where a
-    /// publish must succeed anyway (design D30).
+    /// A fixture whose thumbnailer refuses every source: the publish must still succeed.
     fn fixture_refusing_thumbnails(policy: ChannelPolicy) -> Fixture {
         build(policy, true)
     }
 
     fn build(policy: ChannelPolicy, refuse_thumbnails: bool) -> Fixture {
         let clock = TestClock::new();
-        // One clock for the use case and the store, so a test that moves time
-        // moves it for what the store considers expired too.
+        // One clock for the use case and the store.
         let store = InMemory::with_clock(clock.clone());
         let limiter = TestRateLimiter::new();
         let attachments = InMemoryAttachments::new();
@@ -627,10 +568,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_revision_carries_the_publisher_s_name_and_not_their_id() {
-        // The property every inbox row and every timeline entry depended on and
-        // nothing checked (§2.4). Falsify it by removing the `Attribution` call in
-        // `Writer::create`: this asserts on the ULID instead, which is exactly what
-        // the application rendered until this increment.
+        // Attribution must render a name, not the ULID (§2.4).
         let fixture = fixture(ChannelPolicy::default());
         let id = fixture.alice.as_user().unwrap();
         let user = notify_domain::User::from_claims(
@@ -654,8 +592,7 @@ mod tests {
 
         assert_eq!(published.revision.author.label(), "Alice Martin");
 
-        // And the second revision too: `revise` is a different code path, and it
-        // was the one carrying half the bug.
+        // `revise` is a separate code path.
         let revised = fixture
             .upsert
             .execute(
@@ -897,12 +834,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_channels_configured_ceiling_reaches_the_limiter() {
-        // §8.2 promises "défauts globaux, surchargeables par canal (`limits` dans
-        // `[[channels.managed]]`)". The number was parsed by the config and read by
-        // nobody; this is the wire that makes it mean something. Asserted at the
-        // port rather than at the outcome because the enforcement itself lives in
-        // the adapter that owns the counter — what this use case owes is passing
-        // the channel's number rather than dropping it.
+        // §8.2: the channel's `limits` must reach the limiter (asserted at the port, since
+        // enforcement lives in the adapter).
         let fixture = fixture(ChannelPolicy {
             publish_per_minute: Some(30),
             ..ChannelPolicy::default()
@@ -960,9 +893,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_keys_own_ceiling_reaches_the_limiter_alongside_the_channels() {
-        // D24's half of §8.2: a platform-admin's per-key override travels the same
-        // way the channel's own `limits` does (`a_channels_configured_ceiling_reaches_the_limiter`),
-        // just carried on the grant instead of the channel.
+        // §8.2: a platform-admin's per-key override travels like the channel's, on the grant.
         let fixture = fixture(ChannelPolicy {
             publish_per_minute: Some(30),
             ..ChannelPolicy::default()
@@ -1037,7 +968,7 @@ mod tests {
                 .is_err()
         );
 
-        // Nor is the same owner's other key: the ceiling is this key's (D24).
+        // Nor is the same owner's other key: the ceiling is this key's.
         let sibling = Caller {
             grant: Grant::ApiKey {
                 id: ApiKeyId::generate(),
@@ -1091,7 +1022,7 @@ mod tests {
         assert_eq!(published.revision.received_at, fixture.clock.now());
     }
 
-    // --- D30: a thumbnail is derived eagerly, and never at the cost of the write ---
+    // --- A thumbnail is derived eagerly, never at the cost of the write ---
 
     fn request_with_attachment(reference: notify_domain::AttachmentId) -> PublishRequest {
         PublishRequest {
@@ -1189,16 +1120,13 @@ mod tests {
         let fixture = fixture(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
 
-        // `request(None)` carries no image at all — the common case, and the one
-        // that must not pay a bucket round trip it has nothing to make.
+        // No image at all: the common case, which must not pay a bucket round trip.
         fixture
             .publish
             .execute(&caller, request(None))
             .await
             .unwrap();
 
-        // Nothing to assert against a store keyed by an id that was never
-        // minted; the property under test is that the call above did not panic
-        // or error reaching for `revision.content.image` on `None`.
+        // The property is that the call above did not error on a missing image.
     }
 }

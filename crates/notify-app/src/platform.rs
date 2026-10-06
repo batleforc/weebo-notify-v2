@@ -1,24 +1,6 @@
-//! The platform console's use cases (design §5.4, §10.4bis).
-//!
-//! # The boundary is the whole design, and it is not "admins see everything"
-//!
-//! §5.4 draws it in one sentence: **metadata and operations, never content**. The
-//! role hands over the inventory — which channels exist, who is in them, which keys
-//! are dormant — the operations, and the audit log. It does **not** hand over a
-//! single notification of a channel the admin is not a member of.
-//!
-//! That is not caution, it is the only line that keeps §2.4's rule true. Profiles
-//! are visible "only through a shared channel", and a role that could read any
-//! channel's content would make that sentence false for everybody at once, silently,
-//! for as long as somebody held the role. Membership stays the one door to content
-//! (scenario T30); an admin may *join* a channel, and that join is audited, which
-//! turns "I looked" into something a later reader can see.
-//!
-//! # Why every use case here re-checks the role
-//!
-//! Not because the HTTP layer forgets — it does not — but because a check that only
-//! exists in a route table is a check that a second route table can be written
-//! without. The refusal lives with the operation.
+//! The platform console's use cases (§5.4, §10.4bis): metadata and operations, never
+//! content. Membership stays the one door to content; an admin's join is audited.
+//! Every use case re-checks the role, so a second route table cannot skip it.
 
 use std::sync::Arc;
 
@@ -41,17 +23,12 @@ impl core::fmt::Debug for BrowseAudit {
 }
 
 impl BrowseAudit {
-    /// Wire it.
     #[must_use]
     pub fn new(audit: Arc<dyn AuditLog>) -> Self {
         Self { audit }
     }
 
-    /// Browse, filtered.
-    ///
-    /// The log records *acts*, not payloads, so this is inside the boundary: "alice
-    /// joined `cluster-ovh-1` at 14:02" is metadata about the instance, and it is
-    /// precisely what the role exists to make readable.
+    /// Browse, filtered. The log records acts, not payloads, so it is inside the boundary.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -62,12 +39,8 @@ impl BrowseAudit {
     }
 }
 
-/// `GET /api/v1/admin/channels` — the inventory (design §10.4bis).
-///
-/// A channel is a **record card** here and not an inbox: id, origin, policy,
-/// members. The notifications are not reachable through this use case and must not
-/// become reachable through it later — that is what `GET /channels/{id}/notifications`
-/// is for, and it answers to membership.
+/// `GET /api/v1/admin/channels` — the inventory (§10.4bis): record cards, never
+/// notifications, which answer to membership only.
 #[derive(Clone)]
 pub struct ChannelInventory {
     channels: Arc<dyn ChannelRepository>,
@@ -80,7 +53,6 @@ impl core::fmt::Debug for ChannelInventory {
 }
 
 impl ChannelInventory {
-    /// Wire it.
     #[must_use]
     pub fn new(channels: Arc<dyn ChannelRepository>) -> Self {
         Self { channels }
@@ -93,9 +65,7 @@ impl ChannelInventory {
         let mut cards = Vec::new();
         for id in self.channels.all_ids().await? {
             let Some(channel) = self.channels.get(&id).await? else {
-                // Deleted between the two reads. Not an error: an inventory is a
-                // snapshot, and refusing the whole page over one vanished row would
-                // make the console fail exactly when somebody is tidying up.
+                // Deleted between the two reads: an inventory is a snapshot, skip it.
                 continue;
             };
             cards.push(ChannelCard {
@@ -110,11 +80,7 @@ impl ChannelInventory {
     }
 }
 
-/// What the console shows for one channel.
-///
-/// Counts rather than lists for members: the console's question is "is this channel
-/// configured the way we think", and a name here would put somebody's identity on a
-/// screen belonging to a channel they may not share with the reader (§2.4).
+/// What the console shows for one channel; member counts, not names (§2.4).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ChannelCard {
@@ -137,8 +103,7 @@ pub struct ChannelCard {
 pub enum Trigger {
     /// The process started.
     Boot,
-    /// The interval elapsed. The common case, and the reason this enum exists: a
-    /// timer pass looks exactly like a signalled one in a timestamp.
+    /// The periodic timer fired.
     Timer,
     /// An operator sent `SIGHUP` and the file was re-read.
     Sighup,
@@ -152,11 +117,6 @@ pub struct Reconciliation {
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
     /// What caused this pass — boot, the timer, or `SIGHUP` (§11).
-    ///
-    /// §10.4bis asks this screen for "le dernier SIGHUP", which a timestamp alone
-    /// cannot answer: the reconciler also runs every minute, so `at` is almost
-    /// always the timer and an operator who has just sent a signal cannot tell
-    /// whether it landed.
     pub trigger: Trigger,
     /// Managed channels written.
     pub channels: usize,
@@ -164,30 +124,13 @@ pub struct Reconciliation {
     pub accounts: usize,
     /// Channels that left the configuration and were archived or deleted.
     pub removed: usize,
-    /// Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
-    ///
-    /// The one thing on this screen that is *actionable and quiet otherwise*: such a
-    /// binding grants nothing until that person's first login (§14.1, M1.8), and
-    /// without a place to see it the symptom is "alice says she cannot see the
-    /// channel" with nothing to connect it to.
+    /// Bindings by `oidc_sub` or `email` naming somebody who has never logged in, which
+    /// grant nothing until that person's first login (§14.1).
     pub pending: Vec<String>,
 }
 
-/// Where the composition root leaves its last pass for the console to read.
-///
-/// # Why a slot and not a port
-///
-/// Reconciliation is not storage and not an external system: it is something this
-/// process did, a minute ago, in its own memory. A port would mean an adapter, a
-/// double and a trait for a value that never leaves the replica.
-///
-/// # And that is exactly what makes it per-replica
-///
-/// Unlike the purge (§11, leader-only), **every** replica reconciles — so this is
-/// the last pass of *whichever replica served the request*, not of the instance.
-/// Behind a load balancer two reads can legitimately differ by a tick. Reporting it
-/// as instance-wide would be the more comfortable lie; the field is documented as a
-/// replica's answer instead.
+/// The last reconciliation pass, kept in memory for the console. Every replica
+/// reconciles, so this is the serving replica's answer, not the instance's.
 #[derive(Clone, Default)]
 pub struct ReconciliationLog {
     last: Arc<std::sync::RwLock<Option<Reconciliation>>>,
@@ -208,9 +151,7 @@ impl ReconciliationLog {
 
     /// Record a pass.
     pub fn record(&self, pass: Reconciliation) {
-        // A poisoned lock here means a previous writer panicked mid-write. Reading
-        // through it costs nothing: the worst case is a stale report on a console,
-        // and refusing to record would make that permanent.
+        // A poisoned lock means a writer panicked; overwrite anyway rather than stay stale.
         match self.last.write() {
             Ok(mut slot) => *slot = Some(pass),
             Err(poisoned) => *poisoned.into_inner() = Some(pass),
@@ -234,31 +175,20 @@ pub struct ReadReconciliation {
 }
 
 impl ReadReconciliation {
-    /// Wire it.
     #[must_use]
     pub fn new(log: ReconciliationLog) -> Self {
         Self { log }
     }
 
-    /// What the last pass did on this replica.
-    ///
-    /// `None` means no pass has finished here. In practice the boot pass runs before
-    /// the socket is bound, so a caller should never see it — which is precisely why
-    /// it is modelled rather than papered over with zeroes: a console showing
-    /// "0 channels, 0 accounts" for "we have not looked" would be reporting a
-    /// healthy-looking instance that has not applied its configuration.
+    /// What the last pass did on this replica; `None` means none has finished here,
+    /// rather than zeroes that would look healthy.
     pub fn execute(&self, caller: &Caller) -> Result<Option<Reconciliation>, Failure> {
         caller.ensure_platform_admin()?;
         Ok(self.log.last())
     }
 }
 
-/// `POST /api/v1/admin/channels/{id}/join` — the audited way in (design §5.4).
-///
-/// The escape hatch the boundary needs to be usable: an admin investigating an
-/// incident does sometimes have to read the channel. Making that a **deliberate,
-/// recorded act** is the whole difference between a role that reads everything
-/// quietly and one that reads what it asked for, in writing.
+/// `POST /api/v1/admin/channels/{id}/join` — the audited way in (§5.4).
 #[derive(Clone)]
 pub struct SelfJoin {
     channels: Arc<dyn ChannelRepository>,
@@ -273,7 +203,6 @@ impl core::fmt::Debug for SelfJoin {
 }
 
 impl SelfJoin {
-    /// Wire it.
     #[must_use]
     pub fn new(
         channels: Arc<dyn ChannelRepository>,
@@ -287,11 +216,8 @@ impl SelfJoin {
         }
     }
 
-    /// Join a channel as the calling admin, and record it.
-    ///
-    /// Subscribe only. An admin needs to *read* an incident, and the role is not a
-    /// licence to publish into a channel as though one belonged to it — a message
-    /// nobody in the team sent would be worse than one nobody could read.
+    /// Join a channel as the calling admin, and record it. Subscribe only: the role is
+    /// not a licence to publish.
     pub async fn execute(&self, caller: &Caller, id: &ChannelId) -> Result<(), Failure> {
         caller.ensure_platform_admin()?;
 
@@ -301,10 +227,8 @@ impl SelfJoin {
             .await?
             .ok_or(notify_domain::DomainError::NotificationGone)?;
 
-        // A managed channel is joined all the same, and the reconciler will take the
-        // membership away again (§11). That is the honest outcome: the config owns
-        // the member list, so an admin who needs lasting access edits the config —
-        // and the audit entry below still records that they looked.
+        // A managed channel is joined too; the reconciler removes it again (§11), and the
+        // audit entry still records the look.
         channel.upsert_member(notify_domain::Membership::new(
             caller.principal.clone(),
             vec![notify_domain::Scope::Subscribe],
@@ -326,13 +250,7 @@ impl SelfJoin {
 }
 
 /// `GET /api/v1/admin/trust-policies` — what this instance was deployed with.
-///
-/// Read-only, and not because the endpoint is lazy: trust policies come from GitOps
-/// (§11) and no API path edits them, so a console that offered an edit button would
-/// be offering something the next reconciliation undoes. What it answers is the
-/// question somebody actually has after a pipeline was refused — *which subjects do
-/// we trust, from which forge, on which channels* — and that is metadata, squarely
-/// inside the boundary.
+/// Read-only: trust policies come from GitOps (§11).
 #[derive(Clone, Debug)]
 pub struct ListTrustPolicies {
     policies: crate::federate::LivePolicies,
@@ -349,9 +267,7 @@ impl ListTrustPolicies {
     pub fn execute(&self, caller: &Caller) -> Result<Vec<TrustPolicyCard>, Failure> {
         caller.ensure_platform_admin()?;
 
-        // The set in force, not the one parsed at boot: a console that showed the
-        // file as it was read would answer "why was that pipeline refused" with
-        // yesterday.s configuration after a SIGHUP (D31).
+        // The set in force, not the one parsed at boot (a SIGHUP may have replaced it).
         Ok(self
             .policies
             .current()
@@ -380,9 +296,7 @@ pub struct TrustPolicyCard {
     pub channels: Vec<String>,
     /// What it grants there.
     pub scopes: Vec<Scope>,
-    /// Whether it came from a channel's own `publishers` block, which §11 makes win
-    /// over a global one — the thing to look at first when a policy "should" match
-    /// and does not.
+    /// Whether it came from a channel's own `publishers` block, which wins over a global one (§11).
     pub channel_scoped: bool,
 }
 
@@ -463,8 +377,7 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].id, ChannelId::parse("cluster-ovh-1").unwrap());
         assert_eq!(cards[0].members, 1);
-        // The type is the guarantee: there is no field here that could hold a
-        // notification, so no future edit can widen this into an inbox by accident.
+        // The type has no field that could hold a notification.
     }
 
     #[tokio::test]

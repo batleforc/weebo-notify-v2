@@ -6,38 +6,19 @@ use url::Url;
 /// Everything the OIDC verifier needs, and nothing it can discover for itself.
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
-    /// The issuer, exactly as it appears in the `iss` claim.
-    ///
-    /// Discovery hangs off it (`{issuer}/.well-known/openid-configuration`) and the
-    /// document is required to name it back — see the crate docs.
+    /// The issuer, exactly as in `iss`; discovery must name it back.
     pub issuer: Url,
 
-    /// The audiences a token may carry.
-    ///
-    /// Usually the one client id, but kept plural because an access token's `aud`
-    /// names the *API* rather than the client on several issuers, and an instance
-    /// migrating between the two has to accept both for a while.
+    /// The audiences a token may carry; plural since some issuers put the API, not the client, in `aud`.
     pub audiences: Vec<String>,
 
-    /// Which claim carries group membership.
-    ///
-    /// Configurable because there is no standard one: Authentik says `groups`,
-    /// Keycloak says whatever the mapper was called, and Dex says nothing at all
-    /// (scenario T29). An issuer that omits it yields no groups, which is a
-    /// supported answer — the user reaches their individual bindings and stops
-    /// there.
+    /// Which claim carries group membership; no standard name, and absent means no groups (T29).
     pub groups_claim: String,
 
-    /// Clock skew tolerated on `exp` and `nbf`.
-    ///
-    /// Small but not zero: a token minted by a host thirty seconds ahead of ours is
-    /// a fact of life on real deployments, and refusing it produces a login loop
-    /// nobody can debug from the client side.
+    /// Clock skew tolerated on `exp` and `nbf`; nonzero to avoid login loops on skewed hosts.
     pub leeway: Duration,
 
-    /// The shortest interval between two JWKS fetches.
-    ///
-    /// Also the throttle that stops forged `kid`s from turning into IdP traffic.
+    /// The shortest interval between two JWKS fetches; also throttles forged `kid`s.
     pub min_refresh_interval: Duration,
 
     /// How long to wait on the IdP before calling it unavailable.

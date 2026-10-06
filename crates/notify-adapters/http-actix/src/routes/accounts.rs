@@ -1,9 +1,5 @@
-//! Service accounts (design §5.2bis, §8).
-//!
-//! `DELETE` deactivates rather than deletes, and the verb is the honest one: the
-//! row survives so every revision and audit entry naming it stays readable. What
-//! stops is its ability to act, immediately — its keys go in the same call
-//! (scenario T25).
+//! Service accounts (design §5.2bis, §8). `DELETE` deactivates: the row stays readable in
+//! history and audit, and its keys are revoked in the same call (T25).
 
 use actix_web::{delete, get, post, web};
 use notify_domain::{ServiceAccount, ServiceAccountId};
@@ -17,14 +13,12 @@ use crate::state::ApiState;
 /// What it takes to create one.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CreateAccountBody {
-    /// The name it will be known by, everywhere it appears — as an `author`, in the
-    /// audit log, in a member list. Chosen rather than generated for exactly that
-    /// reason (§5.2bis).
+    /// The name it will be known by everywhere (author, audit log, member list).
     pub id: String,
     /// What clients show instead of the id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    /// What it is for, read by whoever finds it in an audit log in six months.
+    /// What it is for, for whoever finds it in an audit log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }

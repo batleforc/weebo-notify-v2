@@ -1,32 +1,6 @@
-//! The [`FederationVerifier`]: several forges in, one short-lived token out
-//! (design §5.3).
-//!
-//! # Why this lives beside the OIDC verifier
-//!
-//! A forge's ID token is an OIDC token. Everything §5.1's verifier already refuses
-//! to do — trust the header's `alg`, refetch a key set on demand, follow a
-//! discovery document that names a different issuer — applies here unchanged, and
-//! §4 puts "Authentik **and federated CI issuers**" in this crate for that reason.
-//! So a [`OidcVerifier`] is built per trusted forge and the hardening is inherited
-//! rather than re-implemented.
-//!
-//! # The issuer allowlist is the trust policies, and that is a security property
-//!
-//! Selecting which JWKS to fetch means reading `iss` out of a token before its
-//! signature is checked. That is unavoidable — you cannot verify a signature
-//! without first knowing whose key to use — and it is only safe because the set of
-//! issuers is **fixed at startup from the configured trust policies**. An issuer
-//! nobody wrote into `[[trust_policy]]` is refused before any network call, so a
-//! forged `iss` cannot make this process fetch a URL of an attacker's choosing.
-//! Without that, the endpoint would be a server-side request forgery primitive
-//! reachable without a credential.
-//!
-//! # Minting
-//!
-//! Ed25519, fifteen minutes, and the resolved channels written into the token
-//! (§5.3). The key is configuration rather than something generated at boot: a
-//! replica that mints what its neighbour cannot verify is an intermittent failure
-//! that looks like a flaky pipeline (§11 `[ha]`).
+//! The [`FederationVerifier`] (design §5.3): forge ID tokens in, a short-lived Ed25519 token out.
+//! Each forge gets an [`OidcVerifier`], inheriting its hardening. Security: the issuer allowlist is
+//! fixed at startup from trust policies, so an unverified `iss` can never choose a URL to fetch (SSRF).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,8 +17,7 @@ use url::Url;
 use crate::config::OidcConfig;
 use crate::verifier::OidcVerifier;
 
-/// How long a minted token lives. The ceiling §5.3 sets, and the value: a CI job
-/// that outlives it re-exchanges, which costs one request.
+/// How long a minted token lives (§5.3's ceiling); a longer job re-exchanges.
 const TOKEN_TTL: Duration = Duration::minutes(15);
 
 /// What this instance calls itself in the tokens it signs.
@@ -52,8 +25,7 @@ const SELF_ISSUER: &str = "weebo-notify";
 
 /// Everything needed to sign and check our own tokens.
 pub struct FederationTokens {
-    /// One verifier per issuer named by a trust policy. Fixed at startup — see the
-    /// module docs.
+    /// One verifier per trusted issuer, fixed at startup (the SSRF guard).
     issuers: HashMap<String, OidcVerifier>,
     encoding: EncodingKey,
     decoding: DecodingKey,
@@ -70,13 +42,7 @@ impl core::fmt::Debug for FederationTokens {
 }
 
 impl FederationTokens {
-    /// Build from the signing key and the issuers the policies trust.
-    ///
-    /// # Errors
-    ///
-    /// If the key is not a usable Ed25519 PKCS#8 PEM, or an issuer is not a URL.
-    /// Both are operator mistakes, and both are better reported before the socket is
-    /// bound than on the first pipeline that tries to publish.
+    /// Fails at startup if the key is not an Ed25519 PKCS#8 PEM or an issuer is not a URL.
     pub fn new(
         signing_key_pem: &[u8],
         issuers: &[String],
@@ -92,8 +58,7 @@ impl FederationTokens {
         for issuer in issuers {
             let url = Url::parse(issuer)
                 .map_err(|error| PortError::corrupt("trust_policy.issuer", error))?;
-            // `client_id` is what an OIDC config calls its audience, and this one
-            // never uses it: `verify_federated` leaves `aud` to the domain (M4.1).
+            // Unused: `verify_federated` leaves `aud` to the domain.
             let config = OidcConfig::new(url, SELF_ISSUER);
             verifiers.insert(
                 issuer.trim_end_matches('/').to_owned(),
@@ -110,12 +75,7 @@ impl FederationTokens {
         })
     }
 
-    /// Which forge a token claims to come from, before anything is verified.
-    ///
-    /// Reads `iss` from the unverified payload for one purpose only — choosing a
-    /// key set — and returns `None` unless that issuer is one an operator wrote
-    /// into a trust policy. See the module docs: this is the check that keeps an
-    /// unauthenticated endpoint from fetching arbitrary URLs.
+    /// Which trusted forge a token claims, from its unverified `iss`; `None` for any issuer not in a policy.
     fn issuer_of(&self, token: &str) -> Option<&OidcVerifier> {
         let payload = token.split('.').nth(1)?;
         let decoded = base64_url_decode(payload)?;
@@ -134,8 +94,7 @@ struct UnverifiedIssuer {
 #[derive(Debug, Serialize, Deserialize)]
 struct SelfSigned {
     iss: String,
-    /// The forge that vouched for the job, kept so the audit log can say where the
-    /// authority came from.
+    /// The forge that vouched for the job, for the audit log.
     forge: String,
     sub: String,
     aud: String,
@@ -151,9 +110,7 @@ impl FederationVerifier for FederationTokens {
         token: &str,
     ) -> PortResult<Result<FederatedClaims, TokenRejection>> {
         let Some(verifier) = self.issuer_of(token) else {
-            // Same answer as a bad signature, deliberately: distinguishing "we do
-            // not trust that forge" from "your signature is wrong" tells whoever is
-            // probing which issuers are configured.
+            // Same answer as a bad signature, so probing cannot enumerate trusted issuers.
             return Ok(Err(TokenRejection::WrongIssuer));
         };
         verifier.verify_federated(token).await
@@ -197,13 +154,10 @@ impl FederationVerifier for FederationTokens {
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_issuer(&[SELF_ISSUER]);
         validation.set_audience(&[self.audience.as_str()]);
-        // Checked below against the injected clock, like every other deadline here.
         validation.validate_exp = false;
 
         let Ok(data) = decode::<SelfSigned>(token, &self.decoding, &validation) else {
-            // Every failure is the same answer: this is called on **every** bearer
-            // request as the first of two attempts (§5.1 auth path), and an OIDC
-            // access token failing here is the ordinary case, not an incident.
+            // Every failure is a quiet `None`: OIDC tokens land here first on every bearer request.
             return Ok(Err(TokenRejection::BadSignature));
         };
         let payload = data.claims;
@@ -226,8 +180,7 @@ impl FederationVerifier for FederationTokens {
             let mut scopes = Vec::with_capacity(names.len());
             for name in names {
                 let Some(scope) = scope_from(name) else {
-                    // A scope this build does not know is not "ignore it": a token
-                    // minted by a newer replica must not silently authorise less.
+                    // An unknown scope fails: a newer replica's token must not silently authorise less.
                     return Ok(Err(TokenRejection::Malformed));
                 };
                 scopes.push(scope);
@@ -244,11 +197,7 @@ impl FederationVerifier for FederationTokens {
     }
 }
 
-/// The scope names written into a token.
-///
-/// Spelled out rather than derived from `serde`: these strings are a wire format
-/// that outlives a process — a token minted before a rename is presented after it —
-/// so the mapping is somewhere a rename has to touch.
+/// The scope names written into a token; spelled out because they outlive a rename.
 const fn scope_name(scope: Scope) -> &'static str {
     match scope {
         Scope::Publish => "publish",
@@ -266,11 +215,7 @@ fn scope_from(name: &str) -> Option<Scope> {
     }
 }
 
-/// The SPKI PEM of the public half, which is what a verifier loads.
-///
-/// Derived from the private key rather than configured separately: two files that
-/// have to match are two files that can stop matching, and the pairing is not
-/// something an operator should have to get right.
+/// The SPKI PEM of the public half, derived so it can never mismatch the private key.
 fn public_pem(private_pem: &[u8]) -> PortResult<Vec<u8>> {
     use ed25519_dalek::SigningKey;
     use ed25519_dalek::pkcs8::DecodePrivateKey as _;
@@ -305,9 +250,7 @@ mod tests {
 
     use super::*;
 
-    /// A key built from a fixed scalar, so nothing here is a secret a scanner or a
-    /// reader could mistake for one — the convention M3.5 established for
-    /// `push-webpush` after gitleaks found a real-looking key in its tests.
+    /// A key from a fixed scalar, so nothing here looks like a secret to scanners.
     fn signing_pem() -> Vec<u8> {
         use ed25519_dalek::SigningKey;
         use ed25519_dalek::pkcs8::EncodePrivateKey as _;
@@ -397,8 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_oidc_access_token_is_not_mistaken_for_one_of_ours() {
-        // The first of the two attempts every bearer request makes (§5.1): it has to
-        // decline quietly rather than fail the request.
+        // First of two attempts per bearer request (§5.1): must decline quietly.
         let tokens = tokens();
 
         assert!(
@@ -412,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_issuer_no_policy_names_is_refused_before_any_network_call() {
-        // The SSRF guard: `iss` is attacker-supplied, and it selects a URL to fetch.
+        // The SSRF guard: `iss` is attacker-supplied and selects a URL.
         let tokens = tokens();
         let payload = base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,

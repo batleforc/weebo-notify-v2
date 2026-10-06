@@ -1,21 +1,6 @@
 //! The outbound delivery queue and its dead letters (design §7.1bis, T17).
-//!
-//! Two things here are not obvious from the trait, and both are the reason this is
-//! a store rather than an in-process channel:
-//!
-//! **Claiming is one statement.** `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP
-//! LOCKED) RETURNING *` selects, leases and hands back in a single round trip that
-//! two replicas cannot interleave. Reading first and updating after would let two
-//! leaders — which exist for a moment during every failover — POST the same webhook
-//! twice.
-//!
-//! **A lease expires; a claim does not.** Rows are leased rather than deleted on
-//! claim, so a drain killed mid-attempt leaves its deliveries owed again once the
-//! lease runs out. The duplicate that costs, in the worst case, is exactly what
-//! `X-Weebo-Delivery` is sent for.
-//!
-//! What is *not* stored is the sink's target, and therefore its secret — the
-//! reasoning is in the migration and in `notify_ports::sinks`.
+//! Claiming is one `UPDATE … FOR UPDATE SKIP LOCKED` statement, so failover leaders cannot both claim;
+//! rows are leased, not deleted, so a killed drain's work comes back. Sink targets/secrets are not stored.
 
 use notify_domain::{ChannelId, DeliveryId, SinkId};
 use notify_ports::{DeadLetter, Event, PortError, PortResult, SinkDelivery, SinkQueue};
@@ -48,8 +33,7 @@ fn hydrate(row: &sqlx::postgres::PgRow) -> PortResult<SinkDelivery> {
             .map_err(|error| PortError::corrupt("sink.queue.channel_id", error))?,
         sink: SinkId::parse(&sink).map_err(|error| PortError::corrupt("sink.queue.sink", error))?,
         event: from_json::<Event>("sink.queue.event", event)?,
-        // Negative is unreachable through this adapter; clamped rather than refused
-        // because a delivery is worth attempting even if its counter was mangled.
+        // Unreachable; clamped so a mangled counter still gets attempted.
         attempts: attempts.try_into().unwrap_or(0),
         first_failed_at,
     })
@@ -62,10 +46,7 @@ impl SinkQueue for PgStore {
         delivery: &SinkDelivery,
         next_attempt_at: OffsetDateTime,
     ) -> PortResult<()> {
-        // Keyed on the delivery id: this is both "queue it for the first time" and
-        // "schedule the next attempt", and a retry that inserted a second row would
-        // deliver twice for one failure. The lease is cleared on the way through —
-        // rescheduling releases what the drain was holding.
+        // Keyed on the delivery id (enqueue and reschedule alike), clearing the lease.
         sqlx::query(
             "INSERT INTO sink_queue
                  (delivery_id, channel_id, sink, event, attempts, first_failed_at, due_at,
@@ -146,9 +127,7 @@ impl SinkQueue for PgStore {
             .await
             .map_err(|error| fail("sink.queue", error))?;
 
-        // Both halves or neither: a delivery that stayed in the queue *and* became a
-        // dead letter would be sent again by the next drain and be listed as
-        // abandoned at the same time.
+        // Both or neither, or the next drain would resend a dead letter.
         sqlx::query("DELETE FROM sink_queue WHERE delivery_id = $1")
             .bind(delivery.delivery_id.to_string())
             .execute(&mut *transaction)

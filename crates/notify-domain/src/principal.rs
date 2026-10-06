@@ -1,17 +1,5 @@
-//! Who is acting.
-//!
-//! Four identities reach the API and the middleware collapses them into one typed
-//! value (design §5), so no use case ever inspects a header, a token or a key
-//! format. Two questions are asked of a principal often enough to be answered
-//! here rather than at each call site:
-//!
-//! * **Attribution** — which name a revision or an interaction is signed with
-//!   (design §5.2). A key owned by a service account publishes *as that service
-//!   account*; a key owned by a user publishes *as that user*; a channel key is
-//!   anonymous and can only be attributed to itself.
-//! * **Humanity** — whether the actor counts as a person who has been informed.
-//!   Receipts say "seen by 3/5" about humans; a bot that read a channel is not one
-//!   (design §5.2bis).
+//! Who is acting (§5): one typed value for all four identities, answering
+//! attribution (§5.2) and whether the actor is a human reader (§5.2bis).
 
 use core::fmt;
 
@@ -23,8 +11,7 @@ use crate::hygiene::{TextKind, required_text};
 use crate::ids::{ApiKeyId, ChannelId, ServiceAccountId, UserId};
 use crate::limits::MAX_TITLE_CHARS;
 
-/// The discriminant of a [`Principal`], as it appears on the wire in an `author`
-/// object (design §8.1).
+/// The discriminant of a [`Principal`], as it appears in an `author` object (§8.1).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,9 +52,7 @@ pub enum Principal {
         /// Its account.
         id: ServiceAccountId,
     },
-    /// A key attached to a channel and to nobody else. Publishes show as "via key
-    /// `key_…` of channel `ci-infra`" — when attribution matters, the operator is
-    /// meant to reach for a service account instead (design §5.2).
+    /// A key attached to a channel and to nobody else; use a service account when attribution matters (§5.2).
     ChannelKey {
         /// The channel that owns the key.
         channel: ChannelId,
@@ -84,8 +69,7 @@ pub enum Principal {
 }
 
 impl Principal {
-    /// Build a CI job principal, validating the subject the same way any other
-    /// publisher-supplied text is validated.
+    /// Build a CI job principal, sanitising the subject like any publisher text.
     pub fn ci_job(issuer: Url, subject: &str) -> Result<Self> {
         let subject = required_text(
             subject,
@@ -107,8 +91,7 @@ impl Principal {
         }
     }
 
-    /// A stable textual reference, unique within its kind. This is what lands in
-    /// the audit log (design §13) and in the `author.id` of a stream event.
+    /// A stable textual reference, unique within its kind (audit log, `author.id`).
     #[must_use]
     pub fn reference(&self) -> String {
         match self {
@@ -119,11 +102,7 @@ impl Principal {
         }
     }
 
-    /// Whether this principal is a person.
-    ///
-    /// The one place it decides something: receipts. "Seen by 3/5" counts humans,
-    /// so a service account reading a channel must never move that number
-    /// (design §5.2bis, scenario T25).
+    /// Whether this principal is a person; only humans count as readers (§5.2bis, T25).
     #[must_use]
     pub fn is_human(&self) -> bool {
         matches!(self, Self::User { .. })
@@ -148,22 +127,14 @@ impl fmt::Display for Principal {
     }
 }
 
-/// A principal as it is *rendered*: the identity plus the label a client shows
-/// next to a revision, an interaction or a receipt (design §2.4, §8.1).
-///
-/// Carried alongside events rather than fetched, because there is deliberately no
-/// endpoint that reads someone else's profile: embedding it where it is legitimate
-/// is what mechanically enforces "visible only through a shared channel"
-/// (design §2.4). Profile *management* arrives with M2; M1 only needs to be able
-/// to say who published.
+/// A principal plus the display label clients show next to revisions, interactions and receipts (§2.4, §8.1).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author {
     /// The identity itself.
     #[serde(flatten)]
     pub principal: Principal,
-    /// The name to show. Absent for a principal that has no profile — an anonymous
-    /// channel key — in which case clients fall back to the reference.
+    /// The name to show; absent for principals without a profile (clients fall back to the reference).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 }
@@ -192,8 +163,7 @@ impl Author {
         })
     }
 
-    /// What a client shows: the display name when there is one, the reference
-    /// otherwise.
+    /// What a client shows: the display name, or the reference.
     #[must_use]
     pub fn label(&self) -> String {
         self.display_name
@@ -202,18 +172,12 @@ impl Author {
     }
 }
 
-/// The owner of an API key, which is what decides who a publish is attributed to
-/// (design §5.2).
-///
-/// Modelled as its own type rather than as a bare [`Principal`] so that the
-/// authentication adapter cannot accidentally mint a `CiJob` principal out of a
-/// long-lived key: federation and keys are different doors.
+/// The owner of an API key, which decides publish attribution (§5.2).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub enum ApiKeyOwner {
-    /// A personal key. Scripting for one human; never the identity a team bot runs
-    /// on, or offboarding that human kills the bot (design §5.2).
+    /// A personal key, for one human's scripting; never for team bots (§5.2).
     User {
         /// The owning user.
         id: UserId,
@@ -245,8 +209,7 @@ impl ApiKeyOwner {
     }
 }
 
-/// Guard against a caller inventing an author that does not match the principal
-/// that authenticated. Used by the use cases when they stamp a revision.
+/// Refuse an author that does not match the authenticated principal.
 pub fn ensure_matches(author: &Author, principal: &Principal) -> Result<()> {
     if &author.principal == principal {
         Ok(())
@@ -327,8 +290,7 @@ mod tests {
         );
         assert_eq!(job.as_user(), None);
 
-        // Subject text is publisher-influenced like any other, and gets the same
-        // treatment.
+        // Subject text is publisher-influenced and sanitised.
         assert!(Principal::ci_job(issuer.clone(), "\u{1b}[2J").is_err());
         assert!(Principal::ci_job(issuer, "   ").is_err());
     }

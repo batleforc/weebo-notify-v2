@@ -12,21 +12,15 @@ tasks:
       - helm lint "{{.CHART_DIR}}"
 
   template:
-    desc: "Render charts/weebo-notify against the bundled example values, to catch templating errors before a real cluster does"
-    # Bare values.yaml can't render on its own: web.env.apiBaseUrl/oidcIssuer
-    # have no default (see the chart's README on why). The example fills those
-    # in; pass a real values file instead with `task helm:template -- -f
-    # my-values.yaml`.
+    desc: "Render charts/weebo-notify against the bundled example values to catch templating errors."
+    # Bare values.yaml can't render (web.env.apiBaseUrl/oidcIssuer have no default); pass your
+    # own with `task helm:template -- -f my-values.yaml`.
     cmds:
       - helm template weebo-notify "{{.CHART_DIR}}" -f "{{.CHART_DIR}}/examples/values-production.yaml" {{.CLI_ARGS}}
 
   check:
-    desc: "Lint the chart, render the production example, and assert the properties an operator inherits from it"
-    # The example is the file people copy. Rendering it is not enough on its own:
-    # it rendered perfectly well while shipping `networkPolicy.enabled: true`
-    # with an empty `ingressFrom`, which produced a deployment whose own Ingress
-    # and metrics scrape were both blocked. These assertions are the difference
-    # between "the template compiles" and "the result is a deployment that works".
+    desc: "Lint the chart, render the production example, and assert the properties operators inherit."
+    # The example is what people copy, so assert it yields a working deployment, not just a render.
     cmds:
       - task: lint
       - cmd: |
@@ -35,18 +29,15 @@ tasks:
             -f "{{.CHART_DIR}}/examples/values-production.yaml")"
 
           fail() { echo "helm:check — $1" >&2; exit 1; }
-          # `yq` prints an empty line for every document a `select` does not
-          # match, so a bare capture picks up the blanks as well as the answer.
+          # `yq` prints a blank line per unmatched document.
           pick() { printf '%s' "$rendered" | yq "$1" | grep -v '^$' | head -1; }
 
-          # The server's NetworkPolicy must admit more than the web pods, or the
-          # server Ingress and the ServiceMonitor scrape are both refused.
+          # The server NetworkPolicy must admit the Ingress and the ServiceMonitor scrape, not just web.
           sources="$(pick 'select(.kind == "NetworkPolicy" and .metadata.name == "weebo-notify-server") | .spec.ingress[0].from | length')"
           [ "${sources:-0}" -ge 2 ] || fail \
             "the server NetworkPolicy admits only ${sources:-0} source(s); ingressFrom is unset, so the API and the scrape are blocked"
 
-          # Two replicas and a PDB: the example is the high-availability shape.
-          # With the HPA on, the Deployment omits `replicas`; the floor is minReplicas.
+          # Two replicas and a PDB; with the HPA on, the floor is minReplicas.
           replicas="$(pick 'select(.kind == "Deployment" and .metadata.name == "weebo-notify-server") | .spec.replicas')"
           [ "$replicas" != "null" ] || replicas="$(pick 'select(.kind == "HorizontalPodAutoscaler" and .metadata.name == "weebo-notify-server") | .spec.minReplicas')"
           [ "${replicas:-0}" -ge 2 ] || fail \
@@ -60,8 +51,7 @@ tasks:
           [ -n "$window" ] && [ "$window" != "null" ] || fail \
             "the server HPA has no scaleDown stabilisation window"
 
-          # The Ingress publishes /api/v1 and nothing else: that prefix is the
-          # only thing keeping /metrics, /healthz and /readyz off the internet.
+          # Only /api/v1 is published, keeping /metrics, /healthz and /readyz private.
           paths="$(pick 'select(.kind == "Ingress" and .metadata.name == "weebo-notify-server") | [.spec.rules[].http.paths[].path] | join(",")')"
           [ "$paths" = "/api/v1" ] || fail \
             "the server Ingress publishes [$paths]; anything beyond /api/v1 exposes the exporter"

@@ -1,9 +1,5 @@
-//! Managing channels: creating them, and who is in them.
-//!
-//! A GitOps-managed channel is read-only through the API (design §11). Refusing
-//! here rather than letting the write through and having the reconciler undo it is
-//! the difference between an error message and an afternoon spent watching a
-//! channel resurrect.
+//! Managing channels and their members. A GitOps-managed channel is read-only here
+//! (§11): refuse rather than let the reconciler undo the write.
 
 use std::sync::Arc;
 
@@ -27,7 +23,6 @@ impl core::fmt::Debug for ListChannels {
 }
 
 impl ListChannels {
-    /// Wire it.
     #[must_use]
     pub fn new(channels: Arc<dyn ChannelRepository>) -> Self {
         Self { channels }
@@ -59,21 +54,13 @@ impl core::fmt::Debug for ReadChannel {
 }
 
 impl ReadChannel {
-    /// Wire it.
     #[must_use]
     pub const fn new(authorizer: Authorizer) -> Self {
         Self { authorizer }
     }
 
-    /// One channel, if the caller may see it.
-    ///
-    /// `Subscribe` and not `Manage`: this is the read [`ListChannels`] already
-    /// grants, addressed by id instead of by page. Asking for `Manage` would mean a
-    /// member could not open a channel they receive notifications from.
-    ///
-    /// A channel the caller may not see and one that does not exist give the same
-    /// answer, which is [`Authorizer::authorize`]'s rule and the reason this use
-    /// case is three lines: distinguishing them enumerates the instance.
+    /// One channel, if the caller may see it: `Subscribe`, the read [`ListChannels`]
+    /// already grants. Missing and forbidden answer alike.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -100,7 +87,6 @@ impl core::fmt::Debug for CreateChannel {
 }
 
 impl CreateChannel {
-    /// Wire it.
     #[must_use]
     pub fn new(
         channels: Arc<dyn ChannelRepository>,
@@ -114,18 +100,14 @@ impl CreateChannel {
         }
     }
 
-    /// Create it, with the caller as its first manager.
-    ///
-    /// Making the creator a manager is not a courtesy: a channel nobody can
-    /// administer needs an operator with database access to fix.
+    /// Create it, with the caller as its first manager (otherwise nobody could administer it).
     pub async fn execute(
         &self,
         caller: &Caller,
         id: ChannelId,
         display_name: Option<&str>,
     ) -> Result<Channel, Failure> {
-        // A person's session only: a leaked key or a CI token creating channels at
-        // will — each one a place it manages — is a foothold nobody granted.
+        // A person's session only: a key creating channels would grant itself footholds.
         caller.ensure_person()?;
         let mut channel = Channel::dynamic(id, display_name)?;
         channel.upsert_member(Membership::new(
@@ -133,9 +115,7 @@ impl CreateChannel {
             vec![Scope::Publish, Scope::Subscribe, Scope::Manage],
         )?);
 
-        // Insert-if-absent in one write: checking first and writing second let two
-        // creators of the same name both pass the check, and the second silently
-        // replaced the first's channel with one only it could manage.
+        // Insert-if-absent in one write, so two creators of one name cannot both win.
         match self.channels.insert(&channel).await {
             Ok(()) => {}
             Err(notify_ports::PortError::Conflict { .. }) => {
@@ -178,7 +158,6 @@ impl core::fmt::Debug for ManageMembers {
 }
 
 impl ManageMembers {
-    /// Wire it.
     #[must_use]
     pub fn new(
         channels: Arc<dyn ChannelRepository>,
@@ -206,15 +185,13 @@ impl ManageMembers {
             .authorizer
             .authorize(caller, channel_id, Scope::Manage)
             .await?;
-        // Config owns a managed channel's access list; writing here would be undone
-        // at the next reconciliation (design §11).
+        // Config owns a managed channel's access list (§11).
         channel
             .origin
             .ensure_mutable_through_api("channel.members")?;
 
         let membership = Membership::new(principal.clone(), scopes.clone())?;
-        // One row, not the whole list: rewriting every membership from the snapshot
-        // above would drop anybody another manager added in the meantime.
+        // One row, so a concurrent manager's addition is not dropped.
         self.channels.put_member(channel_id, &membership).await?;
         channel.upsert_member(membership);
 
@@ -231,10 +208,7 @@ impl ManageMembers {
         Ok(channel)
     }
 
-    /// Remove a member, or leave.
-    ///
-    /// Leaving needs no `manage`: you may always take yourself out of a channel.
-    /// Removing somebody else does.
+    /// Remove a member, or leave; only removing somebody else needs `manage`.
     pub async fn remove(
         &self,
         caller: &Caller,
@@ -253,8 +227,7 @@ impl ManageMembers {
             .origin
             .ensure_mutable_through_api("channel.members")?;
 
-        // Asked of the store, not of the snapshot: another request may have removed
-        // them already, and only one of the two should be journalled.
+        // Asked of the store, so only one of two concurrent removals is journalled.
         let removed = self.channels.remove_member(channel_id, principal).await?;
         if removed {
             self.audit
@@ -276,11 +249,7 @@ impl ManageMembers {
     }
 }
 
-/// `PATCH /api/v1/channels/{id}` — the channel's policy (design §8).
-///
-/// Its own use case rather than a method on [`ManageMembers`]: members and policy
-/// are the two things `manage` covers, and a type per operation is what keeps the
-/// authorisation check visible at each call site.
+/// `PATCH /api/v1/channels/{id}` — the channel's policy (§8).
 #[derive(Clone)]
 pub struct UpdateChannel {
     channels: Arc<dyn ChannelRepository>,
@@ -296,7 +265,6 @@ impl core::fmt::Debug for UpdateChannel {
 }
 
 impl UpdateChannel {
-    /// Wire it.
     #[must_use]
     pub fn new(
         channels: Arc<dyn ChannelRepository>,
@@ -323,24 +291,18 @@ impl UpdateChannel {
             .authorizer
             .authorize(caller, channel_id, Scope::Manage)
             .await?;
-        // Same refusal as `DELETE` and the member routes: config owns a managed
-        // channel's policy, and letting this through would only move the argument to
-        // the next reconciliation (design §11).
+        // Config owns a managed channel's policy (§11).
         channel
             .origin
             .ensure_mutable_through_api("channel.policy")?;
 
-        // The domain decides whether the edit is coherent; an incoherent one never
-        // reaches storage.
+        // The domain refuses an incoherent edit before storage.
         if !channel.edit_policy(edit)? {
-            // Nothing moved. Returning the channel is still the right answer — a
-            // `PATCH` is idempotent — but writing a row and an audit entry saying the
-            // policy changed would be a record of something that did not happen.
+            // Nothing moved: idempotent answer, no write, no audit entry.
             return Ok(channel);
         }
 
-        // The policy alone: writing the whole channel back would also restore the
-        // member list as it stood when this request read it.
+        // The policy alone, so a stale member list is not written back.
         self.channels
             .set_policy(channel_id, &channel.policy)
             .await?;
@@ -350,8 +312,7 @@ impl UpdateChannel {
                 action: actions::CHANNEL_POLICY_UPDATED,
                 target: Some(channel_id.to_string()),
                 channel: Some(channel_id.clone()),
-                // The resulting policy rather than the request: an audit log is read
-                // to answer "what was it set to", and a partial body cannot answer it.
+                // The resulting policy, not the partial request body.
                 detail: serde_json::to_value(channel.policy).ok(),
                 at: self.clock.now(),
             })
@@ -377,7 +338,6 @@ impl core::fmt::Debug for DeleteChannel {
 }
 
 impl DeleteChannel {
-    /// Wire it.
     #[must_use]
     pub fn new(
         channels: Arc<dyn ChannelRepository>,

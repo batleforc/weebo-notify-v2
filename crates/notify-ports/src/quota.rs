@@ -1,22 +1,11 @@
-//! Rate limits and quotas (design §8.2).
-//!
-//! Limits are per *subject* — an API key, a channel, an `(issuer, subject)` pair for
-//! token exchange — and never global. A CI job in a retry loop must degrade its own
-//! publishing and nobody else's; a shared limit would let one noisy publisher take a
-//! channel down for everybody, which is a worse failure than the one it prevents
-//! (scenario T14).
-//!
-//! The state lives behind a port because it is genuinely shared: with several
-//! replicas, an in-process counter enforces `n × 60/min` rather than `60/min`.
+//! Rate limits and quotas (§8.2), per subject and never global (T14). State is
+//! behind a port so limits hold across replicas.
 
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
 
-/// What is being limited.
-///
-/// A closed set rather than a free-form string: every limit here appears in
-/// design §8.2, and one that does not is a limit nobody documented.
+/// What is being limited; every variant is documented in §8.2.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Quota {
     /// Publishes by one API key, across every channel: 60/min, burst 120.
@@ -47,8 +36,7 @@ pub enum Quota {
 pub enum Allowance {
     /// Yes.
     Allowed {
-        /// How many are left in the current window, for a `X-RateLimit-Remaining`
-        /// header.
+        /// How many are left in the current window (`X-RateLimit-Remaining`).
         remaining: u32,
     },
     /// No — `429`, with this many seconds in `Retry-After`.
@@ -69,19 +57,9 @@ impl Allowance {
 /// Counting requests against a quota.
 #[async_trait::async_trait]
 pub trait RateLimiter: Send + Sync {
-    /// Count one request and say whether it is allowed.
-    ///
-    /// Consumes on the way *in*, so a caller that is over the limit is refused
-    /// before doing the work rather than after.
-    ///
-    /// `configured` is the override design §8.2 promises — "défauts globaux,
-    /// surchargeables par canal (`limits` dans `[[channels.managed]]`, §11)" —
-    /// and `None` means the published default applies. It is a **separate
-    /// argument rather than a field of [`Quota`]** because the two answer
-    /// different questions: `Quota` says *who is being counted*, and it is the
-    /// map key, the row key and the thing compared for equality. Folding a
-    /// ceiling into it would make two requests against the same channel look like
-    /// different subjects the moment an operator edited the number.
+    /// Count one request and say whether it is allowed, consuming on the way in.
+    /// `configured` is the per-channel override (§8.2), `None` for the default; it is
+    /// not part of [`Quota`] because `Quota` is the counter key.
     async fn check(
         &self,
         quota: &Quota,

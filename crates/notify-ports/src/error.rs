@@ -1,16 +1,5 @@
-//! What a port is allowed to fail with.
-//!
-//! The split that matters: a [`DomainError`] means *the request was wrong*, a
-//! [`PortError`] means *the world was wrong*. One is a 4xx a publisher can fix, the
-//! other is a 5xx an operator has to look at. Keeping them in separate types stops
-//! a use case from accidentally reporting a dropped database connection as a
-//! validation failure, which is the kind of mistake that turns a page at 3am into
-//! an hour of reading the wrong logs.
-//!
-//! Adapters therefore never surface their own error types. `sqlx::Error`,
-//! `reqwest::Error` and friends stop at the adapter boundary and become one of
-//! these — with the original attached as a `source`, so the detail survives into
-//! the logs without leaking into the signature.
+//! Port failures: [`PortError`] means the world was wrong (5xx), [`DomainError`](notify_domain::DomainError)
+//! the request (4xx). Adapters map their own errors here, keeping them as `source`.
 
 use thiserror::Error;
 
@@ -21,33 +10,23 @@ pub enum PortError {
     /// The backing store, transport or service could not be reached.
     #[error("{what} is unavailable")]
     Unavailable {
-        /// Which dependency, in the vocabulary used by `/readyz` and the metrics:
-        /// `postgres`, `attachments`, `eventbus`, `jwks`.
+        /// Which dependency, as named by `/readyz` and metrics (`postgres`, `jwks`, …).
         what: &'static str,
         /// The underlying failure.
         #[source]
         source: Box<dyn core::error::Error + Send + Sync>,
     },
 
-    /// A concurrent writer won a race that this operation cannot simply retry
-    /// through — a unique index collided, an optimistic update matched no rows.
-    ///
-    /// Distinct from [`Self::Unavailable`] because it is often *recoverable at the
-    /// use-case level*: an idempotent upsert that loses this race can re-read and
-    /// carry on rather than fail the request.
+    /// A concurrent writer won a race (unique index, optimistic update); often
+    /// recoverable by re-reading at the use-case level.
     #[error("{what} conflicted with a concurrent write")]
     Conflict {
         /// What collided, e.g. `notification.external_id`.
         what: &'static str,
     },
 
-    /// Something this deployment owns cannot be read back: a row written by an older
-    /// build, a column holding something no current type accepts, or a key file the
-    /// operator mounted that no loader here accepts (design §5.3, §11).
-    ///
-    /// Never a client's fault, always ours — which is why it is here and not in
-    /// [`DomainError`], even though the immediate cause is usually a failed
-    /// validation on read.
+    /// Something this deployment owns cannot be read back (old row, bad key file).
+    /// Always ours, never the client's.
     #[error("stored {what} could not be read back: {detail}")]
     Corrupt {
         /// Which record, e.g. `notification.payload`.
@@ -56,11 +35,7 @@ pub enum PortError {
         detail: String,
     },
 
-    /// The port was asked for something it does not implement in this deployment —
-    /// a push transport that is not configured, an event bus backend that is off.
-    ///
-    /// A configuration answer, not a bug: it says "this instance does not do that",
-    /// which an operator fixes in config rather than in code.
+    /// The port is not configured on this instance (e.g. an absent push transport).
     #[error("{what} is not configured on this instance")]
     NotConfigured {
         /// The capability that was asked for, e.g. `push.apns`.
@@ -89,8 +64,7 @@ impl PortError {
         }
     }
 
-    /// The dependency name to report on `/readyz` and in metrics (design §13), when
-    /// this failure names one.
+    /// The dependency name to report on `/readyz` and in metrics (§13), if any.
     #[must_use]
     pub const fn dependency(&self) -> Option<&'static str> {
         match self {
@@ -99,11 +73,7 @@ impl PortError {
         }
     }
 
-    /// Whether retrying the exact same call could plausibly succeed.
-    ///
-    /// Read by the sink retry loop (design §7.1bis) and by the use cases that can
-    /// re-read after losing an upsert race. `Corrupt` and `NotConfigured` say no:
-    /// retrying a bad row or a missing configuration is a busy loop.
+    /// Whether retrying the exact same call could plausibly succeed (§7.1bis).
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
         matches!(self, Self::Unavailable { .. } | Self::Conflict { .. })
@@ -113,10 +83,8 @@ impl PortError {
 /// Shorthand for a port's fallible operations.
 pub type PortResult<T> = Result<T, PortError>;
 
-/// A failure that is either the caller's fault, the world's, or neither.
-///
-/// The one type a use case returns, so a handler has a single thing to map onto
-/// `application/problem+json` (design §8).
+/// A use case's failure: the caller's fault, the world's, or neither; one type
+/// for handlers to map onto `application/problem+json` (§8).
 #[derive(Debug, Error)]
 pub enum Failure {
     /// The request was wrong. Carries the stable `code` clients match on.
@@ -125,10 +93,7 @@ pub enum Failure {
     /// The world was wrong.
     #[error(transparent)]
     Port(#[from] PortError),
-    /// Neither: the request is fine and the world is fine, there has just been too
-    /// much of it (design §8.2). Its own variant because `429` is the one refusal a
-    /// client is expected to *retry*, and burying it in either of the other two
-    /// would lose that.
+    /// Too much traffic (§8.2): a `429` the client is expected to retry.
     #[error("rate limit exceeded; retry in {retry_after_seconds}s")]
     RateLimited {
         /// What to put in `Retry-After`.
@@ -137,11 +102,7 @@ pub enum Failure {
 }
 
 impl Failure {
-    /// The stable wire code, for the failures that have one.
-    ///
-    /// Infrastructure failures deliberately have none: a client cannot do anything
-    /// differently about a database being down, and giving it a code to branch on
-    /// would invite exactly that.
+    /// The stable wire code, for the failures that have one (infrastructure has none).
     #[must_use]
     pub fn code(&self) -> Option<&'static str> {
         match self {

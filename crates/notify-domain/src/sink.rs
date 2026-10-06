@@ -1,36 +1,6 @@
-//! Outbound sinks: naming one, and knowing when to stop retrying (design §7.1bis).
-//!
-//! The transport lives in an adapter and the queue lives in a store; what is here is
-//! the part that is neither — **the identity of a sink** and **the schedule its
-//! deliveries follow**. Both are decisions the design document already made, and
-//! both are the kind that a retry loop otherwise re-invents slightly differently
-//! every time somebody touches it.
-//!
-//! # Why a sink is identified by where it points
-//!
-//! §11 declares sinks inside a channel's block, with no name of their own:
-//!
-//! ```toml
-//! [[channels.managed.sinks]]
-//! type   = "webhook"
-//! url    = "https://hooks.weebo.poc/incidents"
-//! secret_ref = "env:WNK_SINK_INCIDENTS_HMAC"
-//! ```
-//!
-//! So the identity has to be derived, and the destination is the only part that
-//! both identifies it and survives a restart. That gives three properties worth
-//! having: a queued delivery still finds its sink after a redeploy, a delivery
-//! whose sink left the configuration resolves to nothing and is dropped rather than
-//! retried forever, and a dead letter in the console names the endpoint an operator
-//! has to go and look at.
-//!
-//! It also means **a sink pointed at a new URL is a new sink**, which is the honest
-//! reading: whatever is queued was signed for, and destined to, somewhere else.
-//!
-//! What a [`SinkId`] must never contain is a credential. `https://user:pass@host`
-//! is a legal URL and would put a password in a database column, in an API
-//! response and in a log line at once — refused at the point the configuration is
-//! read, which is the only place that can tell the difference.
+//! Outbound sinks (§7.1bis): a sink's identity and its retry schedule. A sink is
+//! identified by `kind:destination` (config gives no name), so a new URL is a new
+//! sink and removed sinks resolve to nothing. Credentials in URLs are refused.
 
 use core::fmt;
 use core::time::Duration;
@@ -41,22 +11,13 @@ use time::OffsetDateTime;
 use crate::error::{DomainError, Result};
 use crate::hygiene::{TextKind, sanitize};
 
-/// Longest a sink identity may be. A URL with a path, and no more: past this it is
-/// a query string somebody is using as configuration.
+/// Longest a sink identity may be.
 pub const MAX_SINK_ID_CHARS: usize = 512;
 
-/// The kinds of sink this build knows how to talk to (design §7.1bis).
-///
-/// A closed list for the same reason the audit vocabulary is one: a `type` nobody
-/// implements has to be refused at startup, and an unknown value read back from a
-/// queue row has to be reported rather than guessed at.
+/// The kinds of sink this build knows how to talk to (§7.1bis); unknown kinds are refused.
 pub const SINK_KINDS: &[&str] = &["webhook", "email"];
 
-/// Which sink of which channel, written as `kind:destination`.
-///
-/// Stable across restarts and reconfigurations, free of secrets, and legible in a
-/// dead-letter listing — see the module documentation for why it is derived rather
-/// than declared.
+/// Which sink of which channel, written as `kind:destination` (never contains secrets).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(value_type = String))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -64,11 +25,7 @@ pub const SINK_KINDS: &[&str] = &["webhook", "email"];
 pub struct SinkId(String);
 
 impl SinkId {
-    /// Build one from a kind and where it points.
-    ///
-    /// The destination is sanitised like every other text field (design §2.3): a
-    /// dead letter is rendered in a terminal by the TUI, and an endpoint carrying an
-    /// escape sequence would be rendered there too.
+    /// Build one from a kind and where it points; the destination is sanitised (§2.3).
     pub fn new(kind: &str, destination: &str) -> Result<Self> {
         let kind = sanitize(kind, TextKind::SingleLine).to_ascii_lowercase();
         if !SINK_KINDS.contains(&kind.as_str()) {
@@ -107,8 +64,7 @@ impl SinkId {
         Self::new(kind, destination)
     }
 
-    /// The kind half — the dimension of `sink_dlq_depth` (design §13) and the way a
-    /// dispatcher decides whether a delivery is its business.
+    /// The kind half, used as a metric label and for dispatcher routing.
     #[must_use]
     pub fn kind(&self) -> &str {
         self.0.split_once(':').map_or("", |(kind, _)| kind)
@@ -142,24 +98,8 @@ impl<'de> Deserialize<'de> for SinkId {
     }
 }
 
-/// How long to wait before trying again, and when to stop (design §7.1bis).
-///
-/// # Why the schedule is a value and not a loop
-///
-/// "Exponential backoff from 30 s to 1 h, give up after 24 h" is one sentence in
-/// the design and three easy mistakes in code: a delay that stops growing at the
-/// wrong place, a cap applied before the doubling, and a give-up measured from the
-/// wrong instant. Written once here, it is also *testable* once — which matters
-/// because the loop that consumes it runs on the leader, every few seconds, against
-/// somebody else's endpoint.
-///
-/// # What the clock is measured from
-///
-/// From the **first failure**, not from the first attempt. A delivery that succeeds
-/// immediately never has a deadline, and one that starts failing gets a full day
-/// from the moment the trouble began rather than from the moment it was published —
-/// which is the difference an operator sees when a consumer goes down hours after a
-/// busy publish.
+/// The retry schedule (§7.1bis): exponential backoff, giving up a fixed time
+/// after the **first failure** (not the first attempt).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// How long after the first failure to try again.
@@ -171,30 +111,19 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// The schedule design §7.1bis publishes: 30 s doubling to 1 h, abandoned after
-    /// 24 h.
-    ///
-    /// A constant rather than a configuration key: it is part of the webhook
-    /// contract consumers are told about, so an instance that quietly retried for a
-    /// week would be lying to them about what "at-least-once" costs.
+    /// The published contract (§7.1bis): 30 s doubling to 1 h, abandoned after 24 h.
     pub const CONTRACT: Self = Self {
         first_delay: Duration::from_secs(30),
         max_delay: Duration::from_secs(3_600),
         give_up_after: Duration::from_secs(24 * 3_600),
     };
 
-    /// How long to wait after `attempts` failed attempts.
-    ///
-    /// `attempts` counts what has already been tried, so the first failure asks for
-    /// [`Self::first_delay`] and each one after that doubles until the ceiling. Zero
-    /// is answered as if it were one: nothing calls it that way, and returning
-    /// "immediately" would turn a caller's off-by-one into a busy loop against
-    /// somebody else's server.
+    /// How long to wait after `attempts` failed attempts, doubling from
+    /// [`Self::first_delay`] up to the ceiling. Zero is treated as one.
     #[must_use]
     pub const fn backoff(&self, attempts: u32) -> Duration {
         let doublings = attempts.saturating_sub(1);
-        // Shifting past the width of the type is undefined for the CPU and merely
-        // wrong for us; 32 doublings of 30 s is already three thousand years.
+        // Avoid shifting past the type width; 32 doublings is already absurd.
         let factor = if doublings >= 32 {
             u64::MAX
         } else {
@@ -209,17 +138,12 @@ impl RetryPolicy {
         }
     }
 
-    /// Whether a delivery that has been failing since `first_failed_at` has run out
-    /// of day.
-    ///
-    /// Answered on the *elapsed* time rather than on an attempt count, because the
-    /// count depends on how often the drain loop happened to run and the promise
-    /// made to consumers is a duration.
+    /// Whether a delivery failing since `first_failed_at` has exceeded the window,
+    /// judged on elapsed time rather than attempt count.
     #[must_use]
     pub fn is_exhausted(&self, first_failed_at: OffsetDateTime, now: OffsetDateTime) -> bool {
         let Ok(window) = time::Duration::try_from(self.give_up_after) else {
-            // Unreachable for the constant above; failing closed here means a
-            // nonsensical policy buries deliveries rather than retrying them forever.
+            // Fail closed: a nonsensical policy buries rather than retries forever.
             return true;
         };
         now - first_failed_at >= window
@@ -255,8 +179,7 @@ mod tests {
 
     #[test]
     fn a_kind_this_build_does_not_serve_is_refused() {
-        // Not "accepted and skipped later": a `type = "matrix"` in the configuration
-        // is an operator expecting deliveries that will never happen.
+        // Unknown kinds are refused, not silently skipped.
         assert!(SinkId::new("matrix", "!room:weebo.poc").is_err());
     }
 

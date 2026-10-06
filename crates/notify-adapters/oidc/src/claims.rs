@@ -6,11 +6,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use url::Url;
 
-/// The payload as it arrives.
-///
-/// Only the claims that are standard enough to name are named; the rest is kept
-/// flat so the configurable groups claim can be looked up by whatever the operator
-/// called it.
+/// The payload as it arrives; non-standard claims stay flat for the configurable groups lookup.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawClaims {
     iss: String,
@@ -26,12 +22,7 @@ pub(crate) struct RawClaims {
 }
 
 impl RawClaims {
-    /// Reduce to what the application layer is allowed to see.
-    ///
-    /// Anything not on [`VerifiedClaims`] is dropped here rather than carried
-    /// along: a claim that never leaves this function is a claim no downstream code
-    /// can quietly start depending on, which matters when the next IdP does not
-    /// send it.
+    /// Reduce to what the application layer may see; everything else is dropped so nothing depends on it.
     pub(crate) fn into_verified(
         self,
         groups_claim: &str,
@@ -54,9 +45,7 @@ impl RawClaims {
             issuer,
             subject: self.sub,
             email: self.email,
-            // `name` is the OIDC claim; `preferred_username` is what an IdP with no
-            // display name configured tends to send instead. Neither is required —
-            // a user with no readable name is a user, not an error.
+            // Fall back to `preferred_username`; neither is required.
             display_name: self.name.or(self.preferred_username),
             groups,
             expires_at,
@@ -64,14 +53,8 @@ impl RawClaims {
     }
 }
 
-/// Read a groups claim in each of the three shapes issuers actually emit.
-///
-/// An array of strings is the common one. A single string happens when a user is in
-/// exactly one group and the IdP does not bother with an array. A space-separated
-/// string is the `scope`-style encoding some mappers produce. Anything else — a
-/// number, an object, a nested array — is ignored rather than rejected: a group we
-/// cannot read is a group the user does not get, and failing the whole login over
-/// it would lock somebody out of channels they *are* individually bound to.
+/// Read a groups claim as an array, a single string, or a space-separated string.
+/// Anything else is ignored rather than failing the login.
 fn normalise_groups(value: &Value) -> Vec<String> {
     match value {
         Value::Array(items) => items
@@ -119,8 +102,7 @@ mod tests {
 
     #[test]
     fn an_issuer_that_emits_no_groups_yields_no_groups_rather_than_a_failure() {
-        // Carol on Dex (scenario T29): the login has to work and reach exactly the
-        // individual bindings, never a default grant.
+        // Dex (T29): login works and reaches only individual bindings.
         let verified = claims(json!({
             "iss": "https://idp.example",
             "sub": "carol",
@@ -205,12 +187,7 @@ mod tests {
     }
 }
 
-/// A CI job's ID token, as it arrives (design §5.3).
-///
-/// A separate shape from [`RawClaims`] rather than more optional fields on it: the
-/// two are read by different callers with different rules — this one keeps `aud`
-/// and `jti` and drops email, name and groups — and one struct serving both would
-/// make every field optional and every rule a runtime check.
+/// A CI job's ID token as it arrives (design §5.3); separate from [`RawClaims`] because the rules differ.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawFederatedClaims {
     iss: String,
@@ -223,8 +200,7 @@ pub(crate) struct RawFederatedClaims {
     jti: Option<String>,
 }
 
-/// `aud` is either a string or an array, and a verifier that only understood one
-/// of them would refuse half the forges in the world.
+/// `aud` is a string or an array (RFC 7519).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum Audience {
@@ -248,9 +224,7 @@ impl RawFederatedClaims {
                 Audience::One(one) => vec![one],
                 Audience::Many(many) => many,
             },
-            // Kept even when absent: the domain refuses a token with no id, and
-            // inventing one here would be this layer deciding a rule that belongs
-            // over there (scenario T11).
+            // Kept even when absent: refusing a missing id is the domain's rule (T11).
             jti: self.jti,
             expires_at,
         })

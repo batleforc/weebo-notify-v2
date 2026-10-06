@@ -1,16 +1,5 @@
-//! `/api/v1/admin/*` — the platform console (design §5.4, §8, §10.4bis).
-//!
-//! Everything here needs the platform role, and everything here refuses **in the
-//! use case** rather than in this file. That is not belt and braces: a check living
-//! only in a route table is a check the next route table can be written without,
-//! and this is the one boundary where forgetting is not recoverable.
-//!
-//! # The DLQ answers about deliveries, never about their contents
-//!
-//! `GET /admin/dlq` names a channel, a sink and an error, and stops there. The
-//! event that failed to deliver is in the queue row and is not served: an admin who
-//! is not a member of the channel would otherwise read its notifications through
-//! the failure of a webhook, which is the one door §5.4 closes.
+//! `/api/v1/admin/*`, the platform console (design §5.4, §10.4bis). The platform role is
+//! enforced in the use cases; the DLQ never serves the failed event's contents.
 
 use actix_web::{HttpResponse, get, post, web};
 use notify_app::{ChannelCard, Reconciliation, TrustPolicyCard};
@@ -40,9 +29,7 @@ pub(crate) struct AuditFilters {
     get,
     path = "/admin/audit",
     tag = "admin",
-    // Declared here as well as on the handler, and that is not duplication: the
-    // document is what the generated clients are built from (ADR-0009), so a filter
-    // the handler accepts and the document omits is a filter no client can send.
+    // Declared here too, so generated clients can send the filters (ADR-0009).
     params(
         ("action" = Option<String>, Query, description = "One action, e.g. `apikey.revoked`"),
         ("channel" = Option<String>, Query, description = "One channel"),
@@ -125,9 +112,7 @@ pub(crate) async fn self_join(
     let id = path.into_inner().parse()?;
     state.self_join.execute(&caller.0, &id).await?;
 
-    // `204` and not the channel: answering with its contents would be this route
-    // quietly becoming the content read the whole boundary exists to prevent. The
-    // admin is a member now and reads it the way every member does.
+    // `204`, not the channel: the admin reads it as any member does.
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -148,8 +133,7 @@ pub(crate) async fn trust_policies(
     state: web::Data<ApiState>,
     caller: Authenticated,
 ) -> Result<web::Json<Vec<TrustPolicyCard>>, ApiError> {
-    // No `POST` beside it, and there will not be one: §11 owns these, and an edit
-    // button would offer what the next reconciliation takes back.
+    // Read-only: §11 owns these and reconciliation would undo an edit.
     Ok(web::Json(state.trust_policies.execute(&caller.0)?))
 }
 
@@ -213,10 +197,7 @@ pub(crate) async fn requeue_dead_letter(
 ) -> Result<HttpResponse, ApiError> {
     let id = path.into_inner().parse()?;
 
-    // A refusal and not a `204` for one that is not there: a console that reported
-    // success for a requeue that requeued nothing would leave an operator waiting on
-    // a delivery nobody scheduled. `409` rather than `404`, like every other object
-    // this API says is gone.
+    // `409` for one that is not there, like every other gone object: never fake success.
     if state.requeue.execute(&caller.0, &id).await? {
         Ok(HttpResponse::NoContent().finish())
     } else {
@@ -243,8 +224,6 @@ pub(crate) async fn reconciliation(
     state: web::Data<ApiState>,
     caller: Authenticated,
 ) -> Result<web::Json<Option<Reconciliation>>, ApiError> {
-    // This replica's, not the instance's: every replica reconciles (§11 gates only
-    // the purge on leadership), so behind a load balancer two reads can differ by a
-    // tick. The field says so rather than the answer pretending otherwise.
+    // Per replica: every replica reconciles (§11), so two reads can differ by a tick.
     Ok(web::Json(state.reconciliation.execute(&caller.0)?))
 }

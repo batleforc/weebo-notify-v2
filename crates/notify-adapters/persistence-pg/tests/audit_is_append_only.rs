@@ -1,21 +1,5 @@
-//! The audit log is append-only, and this is what keeps it that way.
-//!
-//! The decision (advisory SEC-P2-37): **no path deletes an audit entry, and the TTL
-//! purge never reaches one.** Retention, if an operator wants any, is theirs to
-//! apply at the database — deliberately and visibly, rather than as a side effect
-//! of a sweep that was written to reclaim space from tombstoned notifications.
-//!
-//! That property is true today by omission: nothing was ever written that deletes
-//! from `audit_entries`. Omissions are exactly what a refactor takes away without
-//! anybody noticing, so this asserts it against the source rather than trusting it.
-//!
-//! # Why a source scan rather than a database test
-//!
-//! A behavioural test would need Postgres, which puts it in the integration suite
-//! that only runs where a database exists — and it could only prove that the paths
-//! it happened to exercise leave the table alone. This proves something stronger
-//! and cheaper: that no SQL in this crate names the table in a destructive
-//! statement at all. It runs in the ordinary `cargo test`, on any machine.
+//! The audit log is append-only (SEC-P2-37): no SQL in this crate may name `audit_entries` in a
+//! destructive statement, and the TTL purge never reaches it. A source scan, so it runs everywhere.
 
 #![allow(
     clippy::expect_used,
@@ -63,9 +47,7 @@ fn no_sql_in_this_crate_destroys_audit_entries() {
 
 #[test]
 fn the_ttl_purge_only_reclaims_notifications() {
-    // The purge is the one sweep that deletes on a timer, so it is the one most
-    // likely to grow a second target. `events` is swept separately and by cursor,
-    // never by age against this table.
+    // The purge is the timed delete most likely to grow a second target.
     let notifications =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notifications.rs"))
             .expect("the notification store");

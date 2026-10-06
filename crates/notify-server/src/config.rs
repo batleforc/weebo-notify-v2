@@ -1,28 +1,6 @@
 //! Configuration: defaults < TOML file < `WNK_*` environment (design §11).
-//!
-//! **Every key is overridable from the environment, without exception.** The
-//! convention is `WNK_` plus the path in `__`, so `[oidc] issuer` becomes
-//! `WNK_OIDC__ISSUER`. That is not a nicety: it is what lets one `config/dev.toml`
-//! serve Compose *and* an Eclipse Che workspace with no second file, because the
-//! only thing that differs between them — a browser-facing URL — is an override
-//! (§12.1).
-//!
-//! # What this build does not act on yet
-//!
-//! The schema below covers the whole of §11, including sections whose behaviour
-//! lands later: trust policies (M4), channel sinks (§7.1bis) and the relayed push
-//! credentials (M6 and M7). They are parsed rather than ignored, and
-//! [`Config::unhonoured`] reports them at startup — a configuration key that is
-//! silently dropped is how an operator loses an afternoon.
-
-// The whole §11 schema is modelled here, ahead of the wiring that reads it: the
-// composition root's `run` is still blocked on group-based channel access (§11
-// `oidc_group`), which nothing resolves yet. Parsing and validating the complete
-// file now is what makes that blocker the only one left.
-#![allow(
-    dead_code,
-    reason = "the reader of these fields is the composition root, which is blocked"
-)]
+//! Every key is overridable as `WNK_` + path joined by `__` (e.g. `WNK_OIDC__ISSUER`).
+//! Parsed-but-unhonoured sections are reported at startup by [`Config::unhonoured`].
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -56,35 +34,20 @@ pub(crate) struct Config {
     /// Federation trust policies (§5.3).
     pub trust_policy: Vec<TrustPolicy>,
 
-    /// `[federation]` — where the Ed25519 signing key lives (§5.3, §11).
-    ///
-    /// Absent means this deployment does not federate: `POST /auth/token/exchange`
-    /// answers `501` and no CI token is accepted. Present with no readable key is a
-    /// startup failure, not a silent downgrade — the same rule `[push.webpush]` set
-    /// in M3.5.
+    /// `[federation]` — the Ed25519 signing key (§5.3, §11). Absent: no federation (`501`);
+    /// present but unreadable: startup failure.
     pub federation: Option<Federation>,
 
-    /// Push transport credentials (§11). Parsed, not yet honoured — M3 onwards.
+    /// Push transport credentials (§11).
     pub push: Push,
 
     /// `[sinks]` — what the outbound sinks of §7.1bis need beyond their channel.
     pub sinks: Sinks,
 
-    /// `[telemetry]` — where the traces of §13 go, if anywhere.
-    ///
-    /// Absent means this deployment emits no spans, which is the default and not a
-    /// degradation: a collector endpoint is a fact about a deployment, and a default
-    /// pointing at `localhost:4318` would make every instance without a collector
-    /// retry an export it was never asked for.
+    /// `[telemetry]` — where the traces of §13 go; absent (the default) means no spans are exported.
     pub telemetry: Option<Telemetry>,
 
-    /// `[cli]` — serving the `notify` CLI binary for download (design §9).
-    ///
-    /// Absent means this deployment does not serve it: `GET /api/v1/cli` answers
-    /// `501` rather than guessing where a binary might live on this filesystem.
-    /// Present with an unreadable path is a startup failure, the same rule
-    /// `[federation]`/`[push.webpush]` already set — an operator who asked for
-    /// this and got a silent 501 would lose an afternoon to it.
+    /// `[cli]` — serving the `notify` CLI binary (design §9). Absent: `501`; unreadable path: startup failure.
     pub cli: Option<Cli>,
 }
 
@@ -92,9 +55,7 @@ pub(crate) struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Cli {
-    /// A path on this filesystem, not the bytes themselves — the Containerfile
-    /// copies the binary here, alongside `notify-server`, built from the same
-    /// commit so the two can never disagree on version.
+    /// Path to the binary, built from the same commit as `notify-server`.
     pub binary_path: PathBuf,
 }
 
@@ -102,33 +63,20 @@ pub(crate) struct Cli {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Telemetry {
-    /// The collector's OTLP **HTTP** endpoint, e.g. `http://collector:4318`.
-    ///
-    /// The `/v1/traces` path is appended by the exporter, so this is the base URL a
-    /// collector documents rather than the one an operator has to assemble.
+    /// The collector's OTLP HTTP base URL, e.g. `http://collector:4318` (`/v1/traces` is appended).
     pub otlp_endpoint: String,
 
-    /// What the traces are attributed to. One name per deployment, not per replica:
-    /// `service.instance.id` is what tells replicas apart, and putting the pod name
-    /// here would make a trace search per-pod.
+    /// Service name for traces: one per deployment (`service.instance.id` tells replicas apart).
     pub service_name: String,
 
-    /// Fraction of root traces recorded, 0.0 to 1.0.
-    ///
-    /// Sampling belongs here rather than at the collector for the reason every
-    /// sampling decision is taken early: a span that was never recorded costs
-    /// nothing to export, and one recorded to be dropped downstream has already
-    /// been paid for. Children follow their root — a trace missing its middle is
-    /// worse than no trace.
+    /// Fraction of root traces recorded, 0.0 to 1.0; children follow their root.
     pub sample_ratio: f64,
 }
 
 impl Default for Telemetry {
     fn default() -> Self {
         Self {
-            // No default endpoint on purpose: the section only exists when somebody
-            // wrote it, and an empty endpoint is refused at startup rather than
-            // exporting into the void.
+            // No default endpoint: an empty one is refused at startup.
             otlp_endpoint: String::new(),
             service_name: "weebo-notify".to_owned(),
             sample_ratio: 1.0,
@@ -143,22 +91,10 @@ pub(crate) struct Server {
     /// Closed by default (§5.1): an origin that is not listed cannot call the API
     /// from a browser.
     pub cors_origins: Vec<String>,
-    /// Whether `/api/docs` serves the Scalar UI and the OpenAPI document.
-    ///
-    /// **On by default, and that is the right default**: the API surface of an
-    /// open-source product is public information, the endpoint reads no data, and
-    /// being able to send somebody a documentation link is most of its value.
-    ///
-    /// It is a setting rather than a constant because "the shape of our API is not
-    /// something we publish" is a legitimate position for a private deployment to
-    /// take, and there was previously no way to hold it. Turning it off answers
-    /// `404`, not `401` — an endpoint that exists and refuses is still an
-    /// admission that it exists.
+    /// Whether `/api/docs` serves the Scalar UI and OpenAPI document; on by default, off answers `404`.
     pub docs: bool,
-    /// Declares this a development instance, which is what lets it boot on the
-    /// development stack's defaults — a loopback OIDC issuer, the `weebo:weebo`
-    /// database. Off by default: a production config that forgot `[oidc]` refuses
-    /// to start instead of trusting whatever answers on localhost.
+    /// Declares a development instance, allowing the dev-stack defaults (loopback OIDC, `weebo:weebo`).
+    /// Off by default, so a production config missing `[oidc]` refuses to start.
     pub dev: bool,
 }
 
@@ -177,10 +113,7 @@ impl Default for Server {
 #[serde(default)]
 pub(crate) struct Database {
     pub url: String,
-    /// Pool size. Leaves headroom on purpose: every background job that leads holds
-    /// one connection open for as long as it runs (the advisory lock *is* that
-    /// connection), so a pool sized exactly to the request concurrency would
-    /// deadlock the first time the purge took the lock.
+    /// Pool size; leave headroom, since each leading background job holds a connection (its lock).
     pub max_connections: u32,
 }
 
@@ -198,13 +131,9 @@ impl Default for Database {
 pub(crate) struct Oidc {
     pub issuer: String,
     pub client_id: String,
-    /// Extra audiences a token may carry. The client id is always accepted; this is
-    /// for issuers whose access token names the *API* rather than the client, and
-    /// for an instance migrating between the two.
+    /// Extra audiences a token may carry, for issuers whose tokens name the API; the client id is always accepted.
     pub audiences: Vec<String>,
-    /// Which claim carries group membership. There is no standard one: Authentik
-    /// says `groups`, Keycloak says whatever the mapper was called, and Dex says
-    /// nothing at all (T29).
+    /// Which claim carries group membership; there is no standard one (T29).
     pub groups_claim: String,
 }
 
@@ -257,9 +186,7 @@ pub(crate) enum LeaderBackend {
     /// A Postgres advisory lock. Zero extra infrastructure.
     #[default]
     Postgres,
-    /// The Kubernetes Lease API. Not implemented yet — refused at startup rather
-    /// than silently downgraded, because an operator who asked for it would
-    /// otherwise get two leaders across a cluster and never know.
+    /// The Kubernetes Lease API; not implemented, so refused at startup.
     Kubernetes,
 }
 
@@ -275,9 +202,7 @@ pub(crate) enum BusBackend {
     /// `LISTEN/NOTIFY` (ADR-0008).
     #[default]
     Postgres,
-    /// Redis pub/sub, for when the NOTIFY per transaction starts to weigh. No
-    /// adapter exists; kept as a name only so asking for it is refused at startup
-    /// with a reason rather than as an unknown variant.
+    /// Redis pub/sub; no adapter exists, so refused at startup with a reason.
     Redis,
 }
 
@@ -294,9 +219,7 @@ pub(crate) enum AttachmentsBackend {
     /// Any S3-compatible bucket — RustFS by default (ADR-0002).
     #[default]
     S3,
-    /// A local directory, served through this server's own routes rather than a
-    /// bucket URL — for deployments with no S3-compatible service at all
-    /// (ADR-0022).
+    /// A local directory served through this server's own routes, for deployments without S3 (ADR-0022).
     Filesystem,
 }
 
@@ -310,16 +233,14 @@ pub(crate) struct Attachments {
     pub bucket: String,
     pub access_key: String,
     pub secret_key: String,
-    /// Meaningless to most self-hosted stores and required by the signature, so it
-    /// has a default rather than being asked for.
+    /// Region; required by the signature, meaningless to most self-hosted stores.
     #[serde(default = "default_region")]
     pub region: String,
 
     // --- `kind = "filesystem"` (ADR-0022) ---
     /// Where attachments live on disk. Created at startup if missing.
     pub path: String,
-    /// This server's own externally-reachable base URL — the filesystem backend
-    /// presigns against itself, so it has to know its own address.
+    /// This server's externally reachable base URL; the filesystem backend presigns against itself.
     pub public_base_url: String,
     /// Signs the bearer URLs a filesystem-backed presign hands out.
     pub token_secret: String,
@@ -333,8 +254,7 @@ fn default_region() -> String {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OnRemoved {
-    /// Leave the rows in place and stop reconciling it. The safe default: deleting
-    /// a channel takes its history with it, and a config typo should not.
+    /// Leave the rows in place and stop reconciling it; the safe default, as deletion takes history.
     #[default]
     Archive,
     /// Delete it, history included.
@@ -345,8 +265,7 @@ pub(crate) enum OnRemoved {
 #[serde(default)]
 pub(crate) struct Channels {
     pub on_removed: OnRemoved,
-    /// `sighup` — reload without a restart. Recorded for §11; the handler lands
-    /// with the reconciler's hot path.
+    /// `sighup` — reload without a restart (§11).
     pub reload: Option<String>,
     pub managed: Vec<ManagedChannel>,
 }
@@ -358,9 +277,8 @@ pub(crate) struct ManagedChannel {
     pub name: Option<String>,
     pub default_ttl: Option<Ttl>,
     pub max_ttl: Option<HumanDuration>,
-    /// How long without activity before the server closes a lifecycle
-    /// notification here (§7.2bis). Absent means the published default of one
-    /// week; `"0"` means this channel's publishers close their own.
+    /// Inactivity before the server closes a lifecycle notification (§7.2bis); absent means one week,
+    /// `"0"` means publishers close their own.
     pub close_after: Option<CloseAfter>,
     pub default_priority: Option<Priority>,
     pub receipts: bool,
@@ -368,7 +286,7 @@ pub(crate) struct ManagedChannel {
     pub access: Vec<Access>,
     /// Channel-scoped federation publishers (§5.3).
     pub publishers: Vec<Publisher>,
-    /// Outbound sinks (§7.1bis). Parsed, not yet honoured.
+    /// Outbound sinks (§7.1bis).
     pub sinks: Vec<Sink>,
 }
 
@@ -422,20 +340,8 @@ pub(crate) struct Sink {
 }
 
 impl Sink {
-    /// Refuse a sink this build cannot serve, at startup rather than at the first
-    /// incident.
-    ///
-    /// Three of these checks are security rather than tidiness, and they are here
-    /// because this is the only place that sees the raw string:
-    ///
-    /// * **the scheme is `http` or `https`.** A `file:` webhook is not a delivery,
-    ///   it is a write primitive pointed at our own filesystem;
-    /// * **no credentials in the URL.** `https://user:pass@host` is legal and would
-    ///   put a password into a queue row, a dead letter listing and a log line at
-    ///   once — the sink id is derived from this URL (§7.1bis) precisely so that it
-    ///   never carries one;
-    /// * **a webhook has a secret.** An unsigned webhook is one a consumer cannot
-    ///   tell from anyone else's POST, so the signature is not optional.
+    /// Refuse a sink this build cannot serve, at startup. Security checks: `http(s)` only (no `file:`
+    /// write primitive), no URL credentials (they would land in queue rows and logs), webhooks need a secret.
     pub(crate) fn validate(&self, channel: &str) -> anyhow::Result<()> {
         anyhow::ensure!(
             notify_domain::SINK_KINDS.contains(&self.kind.as_str()),
@@ -483,10 +389,7 @@ impl Sink {
     }
 }
 
-/// Resolve a `env:NAME` / `file:/path` reference (design §11).
-///
-/// Two forms and no third: an inline secret would be a secret in a file somebody
-/// commits, which is the whole reason §11 spells references rather than values.
+/// Resolve an `env:NAME` / `file:/path` reference (design §11); inline secrets are refused.
 pub(crate) fn resolve_secret(what: &str, reference: &str) -> anyhow::Result<String> {
     if let Some(name) = reference.strip_prefix("env:") {
         return std::env::var(name).map_err(|_| {
@@ -498,21 +401,14 @@ pub(crate) fn resolve_secret(what: &str, reference: &str) -> anyhow::Result<Stri
         let contents = std::fs::read_to_string(path).map_err(|error| {
             anyhow::anyhow!("{what} names `{path}`, which cannot be read: {error}")
         })?;
-        // Trimmed: a secret written with `echo` into a mounted file ends in a
-        // newline, and an HMAC over a trailing newline is a signature nobody can
-        // reproduce and nobody can see.
+        // Trimmed: `echo` into a file adds a newline that would poison the HMAC.
         return Ok(contents.trim().to_owned());
     }
 
     anyhow::bail!("{what} must be `env:NAME` or `file:/path`, not `{reference}`")
 }
 
-/// `[sinks]` — what the outbound sinks need that is not per-channel (design
-/// §7.1bis).
-///
-/// An addition to §11, on the same terms as `[federation]` before it: §11 declares
-/// an `email` sink per channel and never says which relay carries it, and a relay
-/// is instance-wide by nature — one SMTP server serves every channel that mails.
+/// `[sinks]` — what outbound sinks need beyond their channel (design §7.1bis): the instance-wide relay.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Sinks {
@@ -531,9 +427,7 @@ pub(crate) struct Smtp {
     pub username: Option<String>,
     /// `env:NAME` or `file:/path`, like every other secret here.
     pub password_ref: Option<String>,
-    /// Where this instance is reachable, for the link at the bottom of the mail
-    /// (design §10.4). No link is written without it, because a guessed hostname
-    /// produces mail full of dead links.
+    /// Where this instance is reachable, for the mail's link (design §10.4); no link without it.
     pub permalink_base: Option<String>,
 }
 
@@ -558,20 +452,10 @@ pub(crate) struct TrustPolicy {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Federation {
-    /// Where the Ed25519 private key lives.
-    ///
-    /// A path and not the key, like `[push.webpush] vapid_key_file`, so it is
-    /// mounted from whatever the cluster uses for secrets and never passes through
-    /// a file somebody commits by accident (§15).
-    ///
-    /// It cannot be generated at boot: a replica would sign what its neighbours
-    /// cannot verify, and the failure would be intermittent and look like a flaky
-    /// pipeline (§11 `[ha]`).
+    /// Path to the Ed25519 private key, mounted from a secret store (§15). Never generated at boot,
+    /// or replicas would mint tokens their neighbours cannot verify.
     pub signing_key_file: PathBuf,
-    /// What the minted tokens name as their audience.
-    ///
-    /// Defaults to `weebo-notify`. Worth configuring only where two instances share
-    /// an ingress and a token for one must not be usable on the other.
+    /// The minted tokens' audience; defaults to `weebo-notify`, change it when instances share an ingress.
     pub audience: Option<String>,
 }
 
@@ -583,35 +467,21 @@ pub(crate) struct Push {
     pub unifiedpush: Option<UnifiedPush>,
 }
 
-/// `[push.webpush]` — RFC 8292 identification (design §11, M3.5).
+/// `[push.webpush]` — RFC 8292 identification (design §11).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct WebPush {
-    /// Where the P-256 VAPID private key lives.
-    ///
-    /// A path and not the key itself, so it can be mounted from whatever the cluster
-    /// uses for secrets (§11) without the key passing through a config file that
-    /// gets committed by accident.
+    /// Path to the P-256 VAPID private key, mounted from a secret store (§11).
     pub vapid_key_file: PathBuf,
-    /// `mailto:…` or `https://…` — how a push service reaches this instance's
-    /// operator (RFC 8292 `sub`).
-    ///
-    /// §11 did not list it, and it is not optional: relays refuse a VAPID assertion
-    /// without one. Added rather than defaulted, because a wrong contact is worse
-    /// than a missing one.
+    /// `mailto:…` or `https://…` operator contact (RFC 8292 `sub`); required by relays.
     pub contact: String,
 }
 
-/// `[push.apns]` — token-based `.p8` authentication for iOS (design §11, §6.2,
-/// §10bis.5, M7).
+/// `[push.apns]` — token-based `.p8` authentication for iOS (design §11, §6.2, §10bis.5).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Apns {
-    /// Where the `.p8` provider authentication key lives.
-    ///
-    /// A path, not the key itself, same reason as `[push.webpush]`'s
-    /// `vapid_key_file` (§11): mounted from whatever the cluster keeps secrets in,
-    /// never a config file that gets committed by accident.
+    /// Path to the `.p8` provider authentication key, mounted from a secret store (§11).
     pub key_file: PathBuf,
     /// The 10-character Key ID Apple assigned this `.p8` key.
     pub key_id: String,
@@ -619,33 +489,19 @@ pub(crate) struct Apns {
     pub team_id: String,
     /// The app's bundle identifier, sent as `apns-topic` on every request.
     pub topic: String,
-    /// Push against `api.sandbox.push.apple.com` instead of production — what a
-    /// debug-signed build's device tokens are valid against. `false` by default:
-    /// production is the common case, and a deployment that only ever ships
-    /// debug builds is asking for something unusual enough to opt into.
+    /// Push to `api.sandbox.push.apple.com` (debug-signed builds) instead of production.
     #[serde(default)]
     pub sandbox: bool,
 }
 
-/// `[push.unifiedpush]` — enables the self-hosted UnifiedPush transport (design
-/// §11, §6.2, M6).
-///
-/// Empty on purpose, unlike `[push.webpush]`: there is no server-wide credential to
-/// hold. The destination is per-device (the distributor endpoint from `POST
-/// /devices`), and the payload is sealed to the device's own key rather than signed
-/// by this server's — nothing here identifies the server to a relay the way VAPID
-/// does. The section's only job is to exist, so an operator can turn the transport
-/// on without inventing a value to put under it.
+/// `[push.unifiedpush]` — enables the UnifiedPush transport (design §11, §6.2); empty since there
+/// is no server-wide credential.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct UnifiedPush {}
 
 impl Config {
-    /// Read the layered configuration.
-    ///
-    /// A missing file is not an error: every key has a default and every key is
-    /// overridable from the environment, so a container with nothing but `WNK_*`
-    /// variables is a supported deployment.
+    /// Read the layered configuration; a missing file is fine (env-only deployments are supported).
     pub(crate) fn load(path: &Path) -> anyhow::Result<Self> {
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
 
@@ -655,8 +511,7 @@ impl Config {
             tracing::warn!(path = %path.display(), "no configuration file; using defaults and WNK_*");
         }
 
-        // `split("__")` is what makes `WNK_OIDC__ISSUER` reach `[oidc] issuer`.
-        // Every key, without exception — the rule §11 states.
+        // `split("__")` maps `WNK_OIDC__ISSUER` to `[oidc] issuer`, for every key (§11).
         let config: Self = figment
             .merge(Env::prefixed(ENV_PREFIX).split("__"))
             .extract()?;
@@ -665,32 +520,9 @@ impl Config {
         Ok(config)
     }
 
-    /// The configuration a `SIGHUP` may actually adopt (design §11, T21).
-    ///
-    /// # What a reload changes, and what it cannot
-    ///
-    /// §11 asks for reconciliation "au boot et sur SIGHUP", and reconciliation is
-    /// what this honours: `[[channels.managed]]` and `[[service_accounts]]`. They
-    /// are the sections the reconciler *applies to the database*, so re-reading them
-    /// is enough for them to take effect.
-    ///
-    /// Everything else was wired into a running object at boot — the listening
-    /// socket, the database pool, the OIDC verifier, the sink fleet, and the trust
-    /// policies the token exchange holds. Re-reading those would change a value
-    /// nothing consults.
-    ///
-    /// **Trust policies are adopted too, and only since D31 was closed.** They were
-    /// held by value inside the token exchange, so a reload could change the file
-    /// and nothing else; adopting them here would have written "a forge may now
-    /// publish" into the audit log (§13, D28) while the process went on refusing
-    /// that forge — an entry worse than none, since an incident review would date
-    /// the change to the wrong hour. `notify_app::LivePolicies` makes the swap real,
-    /// so the file and the running process now agree, and the journal tells the
-    /// truth about when rights moved.
-    ///
-    /// What *did* move and still cannot be adopted is reported by
-    /// [`Config::unreloadable`] rather than passed over, so an operator who edited
-    /// the wrong section is told.
+    /// The configuration a `SIGHUP` may adopt (design §11, T21): `[[channels.managed]]`,
+    /// `[[service_accounts]]` and trust policies (via `notify_app::LivePolicies`). Everything else
+    /// was wired at boot; changes there are reported by [`Config::unreloadable`].
     pub(crate) fn reloaded_from(&self, file: Self) -> Self {
         Self {
             channels: file.channels,
@@ -700,11 +532,7 @@ impl Config {
         }
     }
 
-    /// Sections that differ in the file and that a reload cannot adopt (§11).
-    ///
-    /// The counterpart of [`Config::unhonoured`], and for the same reason: silence
-    /// here is how an operator spends an afternoon wondering why their edit did
-    /// nothing.
+    /// Sections that differ in the file but a reload cannot adopt (§11), so the operator is told.
     pub(crate) fn unreloadable(&self, file: &Self) -> Vec<String> {
         let mut moved = Vec::new();
 
@@ -721,11 +549,7 @@ impl Config {
         moved
     }
 
-    /// Refuse a configuration this build cannot honour.
-    ///
-    /// Refused at startup rather than downgraded: an operator who asked for the
-    /// Kubernetes lease and silently got an advisory lock would run two leaders
-    /// across a cluster and never be told.
+    /// Refuse a configuration this build cannot honour, rather than silently downgrade it.
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.ha.leader_election == LeaderBackend::Postgres,
@@ -785,11 +609,7 @@ impl Config {
                 !channel.id.is_empty(),
                 "a [[channels.managed]] entry has no id"
             );
-            // Refused rather than read as "unlimited", which is what somebody
-            // writing it almost certainly meant: a ceiling of zero refuses every
-            // publish on the channel, and it would do so with a `429` that looks
-            // like load rather than like configuration. Leaving `limits` out is how
-            // §8.2's default is asked for.
+            // Zero would refuse every publish with a misleading `429`; omit `limits` for the default (§8.2).
             anyhow::ensure!(
                 channel
                     .limits
@@ -850,21 +670,8 @@ impl Config {
             ));
         }
 
-        // `[[channels.managed.sinks]]` is honoured since M4bis and is absent from
-        // this list on purpose, on the same terms as `[push.webpush]` below: the
-        // composition root reads it, and a sink it cannot build stops the process.
-
-        // `[[channels.managed]].limits` is honoured since M4octodecies — the
-        // reconciler puts `publish_per_min` on the channel policy and the publish
-        // path measures against it. It was parsed and read by nobody before that,
-        // and it was not in this list either, which is the failure mode this
-        // function exists to prevent: the one key that was silently dropped was the
-        // one the drop-detector did not know about.
-
-        // `[push.webpush]` is honoured since M3.5, `[push.unifiedpush]` since M6,
-        // and `[push.apns]` since M7 — all three absent from this list on purpose:
-        // the composition root reads them, and a transport it cannot build stops
-        // the process rather than warning here.
+        // Honoured sections (sinks, `limits`, `[push.*]`) are deliberately absent: the
+        // composition root reads them, and failures stop the process.
 
         pending
     }
@@ -941,9 +748,7 @@ mod tests {
 
     #[test]
     fn the_committed_dev_configuration_parses() {
-        // The one config file this repository ships. If it stops parsing, `task
-        // dev:run` stops working, and finding that out at startup is worse than
-        // finding it out here.
+        // The repository's shipped config must parse.
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/dev.toml");
         let config = load_isolated(&path).expect("config/dev.toml parses");
 
@@ -959,15 +764,7 @@ mod tests {
         assert_eq!(incidents.default_priority, Some(Priority::High));
     }
 
-    /// Every scalar leaf of a serialised config, as `(path, value)`.
-    ///
-    /// The "generated" half of T23: the schema is not written down anywhere, so it
-    /// is read off `Config::default()` — which is the same shape figment extracts
-    /// into, so a field added tomorrow is walked tomorrow with no test to update.
-    ///
-    /// Sequences are skipped, and that is not laziness: `[[channels.managed]]` and
-    /// the other repeated tables are GitOps material (§11), set in the file that
-    /// declares them rather than one variable at a time.
+    /// Every scalar leaf of a serialised config, as `(path, value)` (T23); sequences are GitOps material.
     fn scalar_leaves(
         value: &serde_json::Value,
         prefix: &mut Vec<String>,
@@ -981,9 +778,7 @@ mod tests {
                     prefix.pop();
                 }
             }
-            // `null` is an absent optional section — `[telemetry]`, `[federation]`.
-            // There is nothing under it to walk until something sets it, and the
-            // test above covers that case for the one that matters.
+            // `null` is an absent optional section.
             serde_json::Value::Null | serde_json::Value::Array(_) => {}
             scalar => found.push((prefix.clone(), scalar.clone())),
         }
@@ -991,16 +786,7 @@ mod tests {
 
     #[test]
     fn critical_t23_every_configuration_key_can_be_set_from_the_environment() {
-        // T23 (§3.4). The rule §11 states is "every key without exception", and the
-        // only honest way to check a claim about *every* key is to enumerate them
-        // rather than to list the ones somebody remembered.
-        //
-        // Walked from `config/dev.toml` rather than from the defaults, for a reason
-        // that took a failing run to see: half the schema is optional sections and
-        // empty vectors, so a default config serialises to eleven scalars and would
-        // have let this test pass while covering almost nothing. The committed file
-        // fills `[attachments]`, `[push.webpush]`, `[sinks.smtp]` and the rest — and
-        // it is also the shape an operator actually overrides one variable at a time.
+        // T23 (§3.4): enumerate every key, from `config/dev.toml` since defaults leave most sections empty.
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/dev.toml");
         let mut leaves = Vec::new();
         scalar_leaves(
@@ -1009,11 +795,7 @@ mod tests {
             &mut leaves,
         );
 
-        // A floor and not an exact count: the point is to fail when the walk stops
-        // walking, not to be rewritten every time a key is added. It was 24 the day
-        // this was written, with the repeated tables (`[[channels.managed]]`,
-        // `[[trust_policy]]`, `[[service_accounts]]`) and the list-valued keys
-        // deliberately outside — those are GitOps material, not variables.
+        // A floor, so the test fails when the walk stops walking.
         assert!(
             leaves.len() >= 20,
             "the walk found only {} keys, which means the walk is broken rather than \
@@ -1025,10 +807,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // How many keys were actually *taken* rather than refused by name. Both
-        // outcomes are acceptable per key, so without this the test could pass with
-        // every single key erroring — which would prove that the variables are read
-        // and nothing about them being honoured.
+        // Count keys taken, or all-refused would pass.
         let mut taken = 0_usize;
         let total = leaves.len();
 
@@ -1049,11 +828,7 @@ mod tests {
             figment::Jail::expect_with(|jail| {
                 jail.set_env(&variable, &sentinel);
 
-                // Two acceptable outcomes, and they are acceptable for the same
-                // reason: both prove the variable *reached* the field. Either it was
-                // taken, or it was refused **by name** — a `bind` that will not parse
-                // as a socket address says so. The failure this test exists for is
-                // the third outcome: the variable is ignored in silence.
+                // Taken, or refused by name: both prove the variable arrived; silence is the failure.
                 match Config::load(&base) {
                     Ok(config) => {
                         let loaded = serde_json::to_value(config).unwrap();
@@ -1087,10 +862,7 @@ mod tests {
             });
         }
 
-        // Roughly two thirds of the keys hold a free-form value the sentinel is
-        // valid for; the rest are socket addresses, durations and closed enums that
-        // refuse it by name. Both prove the variable arrived — but if this ever fell
-        // to zero, the test would be checking error messages and nothing else.
+        // Ensure some keys are actually taken, not only refused by name.
         assert!(
             taken * 2 > total,
             "only {taken} of {total} keys were actually taken from the environment; \
@@ -1100,14 +872,7 @@ mod tests {
 
     #[test]
     fn traces_can_be_switched_on_by_environment_alone() {
-        // The path a Kubernetes deployment actually takes: one file for every
-        // environment (§11), and the collector named by a variable because it is the
-        // one thing that differs. A whole section arriving from the environment is
-        // the case `Option<Telemetry>` could plausibly get wrong — figment has to
-        // build the `Some` and fill the rest from the defaults.
-        //
-        // The closure's error type is figment's, and clippy would rather it were
-        // boxed — which is not this test's call to make.
+        // A whole optional section from the environment: figment must build the `Some`.
         #[expect(
             clippy::result_large_err,
             reason = "the signature belongs to figment::Jail"
@@ -1242,8 +1007,7 @@ mod tests {
              secret_ref = \"env:WNK_SINK_HMAC\"\n",
         );
 
-        // Same rule as Web Push above: warning about a section the composition root
-        // reads would train an operator to ignore this list.
+        // Warning about read sections would train operators to ignore the list.
         assert!(
             !load_isolated(&path)
                 .unwrap()
@@ -1264,18 +1028,16 @@ mod tests {
              url = \"https://hooks.weebo.poc/incidents\"\n",
         );
 
-        // An unsigned webhook is one a consumer cannot tell from anybody else's POST
-        // (§7.1bis), so it is not a degraded mode — it is a refusal.
+        // An unsigned webhook is a refusal, not a degraded mode (§7.1bis).
         assert!(load_isolated(&path).is_err());
     }
 
     #[test]
     fn a_webhook_url_that_would_leak_or_reach_inward_is_refused() {
         for url in [
-            // A password that would land in a queue row, a dead letter listing and
-            // a log line at once — the sink id is derived from this url.
+            // A password would land in queue rows and logs.
             "https://user:hunter2@hooks.weebo.poc/incidents",
-            // Not a delivery: a write primitive pointed at our own filesystem.
+            // A write primitive on our own filesystem.
             "file:///etc/passwd",
         ] {
             let path = with_config(
@@ -1310,9 +1072,7 @@ mod tests {
 
     #[test]
     fn a_channel_publish_limit_is_parsed_where_the_reconciler_reads_it() {
-        // Written the way design §11 writes it — an inline table — rather than as a
-        // sub-table. Both are TOML and both deserialise; the one worth pinning is
-        // the one an operator will copy out of the document.
+        // The inline-table form §11 documents.
         let path = with_config(
             "channel-limits",
             "[[channels.managed]]\n\
@@ -1332,9 +1092,7 @@ mod tests {
 
     #[test]
     fn a_publish_limit_of_zero_is_refused_rather_than_read_as_unlimited() {
-        // Zero refuses every publish on the channel, with a `429` that reads like
-        // load rather than like configuration. Whoever writes it means "no limit",
-        // and the way to ask for that is to leave the key out.
+        // Zero would refuse every publish; omit the key for no override.
         let path = with_config(
             "channel-limits-zero",
             "[[channels.managed]]\n\
@@ -1362,8 +1120,7 @@ mod tests {
 
         let pending = load_isolated(&path).unwrap().unhonoured();
 
-        // Warning about a section the composition root reads would train an operator
-        // to ignore this list, which is the one thing it cannot afford (M3.5).
+        // Warning about read sections would train operators to ignore the list.
         assert!(
             !pending.iter().any(|line| line.contains("push.webpush")),
             "Web Push is wired: {pending:?}"
@@ -1445,9 +1202,7 @@ mod tests {
             ..Config::default()
         };
 
-        // These are the two sections the reconciler applies *to the database*, so
-        // re-reading them is enough for them to take effect — which is exactly what
-        // §11 asks a SIGHUP for.
+        // Applied to the database, so re-reading is enough (§11).
         let reloaded = running.reloaded_from(file);
 
         assert_eq!(reloaded.channels.managed.len(), 1);
@@ -1475,12 +1230,7 @@ mod tests {
 
         let reloaded = running.reloaded_from(file.clone());
 
-        // Adopted only since D31 was closed. Before that, `[[trust_policy]]` was held
-        // by value inside the token exchange, so taking the file's version here would
-        // have made the reconciler journal "a forge may now publish" (§13, D28) while
-        // the process went on refusing it — an entry dating the change to the wrong
-        // hour, which is worse than no entry. `LivePolicies` makes the swap real, so
-        // the file, the running process and the journal now agree.
+        // Trust policies are adopted via `LivePolicies`, so file, process and journal agree.
         assert_eq!(
             reloaded.trust_policy[0].subject, "repo:somebody/else:ref:refs/heads/main",
             "a reload adopts the file's trust policies, and the swap makes that true"
@@ -1504,15 +1254,11 @@ mod tests {
 
         let moved = running.unreloadable(&file);
 
-        // Silence here is how somebody spends an afternoon wondering why their edit
-        // did nothing — the same reason `unhonoured` exists.
         assert!(
             moved.iter().any(|line| line.contains("database")),
             "{moved:?}"
         );
-        // And trust policies are *not* on this list any more: since D31 they are
-        // genuinely adopted, so warning about them would train an operator to ignore
-        // the warnings that still mean something.
+        // Trust policies are adopted, so they must not warn.
         assert!(
             !moved.iter().any(|line| line.contains("trust_policy")),
             "{moved:?}"
@@ -1529,8 +1275,7 @@ mod tests {
             ..Config::default()
         };
 
-        // A SIGHUP that changed nothing must be quiet, or the warning stops meaning
-        // anything the one time it matters.
+        // A no-op SIGHUP must be quiet.
         assert!(running.unreloadable(&running.clone()).is_empty());
     }
 }

@@ -1,14 +1,5 @@
-//! The OpenAPI document (design §8).
-//!
-//! Utoipa builds this from the annotations sitting on the handlers, so the spec is
-//! written as the API is written rather than maintained alongside it. The document
-//! is served on `/api/docs` (Scalar UI) and exported by `notify-server dump-openapi`.
-//!
-//! The paths come from the route table itself rather than from a list kept here: an
-//! actix `App` is assembled purely to be taken apart again, which is what makes
-//! "served but undocumented" unrepresentable. Building that `App` needs no state, so
-//! the export runs with no database, no object store and no identity provider — the
-//! property the `contract` CI job depends on (design §3.2).
+//! The OpenAPI document (design §8), served on `/api/docs` and exported by `dump-openapi`.
+//! Paths come from the actix route table itself, built statelessly, so the export needs no infra.
 
 use actix_web::App;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -37,15 +28,12 @@ use utoipa_actix_web::AppExt as _;
         (name = "auth", description = "API keys, service accounts, CI federation"),
         (name = "admin", description = "Platform console — metadata and operations only"),
         (name = "cli", description = "Downloading the `notify` CLI binary"),
+        (name = "compat", description = "Gotify, ntfy and Alertmanager compatible publishing"),
     )
 )]
 struct ApiDoc;
 
-/// One scheme for both credentials.
-///
-/// An OIDC access token and an API key both arrive as `Authorization: Bearer`
-/// (design §5.2). Declaring two schemes would suggest two headers, and the
-/// generated clients would grow two ways to say the same thing.
+/// One `Bearer` scheme for both OIDC tokens and API keys (design §5.2).
 struct BearerAuth;
 
 impl Modify for BearerAuth {
@@ -66,18 +54,14 @@ impl Modify for BearerAuth {
     }
 }
 
-/// The document before the route table is folded into it.
-///
-/// The running server assembles its own `App` and needs to seed it with this;
-/// [`document`] builds a throwaway one for the export. Two callers, one definition.
+/// The document before the route table is folded in; shared by the server and [`document`].
 pub(crate) fn base() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
 
 /// Build the OpenAPI document.
 pub(crate) fn document() -> utoipa::openapi::OpenApi {
-    // The `App` is discarded: only the paths it collected are wanted. No handler
-    // runs, so the absent application state is never reached.
+    // The `App` is only for its collected paths; no handler runs.
     let (_app, api) = App::new()
         .into_utoipa_app()
         .openapi(ApiDoc::openapi())
@@ -123,8 +107,7 @@ mod tests {
         let document = document();
         let components = document.components.unwrap();
 
-        // If these are missing the generated clients fall back to untyped bodies,
-        // and the whole point of ADR-0013 is lost.
+        // Without these the generated clients get untyped bodies (ADR-0013).
         for schema in ["Notification", "Channel", "Problem"] {
             assert!(
                 components.schemas.contains_key(schema),

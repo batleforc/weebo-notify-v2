@@ -30,8 +30,7 @@ impl DeviceRepository for PgStore {
     }
 
     async fn list_for(&self, owner: &Principal) -> PortResult<Vec<Device>> {
-        // Revoked devices included: a device list shows what was revoked and when.
-        // Delivery filters them out itself.
+        // Revoked devices included for the device list; delivery filters them itself.
         let sql = [SELECT_DEVICE, "WHERE owner_ref = $1 ORDER BY enrolled_at"].concat();
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(owner.reference())
@@ -80,10 +79,7 @@ impl DeviceRepository for PgStore {
     }
 
     async fn revoke(&self, id: DeviceId, at: OffsetDateTime) -> PortResult<bool> {
-        // The subscription, the cursor and the public key all go together
-        // (design §8, §15, scenario T18). Leaving the key behind would leave a
-        // sealed box addressable to a device nobody controls any more, and leaving
-        // the endpoint behind would keep pushing to it.
+        // Endpoint, cursor and public key go together (§8, T18): no sealed box to an abandoned device.
         let revoked = sqlx::query(
             "UPDATE devices
                 SET revoked_at = $2,
@@ -108,9 +104,7 @@ impl DeviceRepository for PgStore {
         position: Cursor,
         at: OffsetDateTime,
     ) -> PortResult<()> {
-        // Monotonic in the WHERE clause, not in a read-then-write: two tabs of the
-        // same client acknowledging different positions must not let the older one
-        // win and re-deliver what was already seen.
+        // Monotonic in the `WHERE`: an older ack from another tab must not win.
         sqlx::query(
             "UPDATE devices
                 SET cursor_seq = $2, last_seen_at = $3
@@ -126,13 +120,8 @@ impl DeviceRepository for PgStore {
     }
 
     async fn delivery_targets(&self, channel: &ChannelId) -> PortResult<Vec<Device>> {
-        // "Who could be reached", not "who should be": silenced and do-not-disturb
-        // recipients are the use case's business, not this port's (design §7.4).
-        //
-        // Two doors, same as `scoped_by_access!` in `channels.rs`: an individual
-        // binding in `channel_members`, or a group binding in `channel_group_access`
-        // resolved against the last groups `remember_groups` saw for this owner —
-        // the snapshot `principal_group_snapshots` exists for.
+        // Who could be reached, not who should be (§7.4). Two doors, as in `scoped_by_access!`:
+        // a member row, or a group binding against the `principal_group_snapshots` snapshot.
         let sql = [
             SELECT_DEVICE,
             "WHERE revoked_at IS NULL

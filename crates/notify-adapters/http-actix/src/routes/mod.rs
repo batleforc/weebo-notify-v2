@@ -6,6 +6,7 @@ pub(crate) mod attachments;
 pub(crate) mod attachments_fs;
 pub(crate) mod channels;
 pub(crate) mod cli;
+pub(crate) mod compat;
 pub(crate) mod federation;
 pub(crate) mod identity;
 pub(crate) mod interactions;
@@ -19,25 +20,8 @@ pub(crate) mod sync;
 use notify_domain::{DomainError, Principal, ServiceAccountId, UserId};
 use utoipa_actix_web::service_config::ServiceConfig;
 
-/// The two headers every route that returns **stored bytes** owes.
-///
-/// Three routes serve bytes somebody else supplied — the filesystem download, the
-/// attachment thumbnail and the avatar — and all three used to echo a stored
-/// content type with neither of these. That is the difference between "a stored
-/// object of an unexpected type is inert" and "it renders", and it is not a
-/// judgement any one of the three should make for itself:
-///
-/// * **`nosniff`** stops a browser from second-guessing the declared type. The type
-///   is allowlisted on the way in, so sniffing could only ever disagree with a
-///   value we already checked;
-/// * **`Content-Disposition: attachment`** governs *top-level navigation* only —
-///   browsers ignore it for subresource loads — so an `<img src>` in the web client
-///   is unaffected, while somebody following the raw URL downloads a file instead of
-///   rendering a page.
-///
-/// Defence in depth rather than the control itself: with the content type now bound
-/// into the upload signature and re-checked against the allowlist, nothing hostile
-/// should reach a store to begin with.
+/// `nosniff` + `Content-Disposition: attachment` for routes serving stored bytes, so a
+/// hostile upload downloads instead of rendering (defence in depth; types are allowlisted).
 pub(crate) fn served_bytes(
     builder: &mut actix_web::HttpResponseBuilder,
 ) -> &mut actix_web::HttpResponseBuilder {
@@ -46,15 +30,9 @@ pub(crate) fn served_bytes(
         .insert_header(("content-disposition", "attachment"))
 }
 
-/// Register every M1 route under `/api/v1`.
-///
-/// Takes no state: the composition root supplies that separately, which is what
-/// lets `notify-server dump-openapi` build the document without a database, an
-/// object store or an identity provider (design §3.2).
+/// Register every route under `/api/v1`; stateless so `dump-openapi` needs no infra (§3.2).
 pub fn configure(config: &mut ServiceConfig<'_>) {
-    // No scope-wide payload limit: the two routes that read a raw body — the
-    // filesystem upload and the avatar — stream it against their own ceiling, and
-    // everything else is JSON under its own default.
+    // No scope-wide payload limit: raw-body routes enforce their own ceiling.
     config.service(
         utoipa_actix_web::scope("/api/v1")
             .service(notifications::publish)
@@ -112,14 +90,16 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(admin::reconciliation)
             .service(admin::dlq)
             .service(admin::requeue_dead_letter)
-            .service(cli::download),
+            .service(cli::download)
+            .service(compat::gotify)
+            .service(compat::ntfy)
+            .service(compat::ntfy_put)
+            .service(compat::ntfy_json)
+            .service(compat::alertmanager),
     );
 }
 
-/// Read a principal out of a URL path segment.
-///
-/// A user id is tried first and it has to be: `usr_01J…` is also a syntactically
-/// valid service-account slug, so the looser parse would swallow it.
+/// Read a principal from a path segment; user id first, since `usr_01J…` is also a valid slug.
 pub(crate) fn principal_from_reference(raw: &str) -> Result<Principal, DomainError> {
     if let Ok(id) = raw.parse::<UserId>() {
         return Ok(Principal::User { id });

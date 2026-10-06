@@ -1,18 +1,11 @@
 version: "3"
 
-# Release (design §3.2bis).
-#
-# THE ONLY HUMAN ACTION IS PUSHING THE TAG. `cog bump` computes the version from the
-# conventional commits, writes the changelog and syncs every version in the product
-# (Cargo workspace, web/package.json, tauri.conf.json) through the cocogitto pre-bump
-# hooks. Pushing the resulting v* tag triggers the whole pipeline: gates, artefact
-# builds, signatures, and an atomic release publication.
-#
-# A tag NEVER moves. A failed release means a fix and a new tag, never a re-tag.
+# Release (§3.2bis): `cog bump` versions, changelogs and syncs; pushing the v* tag runs the
+# whole pipeline. A tag never moves: a failed release gets a fix and a new tag.
 
 tasks:
   default:
-    desc: "Cut a release: cog bump --auto (version + changelog + version sync), then push the tag"
+    desc: "Cut a release with cog bump --auto, then push the tag yourself."
     cmds:
       - task: check
       - cog bump --auto
@@ -22,7 +15,7 @@ tasks:
           echo "  git push --follow-tags"
 
   pre:
-    desc: 'Cut a pre-release — usage: task release:pre -- rc (same pipeline, same artefacts, `latest` untouched)'
+    desc: 'Cut a pre-release (task release:pre -- rc) without touching `latest`.'
     cmds:
       - task: check
       - cog bump --auto --pre {{.CLI_ARGS | default "rc"}}
@@ -32,7 +25,7 @@ tasks:
           echo "  git push --follow-tags"
 
   check:
-    desc: "Run the same gates the release pipeline replays, before creating any tag"
+    desc: "Run the release pipeline's gates before creating any tag."
     cmds:
       - task: :lint
       - task: :recu

@@ -1,35 +1,6 @@
-//! Retention: how long a notification stays, and from when (design §7.2bis).
-//!
-//! The subtle part is not the duration, it is the **starting point**, and it
-//! differs by notification type:
-//!
-//! * A **lifecycle** notification (published with a `state`) does not start
-//!   ageing until it closes. A long incident stays visible until it is resolved,
-//!   however long that takes, and reopening it suspends the clock again.
-//! * A **simple** notification (published without a `state`) is born closed, so
-//!   its clock starts at creation.
-//!
-//! The channel owns the policy: a default, an optional forced ceiling, and whether
-//! infinite retention is allowed at all. A publisher asking for more than the
-//! ceiling is **clamped and told**, not refused — a CI job should not fail because
-//! it wanted its build log kept a week longer than the operator allows.
-//!
-//! # The gap that [`CloseAfter`] closes
-//!
-//! Read the first rule again and the failure mode is right there: a lifecycle
-//! notification does not age until it closes, and *nothing in the system closes
-//! it*. A publisher that crashes, is decommissioned, or simply forgets the final
-//! call leaves a notification open forever — and its TTL, however short, never
-//! starts. The retention a channel configured is silently not applied, which is
-//! worse than having no retention at all, because the policy says otherwise.
-//!
-//! That was not theoretical: it is how every lifecycle notification in the
-//! development database ended up immortal, including a `ci-infra` deploy that had
-//! reported `failure` and then said nothing for a week.
-//!
-//! So a channel also says how long a notification may go **without any activity**
-//! before the server closes it on the publisher's behalf. The clock is then the
-//! ordinary one: closing starts the TTL, and the purge takes it from there.
+//! Retention (§7.2bis): lifecycle notifications start ageing when they close,
+//! simple ones at creation. Requests above a channel's ceiling are clamped and
+//! reported. [`CloseAfter`] closes idle lifecycle notifications so their TTL can start.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use time::OffsetDateTime;
@@ -40,8 +11,7 @@ use crate::error::{DomainError, Result};
 /// How long something is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ttl {
-    /// Kept until deleted by hand. Written `"0"` on the wire, and only accepted
-    /// from a channel that opted in (design §7.2bis).
+    /// Kept until deleted by hand; written `"0"`, only from channels that opted in (§7.2bis).
     Forever,
     /// Kept for this long past the moment the clock starts.
     For(HumanDuration),
@@ -75,8 +45,7 @@ impl Ttl {
 }
 
 impl Serialize for Ttl {
-    /// Rendered as a duration string, with `"0s"` standing for forever — the same
-    /// spelling a publisher writes.
+    /// Rendered as a duration string, `"0s"` meaning forever.
     fn serialize<S: Serializer>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error> {
         match self {
             Self::Forever => HumanDuration::ZERO.serialize(serializer),
@@ -91,8 +60,7 @@ impl<'de> Deserialize<'de> for Ttl {
     }
 }
 
-// Hand-written rather than derived: `Ttl` is an enum in Rust and a plain string on
-// the wire, and utoipa's `value_type` shortcut is only available on structs.
+// Hand-written: an enum in Rust, a plain string on the wire.
 #[cfg(feature = "openapi")]
 impl utoipa::PartialSchema for Ttl {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
@@ -109,20 +77,11 @@ impl utoipa::PartialSchema for Ttl {
 #[cfg(feature = "openapi")]
 impl utoipa::ToSchema for Ttl {}
 
-/// How long a lifecycle notification may sit without activity before the server
-/// closes it (see the module doc).
-///
-/// Spelled like [`Ttl`] on purpose — `"0"` for "not this channel's business",
-/// a single-unit duration otherwise — so an operator writing `close_after` next to
-/// `default_ttl` writes the same kind of value and reads the same `"0"` escape.
+/// How long a lifecycle notification may sit idle before the server closes it;
+/// spelled like [`Ttl`] (`"0"` = never).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseAfter {
-    /// The server never closes on its own: only a publisher does.
-    ///
-    /// Written `"0"`. Unlike [`Ttl::Forever`] this needs no opt-in, and the
-    /// asymmetry is deliberate — `ttl: "0"` pins an operator's storage against
-    /// their will, while this only declines a convenience. A channel whose
-    /// publishers are trusted to close what they open loses nothing by saying so.
+    /// The server never closes on its own; written `"0"`, needs no opt-in.
     Never,
     /// Closed once nothing has happened for this long.
     After(HumanDuration),
@@ -154,13 +113,8 @@ impl CloseAfter {
         }
     }
 
-    /// The instant at which a notification last active at `last_activity` becomes
-    /// due for closure, if this policy closes anything at all.
-    ///
-    /// Returns `None` for [`CloseAfter::Never`] *and* for an addition that would
-    /// overflow the calendar, which are the same answer for the caller: there is
-    /// no deadline to sweep for. A `close_after` large enough to overflow is a
-    /// configuration saying "never" in a roundabout way.
+    /// When a notification last active at `last_activity` becomes due for closure;
+    /// `None` for [`CloseAfter::Never`] or on calendar overflow.
     #[must_use]
     pub fn due_at(self, last_activity: OffsetDateTime) -> Option<OffsetDateTime> {
         let duration = self.duration()?;
@@ -171,18 +125,14 @@ impl CloseAfter {
 }
 
 impl Default for CloseAfter {
-    /// One week, matching [`TtlPolicy`]'s own default and the design's stated
-    /// channel default (§7.2bis). A channel that says nothing gets the behaviour
-    /// somebody would describe without reading any configuration: an untouched
-    /// notification stops being open after a week.
+    /// One week, matching the channel's default TTL (§7.2bis).
     fn default() -> Self {
         Self::After(HumanDuration::from_secs_const(7 * 24 * 3_600))
     }
 }
 
 impl Serialize for CloseAfter {
-    /// A duration string, with `"0s"` standing for never — the spelling an
-    /// operator writes.
+    /// A duration string, `"0s"` meaning never.
     fn serialize<S: Serializer>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error> {
         match self {
             Self::Never => HumanDuration::ZERO.serialize(serializer),
@@ -197,7 +147,7 @@ impl<'de> Deserialize<'de> for CloseAfter {
     }
 }
 
-// Hand-written for the same reason [`Ttl`]'s is: an enum here, a string on the wire.
+// Hand-written like [`Ttl`]'s: an enum here, a string on the wire.
 #[cfg(feature = "openapi")]
 impl utoipa::PartialSchema for CloseAfter {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
@@ -216,7 +166,7 @@ impl utoipa::PartialSchema for CloseAfter {
 #[cfg(feature = "openapi")]
 impl utoipa::ToSchema for CloseAfter {}
 
-/// What a channel allows (design §7.2bis, configured per channel in §11).
+/// What retention a channel allows (§7.2bis, configured per channel in §11).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TtlPolicy {
@@ -225,8 +175,7 @@ pub struct TtlPolicy {
     /// Forced ceiling. A longer request is clamped down to it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<HumanDuration>,
-    /// Whether `"0"` is accepted. Off by default: unbounded retention is a
-    /// deliberate operator decision, not something a publisher can opt into.
+    /// Whether `"0"` (keep forever) is accepted; off by default.
     pub allow_forever: bool,
 }
 
@@ -247,18 +196,14 @@ impl Default for TtlPolicy {
 pub struct TtlResolution {
     /// What will actually be applied.
     pub ttl: Ttl,
-    /// Set when the request was longer than the channel ceiling. Reported back to
-    /// the publisher so a clamp is visible rather than silent (scenario T6).
+    /// Set when the request exceeded the channel ceiling, so the clamp is visible (T6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clamped_from: Option<HumanDuration>,
 }
 
 impl TtlPolicy {
-    /// Resolve a publisher request against this policy.
-    ///
-    /// `None` means the publisher did not ask, and gets the channel default —
-    /// itself clamped, so a policy tightened after the fact takes effect on
-    /// everything rather than only on explicit requests.
+    /// Resolve a publisher request against this policy; `None` gets the (also
+    /// clamped) channel default.
     pub fn resolve(&self, requested: Option<Ttl>) -> Result<TtlResolution> {
         let asked = requested.unwrap_or(self.default);
 
@@ -270,9 +215,7 @@ impl TtlPolicy {
                         clamped_from: None,
                     })
                 } else if requested.is_none() {
-                    // The channel's own default contradicts its own policy. Trust
-                    // the ceiling if there is one, and refuse otherwise rather than
-                    // silently granting unbounded retention.
+                    // The default contradicts the policy: use the ceiling, or refuse.
                     self.max
                         .map_or(Err(DomainError::InfiniteTtlNotAllowed), |max| {
                             Ok(TtlResolution {
@@ -388,8 +331,7 @@ mod tests {
         );
     }
 
-    /// `"0"` is the same escape hatch as `Ttl`'s, and it round-trips through the
-    /// wire form that stores a channel policy as JSON.
+    /// `"0"` round-trips through the stored JSON policy.
     #[test]
     fn close_after_round_trips_through_its_wire_form() {
         for value in [Never, CloseAfter::After(hours(48)), CloseAfter::default()] {

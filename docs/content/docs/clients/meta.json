@@ -1,4 +1,4 @@
 {
   "title": "Clients",
-  "pages": ["cli", "tui", "web"]
+  "pages": ["cli", "tui", "web", "compat"]
 }

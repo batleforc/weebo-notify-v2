@@ -1,24 +1,5 @@
-//! `EventBus` over LISTEN/NOTIFY — carries pokes only, never payloads
-//! (ADR-0008, design §4, §11).
-//!
-//! Each replica holds its own stream connections, so every replica has to learn
-//! about every publication. This is the default way it does, and it needs no
-//! infrastructure the instance did not already have: the database is the bus.
-//!
-//! # Pokes, not events
-//!
-//! A poke is an identifier and a cursor. Partly because `NOTIFY` caps its payload
-//! at 8 KB and a revision does not fit, and mostly because a bus that carried
-//! payloads would be a second source of truth to keep in step with the first. A
-//! replica that receives one reads the authoritative row from the event log at that
-//! cursor and fans it out to whichever of its connections should see it.
-//!
-//! # Best-effort is the design, not a shortcut
-//!
-//! A dropped poke costs latency and nothing else: the client's next reconnect or
-//! poll catches up from its cursor, which is authoritative. That is what makes it
-//! reasonable to run the default deployment on this and to swap in Redis purely for
-//! scale (design §11) without the domain noticing.
+//! `EventBus` over LISTEN/NOTIFY (ADR-0008, design §4, §11): carries pokes (id + cursor), never payloads.
+//! Best-effort by design: a dropped poke costs latency only, since clients catch up from their cursor.
 
 use async_trait::async_trait;
 use futures::StreamExt as _;
@@ -27,12 +8,7 @@ use notify_ports::{EventBus, Poke, PortError, PortResult};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 
-/// The `NOTIFY` channel every replica of an instance listens on.
-///
-/// One channel rather than one per weebo-notify channel: `LISTEN` is per session
-/// and a replica cares about every channel some connected client is subscribed to,
-/// which changes as clients come and go. Filtering happens where the connections
-/// are.
+/// The `NOTIFY` channel every replica listens on; one for all, filtering happens at the connections.
 const CHANNEL: &str = "weebo_notify_pokes";
 
 /// How long the listener waits before asking again after a failure.
@@ -58,14 +34,8 @@ impl EventBus for PgEventBus {
         let payload = serde_json::to_string(poke)
             .map_err(|error| PortError::corrupt("eventbus.poke", error))?;
 
-        // `pg_notify` rather than a `NOTIFY` statement: the channel and payload are
-        // bind parameters, so nothing is ever concatenated into SQL.
-        //
-        // This deliberately does not join the caller's transaction. A poke sent
-        // inside one would only fire on commit, which sounds tidier but couples
-        // fan-out latency to transaction length — and the cursor makes a poke that
-        // arrives slightly early harmless: the receiver reads the log, and if the
-        // row is not there yet its next poke or reconnect finds it.
+        // `pg_notify` binds channel and payload, so nothing is concatenated into SQL. Deliberately
+        // outside the caller's transaction: an early poke is harmless since receivers read the log.
         sqlx::query("SELECT pg_notify($1, $2)")
             .bind(CHANNEL)
             .bind(&payload)
@@ -86,17 +56,8 @@ impl EventBus for PgEventBus {
             .await
             .map_err(|error| PortError::unavailable("eventbus", error))?;
 
-        // `try_recv` rather than `into_stream`, for two things the latter hides.
-        // It reconnects silently, and every `NOTIFY` sent while it was away is gone
-        // — a quiet channel's open streams would then stay behind until its next
-        // publish. And its first error ends the stream for good, leaving a replica
-        // that serves reads and fans out nothing, which looks like nothing at all.
-        // Here a lost connection becomes a `Resync` (every stream re-reads from its
-        // own cursor), and an error is a pause, never an end.
-        //
-        // `lost` carries a failure across to the next thing that does arrive: that
-        // is when the listener is back, and a `Resync` then covers whatever was
-        // sent in between — including the notification it stands in for.
+        // `try_recv`, not `into_stream`: that one reconnects silently (losing NOTIFYs) and ends on the
+        // first error. Here a lost connection yields `Resync`, and an error is a pause (`lost` → `Resync`).
         let stream =
             futures::stream::unfold((listener, false), |(mut listener, mut lost)| async move {
                 loop {
@@ -105,8 +66,7 @@ impl EventBus for PgEventBus {
                         Ok(Some(notification)) => {
                             match serde_json::from_str::<Poke>(notification.payload()) {
                                 Ok(poke) => return Some((poke, (listener, false))),
-                                // A payload this build does not understand is a rolling
-                                // deploy, not a reason to tear the subscription down.
+                                // Unreadable payload: likely a rolling deploy, not a reason to drop the subscription.
                                 Err(error) => tracing::warn!(%error, "dropped an unreadable poke"),
                             }
                         }
@@ -139,8 +99,7 @@ mod tests {
 
     #[test]
     fn a_poke_fits_in_a_notify_payload() {
-        // `NOTIFY` refuses more than 8000 bytes, and a poke that did not fit would
-        // fail at publish time on a busy instance rather than in a test.
+        // `NOTIFY` refuses more than 8000 bytes.
         let poke = Poke::Channel {
             id: ChannelId::parse("cluster-ovh-1").unwrap(),
             cursor: Cursor::from_sequence(u64::MAX),
@@ -154,8 +113,7 @@ mod tests {
 
     #[test]
     fn a_private_poke_round_trips_without_naming_a_channel() {
-        // A preference event belongs to its user and to nobody else, so the poke
-        // that announces it must not carry a channel anyone could subscribe to.
+        // A preference event is private to its user, so its poke must not name a channel.
         let poke = Poke::User {
             id: UserId::generate(),
             cursor: Cursor::from_sequence(42),

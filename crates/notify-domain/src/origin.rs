@@ -1,12 +1,5 @@
-//! Who owns the shape of a thing: GitOps config, or the API.
-//!
-//! The distinction is load-bearing for everything the reconciler touches —
-//! channels and service accounts today (design §11). A **managed** object is
-//! declared in config and put back the way config says at boot and on `SIGHUP`, so
-//! the API must refuse to reshape or delete it: otherwise an operator deletes a
-//! channel, watches it resurrect, and spends an afternoon on it. A **dynamic**
-//! object was created through the API or the UI, and the reconciler never touches
-//! it.
+//! Who owns the shape of a thing (§11): **managed** objects are reconciled from
+//! GitOps config and read-only through the API; **dynamic** ones the reconciler never touches.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +10,7 @@ use crate::error::{DomainError, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
-    /// Declared in GitOps config and reconciled from it (design §11). Shown with a
-    /// `managed` badge in the UI, with the config-driven fields read-only.
+    /// Declared in GitOps config and reconciled from it (§11); read-only in the UI.
     Managed,
     /// Created through the API or the UI. The reconciler leaves it alone.
     Dynamic,
@@ -31,16 +23,7 @@ impl Origin {
         matches!(self, Self::Managed)
     }
 
-    /// Refuse an API mutation that GitOps would immediately undo.
-    ///
-    /// `what` names the object in the message, so the operator is told where to go
-    /// instead of only being told no.
-    ///
-    /// The refusal is a *conflict* (409) and not a validation failure (422): the
-    /// request was understood and well formed, and what refuses it is who owns the
-    /// object. §8 already documented 409 on these routes — the code said 422, which
-    /// meant a client branching on `field.malformed` would have treated "go and edit
-    /// the config" as "you typed it wrong".
+    /// Refuse an API mutation that GitOps would immediately undo, as a 409 naming `what`.
     pub fn ensure_mutable_through_api(self, what: &'static str) -> Result<()> {
         match self {
             Self::Dynamic => Ok(()),

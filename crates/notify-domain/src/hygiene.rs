@@ -1,23 +1,6 @@
-//! Content hygiene: what every piece of publisher-supplied text goes through
-//! before it becomes part of a notification (design §2.3).
-//!
-//! A notification server hands attacker-influenced text to a terminal (the TUI,
-//! §9.2), to a desktop toast, and to a browser. Sanitising at *ingestion* means
-//! every one of those surfaces is protected once, by construction, rather than
-//! each having to remember. What is stripped:
-//!
-//! * **ANSI escape sequences** — `CSI`, `OSC`, `DCS`/`SOS`/`PM`/`APC` and the
-//!   two-character forms. A title that clears the screen, repaints the prompt or
-//!   sets the window title is the classic terminal injection.
-//! * **Control characters** — C0, `DEL` and C1, minus the whitespace a body
-//!   legitimately contains.
-//! * **Bidirectional overrides and zero-width characters** — the "trojan source"
-//!   family, where what a reviewer reads is not what the client acts on.
-//!
-//! HTML is *not* stripped: the body is markdown and raw HTML is inert by contract
-//! (design §2.3), escaped at render time by the web client under a strict CSP.
-//! Stripping it here would silently mangle legitimate text like `<3` or a code
-//! fence full of JSX.
+//! Content hygiene at ingestion (§2.3): strips ANSI escapes, control characters,
+//! bidi overrides and zero-width characters (terminal injection, trojan source).
+//! HTML is kept: the body is markdown, escaped at render time.
 
 use crate::error::{DomainError, Result};
 
@@ -27,17 +10,14 @@ const BEL: char = '\u{7}';
 /// How much structure a field is allowed to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextKind {
-    /// Titles, labels, tags, keys: newlines and tabs collapse to a single space
-    /// so the value can never break a table, a log line or a terminal row.
+    /// Titles, labels, tags, keys: newlines and tabs collapse to a single space.
     SingleLine,
     /// Bodies: newlines and tabs survive, because markdown is made of them.
     MultiLine,
 }
 
 /// Strip escape sequences and control characters, then normalise whitespace.
-///
-/// Total and infallible — the result may legitimately be empty, which callers
-/// treat as a missing value rather than as a failure.
+/// Infallible; the result may be empty.
 #[must_use]
 pub fn sanitize(input: &str, kind: TextKind) -> String {
     let mut out = String::with_capacity(input.len());
@@ -69,10 +49,8 @@ pub fn sanitize(input: &str, kind: TextKind) -> String {
     }
 }
 
-/// Sanitise, then enforce presence and length for a named field.
-///
-/// The field name is the dotted path the caller reports back to the publisher, so
-/// a rejection points at the exact key of the JSON they sent.
+/// Sanitise, then enforce presence and length for a named field (`field` is the
+/// dotted JSON path reported back).
 pub fn required_text(
     raw: &str,
     kind: TextKind,
@@ -87,8 +65,7 @@ pub fn required_text(
     Ok(value)
 }
 
-/// Same as [`required_text`], but an input that sanitises down to nothing is
-/// reported as "not supplied" instead of as an error.
+/// Like [`required_text`], but input that sanitises to nothing is `None`.
 pub fn optional_text(
     raw: Option<&str>,
     kind: TextKind,
@@ -116,10 +93,8 @@ fn check_length(value: &str, max_chars: usize, field: &'static str) -> Result<()
     Ok(())
 }
 
-/// Consume the remainder of an escape sequence whose introducing `ESC` was just
-/// read. Unterminated sequences swallow the rest of the input, which is the safe
-/// reading: a truncated `OSC` is exactly what an attacker sends hoping the tail
-/// leaks through.
+/// Consume the rest of an escape sequence after its `ESC`. Unterminated sequences
+/// swallow the remaining input so nothing leaks through.
 fn consume_escape(chars: &mut core::iter::Peekable<core::str::Chars<'_>>) {
     match chars.next() {
         // CSI — parameters and intermediates, then a final byte in 0x40..=0x7E.
@@ -145,8 +120,7 @@ fn consume_escape(chars: &mut core::iter::Peekable<core::str::Chars<'_>>) {
                 }
             }
         }
-        // Two-character escapes (ESC c, ESC 7, …): the second character is already
-        // consumed. A trailing lone ESC lands here as None and is simply dropped.
+        // Two-character escapes (ESC c, ESC 7, …), or a trailing lone ESC: drop.
         _ => {}
     }
 }
@@ -235,8 +209,7 @@ mod tests {
 
     #[test]
     fn html_is_left_alone() {
-        // Inert by contract, escaped at render time — mangling it here would eat
-        // legitimate prose.
+        // Inert by contract, escaped at render time.
         let raw = "<script>alert(1)</script> and 3 < 4";
         assert_eq!(sanitize(raw, TextKind::MultiLine), raw);
     }

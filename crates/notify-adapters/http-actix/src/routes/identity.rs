@@ -13,21 +13,14 @@ use crate::extract::Authenticated;
 use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
 
-/// The caller's own id — everything a client needs to name itself as the
-/// `owner` of something it is about to create, e.g. a personal API key
-/// (design §5.2).
+/// The caller's own id, to name itself as `owner` of e.g. a personal API key (§5.2).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Whoami {
     /// The caller's own id.
     pub id: UserId,
 }
 
-/// Who the caller is.
-///
-/// A user only: an API key or a channel key acts *for* someone or something
-/// else, and has no identity of its own to hand back (design §5.2bis) — the
-/// same restriction `GET /users/me/profile` already applies, for the same
-/// reason.
+/// Who the caller is; users only, since keys act for someone else (design §5.2bis).
 #[utoipa::path(
     get,
     path = "/me",
@@ -55,8 +48,7 @@ pub struct EnrolBody {
     pub label: String,
     /// How it is reached. `stream` is a device that only holds a connection.
     pub transport: PushTransport,
-    /// The X25519 public key. Required for the relayed transports, refused for the
-    /// others (design §6.2).
+    /// The X25519 public key; required for relayed transports, refused otherwise (§6.2).
     #[serde(default)]
     pub public_key: Option<DevicePublicKey>,
 }
@@ -73,18 +65,12 @@ pub struct CreateKeyBody {
     pub scopes: Vec<Scope>,
     /// Where it may do it.
     pub channels: Vec<ChannelId>,
-    /// When it stops working. Absent means never, which is a policy choice rather
-    /// than a default anybody should reach for.
+    /// When it stops working; absent means never.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
 }
 
-/// A newly minted key — the only time its secret exists outside the caller.
-///
-/// A DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no
-/// field that could carry a secret, and that is the property worth keeping
-/// (scenario T12). The secret lives here, in the one response that returns it, and
-/// nowhere else.
+/// A newly minted key: the only response that ever carries its secret (T12).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MintedKey {
     /// The key's metadata, exactly as `GET /apikeys` will show it from now on.
@@ -254,17 +240,13 @@ pub(crate) async fn revoke_key(
 /// Narrow (or clear) one key's own rate-limit ceiling.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ApiKeyLimitBody {
-    /// The new ceiling, or `null` to remove it and fall back to the channel's own
-    /// (design §8.2).
+    /// The new ceiling, or `null` to fall back to the channel's own (design §8.2).
     #[serde(default)]
     pub publish_per_minute: Option<u32>,
 }
 
-/// Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24).
-///
-/// Deliberately not open to the key's own owner — see
-/// [`notify_app::SetApiKeyLimit`]'s docs for why a self-service ceiling would not
-/// be one.
+/// Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24);
+/// not open to the key's owner.
 #[utoipa::path(
     patch,
     path = "/apikeys/{id}/limit",

@@ -12,6 +12,8 @@
       "!**/node_modules",
       "!**/dist",
       "!**/coverage",
+      "!test-results",
+      "!playwright-report",
       // Cargo's output for the Tauri shell. `useIgnoreFile` above does not cover
       // it: Biome runs from `web/`, so it reads this directory's ignore rules and
       // not the repository root's, where `target/` is listed. Before this line, a

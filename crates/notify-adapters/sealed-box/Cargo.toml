@@ -15,20 +15,14 @@ workspace = true
 [dependencies]
 notify-domain = { workspace = true }
 
+base64 = { workspace = true }
 chacha20poly1305 = { workspace = true }
 hkdf = { workspace = true }
 sha2 = { workspace = true }
 x25519-dalek = { workspace = true }
 
 [dev-dependencies]
-# Only for the envelope-v2 round trip: what a relayed push seals is built by
-# `PushMessage::sealed_plaintext`, and this is the one crate that can open a box.
 notify-ports = { workspace = true }
 serde_json = { workspace = true }
-# `static_secrets` only to stand in for a *device's* long-term keypair in this
-# crate's own tests, proving a sealed box opens — production never holds one, only
-# the public half (design §6.2). A second entry with different features from
-# `[dependencies]`, same as `notify-push-unifiedpush` did before this crate existed:
-# a plain build links what `seal()` actually uses, an `EphemeralSecret` per call,
-# never reused, never stored.
+# `static_secrets` stands in for a device keypair in tests; production only seals.
 x25519-dalek = { version = "3", features = ["static_secrets"] }

@@ -1,14 +1,5 @@
-//! Health and readiness surfaces (design §13).
-//!
-//! `/healthz` answers "is this process alive"; `/readyz` answers "should this
-//! replica be in the load balancer" and therefore probes the dependencies a replica
-//! genuinely cannot serve without.
-//!
-//! The distinction is the whole point of having two. A replica whose database has
-//! gone should leave the pool without being restarted — restarting it will not
-//! bring Postgres back, and a restart loop during an outage turns one problem into
-//! two. So `/healthz` answers `200` for as long as the process is running, and only
-//! `/readyz` reports the dependency.
+//! Health and readiness (design §13): `/healthz` is liveness only, `/readyz` probes dependencies,
+//! so a database outage drains the replica instead of restart-looping it.
 
 use actix_web::{HttpResponse, Responder, web};
 use notify_persistence_pg::PgStore;
@@ -21,14 +12,12 @@ pub(crate) struct Health {
     /// Always `"ok"` — the process answered, which is the whole question.
     #[schema(example = "ok")]
     pub status: String,
-    /// Version of the running binary, so an operator can tell replicas apart
-    /// during a rolling update.
+    /// Version of the running binary, to tell replicas apart during a rolling update.
     #[schema(example = "0.1.0")]
     pub version: String,
 }
 
-/// Readiness answer: the overall verdict plus the per-dependency detail an
-/// operator needs to know *which* dependency is holding the replica back.
+/// Readiness answer: the overall verdict plus per-dependency detail.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub(crate) struct Readiness {
     /// `true` only when every checked dependency is reachable.
@@ -65,9 +54,7 @@ impl Dependencies {
     async fn probe(&self) -> Readiness {
         let mut checks = Vec::new();
 
-        // Postgres is both the database and the event bus (ADR-0008), so one probe
-        // answers for both — and reporting them separately would suggest an
-        // independence this deployment does not have.
+        // Postgres is also the event bus (ADR-0008), so one probe answers for both.
         let database = self.store.ping().await;
         checks.push(DependencyCheck {
             name: "postgres".to_owned(),
@@ -75,9 +62,7 @@ impl Dependencies {
             detail: database.err().map(|error| error.to_string()),
         });
 
-        // Push transports are reported but never gate readiness: a replica with no
-        // Web Push key still serves the API, the stream and the inbox perfectly
-        // well. In M1 there are none, and that is not a degraded state.
+        // Push transports are reported but never gate readiness.
         for transport in &self.transports {
             checks.push(DependencyCheck {
                 name: (*transport).to_owned(),
@@ -101,24 +86,11 @@ pub(crate) fn configure(config: &mut web::ServiceConfig) {
         .route("/metrics", web::get().to(metrics));
 }
 
-/// The Prometheus exporter (design §13).
-///
-/// # Why it sits beside the probes rather than under `/api/v1`
-///
-/// It is scraped by infrastructure, not called by a client: it has no OpenAPI entry
-/// (nothing generated from the spec would ever call it), it answers a text format
-/// rather than JSON, and it is unauthenticated for the same reason `/healthz` is —
-/// a scraper is a pod in the same namespace, not a person with a token.
-///
-/// That is a real exposure and it is bounded on purpose: the document carries
-/// **counts and channel ids**, never a notification, a user, a device or an
-/// endpoint. Somebody who can reach this learns how busy the instance is and what
-/// its channels are called. An ingress that publishes it is a deployment mistake,
-/// and the same one that publishing `/readyz` would be.
+/// The Prometheus exporter (design §13): unauthenticated and outside `/api/v1`, like `/healthz`.
+/// It exposes only counts and channel ids; publishing it on an ingress is a deployment mistake.
 async fn metrics(metrics: web::Data<std::sync::Arc<dyn notify_ports::Metrics>>) -> impl Responder {
     HttpResponse::Ok()
-        // The version the Prometheus text parser expects; `prometheus-client`
-        // renders OpenMetrics, which is a superset it reads.
+        // OpenMetrics, which the Prometheus parser reads.
         .content_type("application/openmetrics-text; version=1.0.0; charset=utf-8")
         .body(metrics.render())
 }
@@ -150,8 +122,7 @@ async fn healthz() -> impl Responder {
 async fn readyz(dependencies: web::Data<Dependencies>) -> impl Responder {
     let readiness = dependencies.probe().await;
 
-    // 503 rather than 200-with-a-flag: a load balancer reads the status line, not
-    // the body, and a replica that cannot serve must leave the pool.
+    // 503: load balancers read the status line, not the body.
     if readiness.ready {
         HttpResponse::Ok().json(readiness)
     } else {
@@ -169,8 +140,7 @@ mod tests {
 
     #[actix_web::test]
     async fn liveness_answers_without_touching_a_dependency() {
-        // The point of the split: this must answer during a database outage, or a
-        // restart loop turns one problem into two.
+        // Must answer during a database outage.
         let app = test::init_service(App::new().configure(configure)).await;
 
         let health: Health = test::call_and_read_body_json(
@@ -185,9 +155,7 @@ mod tests {
 
     #[actix_web::test]
     async fn readiness_needs_a_database_and_says_which_one_is_missing() {
-        // A lazy pool pointed at nothing, with a short acquire timeout: the test is
-        // about what an unreachable dependency *reports*, not about waiting for the
-        // production timeout to elapse.
+        // A lazy pool at nothing with a short timeout: tests the report, not the wait.
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_millis(250))
@@ -211,11 +179,7 @@ mod tests {
 
     #[actix_web::test]
     async fn the_exporter_serves_the_registry_the_process_writes_to() {
-        // Worth its own test even though the registry is tested where it lives: what
-        // can break here is the wiring, and it breaks silently. An `app_data` whose
-        // type does not match what the handler extracts is a `500` at scrape time
-        // and nothing at all at compile time — so this asserts the number *this*
-        // registry recorded comes back out, not merely that the route answers.
+        // A mismatched `app_data` type is a runtime `500`, so check this registry's number comes back.
         let metrics: std::sync::Arc<dyn notify_ports::Metrics> =
             std::sync::Arc::new(notify_metrics_prometheus::PrometheusMetrics::new());
         metrics.stream_opened(notify_ports::StreamKind::Sse);
@@ -231,8 +195,7 @@ mod tests {
             test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
         assert!(response.status().is_success());
 
-        // The scraper reads the content type before the body; OpenMetrics is what
-        // `prometheus-client` renders and what the Prometheus parser expects.
+        // Scrapers read the content type first.
         let content_type = response
             .headers()
             .get(actix_web::http::header::CONTENT_TYPE)
@@ -254,9 +217,7 @@ mod tests {
 
     #[actix_web::test]
     async fn an_instance_wired_to_no_exporter_serves_an_empty_document_rather_than_an_error() {
-        // The no-op is a configuration answer, not a failure — a deployment that
-        // measures nothing should give a scraper an empty scrape, and a `500` here
-        // would page somebody for a build that is behaving exactly as configured.
+        // A no-op registry gives an empty scrape, not a `500`.
         let metrics: std::sync::Arc<dyn notify_ports::Metrics> =
             std::sync::Arc::new(notify_ports::NoMetrics);
         let app = test::init_service(
@@ -275,8 +236,7 @@ mod tests {
 
     #[actix_web::test]
     async fn a_push_transport_is_reported_but_never_gates_readiness() {
-        // M1 has no transports at all, and that is not a degraded state: the API,
-        // the stream and the inbox all work without one.
+        // No transports is not a degraded state.
         let pool = sqlx::postgres::PgPoolOptions::new()
             .acquire_timeout(std::time::Duration::from_millis(250))
             .connect_lazy("postgres://nobody@127.0.0.1:1/none")

@@ -1,14 +1,5 @@
-//! What a notification actually says (design §2.3).
-//!
-//! Content is the publisher-controlled half of a revision: title, markdown body,
-//! progress, image, actions, tags. Everything here is attacker-influenced text, so
-//! the type is only constructible through validation — there is no way to build a
-//! [`Content`] that has not been through [`hygiene`](crate::hygiene), including
-//! when it comes back out of storage.
-//!
-//! The lifecycle half — `state`, `status`, priority, TTL — lives on the revision
-//! rather than in the content, because that is what the state machine reads and
-//! what a client filters an inbox on.
+//! What a notification says (§2.3): the publisher-controlled, attacker-influenced
+//! half of a revision, constructible only through validation (storage included).
 
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +12,7 @@ use crate::limits::{
     MAX_TAG_CHARS, MAX_TAGS, MAX_TITLE_CHARS,
 };
 
-/// How far along a long-running thing is. Rendered as a bar; the units are the
-/// publisher's own (steps, files, percent).
+/// How far along a long-running thing is, in the publisher's own units.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "ProgressDraft")]
@@ -67,10 +57,7 @@ impl TryFrom<ProgressDraft> for Progress {
     }
 }
 
-/// The image shown with a notification.
-///
-/// Anything of real size goes to the object store and is referenced, so the
-/// payload stays small enough to ride inside a push transport (design §2.3, §6.1).
+/// The image shown with a notification: an uploaded attachment, or a small inline `data:` URI (§2.3, §6.1).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -81,8 +68,7 @@ pub enum Image {
         #[serde(rename = "ref")]
         reference: AttachmentId,
     },
-    /// A small image inlined in the payload. Capped at [`MAX_DATA_URI_BYTES`];
-    /// past that, publishers upload an attachment instead.
+    /// A small image inlined in the payload, capped at [`MAX_DATA_URI_BYTES`].
     DataUri {
         /// The `data:` URI, already checked for type and size.
         uri: String,
@@ -107,9 +93,7 @@ pub enum ImageDraft {
     },
 }
 
-/// Inline image types the server accepts. Animated formats are excluded for the
-/// same reason as on avatars (design §2.4): they are the expensive end of image
-/// decoding and nothing here needs them.
+/// Inline image types the server accepts (no animated formats, §2.4).
 const ALLOWED_DATA_URI_PREFIXES: [&str; 3] = [
     "data:image/png;base64,",
     "data:image/jpeg;base64,",
@@ -160,11 +144,9 @@ impl<'de> Deserialize<'de> for Image {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Content {
-    /// One line, always present. What a push notification shows when there is room
-    /// for nothing else.
+    /// One line, always present; what a push shows when there is room for nothing else.
     pub title: String,
-    /// Markdown. Raw HTML in it is inert by contract, escaped at render time under
-    /// a strict CSP (design §2.3, §10.3).
+    /// Markdown; raw HTML is inert, escaped at render time (§2.3, §10.3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     /// Progress of a long-running operation.
@@ -173,8 +155,7 @@ pub struct Content {
     /// Illustration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<Image>,
-    /// Name of a client-side icon, e.g. `cluster`. Clients that do not know it
-    /// fall back to their default.
+    /// Name of a client-side icon, e.g. `cluster`; unknown names fall back to the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// Buttons, in display priority order.
@@ -183,28 +164,16 @@ pub struct Content {
     /// Free-form labels, normalised to lowercase and deduplicated.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// Client-side grouping key, and the unit a group-scoped silence acts on
-    /// (design §2.3).
+    /// Client-side grouping key, and the unit a group-scoped silence acts on (§2.3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_key: Option<String>,
 }
 
-/// What a publisher sends, before validation.
-///
-/// Unknown fields are tolerated here, unlike in the nested drafts: this struct is
-/// flattened into the publish request alongside the lifecycle fields (`state`,
-/// `status`, `ttl`…), and serde cannot reject unknown fields across a flatten.
-/// The nested drafts keep the check, which is where it earns its keep — a
-/// misspelled `url` in a `view` action would otherwise silently produce a button
-/// that goes nowhere.
+/// What a publisher sends, before validation (unknown fields tolerated because it is flattened).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ContentDraft {
-    /// See [`Content::title`].
-    ///
-    /// Optional on the wire, and absent means "leave it alone" on a revision — see
-    /// [`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
-    /// an absent title is the same refusal an empty one gets.
+    /// See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
     #[serde(default)]
     pub title: String,
     /// See [`Content::body`].
@@ -240,22 +209,9 @@ impl ContentDraft {
         }
     }
 
-    /// Fill the gaps from the revision this one supersedes (design §2.2).
-    ///
-    /// This is what lets a CI job close a pipeline with
-    /// `{"state": "closed", "status": "success"}` and keep its title, its tags and
-    /// its body. Without it every revision would have to restate the whole payload,
-    /// and the second half of every publish/close pair would be a copy-paste of the
-    /// first — which is where they drift.
-    ///
-    /// **Actions are never inherited.** They are replaced wholesale on every
-    /// revision (design §2.3, scenario T4): a closed pipeline should not still be
-    /// offering "Cancel", and the only way to be sure of that is for silence to
-    /// mean "no buttons" rather than "the previous buttons".
-    ///
-    /// The limitation worth knowing: absent and explicitly `null` are the same
-    /// thing here, so this revision shape cannot *clear* a body. Publishing an
-    /// empty string does.
+    /// Fill the gaps from the superseded revision (§2.2), so a CI job can close with
+    /// just `state`/`status`. **Actions are never inherited** (§2.3, T4); absent and
+    /// `null` are the same, so clearing a body takes an empty string.
     #[must_use]
     pub fn inheriting(mut self, head: &Content) -> Self {
         if self.title.trim().is_empty() {
@@ -289,20 +245,8 @@ impl TryFrom<ContentDraft> for Content {
     fn try_from(draft: ContentDraft) -> Result<Self> {
         let content = Self::validated(draft)?;
 
-        // The ceiling §8.2 puts on a payload, and the only one that is about the
-        // payload rather than about one of its fields (T15).
-        //
-        // Every field below has its own limit, and they do not add up to this one:
-        // a body of `MAX_BODY_CHARS` **characters** is four times that many bytes
-        // in the worst case, and an inline image adds 48 KiB on top. So the check
-        // has to be on the whole, after validation, or the sum of well-formed
-        // fields sails past a limit each of them respects.
-        //
-        // Measured on the serialised form because that is what the ceiling is
-        // about: what travels, what a push transport has to carry (§6.2), and what
-        // a row holds.
-        // A content that will not serialise is a bug rather than an oversized
-        // payload, and it is caught where the serialisation happens.
+        // The whole-payload ceiling (§8.2, T15): per-field limits do not add up to it,
+        // so measure the serialised form after validation.
         let size = serde_json::to_vec(&content).map_or(0, |bytes| bytes.len());
         if size > MAX_PAYLOAD_BYTES {
             return Err(DomainError::TooLarge {
@@ -363,10 +307,6 @@ impl<'de> Deserialize<'de> for Content {
 }
 
 /// Sanitise, lowercase, drop empties, deduplicate, then check the count.
-///
-/// Lowercasing is what makes `?tag=prod` a question with one answer: normalising
-/// once at ingestion beats hoping every filter, index and client agrees on
-/// case-insensitive comparison.
 fn validate_tags(raw: &[String]) -> Result<Vec<String>> {
     let mut tags: Vec<String> = Vec::with_capacity(raw.len());
 
@@ -428,8 +368,7 @@ mod tests {
 
     #[test]
     fn a_revision_that_says_nothing_keeps_what_the_head_said() {
-        // The second half of the design's CI example: close the pipeline without
-        // restating its title, its body or its tags.
+        // Close the pipeline without restating title, body or tags.
         let head = content(ContentDraft {
             body: Some("build log attached".to_owned()),
             icon: Some("rocket".to_owned()),
@@ -471,8 +410,7 @@ mod tests {
 
     #[test]
     fn actions_are_replaced_wholesale_and_never_inherited() {
-        // Scenario T4. A closed pipeline must not still be offering "Cancel", and
-        // the only way to be sure is for silence to mean "no buttons".
+        // T4: a closed pipeline must not still offer "Cancel".
         let head = content(ContentDraft {
             actions: Actions::new(vec![Action::View {
                 label: "Logs".to_owned(),
@@ -533,14 +471,8 @@ mod tests {
 
     #[test]
     fn critical_t15_fields_that_each_fit_can_still_make_a_payload_that_does_not() {
-        // T15's first half, and the reason it needs a check of its own: every field
-        // below is **within** its limit. A body of `MAX_BODY_CHARS` characters is
-        // legal, an inline image just under 48 KiB is legal, and together they are
-        // 60-odd kilobytes past the 64 KiB §8.2 puts on a payload.
-        //
-        // The multi-byte body is the point rather than decoration: the body limit is
-        // in *characters*, this one is in bytes, and a limit that only ever sees
-        // ASCII is a limit that has not been tested.
+        // T15: every field is within its own limit (multi-byte body, ~48 KiB image),
+        // yet together they exceed 64 KiB.
         let draft = ContentDraft {
             title: "an incident".to_owned(),
             body: Some("é".repeat(MAX_BODY_CHARS)),
@@ -568,9 +500,7 @@ mod tests {
 
     #[test]
     fn critical_t15_a_payload_under_the_ceiling_is_accepted_whole() {
-        // The other side of the same check: the ceiling must not refuse a payload
-        // that a publisher can legitimately send, or the useful half of §2.3 —
-        // a body plus a small screenshot — becomes unusable.
+        // A body plus a small screenshot must still fit.
         let draft = ContentDraft {
             title: "etcd degraded".to_owned(),
             body: Some("il y a de la latence sur le cluster".repeat(100)),
@@ -606,7 +536,7 @@ mod tests {
         assert!(empty.is_err());
     }
 
-    // --- T5 · Hygiene (design §3.4) ---------------------------------------
+    // --- T5 · Hygiene -----------------------------------------------------
 
     #[test]
     fn critical_t5_every_text_field_is_stripped_of_escapes_and_control_characters() {
@@ -633,9 +563,7 @@ mod tests {
         })
         .unwrap();
 
-        // What lands in a terminal, a toast and a browser is inert text.
-        // The OSC argument goes with its introducer: `retitled` was the payload of
-        // a window-title escape, not text the publisher wrote.
+        // Escapes are stripped along with their OSC argument.
         assert_eq!(value.title, "wiped");
         assert_eq!(value.body.as_deref(), Some("wiped\nsecond line"));
         assert_eq!(value.icon.as_deref(), Some("wiped"));
@@ -652,8 +580,7 @@ mod tests {
 
     #[test]
     fn critical_t5_raw_html_stays_inert_text_rather_than_being_mangled() {
-        // The contract is markdown-only rendering under a strict CSP (design §2.3,
-        // §10.3), not stripping at ingestion — which would eat `3 < 4`.
+        // HTML is escaped at render time (§2.3, §10.3), not stripped.
         let value = content(ContentDraft {
             body: Some("<img src=x onerror=alert(1)> and 3 < 4".to_owned()),
             ..ContentDraft::titled("t")

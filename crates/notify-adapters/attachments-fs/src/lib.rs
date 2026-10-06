@@ -1,33 +1,6 @@
-//! The attachment store, over a local filesystem directory (ADR-0022).
-//!
-//! # Why this exists alongside `notify-attachments-s3`
-//!
-//! Design §6.1 frames the object store as "the bucket" and its upload path as
-//! `client → bucket`, never through the server. A self-hoster with no S3-compatible
-//! service available — no RustFS, no MinIO, nothing — has no bucket to presign
-//! against. This adapter is that deployment's alternative: bytes live as plain
-//! files on disk, and the two bytes-carrying operations the S3 adapter never
-//! implements (an unauthenticated upload PUT and download GET) are served by
-//! `notify-http-actix`'s own routes instead of a third-party bucket. `verify`
-//! below is what those routes call to check the bearer token in the query string —
-//! the filesystem's answer to an S3 signature.
-//!
-//! # Layout
-//!
-//! One directory per attachment, named after its ULID id (never a raw client
-//! string — every caller of this trait already holds a parsed [`AttachmentId`], so
-//! there is no path-traversal surface here):
-//!
-//! ```text
-//! {root}/{id}/object       # the bytes
-//! {root}/{id}/object.type  # its content type, one line
-//! {root}/{id}/thumb        # a derived thumbnail, if one exists
-//! {root}/{id}/thumb.type   # its content type
-//! ```
-//!
-//! `delete` removes the whole `{root}/{id}/` directory, thumbnail included, in one
-//! call — the same "takes its thumbnail with it" contract [`AttachmentStore`]
-//! documents for the S3 adapter.
+//! The attachment store over a local directory (ADR-0022), for deployments with no S3 bucket.
+//! `notify-http-actix` serves the presigned PUT/GET itself and calls [`FsAttachmentStore::verify`].
+//! Layout: `{root}/{id}/object`, `object.type`, `thumb`, `thumb.type`; `delete` removes `{root}/{id}/`.
 
 pub mod token;
 
@@ -43,10 +16,7 @@ use url::Url;
 
 pub use token::{Purpose, TokenError};
 
-/// How long a presigned URL — S3's or this adapter's own — works for.
-///
-/// Matches `notify-attachments-s3`'s constant: it is a property of what "presign"
-/// means in this project, not of which store answers it.
+/// How long a presigned URL works; matches `notify-attachments-s3`.
 const PRESIGN_TTL: Duration = Duration::minutes(15);
 
 /// What it takes to serve out of a directory.
@@ -54,12 +24,9 @@ const PRESIGN_TTL: Duration = Duration::minutes(15);
 pub struct FsConfig {
     /// Where attachments live. Created if missing.
     pub root: PathBuf,
-    /// This server's own externally-reachable base URL — the filesystem backend
-    /// presigns against itself, so it has to know its own address (design §12.1
-    /// covers the same need for the browser-facing URL).
+    /// This server's externally reachable base URL, since it presigns against itself.
     pub public_base_url: Url,
-    /// Signs and verifies the bearer token embedded in every URL this adapter
-    /// hands out. Required: an unsigned URL would be an open directory.
+    /// Signs the bearer token in every URL; required, or the directory would be open.
     pub token_secret: String,
 }
 
@@ -82,12 +49,7 @@ impl core::fmt::Debug for FsAttachments {
 }
 
 impl FsAttachments {
-    /// Build a store, creating `root` if it does not exist yet.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `root` cannot be created — wrong permissions, or a parent that does
-    /// not exist and cannot be made.
+    /// Fails if `root` cannot be created.
     pub fn connect(config: &FsConfig) -> PortResult<Self> {
         std::fs::create_dir_all(&config.root)
             .map_err(|error| PortError::unavailable("attachments", error))?;
@@ -99,13 +61,8 @@ impl FsAttachments {
         })
     }
 
-    /// Check a bearer token minted by [`AttachmentStore::presign_upload`] or
-    /// [`AttachmentStore::presign_download`], for `notify-http-actix`'s two
-    /// unauthenticated routes.
-    ///
-    /// Deliberately not part of [`AttachmentStore`]: that trait stays HTTP-agnostic,
-    /// and this method exists only because *this one adapter* has to serve its own
-    /// bytes over HTTP where S3 would not.
+    /// Check a bearer token minted by `presign_upload`/`presign_download`, for the two
+    /// unauthenticated routes; not on [`AttachmentStore`], which stays HTTP-agnostic.
     ///
     /// # Errors
     ///
@@ -119,13 +76,8 @@ impl FsAttachments {
         token::verify(&self.secret, purpose, id, given, OffsetDateTime::now_utc())
     }
 
-    /// Reserve `id` for the one upload its token allows: `false` if another upload
-    /// already holds it. Atomic — the directory is created or it is not — so two
-    /// concurrent PUTs on one token cannot both land.
-    ///
-    /// # Errors
-    ///
-    /// The filesystem refusing for any reason but "already there".
+    /// Reserve `id` for the one upload its token allows: `false` if already held.
+    /// Atomic directory creation, so two concurrent PUTs on one token cannot both land.
     pub async fn claim_upload(&self, id: AttachmentId) -> PortResult<bool> {
         tokio::fs::create_dir_all(&self.root)
             .await
@@ -199,10 +151,7 @@ impl FsAttachments {
 
         let content_type = match tokio::fs::read_to_string(type_path(&path)).await {
             Ok(value) => value,
-            // The bytes are the source of truth; a sidecar that went missing is a
-            // store that lost metadata, not an object that never existed. PNG is
-            // what avatars and thumbnails are stored as (§2.4, D30) — the same
-            // fallback the S3 adapter uses for a bucket that does not echo headers.
+            // A missing sidecar is lost metadata, not a missing object; PNG is the stored-image default.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => "image/png".to_owned(),
             Err(error) => return Err(Self::fail("read", error)),
         };
@@ -236,12 +185,7 @@ impl AttachmentStore for FsAttachments {
         Ok(PresignedUpload {
             id,
             url,
-            // The client sends this header on the PUT, and it is **inside the
-            // signature** rather than merely advertised here: the upload route feeds
-            // the header it actually receives through the same MAC, so a PUT
-            // declaring anything else fails to verify. That is the same guarantee
-            // S3 gets from listing `content-type` among its SigV4 signed headers,
-            // and this adapter claimed it for a while before it had it.
+            // The content type is inside the MAC: a PUT declaring anything else fails to verify.
             headers: [("content-type".to_owned(), request.content_type.clone())].into(),
             expires_at,
         })
@@ -263,8 +207,7 @@ impl AttachmentStore for FsAttachments {
     async fn delete(&self, id: AttachmentId) -> PortResult<()> {
         match tokio::fs::remove_dir_all(self.object_dir(id)).await {
             Ok(()) => Ok(()),
-            // Deleting something already gone is the desired state, same as the S3
-            // adapter: the purge job (§7.2bis) retries, and retries have to be free.
+            // Already gone is the desired state: the purge job (§7.2bis) retries.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(Self::fail("remove_dir_all", error)),
         }
@@ -292,8 +235,7 @@ impl AttachmentStore for FsAttachments {
     }
 
     async fn health(&self) -> PortResult<()> {
-        // Write and remove a probe file: the cheapest operation that proves the
-        // directory exists and is actually writable, not merely listable.
+        // A probe file proves the directory is writable, not merely listable.
         let probe = self.root.join(".health");
         tokio::fs::write(&probe, b"ok")
             .await

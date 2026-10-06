@@ -1,8 +1,4 @@
-//! The webhook sink: a signed JSON POST (design §7.1bis, scenario T17).
-//!
-//! This is the one part of weebo-notify that is a **public API for software we will
-//! never see**. A consumer writes a handler once and expects it to keep working, so
-//! everything about the request is contract:
+//! The webhook sink (design §7.1bis, T17): a signed JSON POST; the request shape is a public contract.
 //!
 //! ```text
 //! POST <configured url>
@@ -14,30 +10,8 @@
 //! { … the stream event, unchanged (design §8.1) … }
 //! ```
 //!
-//! # Why the timestamp is inside the signed material
-//!
-//! Because that is what makes a replay detectable at all. A signature over the body
-//! alone is valid for ever: anyone who captures one request can send it again next
-//! month and the consumer cannot tell. Signing `"<t>.<body>"` means a consumer that
-//! rejects `|now − t| > 5 min` gets replay protection out of a comparison it was
-//! going to do anyway — and [`verify`] below is that check, written once so a
-//! consumer can copy it rather than infer it.
-//!
-//! # What is retried and what is not
-//!
-//! Classification lives here because only the thing that spoke HTTP can do it: a
-//! `503` is "later", a `410` is "never", and a connection refused is "later" too.
-//! The schedule those outcomes feed into is [`notify_domain::RetryPolicy`], and the
-//! two are deliberately in different crates — one is a property of the protocol, the
-//! other is a promise made to operators.
-//!
-//! # No SSRF gate here, and where it is instead
-//!
-//! A webhook URL is not user input: it comes from `[[channels.managed.sinks]]`, which
-//! only an operator writes (design §11). The scheme check and the refusal of
-//! credentials in the URL happen where that file is read, at startup — the same
-//! place that already refuses an unknown sink `type`. Repeating them per delivery
-//! would suggest the value can change between two, which it cannot.
+//! The timestamp is signed so consumers can reject replays ([`verify`]). URLs are operator-written
+//! config, validated at startup, so there is no per-delivery SSRF gate.
 
 use core::fmt::Write as _;
 use std::time::Duration;
@@ -47,17 +21,10 @@ use notify_ports::{PortError, PortResult, SinkDelivery, SinkDispatcher, SinkOutc
 use sha2::Sha256;
 use time::OffsetDateTime;
 
-/// How long a consumer has to answer.
-///
-/// Short enough that a hung endpoint does not hold a drain slot for a minute, long
-/// enough for a handler that writes to its own database before answering. A timeout
-/// is a retry, so the cost of being wrong here is one more attempt in thirty seconds.
+/// How long a consumer has to answer; a timeout is just a retry.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The window a consumer should accept a signature in (design §7.1bis).
-///
-/// Published here because it is half of the contract: we promise the timestamp is
-/// honest, they promise to refuse anything older. [`verify`] applies it.
+/// The window a consumer should accept a signature in (design §7.1bis); [`verify`] applies it.
 pub const REPLAY_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// A `SinkDispatcher` that POSTs signed JSON.
@@ -67,19 +34,11 @@ pub struct WebhookSink {
 }
 
 impl WebhookSink {
-    /// Build one.
-    ///
-    /// # Errors
-    ///
-    /// If the HTTP client cannot be constructed at all, which on this platform means
-    /// the TLS backend failed to initialise — an infrastructure failure, reported as
-    /// one rather than deferred to the first delivery.
+    /// If the HTTP client (TLS backend) cannot be constructed.
     pub fn new() -> PortResult<Self> {
         let http = reqwest::Client::builder()
             .timeout(TIMEOUT)
-            // A webhook consumer that answers with a redirect is a consumer whose
-            // configuration is wrong; following it would sign a request for one host
-            // and deliver it to another.
+            // Following a redirect would deliver a request signed for one host to another.
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("weebo-notify/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -101,9 +60,7 @@ impl SinkDispatcher for WebhookSink {
         target: &SinkTarget,
     ) -> PortResult<SinkOutcome> {
         let SinkTarget::Webhook { url, secret } = target else {
-            // The drain resolves a target by the sink's own kind, so this cannot
-            // happen without a wiring mistake — and a wiring mistake must not be
-            // retried for twenty-four hours.
+            // Only a wiring mistake reaches here, and it must not be retried for a day.
             return Ok(SinkOutcome::Rejected {
                 reason: "webhook dispatcher handed a target of another kind".to_owned(),
             });
@@ -128,8 +85,7 @@ impl SinkDispatcher for WebhookSink {
         Ok(match response {
             Ok(response) => classify(response.status()),
             Err(error) => {
-                // Everything reqwest reports here — connect, timeout, TLS, DNS — is
-                // a condition that can end on its own, so it is worth another try.
+                // Connect, timeout, TLS, DNS: all can recover, so retry.
                 tracing::debug!(?error, delivery = %delivery.delivery_id, "webhook attempt failed");
                 SinkOutcome::Retry {
                     reason: error.to_string(),
@@ -145,9 +101,7 @@ fn classify(status: reqwest::StatusCode) -> SinkOutcome {
         return SinkOutcome::Delivered;
     }
 
-    // The two 4xx that mean "not now" rather than "not ever". Everything else in the
-    // 4xx range says the request itself is unacceptable, and repeating it for a day
-    // only delays the moment somebody reads the dead letter.
+    // The only 4xx meaning "not now"; other 4xx are permanent.
     let retryable = status.is_server_error()
         || status == reqwest::StatusCode::REQUEST_TIMEOUT
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
@@ -160,17 +114,10 @@ fn classify(status: reqwest::StatusCode) -> SinkOutcome {
     }
 }
 
-/// The signature of `"<timestamp>.<body>"`, hex-encoded.
-///
-/// Exposed rather than private because it is half of a published contract: a
-/// consumer implements the same three lines, and a test that reimplemented them
-/// would be checking its own copy instead of ours.
+/// The signature of `"<timestamp>.<body>"`, hex-encoded; public because consumers implement the same.
 #[must_use]
 pub fn sign(secret: &[u8], timestamp: i64, body: &[u8]) -> String {
-    // HMAC accepts a key of any length, so the fallback is unreachable — it is
-    // written as an infallible zero key rather than an `expect`, because panicking
-    // is denied in this workspace and would be absurd here: the worst a wrong key
-    // could do is produce a signature a consumer refuses.
+    // HMAC accepts any key length, so the fallback is unreachable (panics are denied here).
     let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(secret).unwrap_or_else(|_| {
         <Hmac<Sha256> as hmac::digest::KeyInit>::new(&hmac::digest::Key::<Hmac<Sha256>>::default())
     });
@@ -192,19 +139,13 @@ pub fn sign(secret: &[u8], timestamp: i64, body: &[u8]) -> String {
 pub enum SignatureError {
     /// The header was not `t=<unix>,v1=<hex>`.
     Malformed,
-    /// The timestamp is outside [`REPLAY_WINDOW`] — a replay, or a clock that needs
-    /// looking at.
+    /// The timestamp is outside [`REPLAY_WINDOW`]: a replay or a skewed clock.
     Stale,
     /// The digest does not match the body under this secret.
     Mismatch,
 }
 
-/// The reference consumer's check (design §7.1bis, scenario T17).
-///
-/// Written here, tested here, and quoted in the docs site: a contract a consumer has
-/// to guess at is a contract that gets implemented three subtly different ways. The
-/// comparison is constant-time, because the alternative leaks the digest one byte of
-/// timing at a time to anyone allowed to POST at the endpoint.
+/// The reference consumer's check (design §7.1bis, T17), quoted in the docs; constant-time.
 ///
 /// # Errors
 ///
@@ -223,8 +164,7 @@ pub fn verify(
     }
 
     let expected = sign(secret, timestamp, body);
-    // Constant time over the rendered hex: both are the same length, and comparing
-    // them with `==` would return early on the first differing byte.
+    // Constant time: `==` would leak the first differing byte.
     let matched = expected.len() == digest.len()
         && expected
             .bytes()
@@ -239,9 +179,7 @@ pub fn verify(
     }
 }
 
-/// Pull `t` and `v1` out of the header, in either order and ignoring anything else —
-/// a future `v2` must not break a `v1` consumer, which is the whole reason the
-/// scheme is versioned.
+/// Pull `t` and `v1` from the header in any order, ignoring the rest (so a future `v2` is harmless).
 fn parse(header: &str) -> Option<(i64, &str)> {
     let mut timestamp = None;
     let mut digest = None;
@@ -319,8 +257,7 @@ mod tests {
     fn the_header_is_parsed_by_name_and_not_by_position() {
         let now = OffsetDateTime::now_utc();
         let at = now.unix_timestamp();
-        // A future `v2=` alongside `v1=`, and the fields the other way round: both
-        // are things a signing scheme is versioned in order to survive.
+        // A future `v2=` and reversed order must both still verify.
         let header = format!("v2=whatever,v1={},t={at}", sign(SECRET, at, BODY));
 
         assert_eq!(verify(SECRET, &header, BODY, now), Ok(()));

@@ -1,9 +1,4 @@
-//! A real ES256 keypair for the tests, so the production verification path is the
-//! one under test rather than a mock of it.
-//!
-//! The scalar is derived from the key id instead of being random or committed: a
-//! private key in the repository is a gitleaks finding waiting to happen, and a
-//! random one would make a failing test unreproducible. These keys protect nothing.
+//! A real ES256 keypair for tests, derived from the key id: reproducible, and no committed private key.
 
 #![allow(
     clippy::expect_used,

@@ -1,10 +1,5 @@
-//! Replaying a request instead of repeating it (design §8, scenario T16).
-//!
-//! The reservation is two-phase, and the first phase is what makes it work. A
-//! single "store the response when done" would leave a window in which a retry
-//! arriving mid-flight starts a second publish — which is exactly the case retries
-//! are made of, a client that timed out and tried again. Claiming the key first
-//! turns that race into a `409`.
+//! Replaying a request instead of repeating it (design §8, T16). Two-phase: claiming the key
+//! first turns a mid-flight retry into a `409` instead of a second publish.
 
 use notify_ports::{Claim, IdempotencyStore, PortResult};
 use time::OffsetDateTime;
@@ -12,12 +7,8 @@ use time::OffsetDateTime;
 use crate::PgStore;
 use crate::mapping::fail;
 
-/// How long a claim stays in flight before another request may take it over.
-///
-/// This is the answer to "the replica holding this key died mid-publish". Long
-/// enough that a slow publish is not stolen from underneath itself, short enough
-/// that a client retrying after a crash is not told `409` for the whole
-/// twenty-four-hour replay window.
+/// How long a claim stays in flight before takeover: covers a slow publish, but a crashed holder
+/// must not cause `409`s for the whole replay window.
 const IN_FLIGHT: time::Duration = time::Duration::minutes(5);
 
 #[async_trait::async_trait]
@@ -28,9 +19,7 @@ impl IdempotencyStore for PgStore {
         key: &str,
         now: OffsetDateTime,
     ) -> PortResult<Claim> {
-        // One statement, so two requests arriving together cannot both come back
-        // `Fresh`. The `WHERE expires_at <= $3` on the conflict branch is what makes
-        // a lapsed reservation reusable rather than a permanent tombstone.
+        // One statement so two requests cannot both get `Fresh`; the `WHERE` reclaims lapsed reservations.
         let claimed: Option<(bool, Option<String>)> = sqlx::query_as(
             "INSERT INTO idempotency_keys (principal_ref, key, response, claimed_at, expires_at)
              VALUES ($1, $2, NULL, $3, $4)
@@ -53,8 +42,7 @@ impl IdempotencyStore for PgStore {
             return Ok(Claim::Fresh);
         }
 
-        // The conflict branch did not fire, so somebody else holds it. Whether they
-        // finished is the difference between a replay and a `409`.
+        // Held by someone else: finished means replay, otherwise `409`.
         let existing: Option<Option<String>> = sqlx::query_scalar(
             "SELECT response FROM idempotency_keys WHERE principal_ref = $1 AND key = $2",
         )
@@ -66,9 +54,7 @@ impl IdempotencyStore for PgStore {
 
         Ok(match existing.flatten() {
             Some(response) => Claim::Replayed { response },
-            // Answered with `409` and a `Retry-After`, not by waiting: holding a
-            // request open on the chance another one finishes is how a thread pool
-            // is spent.
+            // `409` + `Retry-After` rather than holding the request open.
             None => Claim::InFlight,
         })
     }
@@ -81,9 +67,7 @@ impl IdempotencyStore for PgStore {
         response: &str,
         expires_at: OffsetDateTime,
     ) -> PortResult<()> {
-        // `claimed_at` is the claim's identity: a takeover rewrites it, so a slow
-        // original that finishes late matches nothing and cannot clobber the
-        // response its successor stored.
+        // `claimed_at` identifies the claim, so a late original cannot clobber its successor.
         sqlx::query(
             "UPDATE idempotency_keys
                 SET response = $4, expires_at = $5
@@ -106,9 +90,7 @@ impl IdempotencyStore for PgStore {
         key: &str,
         claimed_at: OffsetDateTime,
     ) -> PortResult<()> {
-        // Only an unfinished claim, and only ours: releasing a completed one would
-        // delete a response somebody is entitled to replay, and releasing one taken
-        // over would let a third request publish alongside the second.
+        // Only our unfinished claim: never delete a stored response or a taken-over claim.
         sqlx::query(
             "DELETE FROM idempotency_keys
              WHERE principal_ref = $1 AND key = $2 AND claimed_at = $3 AND response IS NULL",

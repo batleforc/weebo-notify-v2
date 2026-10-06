@@ -1,40 +1,18 @@
-//! Authorisation: the one place that answers "may this principal do that here".
-//!
-//! Ports answer "who could" and never "who may" (design §4), so every membership
-//! and scope check funnels through this module. That is what makes "membership is
-//! the only door to content" (design §5.4) a property of the system rather than a
-//! habit each handler has to remember.
-//!
-//! # Two doors, deliberately not merged
-//!
-//! A **user or service account** is authorised through channel membership. An
-//! **API key** carries its own scopes and its own channel list and is authorised
-//! against those (design §5.2) — resolving a key through membership would hand it
-//! rights nobody granted it, and resolving a member through key scopes would break
-//! the moment they have no key.
-//!
-//! # What a refusal says
-//!
-//! Always `scope.missing`, never "no such channel". Telling somebody a channel
-//! exists but is not theirs is an enumeration oracle: a caller who can distinguish
-//! the two can map the whole instance. The log records which it was; the caller
-//! does not.
+//! Authorisation: the one place that answers "may this principal do that here" (§4).
+//! Members are authorised by membership, keys by their own scopes and channels (§5.2).
+//! A refusal is always `scope.missing`, never "no such channel", so nothing enumerates.
 
 use notify_domain::{ApiKeyId, Channel, ChannelId, DomainError, Principal, Scope, UserId};
 use notify_ports::{ChannelRepository, Failure, PageRequest};
 use time::OffsetDateTime;
 
-/// The credential a request arrived with, once authenticated.
-///
-/// Kept separate from [`Principal`] because the *identity* and the *grant* are
-/// different things: the same service account acts with full membership through the
-/// UI and with a publish-only key from a pipeline.
+/// The credential a request arrived with, once authenticated; separate from
+/// [`Principal`] because one identity can act with different grants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Grant {
     /// Rights come from channel membership.
     Membership,
-    /// Rights come from an API key: these scopes, in these channels, and nothing
-    /// else (design §5.2).
+    /// Rights come from an API key: these scopes, in these channels, nothing else (§5.2).
     ApiKey {
         /// Which key, so its publish quota is its own (design §8.2).
         id: ApiKeyId,
@@ -42,30 +20,23 @@ pub enum Grant {
         scopes: Vec<Scope>,
         /// Where it may do it.
         channels: Vec<ChannelId>,
-        /// This key's own publish ceiling, if a platform-admin set one (design
-        /// §8.2, D24). Carried here rather than re-fetched at quota-check time:
-        /// the key was already loaded to build this `Grant` in the first place.
+        /// This key's own publish ceiling, if a platform-admin set one (§8.2).
         publish_per_minute: Option<u32>,
-        /// For a personal key, the groups its owner's last real login carried
-        /// (`DeviceRepository::remembered_groups`). Used only to check the owner
-        /// still holds what the key grants — never to widen it.
+        /// For a personal key, its owner's last-login groups; only used to check the owner
+        /// still holds what the key grants, never to widen it.
         owner_groups: Vec<String>,
     },
-    /// Rights come from a federated CI token, resolved from a trust policy
-    /// (design §5.3). Same shape as a key, different door.
+    /// Rights come from a federated CI token, resolved from a trust policy (§5.3).
     Federated {
-        /// Each channel, with exactly the scopes the policies grant *there*. Kept
-        /// paired: a flat channel list and a flat scope list would hand every
-        /// channel the union of every policy's scopes.
+        /// Each channel with exactly the scopes the policies grant there; kept paired so
+        /// channels do not get the union of every policy's scopes.
         grants: Vec<(ChannelId, Vec<Scope>)>,
     },
 }
 
 impl Grant {
-    /// Whether this grant, on its own, carries `scope` in `channel`.
-    ///
-    /// `Membership` returns `false` here: it needs the channel to answer, which is
-    /// what [`Authorizer`] is for.
+    /// Whether this grant, on its own, carries `scope` in `channel`; always `false` for
+    /// `Membership`, which needs the channel (see [`Authorizer`]).
     #[must_use]
     pub fn carries(&self, channel: &ChannelId, scope: Scope) -> bool {
         match self {
@@ -87,31 +58,14 @@ pub struct Caller {
     pub principal: Principal,
     /// Where its rights come from.
     pub grant: Grant,
-    /// The groups this request's token carried (design §11).
-    ///
-    /// Held on the *caller* rather than looked up, because that is the only place
-    /// they exist: group membership is a claim the identity provider signs, and
-    /// design §5.1 stores no session derived from it. A caller removed from a group
-    /// therefore loses that access on their next token, with nothing to reconcile.
-    ///
-    /// Empty for an API key, a service account and any issuer that emits no groups
-    /// at all — the last is scenario T29, and the required behaviour is that they
-    /// reach their individual bindings and nothing else.
+    /// The groups this request's token carried (§11); never stored, so removal from a
+    /// group takes effect on the next token. Empty for keys, service accounts and CI.
     pub groups: Vec<String>,
-    /// Whether this request carries the instance-wide platform role (design §5.4).
-    ///
-    /// **Derived, never stored**, on exactly the same terms as `groups` above and
-    /// for the same reason (§14.2): it is `[admin] oidc_groups` intersected with
-    /// what this token says. Somebody removed from the admin group loses the role on
-    /// their next token, with nothing to reconcile and no row to forget.
-    ///
-    /// Always `false` for an API key, a service account and a CI job. §5.4 reserves
-    /// it to OIDC users: a bot scoped to its channels does not administer the
-    /// platform, and no API path grants this — it comes from GitOps or not at all.
+    /// Whether this request carries the platform role (§5.4): `[admin] oidc_groups`
+    /// intersected with the token's groups, never stored. Always `false` for non-OIDC callers.
     pub platform_admin: bool,
-    /// When this credential stops being valid: the token's `exp`, or the key's
-    /// own expiry. `None` for a key that never expires. Long-lived connections
-    /// (SSE, WebSocket) close at this instant rather than outliving it.
+    /// When this credential stops being valid (`None`: never). Long-lived connections
+    /// close at this instant.
     pub expires_at: Option<OffsetDateTime>,
 }
 
@@ -138,16 +92,8 @@ impl Caller {
         }
     }
 
-    /// The user behind a person's own session, or a refusal.
-    ///
-    /// For what changes the account itself — its profile, its settings, the
-    /// channels it creates. A key or a CI token acts *for* a user, but a leaked
-    /// publish-only key must not be able to rename its owner or silence them.
-    ///
-    /// # Errors
-    ///
-    /// [`DomainError::NotAPerson`] for a principal that is not a user;
-    /// [`DomainError::SessionRequired`] for a user reached through a key.
+    /// The user behind a person's own session, or a refusal: a key acts for a user but
+    /// must not change the account itself.
     pub const fn ensure_person(&self) -> Result<UserId, DomainError> {
         match (&self.principal, &self.grant) {
             (Principal::User { id }, Grant::Membership) => Ok(*id),
@@ -156,13 +102,8 @@ impl Caller {
         }
     }
 
-    /// Refuse anyone without the platform role (design §5.4, scenario T30).
-    ///
-    /// # Errors
-    ///
-    /// [`DomainError::NotPlatformAdmin`] — a `403`. Not a `404`: the console is not
-    /// a secret, and hiding its existence from an authenticated user buys nothing
-    /// while making "why does this button do nothing" unanswerable.
+    /// Refuse anyone without the platform role (§5.4): a 403, not a 404, since the
+    /// console is not a secret.
     pub const fn ensure_platform_admin(&self) -> Result<(), DomainError> {
         if self.platform_admin {
             return Ok(());
@@ -190,11 +131,8 @@ impl Authorizer {
         Self { channels }
     }
 
-    /// Fetch a channel the caller holds `scope` in, or refuse.
-    ///
-    /// Returns the channel because almost every caller needs it next — its policy,
-    /// its members — and a second round trip to fetch what we just authorised
-    /// against would be a second chance to authorise against something different.
+    /// Fetch a channel the caller holds `scope` in, or refuse; returned so callers act
+    /// on exactly what was authorised.
     pub async fn authorize(
         &self,
         caller: &Caller,
@@ -203,21 +141,16 @@ impl Authorizer {
     ) -> Result<Channel, Failure> {
         let found = self.channels.get(channel).await?;
 
-        // A channel that does not exist and one the caller may not touch produce
-        // the same answer: distinguishing them enumerates the instance.
+        // Missing and forbidden answer the same, so the instance cannot be enumerated.
         let Some(found) = found else {
             return Err(Self::refuse(scope));
         };
 
         let allowed = match &caller.grant {
-            // Both doors in one call (design §11): named membership, or a group the
-            // token carries. Checking one and forgetting the other is exactly how a
-            // group-based instance shows everybody an empty inbox.
+            // Both doors (§11): named membership, or a group the token carries.
             Grant::Membership => found.allows(&caller.principal, &caller.groups, scope),
-            // A key still has to name a real channel, but its rights come from
-            // itself — not from whatever membership its owner happens to have.
-            // A personal key is also capped by that membership: it must not
-            // outlive its owner's removal from the channel.
+            // A key's rights come from itself; a personal key is also capped by its owner's
+            // membership, so it does not outlive their removal.
             grant @ Grant::ApiKey { owner_groups, .. } => {
                 grant.carries(channel, scope)
                     && (!matches!(caller.principal, Principal::User { .. })
@@ -270,8 +203,7 @@ impl Authorizer {
                 ..
             } => {
                 if !scopes.contains(&Scope::Subscribe) {
-                    // A publish-only key reads nothing, and gets an empty scope
-                    // rather than an error: listing zero channels is a valid answer.
+                    // A publish-only key reads nothing: an empty scope, not an error.
                     return Ok(Vec::new());
                 }
                 if matches!(caller.principal, Principal::User { .. }) {

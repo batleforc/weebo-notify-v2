@@ -1,8 +1,4 @@
 //! The identities the mock serves, read from `dev/oidc-mock/identities.toml`.
-//!
-//! TOML rather than the provider-specific YAML the third-party mock wanted: the
-//! rest of the project configures itself in TOML, and owning the format is the
-//! point of owning the mock.
 
 use std::path::{Path, PathBuf};
 
@@ -10,15 +6,10 @@ use figment::Figment;
 use figment::providers::{Format as _, Toml};
 use serde::Deserialize;
 
-/// Everything the mock knows: who it is, which client may talk to it, and who can
-/// log in.
+/// Everything the mock knows: who it is, which client may talk to it, and who can log in.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Identities {
-    /// What the mock calls itself in its discovery document.
-    ///
-    /// This is the string the server compares against its own `[oidc] issuer`, so
-    /// the two have to agree byte for byte — hence the normalisation in
-    /// [`Identities::with_issuer`].
+    /// The issuer in discovery; must match the server's `[oidc] issuer` byte for byte.
     #[serde(default = "default_issuer")]
     pub issuer: String,
 
@@ -36,8 +27,7 @@ pub struct Client {
     /// `client_id`, and also the audience of every access token it is issued.
     pub id: String,
 
-    /// Where the mock is allowed to send a browser back. Anything else is refused
-    /// in the browser rather than redirected to.
+    /// Where the mock may send a browser back; anything else is refused, not redirected.
     pub redirect_uris: Vec<String>,
 
     /// Where logout may send a browser back.
@@ -77,8 +67,7 @@ pub struct User {
     /// Whether the provider vouches for the address.
     #[serde(default = "default_true")]
     pub email_verified: bool,
-    /// Group memberships. **Empty means no `groups` claim at all**, not an empty
-    /// array — the T29 degradation path.
+    /// Group memberships; empty means no `groups` claim at all (the T29 degradation path).
     #[serde(default)]
     pub groups: Vec<String>,
 }
@@ -125,12 +114,7 @@ impl Identities {
         Ok(identities.with_issuer(issuer))
     }
 
-    /// Replace the issuer, normalised.
-    ///
-    /// The trailing slash is stripped because the server builds its discovery URL
-    /// by concatenation — a rule that keeps path-carrying issuers like Authentik's
-    /// working, and that turns one stray `/` into a mismatch nobody enjoys
-    /// debugging.
+    /// Replace the issuer, minus any trailing slash (the server appends the discovery path).
     #[must_use]
     pub fn with_issuer(mut self, mut issuer: String) -> Self {
         issuer.truncate(issuer.trim_end_matches('/').len());
@@ -138,20 +122,14 @@ impl Identities {
         self
     }
 
-    /// Register additional `redirect_uri`s the client may be sent back to, on top
-    /// of `dev/oidc-mock/identities.toml`.
-    ///
-    /// This is how Eclipse Che registers the workspace's public callback URL
-    /// without committing a per-workspace hostname to the identities file, the
-    /// same reasoning as [`Identities::with_issuer`] (§12.1).
+    /// Register extra `redirect_uri`s on top of the identities file (§12.1).
     #[must_use]
     pub fn with_extra_redirect_uris(mut self, uris: Vec<String>) -> Self {
         self.client.redirect_uris.extend(uris);
         self
     }
 
-    /// Register additional `post_logout_redirect_uri`s, on top of
-    /// `dev/oidc-mock/identities.toml`.
+    /// Register extra `post_logout_redirect_uri`s on top of the identities file.
     #[must_use]
     pub fn with_extra_post_logout_redirect_uris(mut self, uris: Vec<String>) -> Self {
         self.client.post_logout_redirect_uris.extend(uris);
@@ -162,8 +140,7 @@ impl Identities {
     pub(crate) fn authenticate(&self, username: &str, password: &str) -> Option<&User> {
         self.users
             .iter()
-            // Constant-time comparison would be theatre here: the passwords are in
-            // a committed file that ships with the repository.
+            // Not constant-time: these passwords are committed to the repository.
             .find(|user| user.username == username && user.password == password)
     }
 
@@ -275,8 +252,7 @@ mod tests {
 
     #[test]
     fn the_issuer_never_keeps_a_trailing_slash() {
-        // The server concatenates `/.well-known/openid-configuration` onto the
-        // issuer, so a trailing slash here becomes a double slash there.
+        // The server appends `/.well-known/openid-configuration`; a trailing slash would double it.
         let identities = committed().with_issuer("https://route.example/".to_owned());
 
         assert_eq!(identities.issuer, "https://route.example");
@@ -284,8 +260,7 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_there_is_an_error_and_not_an_empty_provider() {
-        // Starting anyway would produce a provider that refuses every login, which
-        // reads as "my password is wrong" rather than "my config path is wrong".
+        // An empty provider would read as "wrong password" rather than "wrong config path".
         let error = Identities::load(Path::new("/nonexistent/identities.toml")).unwrap_err();
 
         assert!(matches!(error, ConfigError::Unreadable { .. }));

@@ -1,25 +1,6 @@
-//! Declarative channels and service accounts (design §11).
-//!
-//! Config owns the shape of a managed object; the API may not reshape it. So this
-//! runs at boot and puts the database back the way the file says — which is what
-//! makes "delete a managed channel through the API, watch it resurrect" impossible
-//! rather than merely discouraged.
-//!
-//! # The three kinds of access binding, and why they are not alike
-//!
-//! * `oidc_group` becomes a [`GroupBinding`] on the channel. Nothing is stored per
-//!   user, and a token that stops carrying the group stops granting access — see
-//!   the type's own documentation.
-//! * `service_account` becomes a [`Membership`] straight away: the account is
-//!   declared in the same file, so it always exists by the time we get here.
-//! * `oidc_sub` and `email` become a [`Membership`] **only once that person has
-//!   logged in at least once**, because a membership needs a `UserId` and a user
-//!   row is created on first login (design §5.1).
-//!
-//! That last one is a real limitation and it is why this runs on a timer as well as
-//! at boot: somebody bound by email who has never logged in gains their access
-//! within one interval of their first login, not at the next restart. It is
-//! reported at reconcile time rather than passed over in silence.
+//! Declarative channels and service accounts (design §11): each pass puts the database back as the file says.
+//! Bindings: `oidc_group` → [`GroupBinding`]; `service_account` → [`Membership`]; `oidc_sub`/`email` →
+//! [`Membership`] only once that user has logged in, hence the timer.
 
 use std::sync::Arc;
 
@@ -53,11 +34,7 @@ pub(crate) struct ReconcileReport {
 }
 
 impl ReconcileReport {
-    /// The same numbers, in the shape the console reads (design §10.4bis).
-    ///
-    /// The timestamp is passed in rather than taken here: this type is what a pass
-    /// *did*, and when it happened is what the caller observed. It also keeps the
-    /// conversion testable without a clock.
+    /// The same numbers in the console's shape (design §10.4bis); the caller supplies the timestamp.
     pub(crate) fn as_pass(
         &self,
         at: OffsetDateTime,
@@ -82,12 +59,7 @@ struct Vocabulary {
     removed: Option<AuditAction>,
 }
 
-/// `[[trust_policy]]` blocks, as the log identifies them.
-///
-/// Keyed by issuer **and** subject, because §5.3 lets one forge carry several
-/// subject patterns with different rights: keying on the issuer alone would make
-/// "a second branch pattern was granted" indistinguishable from "the existing one
-/// was edited", and both would be reported against the same target.
+/// `[[trust_policy]]` blocks, keyed by issuer and subject (one forge may carry several patterns).
 fn trust_policies(config: &Config) -> anyhow::Result<Vec<Declaration>> {
     config
         .trust_policy
@@ -140,9 +112,7 @@ pub(crate) struct Reconciler {
     declarations: Arc<dyn DeclarationStore>,
     /// Where that goes.
     audit: Arc<dyn AuditLog>,
-    /// So a service account retired by [`Self::retire_departed_accounts`] loses
-    /// its keys in the same pass, not on whatever schedule they would otherwise
-    /// expire on.
+    /// Revokes the keys of accounts [`Self::retire_departed_accounts`] retires, in the same pass.
     keys: Arc<dyn ApiKeyRepository>,
 }
 
@@ -177,8 +147,7 @@ impl Reconciler {
     pub(crate) async fn execute(&self, config: &Config) -> anyhow::Result<ReconcileReport> {
         let mut report = ReconcileReport::default();
 
-        // Service accounts first: a channel binding can name one, and resolving a
-        // name that has not been written yet would drop the membership.
+        // Service accounts first: channel bindings can name them.
         for declared in &config.service_accounts {
             let id = ServiceAccountId::parse(&declared.id)?;
             let existing = self.accounts.get(&id).await?;
@@ -189,23 +158,13 @@ impl Reconciler {
                     display_name: declared.display_name.clone(),
                     description: declared.description.clone(),
                     origin: Origin::Managed,
-                    // A managed account has no owner: the configuration administers
-                    // it, and whoever happened to apply that config is not its
-                    // owner (§11).
+                    // Managed accounts have no owner; config administers them (§11).
                     created_by: None,
-                    // Preserved rather than reset: config declares that the account
-                    // exists, not when it was created.
+                    // Preserved: config declares existence, not creation time.
                     created_at: existing
                         .as_ref()
                         .map_or_else(|| self.clock.now(), |account| account.created_at),
-                    // Not carried forward from `existing`: declaring the account is
-                    // what config uses to mean "this exists and is active" — the same
-                    // rule `build()` applies to a managed channel reappearing after
-                    // being archived. An account `retire_departed_accounts` disabled
-                    // because it left the file must become usable again if the file
-                    // names it once more, or removing and re-adding an id would be a
-                    // one-way trip with no API able to undo it (`ensure_may_disable`
-                    // refuses `Origin::Managed` outright).
+                    // Declared means active: re-adding a retired id must re-enable it (no API can, for managed).
                     disabled_at: None,
                 })
                 .await?;
@@ -234,21 +193,13 @@ impl Reconciler {
         report.removed = self.drop_departed(config, &declared).await?
             + self.retire_departed_accounts(&declared_accounts).await?;
 
-        // Last, and after the writes: a pass that fails half way must not have
-        // announced changes it did not finish applying. The cost is the opposite
-        // failure — applied but unannounced, if the process dies here — and that is
-        // the right way round, because the next pass re-diffs against the same
-        // stored snapshot and announces them then.
+        // Journal after the writes: better applied-but-unannounced (re-diffed next pass) than the reverse.
         report.journalled = self.journal(config).await?;
 
         Ok(report)
     }
 
-    /// Whether this configuration is the one the last pass recorded.
-    ///
-    /// The same comparison [`Self::journal`] makes, asked without writing: `false`
-    /// means some pass since applied a different file, which is how a replica holding
-    /// an outdated copy knows to stand aside on its timer.
+    /// Whether this configuration is the one the last pass recorded; `false` means stand aside on the timer.
     pub(crate) async fn is_current(&self, config: &Config) -> anyhow::Result<bool> {
         for (kind, declared) in [
             (DeclarationKind::TrustPolicy, trust_policies(config)?),
@@ -263,10 +214,7 @@ impl Reconciler {
         Ok(true)
     }
 
-    /// Write what the file changed since the last pass into the audit log (§13).
-    ///
-    /// Returns how many entries were written, which is zero on a steady instance —
-    /// the property that keeps this log readable, given the pass runs every minute.
+    /// Write what the file changed since the last pass into the audit log (§13); zero when steady.
     async fn journal(&self, config: &Config) -> anyhow::Result<usize> {
         let at = self.clock.now();
         let mut written = 0;
@@ -293,12 +241,7 @@ impl Reconciler {
             (
                 DeclarationKind::ServiceAccount,
                 managed_accounts(config),
-                // Still `None`, but not for the old reason: a departed managed
-                // account *is* retired now (disabled, its keys revoked) by
-                // `retire_departed_accounts`, which writes its own audit entry —
-                // richer than this generic declaration-diff could produce, since
-                // it carries how many keys that took. Wiring this vocabulary's
-                // `removed` too would double-journal the same event.
+                // `None`: `retire_departed_accounts` journals departed accounts itself, with key counts.
                 Vocabulary {
                     added: actions::MANAGED_ACCOUNT_ADDED,
                     changed: actions::MANAGED_ACCOUNT_CHANGED,
@@ -372,10 +315,7 @@ impl Reconciler {
                 actor: AuditActor::configuration(),
                 action: *action,
                 target: Some(key.to_owned()),
-                // A managed channel's entry names its channel, so the console's
-                // per-channel filter finds it; the other two kinds are not about
-                // one channel, and a trust policy naming the first of several it
-                // grants would be a half-truth.
+                // Only channel entries name a channel, for the console's per-channel filter.
                 channel: (kind == DeclarationKind::Channel)
                     .then(|| ChannelId::parse(key))
                     .transpose()?,
@@ -394,8 +334,7 @@ impl Reconciler {
     ) -> anyhow::Result<Channel> {
         let id = ChannelId::parse(&managed.id)?;
         let mut channel = Channel::dynamic(id.clone(), managed.name.as_deref())?;
-        // Declared in config, so config owns its shape and the API must refuse to
-        // reshape it (§11).
+        // Config owns its shape; the API must refuse to reshape it (§11).
         channel.origin = Origin::Managed;
         channel.policy = ChannelPolicy {
             ttl: TtlPolicy {
@@ -403,9 +342,7 @@ impl Reconciler {
                 max: managed.max_ttl,
                 allow_forever: TtlPolicy::default().allow_forever,
             },
-            // Absent means the published default (one week), not "never": a
-            // managed channel that says nothing about `close_after` gets the
-            // behaviour §7.2bis describes, the same way it gets the default TTL.
+            // Absent means the published default (one week, §7.2bis), not "never".
             close_after: managed
                 .close_after
                 .unwrap_or(ChannelPolicy::default().close_after),
@@ -413,11 +350,7 @@ impl Reconciler {
                 .default_priority
                 .unwrap_or(ChannelPolicy::default().default_priority),
             receipts_enabled: managed.receipts,
-            // `limits.publish_per_min` (§8.2, §11). Absent means the published
-            // default, which is why this is threaded through as `Option` the whole
-            // way rather than defaulted to 600 here: the number lives in the
-            // adapter that enforces it, and a second copy of it in the reconciler
-            // is a second copy to drift.
+            // `limits.publish_per_min` (§8.2, §11); `None` keeps the adapter's default.
             publish_per_minute: managed.limits.and_then(|limits| limits.publish_per_min),
         };
 
@@ -450,14 +383,13 @@ impl Reconciler {
             return Ok(());
         }
 
-        // The two that need a user row. `find_by_*` answering `None` is not an
-        // error: it means that person has not logged in yet.
+        // These need a user row; `None` means not logged in yet.
         let found = if let Some(subject) = &access.oidc_sub {
             self.users.find_by_subject(subject).await?
         } else if let Some(email) = &access.email {
             self.users.find_by_email(email).await?
         } else {
-            // The config validator already refuses a binding that names nothing.
+            // The config validator refuses a binding naming nothing.
             return Ok(());
         };
 
@@ -497,9 +429,7 @@ impl Reconciler {
                     tracing::warn!(channel = %channel.id, "deleted: it left the configuration");
                 }
                 OnRemoved::Archive => {
-                    // Handed back to the API rather than deleted. Deleting takes the
-                    // history with it, and a config typo should not — which is why
-                    // this is the default (§11).
+                    // Handed back to the API rather than deleted, keeping history (the default, §11).
                     let mut archived = channel.clone();
                     archived.origin = Origin::Dynamic;
                     self.channels.upsert(&archived).await?;
@@ -515,17 +445,8 @@ impl Reconciler {
         Ok(removed)
     }
 
-    /// Disable managed service accounts that left the configuration, revoking
-    /// their keys with them — the service-account analogue of
-    /// [`Self::drop_departed`] above.
-    ///
-    /// Disable, never archive-to-dynamic: a stray managed account is usually
-    /// the id changing between passes rather than the account really being
-    /// withdrawn (see the module doc's note on `service_account` bindings),
-    /// and a dynamic account is still fully usable — the opposite of what a
-    /// stray one needs. Idempotent: an already-disabled account is skipped,
-    /// so a steady instance reconciling every SIGHUP does not re-revoke keys
-    /// or re-journal the same retirement forever.
+    /// Disable managed service accounts that left the configuration and revoke their keys.
+    /// Disabled rather than made dynamic (a stray is usually an id change); already-disabled ones are skipped.
     async fn retire_departed_accounts(
         &self,
         declared: &[ServiceAccountId],
@@ -539,16 +460,7 @@ impl Reconciler {
             }
 
             let now = self.clock.now();
-            // Keys revoked *before* the account is marked disabled, on the same
-            // terms `DeactivateServiceAccount` already sets for the API path: the
-            // account row alone would stop only *new* authentications, and a key
-            // left usable is a credential still in somebody's CI configuration.
-            // The order also makes a failure between the two calls self-healing —
-            // `disabled_at` is the flag this loop treats as "already retired", so
-            // it must not be persisted until the keys are actually gone. If the
-            // upsert below fails, the next pass finds the account still enabled
-            // and revokes (a no-op the second time) and disables it again, rather
-            // than skipping it forever with its keys still live.
+            // Keys first: `disabled_at` marks "retired", so a failure between calls is retried next pass.
             let revoked = self.keys.revoke_all_for(&account.principal(), now).await?;
             account.disable(now);
             self.accounts.upsert(&account).await?;
@@ -668,8 +580,7 @@ mod tests {
             "the policy that arrived, and nothing else"
         );
         assert_eq!(entries[0].action.as_str(), "trust_policy.added");
-        // The point of D28: `[[trust_policy]]` is what lets a forge publish here,
-        // and editing it left no trace at all in the log §13 says to replay.
+        // `[[trust_policy]]` edits must leave a trace in the log.
         assert_eq!(
             entries[0].actor,
             notify_ports::AuditActor::configuration(),
@@ -692,9 +603,7 @@ mod tests {
         reconciler.execute(&config).await.unwrap();
         reconciler.execute(&config).await.unwrap();
 
-        // The pass runs every sixty seconds. A row per pass would bury the rows
-        // that matter under the ones that do not, which is the failure §13's own
-        // "what does not go in" paragraph is about.
+        // Steady passes must write nothing, or the log is buried.
         assert_eq!(journal(&store).await.len(), after_first);
     }
 
@@ -727,8 +636,7 @@ mod tests {
             .unwrap();
         let detail = changed.detail.as_ref().unwrap();
 
-        // "A trust policy changed" is not the sentence §13 promises. What it
-        // changed *to*, and *from*, is the whole reason to read the log.
+        // The entry must carry both before and after.
         assert!(detail.get("declaration").is_some());
         assert!(
             detail.get("previous").is_some(),
@@ -764,9 +672,7 @@ mod tests {
             .await
             .unwrap();
 
-        // The snapshot is the whole block and not a chosen few fields: `scopes`
-        // decides what a forge may *do*, and a comparison that skipped it would call
-        // a widened policy unchanged — the quietest way to lose an audit trail.
+        // Whole-block snapshot: a widened `scopes` must not compare equal.
         assert!(
             journal(&store)
                 .await
@@ -788,8 +694,7 @@ mod tests {
         reconciler.execute(&before).await.unwrap();
         reconciler.execute(&Config::default()).await.unwrap();
 
-        // Withdrawing is the half an upsert-only store would lose, and it is the
-        // half that matters most: a forge that may no longer publish.
+        // Withdrawal: the half that matters most.
         assert!(
             journal(&store)
                 .await
@@ -819,9 +724,7 @@ mod tests {
 
         reconciler(&store, &clock).execute(&config).await.unwrap();
 
-        // Doing trust policies alone would have fixed a third of the problem while
-        // looking like the whole of it: the same reconciler writes all three, and
-        // none of them were logged.
+        // All three kinds are journalled.
         let actions: Vec<&str> = journal(&store)
             .await
             .iter()
@@ -847,8 +750,7 @@ mod tests {
             .await
             .unwrap();
 
-        // So the console's per-channel filter finds it. A trust policy has no one
-        // channel — it can grant several — so only this kind carries the field.
+        // Only channel entries carry the channel field.
         let entries = journal(&store).await;
         let entry = entries
             .iter()
@@ -1031,8 +933,7 @@ mod tests {
             secret_hash: "stub$secret".to_owned(),
         });
 
-        // The next sync's config no longer names it — the id churned, or it was
-        // genuinely withdrawn; either way this instance must stop trusting it.
+        // No longer named: this instance must stop trusting it.
         let report = reconciler(&store, &clock)
             .execute(&config(Vec::new()))
             .await
@@ -1144,9 +1045,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_configured_publish_limit_reaches_the_channel_policy() {
-        // The step that was missing: `limits.publish_per_min` parsed cleanly and
-        // stopped there. It is on the policy now, which is what the publish path
-        // reads (§8.2, §11).
+        // The parsed limit must reach the policy the publish path reads (§8.2, §11).
         let store = InMemory::new();
         let clock = TestClock::new();
         let declared = config(vec![ManagedChannel {

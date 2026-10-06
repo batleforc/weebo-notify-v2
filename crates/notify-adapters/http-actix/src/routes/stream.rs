@@ -1,11 +1,5 @@
-//! The live transports: SSE and WebSocket (design §8.1, ADR-0001).
-//!
-//! Both carry the same events off the same cursor, and both are thin: a poke says
-//! "something landed", and the connection reads the authoritative rows from the
-//! event log through [`notify_app::SyncBacklog`] — the same use case `GET /sync`
-//! calls. That is what keeps authorisation and visibility in one place rather than
-//! re-derived per transport, and it is why "the events you missed" and "the events
-//! arriving now" cannot disagree.
+//! The live transports, SSE and WebSocket (design §8.1, ADR-0001). A poke only wakes
+//! the connection, which reads rows via [`notify_app::SyncBacklog`] like `GET /sync`.
 
 use std::time::Duration;
 
@@ -22,71 +16,29 @@ use crate::extract::{Authenticated, csv};
 use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
 
-/// Proxy-friendly, and short enough that a dead connection is noticed within a
-/// reconnect rather than within a TCP timeout (design §8.1).
+/// Short enough that a dead connection is noticed within a reconnect (design §8.1).
 const KEEP_ALIVE: Duration = Duration::from_secs(25);
 
-/// How many events a slow client may fall behind before it is dropped.
-///
-/// Dropping is the right answer: the client reconnects with `Last-Event-ID` and
-/// replays exactly what it missed, whereas an unbounded buffer turns one stalled
-/// browser tab into a memory leak on the replica.
+/// How far a slow client may fall behind before it is dropped; it then replays via
+/// `Last-Event-ID` instead of the buffer growing unbounded.
 const BACKPRESSURE: u32 = 64;
 
-/// How often a live connection re-checks the credential it opened with.
-///
-/// Expiry needs no re-check: the stream closes at the credential's own
-/// `expires_at`. This catches revocation and membership changes, which can
-/// therefore lag by up to this much.
+/// How often a live connection re-checks its credential (revocation, membership);
+/// expiry is handled separately at `expires_at`.
 const REAUTHENTICATE: Duration = Duration::from_secs(300);
 
-/// Holds a §8.2 connection slot and `realtime_connections{transport}` up for as
-/// long as it lives (design §13).
-///
-/// One guard for both because they have exactly the same lifetime and exactly the
-/// same hard part — the decrement. Two guards would be two chances to get that
-/// wrong, and the failure modes differ in severity: a leaked gauge misleads an
-/// operator, a leaked slot locks somebody out of their own inbox until the replica
-/// restarts.
-///
-/// A guard and not two calls, because the interesting half is the decrement: a
-/// stream ends when the client goes away, when the task is aborted at shutdown, or
-/// when the log becomes unreadable — and a handler that decremented on its own
-/// success path would leak a connection on every one of those. The gauge also feeds
-/// the HPA (§11), so a leak there is an instance that never scales back down.
-///
-/// It is **eventually** accurate, and how long "eventually" is differs by transport
-/// — which is worth knowing before reading the gauge as a live number:
-///
-/// * **SSE** waits on the receiver being dropped as well as on the next poke, so a
-///   departure is learned without anything being published. The remaining lag is the
-///   responder's: it drops its receiver on the first write the socket actually
-///   refuses, and the socket refuses one write later than one would expect — the
-///   kernel absorbs the first. Measured on a killed client with nothing in flight:
-///   **off the gauge 50 s later**, two [`KEEP_ALIVE`]s, no publish involved;
-/// * **WebSocket** reads the incoming stream, so a client that closes, or a
-///   connection that errors, comes off as soon as the frame or the error arrives.
-///   A peer that vanishes without a word is still only found by the next write.
-///
-/// Measured rather than assumed, and the measurement is why the select below exists:
-/// waiting on pokes alone, a killed client survived a keep-alive *and* a first
-/// publish, and only came off the gauge at the **second** — which on a quiet channel
-/// is however long that takes.
+/// Holds a §8.2 connection slot and `realtime_connections{transport}` (design §13) for
+/// as long as it lives; released on drop so every exit path decrements.
 struct Connected {
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     transport: notify_ports::StreamKind,
-    /// Released on drop; never read. Held rather than dropped immediately, which is
-    /// the entire mechanism — see [`crate::slots::StreamSlot`].
+    /// Released on drop; never read (see [`crate::slots::StreamSlot`]).
     _slot: crate::slots::StreamSlot,
 }
 
 impl Connected {
-    /// Take a slot and start counting, or refuse with the `429` §8.2 asks for.
-    ///
-    /// Refusing *here* rather than after the backlog is drained is deliberate: the
-    /// twenty-first connection is turned away before it costs a page of events, and
-    /// a client over its ceiling learns so from a status code instead of from a
-    /// stream that goes quiet.
+    /// Take a slot and start counting, or refuse with the `429` §8.2 asks for, before
+    /// any backlog work.
     fn open(
         state: &ApiState,
         caller: &Caller,
@@ -119,8 +71,7 @@ impl Drop for Connected {
 pub struct StreamParams {
     /// Comma-separated channel ids; absent means every channel the caller may read.
     pub channels: Option<String>,
-    /// Resume after this cursor. `Last-Event-ID` wins over it when both are sent,
-    /// because that one is the browser reconnecting rather than the page asking.
+    /// Resume after this cursor; `Last-Event-ID` wins when both are sent.
     pub cursor: Option<String>,
     /// Which device is connected, so its cursor advances as it reads.
     pub device: Option<String>,
@@ -152,8 +103,6 @@ impl Connection {
             .map(str::parse::<DeviceId>)
             .transpose()?;
 
-        // `Last-Event-ID` beats `?cursor=`: the header is the browser reconnecting
-        // on its own, and it knows better than the URL the page was opened with.
         let resume = last_event_id
             .or(params.cursor.as_deref())
             .map(str::parse::<Cursor>)
@@ -170,12 +119,8 @@ impl Connection {
         })
     }
 
-    /// One page after the current cursor, advancing it; `true` when more follow.
-    ///
-    /// A poke says "at least one thing landed", never how much, so callers loop
-    /// until this says there is no more — sending each page before asking for the
-    /// next. Collecting the whole backlog first would hold an old cursor's entire
-    /// visible log in memory before the first byte went out.
+    /// One page after the current cursor, advancing it; `true` when more follow. Callers
+    /// loop page by page so an old cursor's backlog is never held in memory at once.
     async fn page(&mut self) -> Result<(Vec<Event>, bool), ApiError> {
         let page = self
             .sync
@@ -194,12 +139,7 @@ impl Connection {
             self.cursor = last.cursor;
         }
 
-        // The answer to "should this make a noise for *this* reader" is right
-        // here and used to be thrown away: the sync use case computes
-        // `deferred_by_dnd` per caller (§7.4) and this loop kept only the
-        // events. Every client then re-derived the rule for itself — three
-        // implementations of it at the last count (§14.4, D22). Carrying it
-        // costs a lookup per event and removes the reason they existed.
+        // Carry the per-reader `deferred_by_dnd` (§7.4) so clients needn't re-derive it.
         let muted = &page.deferred_by_dnd;
         let events = page
             .events
@@ -217,11 +157,7 @@ impl Connection {
         Ok((events, page.next.is_some()))
     }
 
-    /// Check the credential the connection opened with again.
-    ///
-    /// A stream outlives the request that authenticated it; without this, a token
-    /// that expired, a key that was revoked or a membership that was removed would
-    /// keep receiving for as long as the socket stayed up. `false` ends the stream.
+    /// Re-check the credential the connection opened with; `false` ends the stream.
     async fn still_authorised(&mut self, state: &ApiState, credential: &Credential) -> bool {
         match state.authenticate.execute(credential.clone()).await {
             Ok(caller) => {
@@ -232,8 +168,7 @@ impl Connection {
         }
     }
 
-    /// Resolves when the credential this stream runs on expires; never, for one
-    /// that does not.
+    /// Resolves when the stream's credential expires; never, for one that does not.
     async fn expired(&self, state: &ApiState) {
         match state.authenticate.time_left(&self.caller) {
             Some(left) => tokio::time::sleep(left).await,
@@ -242,19 +177,11 @@ impl Connection {
     }
 }
 
-/// Render one event the way the SSE contract asks (design §8.1).
-///
-/// The `data:` is the whole event, not just its payload. §8.1 shows `channel_id`
-/// inside the revision frame for a reason: a client that has never seen a
-/// notification cannot file it anywhere without knowing its channel, and the
-/// alternative is one `GET /notifications/{id}` per arrival — exactly the
-/// follow-up [`notify_ports::RevisionEvent`] is denormalised to avoid.
-///
-/// It also makes the two live transports carry byte-identical JSON, which is what
-/// §8.1 promises when it says the WebSocket transports the same events as frames.
+/// Render one event as SSE (design §8.1): `data:` is the whole event, channel included,
+/// byte-identical to the WebSocket frame.
 fn as_sse(event: &Event) -> Result<sse::Data, serde_json::Error> {
     Ok(sse::Data::new_json(event)?
-        // The `id:` is the cursor, which is what `Last-Event-ID` replays.
+        // The `id:` is the cursor, which `Last-Event-ID` replays.
         .id(event.cursor.to_string())
         .event(event.kind().as_str()))
 }
@@ -294,10 +221,7 @@ pub(crate) async fn stream(
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
 
-    // Counted from here, where the connection is real, rather than from the first
-    // poke — a client that connects and never receives anything is still one this
-    // replica is holding open. First of all, too: this is the one refusal that
-    // should cost nothing, so the ceiling is checked before the store is touched.
+    // First, so the one refusal that should cost nothing never touches the store.
     let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::Sse)?;
     let credential = credential_of(&request)?;
     let mut connection =
@@ -307,10 +231,8 @@ pub(crate) async fn stream(
     let (sender, receiver) = tokio::sync::mpsc::channel(BACKPRESSURE as usize);
     let stream = sse::Sse::from_infallible_receiver(receiver).with_keep_alive(KEEP_ALIVE);
 
-    // Everything the caller missed goes out before the first poke, so a reconnect
-    // is seamless rather than "you get what happens from now on". The first page
-    // here, so a refusal is still a status code; the rest from the task, one page
-    // at a time — the channel holds exactly one page until the response is polled.
+    // Backlog before live: the first page here (a refusal is still a status code), the
+    // rest from the task one page at a time.
     let (first, mut more) = connection.page().await?;
     for event in &first {
         let data = as_sse(event).map_err(port_error)?;
@@ -320,9 +242,7 @@ pub(crate) async fn stream(
     }
 
     actix_web::rt::spawn(async move {
-        // Moved into the task, so the gauge comes back down whichever way this ends:
-        // the client going away, the log becoming unreadable, or the runtime
-        // dropping the task at shutdown.
+        // Moved into the task so the gauge drops however it ends.
         let _connected = connected;
         let mut reauthenticate = tokio::time::interval(REAUTHENTICATE);
         reauthenticate.tick().await;
@@ -343,8 +263,7 @@ pub(crate) async fn stream(
                         tracing::error!(cursor = %event.cursor, "an event that will not serialise");
                         continue;
                     };
-                    // A send failure is the client having gone away, which is the
-                    // ordinary end of a stream rather than something to report.
+                    // Send failure: the client left, the ordinary end of a stream.
                     if sender.send(data.into()).await.is_err() {
                         return;
                     }
@@ -352,11 +271,7 @@ pub(crate) async fn stream(
             }
 
             tokio::select! {
-                // The client leaving, learned without waiting for somebody to
-                // publish. Waiting only on pokes was measurably wrong: a killed
-                // client stayed on the gauge through a keep-alive and a first
-                // publish, and on a channel that is quiet overnight it would have
-                // stayed there overnight — with the HPA reading the number.
+                // Learn the client left without waiting for a publish.
                 () = sender.closed() => return,
                 () = connection.expired(&state) => return,
                 _ = reauthenticate.tick() => {
@@ -410,8 +325,7 @@ pub(crate) async fn websocket(
     params: web::Query<StreamParams>,
 ) -> Result<HttpResponse, ApiError> {
     let params = params.into_inner();
-    // Before the handshake, for the same reason as SSE: a client over its ceiling
-    // gets a status code rather than an upgraded socket that closes on its own.
+    // Before the handshake, as for SSE.
     let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::WebSocket)?;
     let credential = credential_of(&request)?;
     let mut connection = Connection::open(&state, caller.0, &params, None).await?;
@@ -420,8 +334,7 @@ pub(crate) async fn websocket(
     let (response, mut session, mut incoming) = match actix_ws::handle(&request, body) {
         Ok(parts) => parts,
         Err(error) => {
-            // A failed handshake is the client not sending an upgrade, which is a
-            // request problem rather than ours.
+            // No upgrade sent: a request problem, not ours.
             tracing::debug!(%error, "websocket handshake refused");
             return Err(notify_domain::DomainError::Malformed {
                 field: "upgrade",
@@ -461,8 +374,7 @@ pub(crate) async fn websocket(
             }
 
             tokio::select! {
-                // Read what the client sends, if only to learn it left: without
-                // this a dead socket held its slot until the next publish.
+                // Read incoming frames to learn the client left.
                 message = incoming.next() => match message {
                     Some(Ok(actix_ws::Message::Ping(bytes))) => {
                         if session.pong(&bytes).await.is_err() {

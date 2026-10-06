@@ -1,67 +1,28 @@
 version: "3"
 
-# The Android half of the Tauri shell (M6, design §10bis.4).
-#
-# The toolchain itself is `mise.android.toml`, loaded with `MISE_ENV=android` — see
-# that file for why it is not in the dev image. What lives here is the part mise
-# cannot express: the SDK *components*, which are versioned by Google's own
-# `sdkmanager` rather than by a mise version string, and which are gigabytes.
-#
-# Nothing in this file runs in CI. `web/src-tauri` is not a workspace member and no
-# gate builds it (D13); these tasks exist so that the person who does build it is
-# not reverse-engineering a toolchain from a wiki page.
+# The Android half of the Tauri shell (§10bis.4). The toolchain is `mise.android.toml`
+# (`MISE_ENV=android`); this installs the multi-GB SDK components mise can't express. Not run in CI.
 
 silent: true
 
 vars:
-  # Persistent, and deliberately outside mise's install tree: mise owns
-  # `$MISE_DATA_DIR/installs/...` and replaces it on a version bump, which would
-  # take three gigabytes of SDK with it. A devfile volume backs this path, so it
-  # also survives a workspace restart.
-  #
-  # Overridable for tests and for anyone whose home is elsewhere.
-  #
-  # `ANDROID_SDK_ROOT` is authoritative here rather than merely a hint, because
-  # `mise.android.toml` now sets it. It has to: the `vfox-android-sdk` plugin exports
-  # the same variable pointing at *its own* install directory, and Task's `default`
-  # filter only fires on an unset value — so before that `[env]` block existed, this
-  # line silently resolved to the one directory the comment above rules out, and
-  # `task android:sdk` put three gigabytes there.
+  # Persistent and outside mise's install tree (a version bump would wipe it), on a devfile volume.
+  # `mise.android.toml` sets ANDROID_SDK_ROOT so vfox-android-sdk's own path doesn't win.
   SDK_ROOT: '{{.ANDROID_SDK_ROOT | default "/home/user/.android-sdk"}}'
-  # The *development* keystore, minted by `keystore` below into the directory that
-  # already holds every other locally-minted secret (`dev/secrets/`, ignored by git
-  # and deliberately not allowlisted for gitleaks — see `.gitignore`).
-  #
-  # This is NOT the release keystore and must never become it: it is generated on
-  # each developer's machine with a published password, so an APK signed with it is
-  # trustworthy to exactly one person. The release key is the app's permanent
-  # identity (§3.2bis), lives only as a CI secret, and is overridden here by
-  # pointing `KEYSTORE`/`KEYSTORE_PASS` at it.
+  # The development keystore (in gitignored `dev/secrets/`), never the release key: that lives
+  # only in CI and is used by pointing `KEYSTORE`/`KEYSTORE_PASS` at it (§3.2bis).
   KEYSTORE: '{{.KEYSTORE | default "dev/secrets/android-dev.keystore"}}'
   KEYSTORE_PASS: '{{.KEYSTORE_PASS | default "android"}}'
   KEYSTORE_ALIAS: '{{.KEYSTORE_ALIAS | default "weebo-notify-dev"}}'
-  # Pinned for the same reason every other version in this repository is: a
-  # toolchain that moves under a build nobody asked to change is a build nobody can
-  # reproduce.
-  #
-  # These are 36 rather than 35 because `gen/android/build.gradle.kts` now exists and
-  # pins `compileSdk = 36` / `targetSdk = 36`, which is what the comment here always
-  # said to follow. The mismatch was not cosmetic while it lasted: Gradle does not
-  # fail on a missing compileSdk, it downloads one — so a build accepted the SDK 36
-  # licence on its own and fetched the platform mid-run, which is exactly the
-  # "who agreed to what" that `sdk` below exists to keep answerable.
+  # Pinned; must match `compileSdk`/`targetSdk` in `gen/android/build.gradle.kts`, or Gradle
+  # silently downloads (and accepts the licence for) another platform.
   PLATFORM: "android-36"
   BUILD_TOOLS: "36.0.0"
-  # NDK 27, side-by-side. This is what actually links `notify-client-core` for each
-  # Android target — `rusqlite`'s `bundled` feature already means "building a client
-  # needs a C compiler", and this is that compiler, cross-targeted.
+  # NDK 27: the C cross-compiler `rusqlite`'s bundled SQLite needs.
   NDK: "27.2.12479018"
   RUST_TARGETS: "aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android"
 
-  # Reported by `doctor`, reused as a gate by `build` and `dev` — the same shape
-  # `.tasks/tauri.yaml` uses for the GTK/WebKit stack, and for the same reason: the
-  # answer differs per machine, so the failure should be a paragraph rather than a
-  # wall of Gradle output.
+  # Reported by `doctor`, reused as a gate by `build` and `dev` (as in `.tasks/tauri.yaml`).
   NEED_TOOLCHAIN: |
     if ! command -v cargo-tauri >/dev/null 2>&1; then
       echo "The Tauri CLI is not on PATH — the Android toolchain is opt-in."
@@ -79,10 +40,8 @@ vars:
 
 tasks:
   sdk:
-    desc: "Install the Android SDK components and Rust targets Tauri needs (run once per workspace, ~3 GB)"
-    # Not part of `task init`: Android is opt-in, and three gigabytes is not
-    # something to download on behalf of somebody who cloned the repository to fix
-    # a typo in the server.
+    desc: "Install the Android SDK components and Rust targets Tauri needs (once per workspace, ~3 GB)."
+    # Not part of `task init`: Android is opt-in.
     cmds:
       - cmd: |
           set -eu
@@ -92,10 +51,7 @@ tasks:
             exit 1
           fi
           mkdir -p "{{.SDK_ROOT}}"
-      # Accepting the licences is a real decision, and it is recorded on disk under
-      # {{.SDK_ROOT}}/licenses. It runs here, as the person building, rather than in
-      # an image build on everyone's behalf — "who agreed to what" should have an
-      # answer.
+      # Licences are accepted here, by the person building, and recorded under {{.SDK_ROOT}}/licenses.
       - yes | sdkmanager --sdk_root="{{.SDK_ROOT}}" --licenses > /dev/null
       - >-
         sdkmanager --sdk_root="{{.SDK_ROOT}}"
@@ -103,42 +59,24 @@ tasks:
         "platforms;{{.PLATFORM}}"
         "build-tools;{{.BUILD_TOOLS}}"
         "ndk;{{.NDK}}"
-      # The targets are the project's business rather than the image's, which is why
-      # they are here and not in a Containerfile.
       - rustup target add {{.RUST_TARGETS}}
       - task: doctor
 
   init:
-    desc: "Generate web/src-tauri/gen/android (run once — the result is committed)"
-    # Separate from `build` rather than folded into it, because it is not idempotent
-    # in the way a build is: it rewrites the generated Gradle project, and that
-    # project is committed (see the note in `.gitignore`). Running it is a decision
-    # to regenerate, which belongs in a diff somebody reads.
+    desc: "Generate web/src-tauri/gen/android once (the result is committed)."
+    # Separate from `build`: it rewrites the committed Gradle project, so regenerating is a decision.
     cmds:
       - cmd: |
           {{.NEED_TOOLCHAIN}}
           cd web/src-tauri && NDK_HOME="{{.SDK_ROOT}}/ndk/{{.NDK}}" cargo tauri android init
 
   build:
-    desc: "Build the Android APK and AAB — release, unsigned (M6, §10bis.4)"
-    # `NDK_HOME` is set here rather than left to the environment: Tauri will happily
-    # discover *an* NDK, and a build that picks up whichever one a machine happens to
-    # have is the reproducibility problem this file's pinned versions exist to avoid.
-    #
-    # The output is UNSIGNED, and on Android that means it does not install at all —
-    # not "installs with a warning". `PackageManager` rejects an APK with no v1/v2/v3
-    # signature outright, and `adb install -t` does not change that: `-t` allows a
-    # *test-only* APK, which is a manifest flag, not a missing signature.
-    #
-    # Signing needs a keystore (§3.2bis lists it alongside cosign and the minisign
-    # updater key as its own custody problem), and this repository has no story for
-    # one yet. Saying so here is the honest output until it does — see `apksigner`
-    # in the message below for what turns this file into something installable.
+    desc: "Build the unsigned release Android APK and AAB (§10bis.4)."
+    # NDK_HOME pinned so Tauri doesn't pick whichever NDK is around. Output is unsigned and won't
+    # install at all until `task android:sign`.
     cmds:
       - cmd: |
-          # `set -e`, for the reason spelled out in `.tasks/tauri.yaml`'s `bundle`:
-          # without it the trailing `echo`s are the block's last command, so a build
-          # that failed still exits 0 and prints a path to whatever was there before.
+          # `set -e`: otherwise a failed build still exits 0 (see `.tasks/tauri.yaml`'s `bundle`).
           set -eu
           {{.NEED_TOOLCHAIN}}
           # The CSP pinned to `web/public/env.js`'s origins (`.tasks/tauri.yaml`, `build`).
@@ -157,16 +95,9 @@ tasks:
           echo "    --out signed.apk <apk>"
 
   keystore:
-    desc: "Mint the local development keystore (once per machine — never the release key)"
-    # Why a task and not a line in a README: the alternative people reach for is
-    # `~/.android/debug.keystore`, which Android Studio generates and which differs
-    # per machine with no record of what is in it. This one is reproducible, lives
-    # with the project's other local secrets, and says what it is in its own
-    # distinguished name.
-    #
-    # 10000 days because a dev key that expires mid-year produces a signing failure
-    # nobody can read; RSA 4096 to match what a release key should be, so that
-    # signing here exercises the same path.
+    desc: "Mint the local development keystore once per machine (never the release key)."
+    # Reproducible, unlike `~/.android/debug.keystore`. 10000 days so it doesn't expire mid-year;
+    # RSA 4096 to exercise the release signing path.
     status:
       - test -f {{.KEYSTORE}}
     cmds:
@@ -188,17 +119,10 @@ tasks:
           echo "An APK signed with this key is installable by you and trusted by nobody."
 
   sign:
-    desc: "Sign the built APK so a device will install it (development key by default)"
-    # Android will not install an unsigned APK at all, so this is not an optional
-    # hardening step on top of `build` — it is the rest of `build`, split out only
-    # because the key it needs is a decision rather than a default.
-    #
-    # Overriding for a real release:
+    desc: "Sign the built APK so a device will install it (development key by default)."
+    # Android won't install an unsigned APK. For a release:
     #   KEYSTORE=... KEYSTORE_PASS=... KEYSTORE_ALIAS=... task android:sign
-    #
-    # `--v2-signing-enabled`/`--v3-` are left at apksigner's defaults on purpose: it
-    # already picks the schemes that match the `minSdk` Gradle compiled against, and
-    # naming them here would freeze that decision at the day this was written.
+    # Signature schemes stay at apksigner's defaults (matched to minSdk).
     deps: [keystore]
     vars:
       APK: '{{.APK | default "web/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"}}'
@@ -221,21 +145,15 @@ tasks:
             --ks-key-alias "{{.KEYSTORE_ALIAS}}" \
             --out "{{.SIGNED}}" \
             "{{.APK}}"
-          # Verifying here rather than trusting the exit code above: `sign` succeeding
-          # says the tool ran, `verify` says the result is something Android accepts,
-          # and those came apart once already in this file's history (an unsigned APK
-          # documented as installable with `adb install -t`).
+          # Verify rather than trust the exit code: signing ran ≠ Android accepts it.
           "$APKSIGNER" verify --verbose "{{.SIGNED}}" | head -5
           echo
           echo "Signed: {{.SIGNED}}"
           echo "Install: adb install -r {{.SIGNED}}"
 
   dev:
-    desc: "Run the Android app on a connected device or emulator against the Vite dev server"
-    # Needs a device: `cargo tauri android dev` builds a debug APK, installs it and
-    # points the webview at the dev server over adb's reverse tunnel. A Che workspace
-    # has no emulator and no USB, so in practice this is for somebody running it on
-    # their own machine — named rather than quietly broken.
+    desc: "Run the Android app on a connected device or emulator against the Vite dev server."
+    # Needs a device or emulator (none in Che).
     cmds:
       - cmd: |
           {{.NEED_TOOLCHAIN}}
@@ -247,11 +165,8 @@ tasks:
           cd web/src-tauri && NDK_HOME="{{.SDK_ROOT}}/ndk/{{.NDK}}" cargo tauri android dev {{.CLI_ARGS}}
 
   doctor:
-    desc: "Say whether this machine can build the Android app, and what is missing"
-    # Reports rather than fails, exactly like `task tauri:doctor` and for the same
-    # reason: the answer differs per machine and changes the moment somebody fixes
-    # their environment, so a sentence in a document is wrong as soon as it helps.
-    # An exit code of 1 would also make it unusable from a shell with `set -e`.
+    desc: "Report whether this machine can build the Android app and what is missing."
+    # Reports rather than fails, like `task tauri:doctor`.
     cmds:
       - cmd: |
           echo "Tauri v2 · Android build prerequisites"

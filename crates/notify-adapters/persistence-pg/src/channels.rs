@@ -1,10 +1,5 @@
-//! Channels, their members and their policy.
-//!
-//! Membership is the only door to content (design §5.4), so
-//! [`ChannelRepository::subscribed_ids`] is the query almost everything else hangs
-//! off — the inbox scope, the stream filter, the search scope. It is one indexed
-//! read on `channel_members`, deliberately unpaginated: a filter that has to be
-//! complete to be correct should not offer a first page.
+//! Channels, their members and their policy. Membership is the only door to content (§5.4), so
+//! `subscribed_ids` is deliberately unpaginated: a scope filter must be complete.
 
 use notify_domain::{
     Channel, ChannelId, ChannelPolicy, GroupBinding, Membership, Origin, Principal, Scope,
@@ -16,19 +11,9 @@ use sqlx::postgres::PgRow;
 use crate::PgStore;
 use crate::mapping::{cursor, enum_from_text, enum_to_text, fail, from_json, sequence, to_json};
 
-/// The two doors to a channel, as one predicate over `channels c`.
-///
-/// `$1` is the principal reference, `$2` the groups their token carried, `$3` the
-/// scope. Written once because a read that checked memberships and forgot group
-/// bindings would show an empty inbox to everybody whose access is group-based —
-/// and that failure looks like "the database is empty", not like a missing join.
-///
-/// `EXISTS` rather than a `JOIN`: a caller who is both a named member and in a
-/// bound group would otherwise get the channel twice, and the pagination cursor
-/// would skip a row every time it happened.
-///
-/// A macro rather than a `const`, so the result is still one `&'static str`: sqlx
-/// refuses a runtime-built query string, and it is right to.
+/// The two doors (member or group binding) as one predicate over `channels c`: `$1` principal,
+/// `$2` token groups, `$3` scope. `EXISTS`, not `JOIN`, so a double-door caller is not duplicated;
+/// a macro so the query stays a `&'static str`.
 macro_rules! scoped_by_access {
     ($($tail:literal),* $(,)?) => {
         concat!(
@@ -99,8 +84,7 @@ impl ChannelRepository for PgStore {
         principal: &Principal,
         groups: &[String],
     ) -> PortResult<Vec<ChannelId>> {
-        // The same predicate, but only the id: the stream and the sync backlog want
-        // the whole set on every reconnect and never the channel bodies.
+        // Ids only: stream and backlog need the set, not the bodies.
         let rows: Vec<(String,)> = sqlx::query_as(scoped_by_access!("ORDER BY c.id"))
             .bind(principal.reference())
             .bind(groups)
@@ -128,8 +112,7 @@ impl ChannelRepository for PgStore {
     }
 
     async fn insert(&self, channel: &Channel) -> PortResult<()> {
-        // No `ON CONFLICT`: the primary key refusing a second creator is the whole
-        // point, and `fail` turns that refusal into `Conflict`.
+        // No `ON CONFLICT`: the primary key refusing a second creator becomes `Conflict`.
         self.write_channel(
             channel,
             "INSERT INTO channels (id, display_name, origin, policy) VALUES ($1, $2, $3, $4)",
@@ -212,8 +195,7 @@ impl ChannelRepository for PgStore {
     }
 
     async fn all_ids(&self) -> PortResult<Vec<ChannelId>> {
-        // Ids straight off the index, with no member fan-out: the one caller wants
-        // to match patterns against names (design §5.3).
+        // Ids only, for pattern matching (§5.3).
         let rows = sqlx::query_scalar::<_, String>("SELECT id FROM channels ORDER BY id")
             .fetch_all(self.pool())
             .await
@@ -225,9 +207,7 @@ impl ChannelRepository for PgStore {
     }
 
     async fn all_policies(&self) -> PortResult<Vec<(ChannelId, ChannelPolicy)>> {
-        // Two columns and no member fan-out, same as `all_ids` above: the caller is
-        // the stale-closure sweep, which needs `close_after` and nothing else about
-        // a channel (design §7.2bis).
+        // Only `close_after`, for the stale-closure sweep (§7.2bis).
         let rows: Vec<(String, serde_json::Value)> =
             sqlx::query_as("SELECT id, policy FROM channels ORDER BY id")
                 .fetch_all(self.pool())
@@ -246,7 +226,6 @@ impl ChannelRepository for PgStore {
 }
 
 impl PgStore {
-    /// Turn a channel row plus its members into a domain [`Channel`].
     /// Write a channel row with `statement`, then its members and group access.
     async fn write_channel(&self, channel: &Channel, statement: &'static str) -> PortResult<()> {
         let mut transaction = self
@@ -264,9 +243,7 @@ impl PgStore {
             .await
             .map_err(|error| fail("channel.id", error))?;
 
-        // Members are replaced wholesale rather than diffed: the caller always
-        // hands over the complete list, and a diff would be a second place for
-        // "who is in this channel" to be decided.
+        // Replaced wholesale: the caller always passes the complete list.
         sqlx::query("DELETE FROM channel_members WHERE channel_id = $1")
             .bind(channel.id.as_str())
             .execute(&mut *transaction)
@@ -296,8 +273,7 @@ impl PgStore {
             .map_err(|error| fail("channel.member", error))?;
         }
 
-        // Group bindings, same rule: replaced wholesale, so removing an
-        // `oidc_group` line from the config actually removes the access.
+        // Same for group bindings, so removing an `oidc_group` removes the access.
         sqlx::query("DELETE FROM channel_group_access WHERE channel_id = $1")
             .bind(channel.id.as_str())
             .execute(&mut *transaction)

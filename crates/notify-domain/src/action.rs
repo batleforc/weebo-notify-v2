@@ -1,20 +1,5 @@
-//! Call-to-action buttons carried by a notification (design §2.3).
-//!
-//! Two properties are worth stating up front because they shape the whole type:
-//!
-//! * **No action makes an outbound HTTP call from the device.** `ack`, `reply` and
-//!   `choice` are recorded on the server and read back by whichever service cares
-//!   (design §2.3). Only `view` opens a URL, and only `silence` changes server-side
-//!   delivery state. A notification is therefore never a way to make somebody
-//!   else's browser talk to a third party.
-//! * **`view` URLs are validated at ingestion, not only at click time.** Refusing
-//!   `javascript:`, `file:` and custom schemes here means every client — web, TUI,
-//!   desktop, mobile — inherits the protection without having to remember it
-//!   (scenario T4). Clients check again before opening; belt and braces.
-//!
-//! Actions are replaced wholesale by every revision (design §2.3), so they carry no
-//! identity of their own beyond the publisher-chosen `key` that interactions are
-//! addressed to.
+//! Call-to-action buttons (§2.3). No action makes the device call a third party;
+//! `view` URLs are restricted to http(s) at ingestion (T4). Every revision replaces them wholesale.
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -33,9 +18,7 @@ pub enum SilenceScope {
     /// This notification only, until it closes or expires.
     #[default]
     Notification,
-    /// Everything sharing the notification's `group_key`. Always time-boxed —
-    /// muting a whole group with no end date is the kind of thing someone does at
-    /// 3am and regrets for a quarter.
+    /// Everything sharing the notification's `group_key`; always time-boxed.
     Group,
 }
 
@@ -92,8 +75,7 @@ pub enum Action {
         /// Where to go. `http(s)` only, checked here and again before opening.
         url: Url,
     },
-    /// Acknowledge. Idempotent per user and per key: clicking twice is a no-op
-    /// (design §2.3, scenario T4).
+    /// Acknowledge; idempotent per user and key (§2.3, T4).
     Ack {
         /// Button text.
         label: String,
@@ -108,8 +90,7 @@ pub enum Action {
         #[serde(skip_serializing_if = "Option::is_none")]
         placeholder: Option<String>,
     },
-    /// Pick exactly one option. Last pick wins, consistently with the rest of the
-    /// model (design §2.2).
+    /// Pick exactly one option; the last pick wins (§2.2).
     Choice {
         /// Button text.
         label: String,
@@ -143,10 +124,7 @@ impl Action {
         }
     }
 
-    /// The key interactions address this action by, when it has one.
-    ///
-    /// `view` and `silence` have none: neither records an interaction, so neither
-    /// needs to be addressable after the fact.
+    /// The key interactions address this action by (`view` and `silence` have none).
     #[must_use]
     pub const fn key(&self) -> Option<&ActionKey> {
         match self {
@@ -293,9 +271,7 @@ impl<'de> Deserialize<'de> for Action {
     }
 }
 
-/// Accept only links a client may open. Everything else — `javascript:`, `file:`,
-/// a custom scheme that would reach `xdg-open` — is refused at ingestion so it
-/// never reaches a client at all (design §2.3, scenario T4).
+/// Accept only http(s) links; `javascript:`, `file:` and custom schemes are refused (§2.3, T4).
 fn parse_web_url(raw: &str) -> Result<Url> {
     let url = Url::parse(raw.trim()).map_err(|_| DomainError::Malformed {
         field: "action.url",
@@ -348,11 +324,8 @@ fn validate_options(drafts: Vec<ChoiceOptionDraft>) -> Result<Vec<ChoiceOption>>
     Ok(options)
 }
 
-/// The action set of one revision: at most [`MAX_ACTIONS`], with unique keys.
-///
-/// Order is meaningful — it is display priority. Mobile push transports only
-/// surface the first two or three, the rest are reachable by opening the client
-/// (design §2.3).
+/// The action set of one revision: at most [`MAX_ACTIONS`] with unique keys, in
+/// display priority order (§2.3).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
@@ -369,8 +342,7 @@ impl Actions {
             });
         }
 
-        // Two actions sharing a key would make an interaction on that key
-        // ambiguous — and `ack` idempotency is defined per key.
+        // Duplicate keys would make interactions ambiguous.
         let mut seen: Vec<&ActionKey> = Vec::with_capacity(actions.len());
         for key in actions.iter().filter_map(Action::key) {
             if seen.contains(&key) {
@@ -440,7 +412,7 @@ mod tests {
         .unwrap()
     }
 
-    // --- T4 · Actions (design §3.4) ---------------------------------------
+    // --- T4 · Actions -----------------------------------------------------
 
     #[test]
     fn critical_t4_view_accepts_only_web_urls() {
@@ -576,8 +548,7 @@ mod tests {
 
     #[test]
     fn critical_t4_deserialising_re_runs_validation() {
-        // Storage is not a trust boundary we get to skip: a row written by an older
-        // build must still be refused if it violates today's invariants.
+        // Stored rows are revalidated on read.
         let json = r#"[{"type":"view","label":"x","url":"javascript:alert(1)"}]"#;
         assert!(serde_json::from_str::<Actions>(json).is_err());
     }

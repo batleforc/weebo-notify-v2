@@ -1,9 +1,4 @@
-//! The registry of signed uploads (design §7.2bis, §6.1, D25).
-//!
-//! Not the bucket — that is `notify-attachments-s3`. This is the database
-//! remembering which ids we handed out, so an upload that was never referenced by
-//! any notification can still be found and collected. Without it, such an object
-//! is invisible: nothing in this schema has ever seen its id.
+//! The registry of signed uploads (design §7.2bis, §6.1), so never-referenced objects can be collected.
 
 use notify_domain::{AttachmentId, ChannelId};
 use notify_ports::{AttachmentRegistry, PortResult};
@@ -20,10 +15,7 @@ impl AttachmentRegistry for PgStore {
         channel: &ChannelId,
         at: OffsetDateTime,
     ) -> PortResult<()> {
-        // `DO NOTHING` rather than an upsert: ids come from a generator, so a
-        // conflict is not a re-signature but the astronomically unlikely collision
-        // — and if it ever happened, the earlier `requested_at` is the safer one to
-        // keep, since it is the one that expires first.
+        // A conflict is an id collision; keep the earlier `requested_at`, which expires first.
         sqlx::query(
             "INSERT INTO attachment_presigns (id, channel_id, requested_at)
              VALUES ($1, $2, $3)
@@ -44,14 +36,8 @@ impl AttachmentRegistry for PgStore {
         older_than: OffsetDateTime,
         limit: u32,
     ) -> PortResult<Vec<AttachmentId>> {
-        // `NOT EXISTS` and not `NOT IN`, for the reason the sibling query in
-        // `notifications.rs` spells out: the inner projection is NULL for every
-        // revision without an attachment image, and `NOT IN` over a set holding a
-        // NULL is never true — this would return nothing, for ever, and look
-        // exactly like a bucket with nothing to collect.
-        //
-        // Avatars never appear here: they are written by `put` rather than signed,
-        // so no row is ever recorded for one.
+        // `NOT EXISTS`, not `NOT IN`: the inner projection holds NULLs, making `NOT IN` never true.
+        // Avatars are `put`, never signed, so they never appear here.
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT p.id FROM attachment_presigns p
              WHERE p.requested_at < $1
@@ -76,8 +62,7 @@ impl AttachmentRegistry for PgStore {
 
     async fn forget(&self, ids: &[AttachmentId]) -> PortResult<u64> {
         if ids.is_empty() {
-            // `= ANY('{}')` is valid and matches nothing, but a round trip to learn
-            // that is a round trip on every tick of a quiet instance.
+            // Skip the round trip on a quiet instance.
             return Ok(0);
         }
 

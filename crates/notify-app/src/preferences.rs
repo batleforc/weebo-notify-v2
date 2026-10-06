@@ -1,15 +1,5 @@
-//! Reading and setting do not disturb (design §7.4, §8 `/preferences/dnd`).
-//!
-//! Two use cases and one rule that runs through both: **a preference belongs to the
-//! person it is about, and to nobody else.** There is no path here that takes a user
-//! id — the subject is always the caller. That is what makes scenario T26 a property
-//! of the code rather than a check somebody has to remember at each endpoint, and it
-//! is why neither of these consults [`Authorizer`](crate::authz::Authorizer): there
-//! is no channel involved and therefore no membership to test.
-//!
-//! A service account is refused rather than given an empty preference. A bot has no
-//! attention to protect (§5.2bis), and answering "your do-not-disturb is off" to one
-//! would suggest it has a setting to change.
+//! Reading and setting do not disturb (§7.4). The subject is always the caller, so
+//! no path takes a user id (T26). Service accounts are refused: no attention to protect.
 
 use std::sync::Arc;
 
@@ -32,14 +22,12 @@ impl core::fmt::Debug for ReadDnd {
 }
 
 impl ReadDnd {
-    /// Wire it.
     #[must_use]
     pub fn new(preferences: Arc<dyn PreferenceRepository>) -> Self {
         Self { preferences }
     }
 
-    /// The caller's own preference. Never anybody else's — there is no argument for
-    /// it to be.
+    /// The caller's own preference.
     pub async fn execute(&self, caller: &Caller) -> Result<Dnd, Failure> {
         Ok(self.preferences.dnd(subject(caller)?).await?)
     }
@@ -60,7 +48,6 @@ impl core::fmt::Debug for SetDnd {
 }
 
 impl SetDnd {
-    /// Wire it.
     #[must_use]
     pub fn new(
         preferences: Arc<dyn PreferenceRepository>,
@@ -74,23 +61,15 @@ impl SetDnd {
         }
     }
 
-    /// Replace the caller's preference wholesale.
-    ///
-    /// Wholesale, not a patch: the draft **is** the new state (§7.4 carries it whole
-    /// on the wire for the same reason). Quiet hours are a list, and merging a list
-    /// has no unambiguous meaning — a partial update that dropped a window would be
-    /// indistinguishable from one that left it alone.
-    ///
-    /// It takes a [`DndDraft`] and not a [`Dnd`] because the subject is not an
-    /// input: this is the only place that knows whose preference is being written.
+    /// Replace the caller's preference wholesale: quiet hours are a list, and merging
+    /// a list has no unambiguous meaning.
     pub async fn execute(&self, caller: &Caller, wanted: DndDraft) -> Result<Dnd, Failure> {
         subject(caller)?;
         let user = caller.ensure_person()?;
         let dnd = wanted.for_user(user).validated()?;
 
         let cursor = self.preferences.set_dnd(&dnd, self.clock.now()).await?;
-        // Private to this user: their other clients apply it immediately, nobody
-        // else's hears about it (design §8.1, scenario T26).
+        // Private to this user (§8.1, T26).
         self.fanout.poke_user(user, cursor).await;
 
         Ok(dnd)
@@ -219,8 +198,7 @@ mod tests {
         assert_eq!(fixture.read.execute(&caller).await.unwrap(), stored);
     }
 
-    /// The subject is not an input — a draft has no field for it — so this checks
-    /// the other half: the one it *does* get attached to.
+    /// The draft has no subject field; check it attaches to the caller only.
     #[tokio::test]
     async fn a_preference_is_written_on_the_caller_and_on_nobody_else() {
         let fixture = fixture();
@@ -253,8 +231,7 @@ mod tests {
     async fn a_preference_that_would_not_resolve_is_refused_before_it_is_stored() {
         let fixture = fixture();
         let caller = Caller::member(fixture.alice.clone());
-        // A zone the IANA database does not know: accepted today, a notification
-        // that never arrives in six months.
+        // A zone the IANA database does not know.
         let bad = DndDraft {
             quiet_hours: vec![QuietHours {
                 timezone: "Europe/Pris".to_owned(),
@@ -275,8 +252,7 @@ mod tests {
         );
     }
 
-    /// T26: the preference event is private, and it is what the other clients of
-    /// *this* user hear.
+    /// T26: the preference event reaches only this user's other clients.
     #[tokio::test]
     async fn critical_t26_setting_one_announces_it_to_that_user_alone() {
         let fixture = fixture();
@@ -344,8 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn what_was_stored_is_what_the_fanout_will_ask_about() {
-        // The point of storing it: `is_muted` is the one question, and it has to
-        // survive the round trip through the port unchanged.
+        // `is_muted` must survive the round trip through the port.
         let fixture = fixture();
         let caller = Caller::member(fixture.alice.clone());
         let ci = ChannelId::parse("ci-infra").unwrap();

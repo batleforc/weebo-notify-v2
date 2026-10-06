@@ -7,16 +7,10 @@ use notify_ports::{Failure, PortError};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-/// The `application/problem+json` body every refusal carries.
-///
-/// The field clients are told to match on is `code`, not `status` and certainly not
-/// `title` — statuses are coarse and titles are prose that gets reworded. A code is
-/// a promise (design §8, `notify-domain`'s error table).
+/// The `application/problem+json` body every refusal carries; clients match on `code`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Problem {
-    /// Always `about:blank` for now: the `code` field carries the specificity a
-    /// `type` URI usually would, and inventing URIs nobody dereferences is
-    /// ceremony.
+    /// Always `about:blank`; `code` carries the specificity.
     #[serde(rename = "type")]
     #[schema(example = "about:blank")]
     pub kind: &'static str,
@@ -25,8 +19,7 @@ pub struct Problem {
     /// The HTTP status, repeated in the body as RFC 9457 asks.
     #[schema(example = 422)]
     pub status: u16,
-    /// The stable code. Absent only when the failure is ours rather than the
-    /// caller's — there is nothing useful to branch on when a database is down.
+    /// The stable code to match on; absent only for server-side failures.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "field.missing")]
     pub code: Option<&'static str>,
@@ -82,9 +75,7 @@ impl ApiError {
                 PortError::Unavailable { .. } => Code::SERVICE_UNAVAILABLE,
                 PortError::Conflict { .. } => Code::CONFLICT,
                 PortError::NotConfigured { .. } => Code::NOT_IMPLEMENTED,
-                // `Corrupt`, plus whatever `PortError` grows next: an adapter that
-                // cannot classify a failure reports it as ours, which is the safe
-                // reading and keeps a new variant from being a compile error here.
+                // `Corrupt` and any future variant: ours, the safe reading.
                 _ => Code::INTERNAL_SERVER_ERROR,
             },
         }
@@ -95,12 +86,9 @@ impl ApiError {
         let status = self.status();
 
         let title = match &self.0 {
-            // A domain refusal is about the request, so the caller gets to read it:
-            // "`payload.title` is required" is exactly what they need.
             Failure::Domain(error) => error.to_string(),
             Failure::RateLimited { .. } => "too many requests".to_owned(),
-            // A port failure is about us. The caller gets a shrug and the operator
-            // gets the cause, in the log line emitted below.
+            // About us: the cause goes to the log below, not to the caller.
             Failure::Port(_) => "the request could not be served".to_owned(),
         };
 
@@ -127,8 +115,7 @@ impl ResponseError for ApiError {
     fn error_response(&self) -> HttpResponse {
         let problem = self.problem();
 
-        // Logged here rather than at every call site, so nothing can return a 5xx
-        // without the cause landing somewhere an operator will find it.
+        // Logged here so no 5xx goes out without its cause in the log.
         match &self.0 {
             Failure::Port(error) => {
                 tracing::error!(
@@ -148,8 +135,6 @@ impl ResponseError for ApiError {
             response.insert_header((header::RETRY_AFTER, seconds));
         }
         if self.status() == actix_web::http::StatusCode::UNAUTHORIZED {
-            // Without this a 401 is not a well-formed challenge, and a client
-            // library cannot tell "log in" from "you may not".
             response.insert_header((
                 header::WWW_AUTHENTICATE,
                 HeaderValue::from_static("Bearer realm=\"weebo-notify\""),

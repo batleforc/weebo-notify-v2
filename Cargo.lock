@@ -3215,6 +3215,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
+ "etcetera",
  "figment",
  "notify-client-api",
  "progenitor-client",
@@ -3263,6 +3264,7 @@ dependencies = [
  "actix-web",
  "actix-web-lab",
  "actix-ws",
+ "base64 0.22.1",
  "futures",
  "image",
  "notify-app",
@@ -3397,7 +3399,6 @@ name = "notify-push-unifiedpush"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "notify-domain",
  "notify-ports",
  "notify-sealed-box",
@@ -3448,6 +3449,7 @@ dependencies = [
 name = "notify-sealed-box"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chacha20poly1305",
  "hkdf 0.12.4",
  "notify-domain",
@@ -7347,6 +7349,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bcrypt",
  "clap",
  "dbus",

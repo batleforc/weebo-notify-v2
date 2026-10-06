@@ -1,29 +1,5 @@
-//! The deployment-owed guarantees, checked against the configuration that is
-//! actually loaded (advisory SEC-P2-20, SEC-P2-21).
-//!
-//! `hardening.mdx` lists what weebo-notify deliberately does not do for you:
-//! encryption at rest, a private bucket, `frame-ancestors`, HSTS, per-address rate
-//! limiting, keeping `/metrics` off the ingress. That list is honest and it has one
-//! failure mode — **every item on it fails silently**. Nothing logs "your bucket is
-//! world-readable"; the product runs perfectly, right up until it is somebody's
-//! incident.
-//!
-//! This module is the part of that list a process can check *about itself*, from
-//! configuration alone, and it exists in two shapes:
-//!
-//! * at **boot**, [`review`] runs and each finding becomes a `WARN` line, so an
-//!   operator who never reads the documentation still meets it once;
-//! * on **demand**, `notify-server doctor` prints the same review and exits
-//!   non-zero if anything is wrong, which is something to paste into an issue.
-//!
-//! # What it deliberately cannot see
-//!
-//! Everything requiring a network or a cluster: whether TLS terminates in front of
-//! it, whether the bucket answers an anonymous `GET`, whether the ingress publishes
-//! `/metrics`, whether `frame-ancestors` is sent. Those need a probe from outside,
-//! and a check that quietly answers "fine" because it could not look is worse than
-//! no check. [`review`] therefore ends by naming them, so the output is a complete
-//! list of what to verify rather than a complete list of what was verified.
+//! Deployment-owed guarantees checked against the loaded config (SEC-P2-20, SEC-P2-21): `WARN` lines at
+//! boot, and `notify-server doctor` exits non-zero. What needs an outside probe is listed, not guessed.
 
 use crate::config::{AttachmentsBackend, Config};
 
@@ -67,10 +43,7 @@ impl Finding {
 /// The development stack's defaults this config still runs on.
 fn development_defaults(config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
-    // Every key has a default so a checkout runs with nothing but `task dev:*`,
-    // and two of those defaults are the development stack. A production config
-    // that forgot a section must not boot on them — trusting whatever answers on
-    // localhost:9110 is the worse of the two — hence `refuse_development_defaults`.
+    // Dev-stack defaults must not boot in production; see `refuse_development_defaults`.
     if url::Url::parse(&config.oidc.issuer)
         .ok()
         .and_then(|issuer| issuer.host_str().map(is_loopback_host))
@@ -130,8 +103,7 @@ pub(crate) fn review(config: &Config) -> Vec<Finding> {
         Some(attachments) if attachments.kind == AttachmentsBackend::Filesystem => {
             let secret = attachments.token_secret.trim();
             if secret.is_empty() {
-                // Refused at startup already; kept here so `doctor` explains it
-                // rather than the process merely refusing to boot.
+                // Refused at startup; listed so `doctor` explains why.
                 findings.push(Finding::warn(
                     "[attachments] token_secret is empty: every presigned attachment URL would \
                      be unsigned, which is an open directory",
@@ -301,8 +273,7 @@ mod tests {
 
     #[test]
     fn a_default_configuration_warns_about_nothing() {
-        // Notes are expected — they are the guarantees a deployment owes. A *warning*
-        // on a default config would mean the defaults are wrong.
+        // Notes are expected; a warning on defaults would mean the defaults are wrong.
         let findings = review(&config());
         let warnings: Vec<_> = findings
             .iter()
@@ -319,8 +290,7 @@ mod tests {
 
     #[test]
     fn encryption_at_rest_is_always_mentioned() {
-        // The one nobody discovers until a backup leaks. It has no configuration to
-        // get wrong, which is exactly why it has to be said out loud every boot.
+        // Nothing to configure, so it must be said every boot.
         assert!(
             review(&config())
                 .iter()

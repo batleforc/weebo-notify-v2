@@ -1,15 +1,13 @@
 version: "3"
 
-# Everything here is deterministic and its output is COMMITTED (design §3.2).
-# The CI `contract` job runs `task recu` then `git diff --exit-code`: the OpenAPI
-# spec and the clients derived from it can therefore never drift from the server.
+# Deterministic, committed output (§3.2): CI runs `task recu` then `git diff --exit-code`.
 
 vars:
   OPENAPI: docs/content/docs/api/openapi.json
 
 tasks:
   default:
-    desc: "Regenerate everything derived from the code: the OpenAPI spec, the Rust + TS clients and the desktop icons"
+    desc: "Regenerate the OpenAPI spec, the Rust and TS clients, and the desktop icons."
     cmds:
       - task: openapi
       - task: client:rust
@@ -25,8 +23,7 @@ tasks:
   client:rust:
     desc: "Regenerate the Rust client crate notify-client-api from the OpenAPI spec (progenitor, ADR-0009)"
     cmds:
-      # xtask lowers the 3.1 document utoipa emits to the 3.0 subset progenitor
-      # parses. The committed spec itself stays 3.1 — only the generator sees 3.0.
+      # xtask lowers utoipa's OpenAPI 3.1 to the 3.0 subset progenitor parses; the spec stays 3.1.
       - cargo run --quiet -p xtask -- client-rust --spec {{.OPENAPI}}
 
   client:ts:
@@ -39,26 +36,11 @@ tasks:
           fi
           pnpm -C web run generate:client
 
-  # There used to be a `devfile` step here, inlining the identity provider's
-  # configuration into devfile.yaml because Eclipse Che cannot mount host files.
-  # The provider is a workspace binary now (ADR-0014), so it reads
-  # dev/oidc-mock/identities.toml straight from the project source in both worlds
-  # and there is nothing left to generate.
-
-  # There is no `sqlx` step either, and that is a decision rather than an omission.
-  # `cargo sqlx prepare` exists to let the `sqlx::query!` macros check SQL at
-  # compile time against committed metadata. notify-persistence-pg does not use
-  # them: its queries are jsonb round-trips, `text[]` filters and reads whose WHERE
-  # clause is assembled from optional filters, and every one of them is exercised
-  # against a real Postgres by `crates/notify-adapters/persistence-pg/tests/
-  # conformance.rs` (run by `task test:e2e`). The trade is stated in that crate's
-  # module documentation; the cost is that a typo fails a test rather than a build.
+  # No `sqlx prepare` step: persistence-pg doesn't use `query!`; its SQL is covered by the
+  # Postgres conformance tests (`task test:e2e`).
 
   icons:
-    desc: "Rasterise the desktop icons from their SVG sources (§10bis.3ter, M5)"
-    # Derived and committed, exactly like the generated clients above: the sources
-    # are SVG so a change to the mark is reviewable, and the PNGs are what Tauri
-    # actually loads. Pure Rust — `librsvg` and ImageMagick are system packages this
-    # workspace cannot install (§12.4), which is the same wall the shell itself hits.
+    desc: "Rasterise the desktop icons from their SVG sources (§10bis.3ter)."
+    # Derived and committed like the clients: SVG sources stay reviewable, Tauri loads the PNGs.
     cmds:
       - cargo run --quiet -p xtask -- icons

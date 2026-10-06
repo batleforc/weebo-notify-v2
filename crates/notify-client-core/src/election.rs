@@ -1,48 +1,16 @@
-//! Which front end holds the stream (design §9.3bis).
-//!
-//! # One connection, several front ends
-//!
-//! The CLI, the TUI and the desktop app can all be running against the same
-//! profile. Exactly one of them should hold the SSE connection and feed the shared
-//! store; the rest read it. Without that rule, three windows on one laptop spend
-//! three of the twenty stream slots a user gets across every device they own
-//! (§8.2), and each keeps a cursor the others cannot see.
-//!
-//! # An advisory file lock, and why not anything cleverer
-//!
-//! The holder is whoever holds an exclusive lock on a file next to the store. That
-//! choice is the whole design:
-//!
-//! * **a process that dies releases it by ceasing to exist** — crash, `kill -9`,
-//!   a laptop lid closing on a suspended process. A flag in a table would need a
-//!   lease, a heartbeat, and a recovery path for the holder that never came back,
-//!   all to answer a question the operating system answers for free;
-//! * **it is per profile**, because the store is (§9.3bis): two profiles are two
-//!   servers, two devices, two streams, and they must not elect each other;
-//! * **acquiring is non-blocking**. A front end that loses the election does not
-//!   wait — it reads the store and gets on with it, which is what makes the desktop
-//!   app in the tray naturally win by simply being there first.
-//!
-//! What it does not do is *notify* the losers when something lands. §9.3bis asks
-//! for a local signal — a unix socket or a named pipe — so the TUI redraws the
-//! instant the tray app writes. That is not here: without it a reader polls, which
-//! is a latency problem rather than a correctness one, and it is written down in
-//! §14.1 rather than pretended away.
+//! Which front end holds the stream (§9.3bis): whoever holds an exclusive, non-blocking
+//! advisory lock beside the per-profile store. A crashed holder releases it by exiting,
+//! so there is no lease or heartbeat; losers read the store instead.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use crate::error::ClientError;
 
-/// Proof that this process holds the stream for a profile.
-///
-/// Dropping it releases the lock, so the next front end to try wins. There is no
-/// `release()`: a lock you can forget to release is a lock that outlives its
-/// process on the day somebody adds an early `return`.
+/// Proof that this process holds the stream for a profile; dropping it releases the lock.
 #[derive(Debug)]
 pub struct StreamLease {
-    /// Held for its `Drop`. The lock lives on the open descriptor, so closing the
-    /// file *is* the release.
+    /// Held for its `Drop`: closing the descriptor is the release.
     _file: File,
     path: PathBuf,
 }
@@ -55,15 +23,11 @@ impl StreamLease {
     }
 }
 
-/// Try to become the front end that holds the stream.
-///
-/// Returns `None` when somebody else already does — which is an ordinary answer,
-/// not a failure: the caller reads the shared store instead.
+/// Try to become the front end that holds the stream; `None` when somebody else does.
 ///
 /// # Errors
 ///
-/// Fails only if the lock file cannot be created or opened at all, which means the
-/// data directory is not writable and the store would not have opened either.
+/// Fails only if the lock file cannot be created or opened (unwritable data directory).
 pub fn try_hold_stream(store: &Path) -> Result<Option<StreamLease>, ClientError> {
     let path = lock_path(store);
 
@@ -83,11 +47,8 @@ pub fn try_hold_stream(store: &Path) -> Result<Option<StreamLease>, ClientError>
             detail: format!("cannot open {}: {error}", path.display()),
         })?;
 
-    // `std::fs::File::try_lock` since Rust 1.89 — no crate needed for what the
-    // operating system has always done.
     match file.try_lock() {
         Ok(()) => Ok(Some(StreamLease { _file: file, path })),
-        // Somebody else holds it. Not an error: this front end reads the store.
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(error) => Err(ClientError::Store {
             detail: format!("cannot lock {}: {error}", path.display()),
@@ -95,10 +56,7 @@ pub fn try_hold_stream(store: &Path) -> Result<Option<StreamLease>, ClientError>
     }
 }
 
-/// The lock that goes with a store.
-///
-/// Beside the database rather than inside it: a file the operating system can
-/// release on its own is the entire point (see the module docs).
+/// The lock file that goes with a store, beside the database so the OS can release it.
 #[must_use]
 pub fn lock_path(store: &Path) -> PathBuf {
     store.with_extension("stream.lock")
@@ -132,8 +90,7 @@ mod tests {
 
     #[test]
     fn a_second_one_is_told_no_rather_than_made_to_wait() {
-        // The losing front end reads the store and carries on; blocking here would
-        // hang `notify ls` for as long as the TUI is open.
+        // The loser must not block: `notify ls` would hang while the TUI is open.
         let store = temp_store_path("second");
         let held = try_hold_stream(&store).unwrap();
         assert!(held.is_some());
@@ -145,8 +102,6 @@ mod tests {
 
     #[test]
     fn the_lease_is_released_when_its_holder_goes_away() {
-        // The property that makes this an advisory lock rather than a flag: no
-        // heartbeat, no lease expiry, no recovery path for a holder that crashed.
         let store = temp_store_path("released");
         {
             let _held = try_hold_stream(&store).unwrap().expect("the first wins");
@@ -157,11 +112,8 @@ mod tests {
         assert!(next.is_some(), "a dropped lease frees the stream");
     }
 
-    /// The child half of [`critical_t28_a_killed_holder_frees_the_stream`].
-    ///
-    /// A `#[test]` because that is the only entry point an integration binary
-    /// exposes, and it does nothing at all unless the parent asks: without the
-    /// variable it returns immediately, so a normal run pays nothing for it.
+    /// The child half of [`critical_t28_a_killed_holder_frees_the_stream`]; a no-op unless the
+    /// parent sets the variable.
     #[test]
     fn hold_the_stream_until_killed() {
         let Ok(store) = std::env::var("WNK_TEST_HOLD_STREAM") else {
@@ -172,12 +124,7 @@ mod tests {
             .unwrap()
             .expect("the child is started before the parent tries");
 
-        // Tell the parent the lock is taken, then wait to be killed. The parent
-        // reads this marker rather than sleeping a guessed interval.
-        //
-        // A marker and not a bare word: libtest prints `test <name> ... ` without a
-        // newline first, so this lands *in the middle* of that line. The parent
-        // therefore looks for the token anywhere in a line rather than matching one.
+        // libtest prints `test <name> ... ` first, so the parent searches for this token mid-line.
         println!("WNK-STREAM-HELD");
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(60));
@@ -185,11 +132,7 @@ mod tests {
 
     #[test]
     fn critical_t28_a_killed_holder_frees_the_stream() {
-        // T28 (§3.4), and the half the other tests cannot reach: they drop a lease,
-        // which runs `Drop`. A `kill -9` runs nothing — the release has to come from
-        // the operating system, which is the entire reason §9.3bis chose an advisory
-        // file lock over a flag in the database. A flag would still say "held" here,
-        // and the tray app would never get the stream back after a crash.
+        // T28 (§3.4): `kill -9` runs no `Drop`, so the OS must release the lock.
         let store = temp_store_path("killed");
 
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -200,7 +143,6 @@ mod tests {
             .spawn()
             .expect("the test binary can spawn itself");
 
-        // Wait for the child to say it holds the lock.
         let stdout = child.stdout.take().unwrap();
         let mut reader = std::io::BufReader::new(stdout);
         let mut line = String::new();
@@ -221,8 +163,6 @@ mod tests {
         child.kill().expect("SIGKILL");
         child.wait().expect("reaped");
 
-        // No grace period and no retry loop: the descriptor is gone with the
-        // process, so the lock is gone with it.
         assert!(
             try_hold_stream(&store).unwrap().is_some(),
             "a killed holder must free the stream, or a crashed tray app takes the \
