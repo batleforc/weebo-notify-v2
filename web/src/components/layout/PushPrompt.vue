@@ -1,15 +1,7 @@
 <script setup lang="ts">
 /**
- * The boot-time ask: "want push on this browser?" (§6.2, M3.6).
- *
- * Shown at most once per browser profile — `PROMPTED_KEY` is set the moment this
- * decides to show, not on dismiss, so leaving without clicking anything still
- * counts as asked. Settings › Notifications (`PushPanel.vue`) is where the switch
- * lives for good; this is only the one nudge toward finding it.
- *
- * Gated on the same three things `PushPanel` reads from `push.state()` — supported,
- * available, permission still "default" — so this never asks for a permission the
- * browser would refuse to raise again, or a deployment cannot honour.
+ * The one-time "push on this browser?" nudge (§6.2). Marked as asked when shown,
+ * and only offered when supported, available and permission is still "default".
  */
 import { BellRing, X } from "@lucide/vue";
 import { onMounted, ref } from "vue";
@@ -66,19 +58,19 @@ async function accept(): Promise<void> {
     :aria-label="t('push.prompt.ariaLabel')"
   >
     <div
-      class="pointer-events-auto w-full max-w-sm rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
+      class="pointer-events-auto w-full max-w-sm border border-rule-strong bg-popover p-4 text-popover-foreground"
     >
       <div class="flex items-start gap-2">
-        <BellRing class="mt-0.5 size-4 shrink-0 text-primary" />
+        <BellRing class="mt-0.5 size-4 shrink-0 text-copper" />
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-medium">{{ t("push.prompt.title") }}</p>
-          <p class="mt-0.5 text-xs text-muted-foreground">
+          <p class="pixel text-base font-bold uppercase">{{ t("push.prompt.title") }}</p>
+          <p class="mt-0.5 text-xs text-ink-dim">
             {{ t("push.prompt.body") }}
           </p>
-          <p v-if="error" class="mt-1 text-xs text-destructive">{{ error }}</p>
+          <p v-if="error" class="mt-1 text-xs text-signal">{{ error }}</p>
           <div class="mt-2 flex items-center gap-2">
             <Button size="sm" :disabled="busy" @click="accept">
-              {{ busy ? "…" : t("push.prompt.activate") }}
+              {{ t("push.prompt.activate") }}
             </Button>
             <Button size="sm" variant="ghost" :disabled="busy" @click="dismiss">
               {{ t("push.prompt.later") }}
@@ -87,7 +79,7 @@ async function accept(): Promise<void> {
         </div>
         <button
           type="button"
-          class="shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground"
+          class="shrink-0 p-1 text-ink-dim hover:text-ink"
           :aria-label="t('push.prompt.close')"
           @click="dismiss"
         >

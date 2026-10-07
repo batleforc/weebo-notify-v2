@@ -1,14 +1,5 @@
-//! Building the application from the configuration (design §4).
-//!
-//! Every adapter is constructed exactly once here and handed to the use cases as
-//! `Arc<dyn Port>`. Nothing below this file knows which adapter it got, which is
-//! the whole point of the ports — and the reason the same use cases run against
-//! `InMemory` in a sub-second test suite.
-//!
-//! One `PgStore` satisfies eleven ports. That is not a shortcut: several of them
-//! have to write inside the *same* transaction as an event append (ADR-0012), and
-//! splitting them into separate objects would mean either sharing a transaction
-//! across objects or giving up the guarantee.
+//! Building the application from the configuration (design §4): every adapter is built once and
+//! handed out as `Arc<dyn Port>`. One `PgStore` serves eleven ports to share transactions (ADR-0012).
 
 use std::sync::Arc;
 
@@ -56,41 +47,28 @@ pub(crate) struct Application {
     pub state: ApiState,
     /// The store, for `/readyz` and for the migrations.
     pub store: PgStore,
-    /// The one task holding this replica's `LISTEN` connection. Aborted before the
-    /// runtime ends: a sqlx connection dropped afterwards panics in its destructor,
-    /// and a panic in a destructor aborts rather than unwinds.
+    /// The task holding this replica's `LISTEN` connection; abort it before the runtime ends.
     pub pump: actix_web::rt::task::JoinHandle<()>,
     /// The TTL purge, run on a timer by whichever replica leads.
     pub purge: PurgeExpired,
-    /// The stale-closure sweep (§7.2bis), on the same terms — and run *before* the
-    /// purge on every tick, because closing is what gives the purge something to
-    /// find: a lifecycle notification's retention clock does not start until it
-    /// closes.
+    /// The stale-closure sweep (§7.2bis), leader-run before the purge since closing starts retention.
     pub close_stale: CloseStale,
     /// The do-not-disturb digest (§7.4), on the same terms.
     pub digests: SendDndDigests,
     /// The outbound sink drain (§7.1bis), on the same terms again.
     pub drain: DrainSinks,
-    /// What `[[channels.managed.sinks]]` configured, for the startup log — the
-    /// counterpart of `transports` below.
+    /// What `[[channels.managed.sinks]]` configured, for the startup log.
     pub routes: SinkRoutes,
     /// GitOps reconciliation.
     pub reconciler: Reconciler,
-    /// The trust policies the token exchange consults, so `SIGHUP` can swap them
-    /// (§5.3, §11, D31). Handed back rather than kept private for the same reason
-    /// `reconciliation_log` is: the writer is the run loop.
+    /// The trust policies the token exchange consults, swappable on `SIGHUP` (§5.3, §11).
     pub policies: notify_app::LivePolicies,
-    /// Where each pass is left for `GET /admin/reconciliation` to read (§10.4bis).
-    ///
-    /// Handed back rather than kept inside the reconciler because the *writer* is
-    /// the run loop, not the reconciler: a pass that failed must not overwrite the
-    /// last one that worked, and only the caller knows which happened.
+    /// Where each pass is left for `GET /admin/reconciliation` (§10.4bis); the run loop writes it.
     pub reconciliation_log: ReconciliationLog,
     /// The push transports this deployment configured, for `/readyz` and the
     /// startup log.
     pub transports: TransportRegistry,
-    /// The registry `GET /metrics` serves, and that the drain loop refreshes the
-    /// dead-letter depth on (design §13).
+    /// The registry `GET /metrics` serves (design §13).
     pub metrics: Arc<dyn notify_ports::Metrics>,
 }
 
@@ -103,13 +81,7 @@ impl core::fmt::Debug for Application {
 }
 
 impl Application {
-    /// Construct everything from the configuration.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be reached or the identity provider's issuer
-    /// does not parse — both are operator problems, and both are better reported
-    /// before the socket is bound than after.
+    /// Fails if the database cannot be reached or the issuer does not parse.
     #[allow(
         clippy::too_many_lines,
         reason = "one statement per use case; splitting it would hide which port \
@@ -117,8 +89,7 @@ impl Application {
     )]
     pub(crate) async fn build(config: &Config) -> anyhow::Result<Self> {
         let store = PgStore::connect(&config.database.url, config.database.max_connections).await?;
-        // One LISTEN per replica, fanned out in process — see `bus`. Subscribing
-        // per stream would open one Postgres connection per connected client.
+        // One LISTEN per replica, fanned out in process (see `bus`).
         let (shared, pump) =
             SharedBus::start(Arc::new(PgEventBus::new(store.pool().clone()))).await?;
         let bus: Arc<dyn EventBus> = Arc::new(shared);
@@ -126,43 +97,24 @@ impl Application {
         let clock = Arc::new(SystemClock);
         let repository = Arc::new(store.clone());
 
-        // The identity provider. `audiences` always includes the client id, because
-        // that is what an access token minted for this client carries; the extra
-        // ones exist for issuers that name the API instead (§5.1).
+        // `audiences` always includes the client id; extras are for issuers naming the API (§5.1).
         let mut oidc = OidcConfig::new(config.oidc.issuer.parse()?, config.oidc.client_id.clone());
         oidc.audiences.extend(config.oidc.audiences.iter().cloned());
         oidc.groups_claim.clone_from(&config.oidc.groups_claim);
         let verifier = Arc::new(OidcVerifier::new(oidc, clock.clone())?);
-        // Argon2id, behind the memoisation and the admission gate that bound what an
-        // anonymous caller can make it spend (`notify_oidc::guard`). The cost of the
-        // KDF is the point and stays untouched; what changes is that the *same*
-        // question is not paid for twice, and that a flood is shed rather than
-        // queued into a memory limit. The wrapping happens here rather than inside
-        // `Argon2SecretHasher` so the port stays a plain KDF and the guard is a
-        // visible line in the composition root.
+        // Argon2id behind memoisation and admission control (`notify_oidc::guard`).
         let hasher = Arc::new(GuardedSecretHasher::new(Argon2SecretHasher));
 
-        // The exporter (§13). One registry per process, handed to everything that
-        // measures: the HTTP layer, the push registry below, and the drain loop.
+        // One metrics registry per process (§13).
         let metrics: Arc<dyn notify_ports::Metrics> = Arc::new(PrometheusMetrics::new());
 
-        // The transports `[push.*]` asks for. Nothing above this line knows which
-        // ones there are: a deployment with no `[push.webpush]` gets a registry that
-        // names the missing capability, and the fan-out carries on (§14.3).
+        // Missing transports are named by the registry; the fan-out carries on (§14.3).
         let (transports, application_server_key) = push_transports(config)?;
         let transports = transports.measured_by(metrics.clone());
         let dispatcher = Arc::new(transports.clone());
 
-        // The object store. Absent from the configuration means absent from the
-        // deployment, and the double that stands in for it refuses rather than
-        // pretends: an avatar upload then answers "not configured" instead of
-        // succeeding into nowhere (§14.3 — a port with no adapter is a refusal, not
-        // a silent no-op).
-        //
-        // `attachments_fs` is kept alongside as the concrete type, not just the
-        // trait object: the two unauthenticated routes a filesystem backend needs
-        // (ADR-0022) call its `verify` method, which is deliberately not part of
-        // `AttachmentStore` — that trait stays HTTP-agnostic.
+        // No object store means a refusing double (§14.3). `attachments_fs` is kept concrete for its
+        // `verify`, used by the filesystem routes (ADR-0022).
         let mut attachments_fs: Option<Arc<FsAttachments>> = None;
         let attachments: Arc<dyn AttachmentStore> = match &config.attachments {
             Some(settings) => match settings.kind {
@@ -186,15 +138,10 @@ impl Application {
             None => Arc::new(NoAttachments),
         };
         let avatars = Arc::new(ImageAvatarProcessor::new());
-        // The other decoder §15/D30 names — see `notify_avatars`'s own module
-        // docs for why the two share a crate.
         let thumbnailer: Arc<dyn AttachmentThumbnailer> =
             Arc::new(ImageAttachmentThumbnailer::new());
 
-        // The sinks `[[channels.managed.sinks]]` asks for, and the adapters that
-        // serve them (§7.1bis). Built before the fan-out because the fan-out is
-        // handed the routing table: a channel with no sink queues nothing, and an
-        // instance with no sink at all does not even look.
+        // Sinks (§7.1bis), built before the fan-out, which takes the routing table.
         let routes = SinkRoutes::build(config)?;
         let sinks = sink_fleet(config, &routes)?;
 
@@ -206,10 +153,7 @@ impl Application {
             repository.clone(),
             repository.clone(),
             clock.clone(),
-            // What the configured transports will actually carry, rather than a
-            // constant chosen when none of them existed: Web Push allows just over
-            // 4 KiB (RFC 8291), and a deployment with no transport allows nothing,
-            // so every message it produces is a poke.
+            // What the configured transports actually carry; none means every message is a poke.
             transports.max_payload_bytes(),
         );
 
@@ -218,40 +162,27 @@ impl Application {
         } else {
             fanout.with_sinks(Arc::new(routes.clone()), repository.clone())
         };
-        // Unconditional, unlike sinks: an instance with no `[attachments]` still
-        // gets `NoAttachments`, whose `get` already answers `None` for every
-        // source — `Fanout::derive_thumbnail` finding nothing to fetch is that
-        // deployment's ordinary path, not a case this wiring needs to special-case.
+        // Unconditional: with no store, `NoAttachments::get` answers `None`, so nothing is derived.
         let fanout = fanout.with_thumbnails(attachments.clone(), thumbnailer.clone());
 
         // Shared by everything that has to answer "is this notification still
         // there, and may this caller see it".
         let get = GetNotification::new(repository.clone(), authorizer.clone(), clock.clone());
 
-        // Shared by everything that writes something a client shows an author for
-        // (§2.4). One value rather than a pair of `Arc`s repeated at each call
-        // site, so that a fourth writer cannot be wired without it.
+        // Shared by every writer that shows an author (§2.4).
         let attribution = Attribution::new(repository.clone(), repository.clone());
 
-        // Federation (§5.3). `None` here is what makes the exchange answer 501 and
-        // every CI token fail to authenticate — one absent block, one behaviour.
+        // Federation (§5.3); `None` makes the exchange answer 501.
         let federation = federation_tokens(config, clock.clone())?;
-        // The CLI download (design §9, new). `None` here is what makes `GET /cli`
-        // answer 501 — same absent-block-one-behaviour rule as federation above.
+        // The CLI download (§9); `None` makes `GET /cli` answer 501.
         let (cli_binary, cli_digest) = match cli_binary(config)? {
             Some((bytes, digest)) => (Some(bytes), Some(digest)),
             None => (None, None),
         };
-        // One set, shared, and swappable on SIGHUP (D31). It used to be built twice
-        // — once for the exchange, once for the console — on the reasoning that a
-        // read-only screen should not be tied to an authentication path. The reason
-        // that reversed: §11 re-reads the file, and two copies would have meant two
-        // answers to "which forge may publish", with the console showing the one
-        // nobody enforces.
+        // One shared set, swapped on `SIGHUP`, so the console shows what is enforced.
         let policies = notify_app::LivePolicies::new(trust_policies(config)?);
         let console_policies = policies.clone();
-        // Written by the reconcile loop, read by the console. Cloned rather than
-        // shared by reference because both halves outlive this function.
+        // Written by the reconcile loop, read by the console.
         let reconciliation_log = ReconciliationLog::new();
         let audience = config
             .federation
@@ -259,13 +190,20 @@ impl Application {
             .and_then(|settings| settings.audience.clone())
             .unwrap_or_else(|| "weebo-notify".to_owned());
 
+        // Unique per process: pods often all run as PID 1, so the hostname and a timestamp join it.
+        let replica = format!(
+            "{}-{}-{}",
+            std::env::var("HOSTNAME").unwrap_or_default(),
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        );
         let state = ApiState {
             bus: bus.clone(),
             metrics: metrics.clone(),
-            // Empty: a replica that has just booted is holding nothing. The count
-            // is per process by design (§8.2, D23), so it is built here rather than
-            // read from anywhere — there is nothing to recover.
-            streams: Arc::new(notify_http_actix::StreamSlots::new()),
+            streams: Arc::new(notify_http_actix::StreamSlots::clustered(
+                Arc::new(store.clone()),
+                replica,
+            )),
             authenticate: {
                 let base = Authenticate::new(
                     verifier,
@@ -276,9 +214,7 @@ impl Application {
                     hasher.clone(),
                     clock.clone(),
                 )
-                // GitOps and nowhere else (§5.4). An empty list means the instance
-                // has no platform admins, which is the right reading of an operator
-                // who never said who administers it.
+                // GitOps only (§5.4); empty means no platform admins.
                 .with_platform_admins(config.admin.oidc_groups.clone());
 
                 match federation.clone() {
@@ -469,6 +405,7 @@ impl Application {
             application_server_key,
 
             accounts: ListServiceAccounts::new(repository.clone()),
+            users: notify_app::SearchUsers::new(repository.clone()),
             create_account: CreateServiceAccount::new(
                 repository.clone(),
                 repository.clone(),
@@ -489,12 +426,7 @@ impl Application {
             repository.clone(),
             repository.clone(),
             repository.clone(),
-            // The same store the presign writes into (§6.1). On a deployment with no
-            // `[attachments]` this is the double that refuses, which is the right
-            // answer rather than a problem: an instance that cannot hand out a
-            // presigned upload has no attachment to collect either.
-            // The registry is the database, not the bucket (D25): it is what makes an
-            // upload nobody ever referenced findable at all.
+            // The store the presign writes into (§6.1); the registry is the database (D25).
             notify_app::Attachments {
                 store: attachments.clone(),
                 registry: repository.clone(),
@@ -504,9 +436,7 @@ impl Application {
             clock.clone(),
         );
 
-        // Its own leader lock, not the purge's: the two run on the same timer, but a
-        // slow purge holding a shared lock would stop closures fleet-wide for no
-        // reason (see `CloseStale::JOB`).
+        // Its own leader lock, so a slow purge cannot stall closures (see `CloseStale::JOB`).
         let close_stale = CloseStale::new(
             repository.clone(),
             repository.clone(),
@@ -516,8 +446,7 @@ impl Application {
             clock.clone(),
         );
 
-        // The digest of §7.4: one push when a quiet period ends, leader-only for the
-        // same reason the purge is — every replica running it would send one each.
+        // The §7.4 digest, leader-only so each push is sent once.
         let digests = SendDndDigests::new(
             repository.clone(),
             repository.clone(),
@@ -526,8 +455,7 @@ impl Application {
             clock.clone(),
         );
 
-        // The sink drain (§7.1bis), leader-only for the same reason as the two
-        // above: every replica draining would deliver each webhook once per replica.
+        // The sink drain (§7.1bis), leader-only so each webhook is delivered once.
         let drain = DrainSinks::new(
             repository.clone(),
             Arc::new(routes.clone()),
@@ -564,16 +492,7 @@ impl Application {
     }
 }
 
-/// The sink adapters this deployment needs — and only those.
-///
-/// Driven by what the channels declare rather than by what the binary can do: an
-/// instance with three webhooks and no mail sink never builds an SMTP transport, so
-/// a missing `[sinks.smtp]` is not its problem. The converse is refused in
-/// [`crate::config`], where an `email` sink without a relay stops the process.
-///
-/// Every failure here is an operator's and is answered at startup: an SMTP URL that
-/// does not parse, a `from` that is not a mailbox. Finding out at the first incident
-/// is the failure mode this exists to avoid — the same rule as the VAPID key above.
+/// The sink adapters the channels actually declare; misconfiguration fails at startup.
 fn sink_fleet(config: &Config, routes: &SinkRoutes) -> anyhow::Result<SinkFleet> {
     let mut fleet = SinkFleet::empty();
     let kinds = routes.kinds();
@@ -608,27 +527,14 @@ fn sink_fleet(config: &Config, routes: &SinkRoutes) -> anyhow::Result<SinkFleet>
     Ok(fleet)
 }
 
-/// The push transports this deployment configured, and the key a browser needs to
-/// subscribe to the first of them (design §6.2, §11).
-///
-/// The key is returned rather than read back off the registry because the registry
-/// holds `dyn PushTransport`, which is the right shape for the fan-out — it delivers
-/// and says nothing else — and the wrong one for a value only Web Push has.
-///
-/// Every failure here is an operator's, and every one of them is answered at startup
-/// rather than at the first push: a key file that cannot be read, a key that is not
-/// P-256, a contact no relay would accept, a Team ID or Key ID the wrong shape for
-/// APNs — UnifiedPush has nothing in this category to fail on, since
-/// `[push.unifiedpush]` holds no credential (design §6.2). Finding out because
-/// somebody's phone stayed silent is the failure this refuses.
+/// The push transports configured, and the Web Push key a browser subscribes with (design §6.2, §11).
+/// Every operator mistake fails here at startup rather than at the first push.
 fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option<String>)> {
     let mut registry = TransportRegistry::empty();
     let mut key = None;
 
     if let Some(settings) = &config.push.webpush {
-        // The key is a path in the configuration and not the key itself (§11), so it
-        // can be mounted from whatever the cluster keeps secrets in without passing
-        // through a file that gets committed by accident.
+        // A path, not the key, so it can be mounted from a secret store (§11).
         let pem = std::fs::read_to_string(&settings.vapid_key_file).map_err(|error| {
             anyhow::anyhow!(
                 "[push.webpush] vapid_key_file `{}` cannot be read: {error}",
@@ -646,15 +552,12 @@ fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option
     }
 
     if config.push.unifiedpush.is_some() {
-        // Unlike Web Push, nothing here can fail on an operator's typo — there is no
-        // key to read (design §11, `[push.unifiedpush]`) — so the only way `new()`
-        // fails is the HTTP client itself, the same class of startup failure as
-        // everything else in this function.
+        // No credential to read; only the HTTP client can fail.
         registry = registry.with(Arc::new(UnifiedPush::new()?));
     }
 
     if let Some(settings) = &config.push.apns {
-        // Same path-not-key-itself reasoning as `[push.webpush]`'s `vapid_key_file`.
+        // A path, not the key, as with `vapid_key_file`.
         let pem = std::fs::read_to_string(&settings.key_file).map_err(|error| {
             anyhow::anyhow!(
                 "[push.apns] key_file `{}` cannot be read: {error}",
@@ -676,17 +579,9 @@ fn push_transports(config: &Config) -> anyhow::Result<(TransportRegistry, Option
     Ok((registry, key))
 }
 
-/// The federation adapter, when `[federation]` says there is one.
-///
-/// Returns `None` for a deployment that does not federate, which is what makes
-/// `POST /auth/token/exchange` answer `501` and every CI token fail to
-/// authenticate. Returns an **error** when the block is present and the key is not
-/// usable: starting mute would mean a pipeline failing on credentials that are
-/// fine, hours after somebody mistyped a path (the rule M3.5 set for VAPID).
-///
-/// The issuer allowlist is built from the trust policies, global and channel-scoped
-/// alike — see [`notify_oidc::FederationTokens`] for why that list is a security
-/// boundary and not a convenience.
+/// The federation adapter, when `[federation]` says there is one (`None` makes the exchange 501).
+/// An unusable key is an error at startup. The issuer allowlist is the trust policies'
+/// (a security boundary, see [`notify_oidc::FederationTokens`]).
 fn federation_tokens(
     config: &Config,
     clock: Arc<SystemClock>,
@@ -728,17 +623,8 @@ fn federation_tokens(
     )?)))
 }
 
-/// The CLI binary this replica serves, when `[cli]` says there is one (design §9).
-///
-/// `None` for a deployment that does not, which is what makes `GET /cli` answer
-/// `501`. `Bytes` and not `Vec<u8>`: read once here, at boot, and cloned into
-/// every request afterwards — a refcount bump, not a copy of a multi-megabyte
-/// binary per download.
-///
-/// Returns an **error** when the section is present and the path is not
-/// readable, the same rule `federation_tokens` above and `[push.webpush]` set:
-/// starting up silently unable to serve what an operator explicitly configured
-/// is a worse failure than refusing to start at all.
+/// The CLI binary this replica serves, when `[cli]` says there is one (design §9); `None` → `501`.
+/// Read once into `Bytes`, so each download is a refcount bump; an unreadable path fails startup.
 fn cli_binary(config: &Config) -> anyhow::Result<Option<(actix_web::web::Bytes, String)>> {
     let Some(settings) = &config.cli else {
         return Ok(None);
@@ -751,9 +637,7 @@ fn cli_binary(config: &Config) -> anyhow::Result<Option<(actix_web::web::Bytes, 
         )
     })?;
 
-    // Hashed once at boot, alongside the read. `GET /api/v1/cli` serves it as
-    // `X-Content-Digest` so a recipient can check the executable they were handed
-    // against the digest published with the release (SEC-P2-26/27).
+    // Served as `X-Content-Digest` for checking against the release (SEC-P2-26/27).
     let digest = {
         use sha2::{Digest as _, Sha256};
         let mut hasher = Sha256::new();
@@ -776,11 +660,7 @@ fn cli_binary(config: &Config) -> anyhow::Result<Option<(actix_web::web::Bytes, 
     Ok(Some((actix_web::web::Bytes::from(bytes), digest)))
 }
 
-/// The trust policies, global and channel-scoped, as the domain wants them.
-///
-/// A channel's `publishers` block becomes a policy over that one channel, marked
-/// `channel_scoped` so §11's precedence is a fact the domain reads rather than a
-/// shape it has to infer (M4.1).
+/// The trust policies, global and channel-scoped (marked `channel_scoped` for §11's precedence).
 pub(crate) fn trust_policies(config: &Config) -> anyhow::Result<TrustPolicies> {
     let mut policies = Vec::new();
 
@@ -803,9 +683,7 @@ pub(crate) fn trust_policies(config: &Config) -> anyhow::Result<TrustPolicies> {
             policies.push(DomainTrustPolicy {
                 issuer: publisher.issuer.clone(),
                 subject: Pattern::parse(&publisher.subject)?,
-                // The channel it is written under, and nothing else. A `publishers`
-                // block that could name other channels would be a global policy
-                // wearing a local name.
+                // Only its own channel, or it would be a global policy in disguise.
                 channels: vec![Pattern::parse(&channel.id)?],
                 scopes: publisher.scopes.clone(),
                 channel_scoped: true,
@@ -816,12 +694,7 @@ pub(crate) fn trust_policies(config: &Config) -> anyhow::Result<TrustPolicies> {
     Ok(TrustPolicies::new(policies))
 }
 
-/// The object store a deployment without one gets.
-///
-/// It refuses rather than pretending. §14.3 makes the rule explicit: a port with no
-/// adapter answers `NotConfigured` naming the capability, so an avatar upload on an
-/// instance with no bucket fails visibly instead of succeeding into nowhere and
-/// leaving a profile pointing at bytes that were never written.
+/// The object store a deployment without one gets: refuses with `NotConfigured` (§14.3).
 #[derive(Debug)]
 struct NoAttachments;
 
@@ -846,8 +719,7 @@ impl AttachmentStore for NoAttachments {
     }
 
     async fn delete(&self, _id: notify_domain::AttachmentId) -> notify_ports::PortResult<()> {
-        // Nothing to delete is the desired state, so the purge job stays green on an
-        // instance that never stored anything.
+        // Nothing to delete is the desired state.
         Ok(())
     }
 
@@ -880,17 +752,12 @@ impl AttachmentStore for NoAttachments {
         &self,
         _id: notify_domain::AttachmentId,
     ) -> notify_ports::PortResult<Option<notify_ports::StoredObject>> {
-        // `None`, like `get`: `Writer::derive_thumbnail` reads this to decide
-        // whether a source exists before it ever calls `put_thumbnail`, so an
-        // instance with no bucket configured derives nothing rather than erroring
-        // out of a publish over a feature it was never asked to provide.
+        // `None`, like `get`, so nothing is derived.
         Ok(None)
     }
 
     async fn health(&self) -> notify_ports::PortResult<()> {
-        // Healthy: an instance with no bucket configured is not a broken instance,
-        // and reporting it unready would take the whole replica out over a feature
-        // it was never asked to provide.
+        // Healthy: no bucket configured is not a broken instance.
         Ok(())
     }
 }
@@ -1076,8 +943,7 @@ mod tests {
         let (bytes, digest) = cli_binary(&config).unwrap().unwrap();
 
         assert_eq!(bytes.as_ref(), b"not really a binary, but bytes");
-        // The digest served as `X-Content-Digest`, so a recipient can check the
-        // executable they were handed against the release notes (SEC-P2-26/27).
+        // Served as `X-Content-Digest` (SEC-P2-26/27).
         assert_eq!(
             digest, "181dcdff3eebcb931b129e19f67aecbbaff4816770bd0c1da0d2af3b4b60a113",
             "the digest is not SHA-256 of the bytes actually read"

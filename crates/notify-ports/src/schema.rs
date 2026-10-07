@@ -1,43 +1,6 @@
-//! The two OpenAPI schemas this crate writes by hand (design §14.4, D1 and D3).
-//!
-//! Everywhere else the document is a derive over the serde representation
-//! (ADR-0013): the type is the source of truth and nobody maintains a second
-//! description of it. These two are the exceptions, and both for the same reason —
-//! what utoipa *composes* for them is valid OpenAPI that no generator can model,
-//! and ADR-0009 promises the clients come from the contract. A contract a generator
-//! chokes on is a promise with a hole in it.
-//!
-//! # D1 — [`Event`]
-//!
-//! [`Event`] flattens an audience and a payload into one object, which is the flat
-//! wire shape design §8.1 documents. Derived, that comes out as
-//! `allOf[oneOf, oneOf, object]`, and progenitor renders it as `pub enum
-//! EventVariant0 {}` — an **uninhabited** type, so a generated client can
-//! deserialise a page of `GET /sync` only for as long as it contains no events.
-//!
-//! Written by hand it is a `oneOf` of the five events that actually exist, each one
-//! complete: its own `event` discriminant, the audience it is really addressed to,
-//! and the envelope. **The bytes on the wire do not change** — only their
-//! description does, into something a generator turns into five struct variants.
-//!
-//! The payload half of each branch stays a `$ref` to the schema derived from the
-//! payload type, rather than a hand-copied property list: an `allOf` of a `$ref`
-//! and an object is a shape generators *do* merge — it is what `EventPayload`
-//! already compiled to — so adding a field to [`RevisionEvent`] still updates the
-//! document by itself. What is written by hand is the envelope, five short objects,
-//! and the test below holds it to the type by round-tripping a real event of each
-//! kind through it.
-//!
-//! # D3 — [`Page<T>`]
-//!
-//! utoipa inlines a generic parameter, so `Page_Channel.items` described a whole
-//! channel instead of referencing `Channel`. Structural typing means the TS client
-//! never noticed; progenitor mints a second nominal type — `PageChannelItemsItem` —
-//! for something the document already names. Written by hand, `items` is an array of
-//! **references**, and the document loses a full copy of `Channel`, `Notification`
-//! and `Revision` along the way.
-//!
-//! [`RevisionEvent`]: crate::event::RevisionEvent
+//! The two hand-written OpenAPI schemas (§14.4, ADR-0009), because the derived ones
+//! defeat generators: [`Event`] as a `oneOf` of five complete branches, [`Page<T>`]
+//! referencing its items. Wire bytes are unchanged; tests hold both to the types.
 
 use std::borrow::Cow;
 
@@ -55,12 +18,7 @@ use crate::pagination::Page;
 
 // --- Event (D1) -----------------------------------------------------------
 
-/// Who an event is addressed to.
-///
-/// Not a free choice per kind: a `preference` event is one user's own business and
-/// every other kind belongs to a channel (scenario T26). Saying so in the schema is
-/// what lets a generated client read `channel_id` off a revision without unwrapping
-/// an option that can never be empty.
+/// Who an event is addressed to: `preference` events a user, every other kind a channel (T26).
 #[derive(Clone, Copy)]
 enum Reach {
     Channel,
@@ -90,9 +48,7 @@ impl ToSchema for Event {
     }
 
     fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
-        // Everything the six branches reference, directly or through a payload. A
-        // `$ref` to a schema nobody registered is a document that does not resolve,
-        // and the generators report that in a way nobody enjoys reading.
+        // Everything the branches reference, so every `$ref` resolves.
         register::<Cursor>(schemas);
         register::<ChannelId>(schemas);
         register::<UserId>(schemas);
@@ -113,11 +69,7 @@ fn carrying<T: ToSchema>(kind: &str, reach: Reach) -> AllOfBuilder {
         .item(envelope(kind, reach))
 }
 
-/// The title a branch is known by.
-///
-/// Not decoration: a generator names the variant it mints after it, so without one
-/// the five events come out as `Variant0`…`Variant4` — and a client matching on
-/// positions silently changes meaning the day a branch moves.
+/// The title a branch is known by; generators name the variant after it.
 fn branch_title(kind: &str) -> String {
     let mut title = String::from("Logged");
     let mut characters = kind.chars();
@@ -128,8 +80,7 @@ fn branch_title(kind: &str) -> String {
     title
 }
 
-/// The tombstone branch, which carries no payload type of its own — "gone, and why"
-/// is two fields, and giving them a struct would name something nothing else reads.
+/// The tombstone branch: two fields, no payload type.
 fn tombstone() -> ObjectBuilder {
     envelope("tombstone", Reach::Channel)
         .title(Some(branch_title("tombstone")))
@@ -145,14 +96,8 @@ fn tombstone() -> ObjectBuilder {
         .required("reason")
 }
 
-/// The closure branch. Same reasoning as [`tombstone`] for having no payload type:
-/// "this one closed, at this instant" is two fields.
-///
-/// Distinct from a tombstone on the wire because it means the opposite thing to a
-/// client — the notification is still there, and still readable, it has only
-/// stopped being open. A client that treated this as a tombstone would make a
-/// closed incident disappear from the inbox that is supposed to keep it until its
-/// TTL runs out.
+/// The closure branch: two fields, no payload type. Unlike a tombstone, the
+/// notification stays readable.
 fn closure() -> ObjectBuilder {
     envelope("closure", Reach::Channel)
         .title(Some(branch_title("closure")))
@@ -181,8 +126,7 @@ fn closure() -> ObjectBuilder {
         .required("closed_at")
 }
 
-/// What every event carries whatever happened: where it sits in the log, when it was
-/// appended, who it is for, and which kind it is.
+/// What every event carries: cursor, append time, audience and kind.
 fn envelope(kind: &str, reach: Reach) -> ObjectBuilder {
     let common = Object::builder()
         .schema_type(Type::Object)
@@ -193,9 +137,7 @@ fn envelope(kind: &str, reach: Reach) -> ObjectBuilder {
             timestamp("When it was appended, by the server's clock."),
         )
         .required("logged_at")
-        // Optional, and that is the contract: it is a fact about *this delivery*
-        // to *this reader*, absent when false, and a client written before it
-        // existed keeps parsing (design §7.4, §14.4 D22).
+        // Optional: absent when false, so older clients keep parsing (§7.4).
         .property(
             "muted_by_dnd",
             Object::builder()
@@ -226,12 +168,8 @@ fn envelope(kind: &str, reach: Reach) -> ObjectBuilder {
 
 // --- Page<T> (D3) ---------------------------------------------------------
 
-/// A generic body is composed rather than merely described: `body = Page<Channel>`
-/// expands to a call on this trait, and [`PartialSchema`] then comes from utoipa's
-/// blanket implementation over it. Hidden from utoipa's docs, but it is the same
-/// entry point its own derive targets — and the alternative, a concrete `ChannelPage`
-/// newtype per element, would put three empty types in the domain to satisfy a
-/// generator.
+/// `body = Page<Channel>` expands to this trait; [`PartialSchema`] comes from
+/// utoipa's blanket impl over it.
 impl<T: ToSchema> utoipa::__dev::ComposeSchema for Page<T> {
     fn compose(_generics: Vec<RefOr<Schema>>) -> RefOr<Schema> {
         Object::builder()
@@ -262,9 +200,7 @@ impl<T: ToSchema> utoipa::__dev::ComposeSchema for Page<T> {
 }
 
 impl<T: ToSchema> ToSchema for Page<T> {
-    /// A *prefix*, not the whole name: utoipa appends the element's own name, so
-    /// this is what makes the schema `Page_Channel` — the name its own alias
-    /// produced, which the generated clients already spell `PageChannel`.
+    /// A prefix: utoipa appends the element's name, giving `Page_Channel`.
     fn name() -> Cow<'static, str> {
         Cow::Borrowed("Page")
     }
@@ -439,9 +375,7 @@ mod tests {
         (required, properties)
     }
 
-    /// The payload schemas a branch may reference. Hand-listed rather than looked up
-    /// in a document, because this test is about *this* schema and not about how the
-    /// server assembles the whole one.
+    /// The payload schemas a branch may reference.
     fn resolve(location: &str) -> RefOr<Schema> {
         match location.rsplit('/').next().unwrap_or_default() {
             "RevisionEvent" => RevisionEvent::schema(),
@@ -452,8 +386,7 @@ mod tests {
         }
     }
 
-    /// What D1 is about, and what decays silently: the envelope is written by hand,
-    /// so nothing but a test stops it drifting from the type it describes.
+    /// The hand-written envelope must not drift from the type it describes.
     #[test]
     fn every_kind_of_event_matches_the_branch_that_describes_it() {
         let RefOr::T(Schema::OneOf(one_of)) = Event::schema() else {
@@ -490,8 +423,7 @@ mod tests {
 
     #[test]
     fn a_preference_event_is_described_as_the_private_thing_it_is() {
-        // Scenario T26 in the document rather than only in the code: a client reading
-        // the schema must not expect a channel on it.
+        // T26: a preference event carries no channel.
         let RefOr::T(Schema::OneOf(one_of)) = Event::schema() else {
             panic!("Event must stay a oneOf");
         };
@@ -501,8 +433,7 @@ mod tests {
         assert!(!required.iter().any(|name| name == "channel_id"));
     }
 
-    /// D3: the item is a reference, so a generator has one type for a channel rather
-    /// than one per container that carries one.
+    /// The item is a reference, not an inlined copy.
     #[test]
     fn a_page_references_its_item_instead_of_copying_it() {
         use notify_domain::Channel;
@@ -522,8 +453,6 @@ mod tests {
                 if reference.ref_location.ends_with("/Channel")),
             "the item must be a $ref: inlining it is what mints PageChannelItemsItem"
         );
-        // A prefix: utoipa appends the element's name, giving `Page_Channel`. Naming
-        // the whole thing here is how it came out `Page_Channel_Channel` once.
         assert_eq!(Page::<Channel>::name(), "Page");
     }
 }

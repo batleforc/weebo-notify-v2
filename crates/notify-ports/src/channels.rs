@@ -5,30 +5,14 @@ use notify_domain::{Channel, ChannelId, ChannelPolicy, Membership, Principal, Sc
 use crate::error::PortResult;
 use crate::pagination::{Page, PageRequest};
 
-/// Channels.
-///
-/// # Why the reads take groups as well as a principal
-///
-/// A channel grants access two ways: to a named principal through a
-/// [`notify_domain::Membership`], and to everyone in an identity-provider group
-/// through a [`notify_domain::GroupBinding`] (design §11). The second has no row
-/// per user by design — who is in `infra-admins` is a fact the token carries, and
-/// design §5.1 promises we store no session derived from it.
-///
-/// So every read that answers "which channels may this caller see" needs both, and
-/// they are one argument list rather than two calls: a caller that fetched
-/// memberships and forgot groups would silently show an empty inbox to everybody
-/// whose access is group-based.
+/// Channels. Reads take groups as well as a principal because group bindings
+/// have no per-user row (§5.1, §11); forgetting them empties group-based inboxes.
 #[async_trait::async_trait]
 pub trait ChannelRepository: Send + Sync {
     /// Fetch one by name.
     async fn get(&self, id: &ChannelId) -> PortResult<Option<Channel>>;
 
-    /// The channels a caller holds at least `scope` in, by membership or by group.
-    ///
-    /// This is the query behind almost everything: the inbox, the stream filter,
-    /// the search scope. Access is the only door to content (design §5.4), so
-    /// getting it from one place means there is one place to get it right.
+    /// The channels a caller holds at least `scope` in, by membership or group (§5.4).
     async fn list_for(
         &self,
         principal: &Principal,
@@ -37,82 +21,42 @@ pub trait ChannelRepository: Send + Sync {
         page: PageRequest,
     ) -> PortResult<Page<Channel>>;
 
-    /// Every channel id a caller may read, unpaginated.
-    ///
-    /// Deliberately separate from [`Self::list_for`]: the stream and the sync
-    /// backlog need the whole set on every reconnect and never the channel bodies,
-    /// and paginating a filter that has to be complete to be correct would just
-    /// invite somebody to use the first page of it.
+    /// Every channel id a caller may read, unpaginated: stream filters must be complete.
     async fn subscribed_ids(
         &self,
         principal: &Principal,
         groups: &[String],
     ) -> PortResult<Vec<ChannelId>>;
 
-    /// Create or update a channel, members and policy included.
-    ///
-    /// Used by the API for dynamic channels and by the reconciler for managed ones
-    /// (design §11). Refusing to reshape a managed channel is the *use case's* job,
-    /// not this port's — the reconciler legitimately needs to write to it.
+    /// Create or update a channel, members and policy included. Refusing to reshape
+    /// managed channels is the use case's job (§11).
     async fn upsert(&self, channel: &Channel) -> PortResult<()>;
 
-    /// Create a channel that must not exist yet.
-    ///
-    /// [`crate::PortError::Conflict`] when it does — asked of the store in the same
-    /// write rather than checked beforehand, because "look, then write" lets two
-    /// creators of one name both pass the look and the second take the first's
-    /// channel over.
+    /// Create a channel that must not exist yet; [`crate::PortError::Conflict`] if it
+    /// does, checked in the same write to avoid a race.
     async fn insert(&self, channel: &Channel) -> PortResult<()>;
 
-    /// Add one membership or change its scopes, leaving every other one alone.
-    ///
-    /// The API's member routes write through this rather than [`Self::upsert`]:
-    /// rewriting the whole list from a snapshot read a moment earlier is how two
-    /// managers adding two people at once end up with one of them.
+    /// Add one membership or change its scopes, leaving the others alone (no
+    /// lost update between concurrent managers).
     async fn put_member(&self, id: &ChannelId, membership: &Membership) -> PortResult<()>;
 
     /// Remove one membership. Returns whether it was there.
     async fn remove_member(&self, id: &ChannelId, principal: &Principal) -> PortResult<bool>;
 
-    /// Replace the policy, leaving members and group access alone — for the same
-    /// reason as [`Self::put_member`].
+    /// Replace the policy, leaving members and group access alone.
     async fn set_policy(&self, id: &ChannelId, policy: &ChannelPolicy) -> PortResult<()>;
 
     /// Delete a channel. Returns whether one was there.
     async fn delete(&self, id: &ChannelId) -> PortResult<bool>;
 
-    /// Every GitOps-managed channel, for reconciliation and drift correction
-    /// (design §11, scenario T21).
+    /// Every GitOps-managed channel, for reconciliation (§11, T21).
     async fn list_managed(&self) -> PortResult<Vec<Channel>>;
 
-    /// Every channel id on the instance, ordered.
-    ///
-    /// Ids only, and deliberately: the one caller is the federation exchange
-    /// (design §5.3), which resolves a policy's `ci-*` into the channels that
-    /// actually exist so the minted token can name them. It needs no members, no
-    /// policy and no origin, and returning whole channels here would make an
-    /// instance-wide read of everything look like an ordinary thing to reach for.
-    ///
-    /// Unscoped, so it is **not** an authorisation path: nothing may hand this list
-    /// to a caller. It answers "what exists", not "what may you see" — the second
-    /// question is [`list_for`], and mixing them is how an inventory becomes a leak.
-    ///
-    /// [`list_for`]: ChannelRepository::list_for
+    /// Every channel id on the instance, ordered, for the federation exchange (§5.3).
+    /// Unscoped: never an authorisation path, never hand it to a caller.
     async fn all_ids(&self) -> PortResult<Vec<ChannelId>>;
 
-    /// Every channel's id and policy, for the background passes that apply a
-    /// per-channel rule to rows they have not read yet.
-    ///
-    /// The one caller is the stale-closure sweep (design §7.2bis): `close_after`
-    /// lives in a policy stored as JSON, and turning it into the deadline a query
-    /// can compare against means parsing a duration — which belongs in Rust and
-    /// not in SQL. One read of every policy per pass is the price, and it is the
-    /// right shape: channels are an operator-scale concept, a handful per team,
-    /// while the notifications the sweep is looking through are unbounded.
-    ///
-    /// Unscoped, exactly like [`all_ids`], and the same warning applies: this
-    /// answers "what exists", never "what may you see".
-    ///
-    /// [`all_ids`]: ChannelRepository::all_ids
+    /// Every channel's id and policy, for the stale-closure sweep (§7.2bis).
+    /// Unscoped, like [`ChannelRepository::all_ids`].
     async fn all_policies(&self) -> PortResult<Vec<(ChannelId, ChannelPolicy)>>;
 }

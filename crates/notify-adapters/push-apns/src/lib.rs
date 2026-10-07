@@ -1,92 +1,31 @@
-//! APNs: token-based `.p8` authentication, and the sealed box relayed transports
-//! share (design §6.2, §6.3, §10bis.5, M7).
-//!
-//! # The server half of a milestone whose other half cannot exist here
-//!
-//! M7's Swift side — the Notification Service Extension that decrypts before
-//! display, Keychain X25519 enrollment, the whole iOS build — needs Xcode, which
-//! cannot run in this project's Linux infrastructure at all (design §14.4, D34;
-//! unlike D33's Android gap, there is no image this could ever land in). This
-//! transport is the other half: it has a real caller (the fan-out, via
-//! [`notify_ports::PushTransport`]) and talks to a stable, publicly documented
-//! Apple API, neither of which needs the Swift side to exist first — the same
-//! reasoning that let `notify-push-unifiedpush` (M6) ship its outbound half with no
-//! Android build in reach either. **Tested everywhere, never against real Apple
-//! infrastructure**: nothing here has ever received a `200` from
-//! `api.push.apple.com`, the same honesty `notify-push-unifiedpush`'s own module doc
-//! states for UnifiedPush.
-//!
-//! # `mutable-content`, not `content-available`
-//!
-//! A Notification Service Extension only runs *before display* — the whole point,
-//! since it is what decrypts [`notify_sealed_box`]'s ciphertext — when the payload
-//! carries `"aps":{"alert":{...},"mutable-content":1}`. A plain `content-available`
-//! background push does not invoke it for that purpose; getting this wrong would
-//! mean the feature silently does nothing the day the Swift half exists to receive
-//! it. Apple also forbids the extension from *removing* the alert text, only
-//! replacing it, so [`AlertPlaceholder`] is not empty — it is what a device sees for
-//! the instant before the extension overwrites it with the decrypted title.
-//!
-//! # The payload budget, and why it differs from UnifiedPush's
-//!
-//! Apple's hard cap is 4096 bytes for the **entire** JSON payload, stricter than Web
-//! Push's 4096-*encrypted-body-only*. See [`MAX_PAYLOAD`] for the arithmetic —
-//! conservative by the same deliberate margin `notify-push-unifiedpush`'s own budget
-//! is, and a little smaller than it, because this envelope also carries the `aps`/
-//! `mutable-content` wrapper UnifiedPush's does not.
+//! APNs transport (design §6.2, §6.3, §10bis.5): token-based `.p8` auth, sealed-box payload.
+//! Untested against real Apple infrastructure. Uses `mutable-content` so the Notification Service
+//! Extension decrypts before display (`content-available` would not invoke it).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use notify_domain::{Device, DevicePublicKey, Priority};
 use notify_ports::{
-    PortError, PortResult, PushDispatcher, PushMessage, PushOutcome, PushTransport,
-    SEALED_ENVELOPE_VERSION,
+    PortError, PortResult, PushMessage, PushOutcome, PushTransport, SEALED_ENVELOPE_VERSION,
 };
 use p256::pkcs8::DecodePrivateKey as _;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-/// The most plaintext one push may carry.
-///
-/// Apple's limit is 4096 bytes for the whole JSON body, not just `aps`. The fixed
-/// skeleton — `{"aps":{"alert":{"title":" ","body":" "},"mutable-content":1},
-/// "v":2,"ciphertext_device":""}` — is under 100 bytes; rounding up for safety
-/// leaves ~250 bytes of fixed overhead. The remaining ~3846 bytes for the base64'd
-/// (`URL_SAFE_NO_PAD`, no JSON-escaping inflation) `ciphertext_device` back out to
-/// ~2884 raw sealed bytes, minus the sealed box's own 72-byte overhead (32-octet
-/// ephemeral key, 24-octet nonce, 16-octet tag) and the ~150-byte sealed wrapper
-/// around the content (kind, channel, notification id — envelope v2) ≈ 2660 raw
-/// content. Rounded down, deliberately a little under `notify-push-unifiedpush`'s
-/// budget: this envelope carries the `aps` wrapper that one does not. Revisit once a real device
-/// gives a number worth citing instead of a margin.
+/// Max plaintext: Apple caps the whole JSON at 4096 bytes; minus `aps` wrapper, base64 and sealing, with margin.
 const MAX_PAYLOAD: usize = 2_600;
 
-/// How long APNs may hold a push before giving up on it, sent as `apns-expiration`.
-///
-/// Same four hours and the same reasoning `notify-push-webpush`'s `TTL` states: a
-/// notification nobody has seen after four hours is one the inbox shows when the
-/// app next opens, not news worth arriving half a day late.
+/// `apns-expiration` window; same four hours as Web Push's `TTL`.
 const TTL: Duration = Duration::from_secs(4 * 3_600);
 
-/// How long a minted provider token is reused before signing another.
-///
-/// Apple accepts a token for up to roughly an hour and asks integrators not to mint
-/// one per push. Unlike VAPID (`notify-push-webpush` signs fresh every time because
-/// the `aud` claim is per-push-service-origin), nothing in an APNs provider token's
-/// claims varies per request, so caching costs nothing and minting one per delivery
-/// would just be needless signing on a request's hot path.
+/// Provider token reuse window: Apple accepts ~1h and asks not to mint one per push.
 const TOKEN_TTL: Duration = Duration::from_secs(50 * 60);
 
 const APNS_PRODUCTION_HOST: &str = "https://api.push.apple.com";
 const APNS_SANDBOX_HOST: &str = "https://api.sandbox.push.apple.com";
 
-/// Why the transport could not be built (design §11, `[push.apns]`).
-///
-/// Its own type rather than a [`PortError`], matching `notify-push-webpush`: an
-/// operator's mistake found at startup, not a category the fan-out has to classify.
+/// Why the transport could not be built: an operator mistake found at startup (design §11).
 #[derive(Debug, thiserror::Error)]
 pub enum ApnsSetup {
     /// Apple's Team ID is always exactly ten alphanumeric characters.
@@ -110,24 +49,17 @@ pub enum ApnsSetup {
 pub struct ApnsConfig {
     /// The `.p8` provider authentication key, PEM-encoded P-256 (PKCS#8).
     pub key_pem: String,
-    /// The 10-character Key ID Apple assigned this `.p8` key — becomes the JWT
-    /// `kid` header.
+    /// The 10-character Key ID of the `.p8` key (JWT `kid`).
     pub key_id: String,
-    /// The 10-character Apple Developer Team ID — becomes the JWT `iss` claim.
+    /// The 10-character Apple Developer Team ID (JWT `iss`).
     pub team_id: String,
     /// The app's bundle identifier — sent as `apns-topic` on every request.
     pub topic: String,
-    /// Whether to push against the sandbox environment (`api.sandbox.push.apple.com`,
-    /// what a debug-signed build's device tokens are valid against) instead of
-    /// production. A real deployment needs both eventually — one instance per
-    /// environment, like any other `[push.apns]` credential — not a per-device
-    /// toggle, since which environment a token is valid for is fixed at the app's
-    /// own signing, not something this server observes.
+    /// Push to `api.sandbox.push.apple.com` (debug-signed builds) instead of production.
     pub sandbox: bool,
 }
 
-/// The APNs provider token's claims — `iss`/`iat` only, nothing that varies per
-/// push, which is exactly why [`Apns::provider_token`] can cache one.
+/// Provider token claims: nothing per-push, so [`Apns::provider_token`] can cache one.
 #[derive(Serialize)]
 struct Provider<'a> {
     iss: &'a str,
@@ -142,9 +74,7 @@ pub struct Apns {
     team_id: String,
     topic: String,
     host: &'static str,
-    /// The last minted provider token and when, behind a plain [`Mutex`]: refreshed
-    /// roughly hourly on a low-frequency path, not a contended one — see
-    /// [`Apns::provider_token`].
+    /// The last minted provider token and when; refreshed ~hourly, so an uncontended [`Mutex`].
     cached_token: Mutex<Option<(String, Instant)>>,
 }
 
@@ -160,13 +90,7 @@ impl core::fmt::Debug for Apns {
 }
 
 impl Apns {
-    /// Build one from the configured key.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the team/key IDs are not the shape Apple assigns, or the key is not
-    /// a P-256 private key this build can read — all at startup rather than at the
-    /// first push, the same rule `notify-push-webpush`'s constructor states.
+    /// Fails at startup if the team/key IDs are malformed or the key is not a readable P-256 key.
     pub fn new(config: &ApnsConfig) -> Result<Self, ApnsSetup> {
         let host = if config.sandbox {
             APNS_SANDBOX_HOST
@@ -176,9 +100,7 @@ impl Apns {
         Self::at(config, host)
     }
 
-    /// The same construction, against an explicit host — [`Apns::new`]'s own real
-    /// path, and what the tests use to prove the unreachable-relay path without
-    /// ever addressing Apple's real edge.
+    /// [`Apns::new`] against an explicit host, so tests never address Apple.
     fn at(config: &ApnsConfig, host: &'static str) -> Result<Self, ApnsSetup> {
         if !is_apple_id(&config.team_id) {
             return Err(ApnsSetup::TeamId);
@@ -189,9 +111,7 @@ impl Apns {
 
         let signing = jsonwebtoken::EncodingKey::from_ec_pem(config.key_pem.as_bytes())
             .map_err(|_| ApnsSetup::Key)?;
-        // Read a second time, purely so a malformed key is caught here rather than
-        // waiting for `jsonwebtoken` to fail it at the first sign — mirrors
-        // `notify-push-webpush`'s own `read_key` pass for the same reason.
+        // Parsed here so a malformed key fails at startup, not at the first signing.
         p256::SecretKey::from_pkcs8_pem(&config.key_pem).map_err(|_| ApnsSetup::Key)?;
 
         Ok(Self {
@@ -208,8 +128,7 @@ impl Apns {
         })
     }
 
-    /// The `Authorization: bearer …` token, minted fresh past [`TOKEN_TTL`] and
-    /// reused before it.
+    /// The `Authorization: bearer …` token, re-minted after [`TOKEN_TTL`].
     fn provider_token(&self) -> PortResult<String> {
         let now = Instant::now();
 
@@ -246,10 +165,7 @@ impl Apns {
     }
 }
 
-/// The placeholder every push carries before the Notification Service Extension
-/// overwrites it. Non-empty on purpose: Apple lets the extension replace the alert
-/// text, never remove it, so an empty string would be a payload the extension is
-/// not allowed to fully correct.
+/// Alert shown until the extension replaces it; non-empty since Apple forbids removing alert text.
 struct AlertPlaceholder {
     title: &'static str,
     body: &'static str,
@@ -284,10 +200,7 @@ struct Aps {
     mutable_content: u8,
 }
 
-/// What crosses the wire to APNs (design §6.3, envelope v2): the `aps` wrapper, a
-/// version and the sealed box. The channel and notification ids ride inside the
-/// box ([`PushMessage::sealed_plaintext`]), pokes included — Apple routes by
-/// device token and needs neither.
+/// What crosses the wire to APNs (envelope v2, §6.3): `aps`, a version and the sealed box.
 #[derive(Serialize)]
 struct Envelope {
     aps: Aps,
@@ -296,9 +209,7 @@ struct Envelope {
 }
 
 impl Envelope {
-    /// Seal what the fan-out decided to send to `key`. `None` propagates a weak
-    /// recipient key, the same `notify-push-unifiedpush::Envelope::sealed_for` does
-    /// and for the same reason.
+    /// Seal `message` to `key`; `None` for a weak key (see [`notify_sealed_box::seal`]).
     fn sealed_for(key: &DevicePublicKey, message: &PushMessage) -> Option<Self> {
         Some(Self {
             aps: Aps {
@@ -306,13 +217,9 @@ impl Envelope {
                 mutable_content: 1,
             },
             v: SEALED_ENVELOPE_VERSION,
-            ciphertext_device: seal_base64(key, &message.sealed_plaintext())?,
+            ciphertext_device: notify_sealed_box::seal_base64(key, &message.sealed_plaintext())?,
         })
     }
-}
-
-fn seal_base64(key: &DevicePublicKey, plaintext: &[u8]) -> Option<String> {
-    notify_sealed_box::seal(key, plaintext).map(|sealed| URL_SAFE_NO_PAD.encode(sealed))
 }
 
 #[async_trait::async_trait]
@@ -327,18 +234,14 @@ impl PushTransport for Apns {
 
     async fn deliver(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
         let notify_domain::PushTransport::Apns { token } = &device.transport else {
-            // The registry dispatches by name, so reaching here means a device whose
-            // stored transport disagrees with the name it enrolled under.
+            // The registry dispatches by name, so this is a stored-transport mismatch.
             return Err(PortError::corrupt(
                 "device.transport",
                 "not an APNs registration",
             ));
         };
 
-        // `Device::enrol` refuses a relayed transport with no key (design §6.2), so
-        // a `None` here is stored state disagreeing with an invariant the domain is
-        // supposed to hold for it — the same corruption `notify-push-unifiedpush`
-        // reports the same way.
+        // `Device::enrol` requires a key for relayed transports (§6.2), so `None` is corrupt state.
         let Some(public_key) = device.public_key else {
             return Err(PortError::corrupt(
                 "device.public_key",
@@ -359,9 +262,7 @@ impl PushTransport for Apns {
             .map_err(|error| PortError::unavailable("push.apns", error))?
             .as_secs();
 
-        // `self.host` is one of this crate's own two constants and
-        // `path_segments_mut` only refuses a URL that cannot be a base, which no
-        // `https://` URL is.
+        // `self.host` is a fixed `https://` base, so `path_segments_mut` cannot fail.
         #[allow(
             clippy::unwrap_used,
             reason = "the base URL is this crate's own https constant, always parseable and always a base"
@@ -393,11 +294,7 @@ impl PushTransport for Apns {
                 if (200..=299).contains(&status) {
                     PushOutcome::Delivered
                 } else {
-                    // Unlike a relay that spells every failure in its status code,
-                    // APNs folds distinct failures under the same one (`400` covers
-                    // both "the device is gone" and "our own payload was too big"),
-                    // with the real distinction only in the body — reading it is
-                    // what keeps a live device from being misclassified as expired.
+                    // APNs folds distinct failures under one status; the body's `reason` tells them apart.
                     let reason = response
                         .json::<ApnsErrorBody>()
                         .await
@@ -406,9 +303,7 @@ impl PushTransport for Apns {
                     outcome(status, reason.as_deref())
                 }
             }
-            // APNs was unreachable. A routine outcome on a flaky network and a
-            // metric rather than an error, the same distinction the sibling
-            // transports draw.
+            // Unreachable is a metric, not an `Err`.
             Err(_) => PushOutcome::Failed {
                 reason: "unreachable",
             },
@@ -416,35 +311,14 @@ impl PushTransport for Apns {
     }
 }
 
-/// APNs as a dispatcher, so this crate's own tests reach it through the trait the
-/// fan-out uses — the same reason the sibling transports have one.
-#[async_trait::async_trait]
-impl PushDispatcher for Apns {
-    async fn dispatch(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
-        self.deliver(device, message).await
-    }
-}
-
 /// APNs' error body on a non-2xx response: `{"reason": "BadDeviceToken", ...}`.
-/// Other fields (`timestamp`, present only on `410`) are not read — nothing here
-/// yet acts on *when* a token became invalid, only that it did.
 #[derive(Debug, Deserialize)]
 struct ApnsErrorBody {
     reason: String,
 }
 
-/// How a **failing** APNs status and, where it matters, its `reason` map onto
-/// [`PushOutcome`].
-///
-/// Only ever called for a non-2xx response — [`Apns::deliver`] answers `Delivered`
-/// itself without reading the body, so this has no `2xx` arm of its own and treats
-/// one as `relay_unavailable` if it were ever asked, which it is not in practice.
-///
-/// `410` is always a dead token. `400` is not always the same thing — `BadDeviceToken`
-/// and `DeviceTokenNotForTopic` mean the token will never work here again (revoke,
-/// same as `410`); `PayloadTooLarge` is this transport's own bug, not the device's,
-/// and must not revoke a live subscription. A body that fails to parse degrades to
-/// status-only, rather than failing the whole delivery over an unreadable error.
+/// Map a failing (non-2xx) APNs status and `reason` to [`PushOutcome`].
+/// `410` and token-invalid `400`s revoke; `PayloadTooLarge` is our bug and must not revoke.
 fn outcome(status: u16, reason: Option<&str>) -> PushOutcome {
     match (status, reason) {
         (410, _) | (400, Some("BadDeviceToken" | "DeviceTokenNotForTopic")) => PushOutcome::Expired,
@@ -461,12 +335,7 @@ fn outcome(status: u16, reason: Option<&str>) -> PushOutcome {
     }
 }
 
-/// How loudly to ask APNs to wake the device.
-///
-/// Apple accepts only two values. A digest is deliberately never urgent — the same
-/// rule `notify-push-webpush`'s `urgency` states — and everything else asks for
-/// immediate delivery: unlike a browser's push service, APNs has no low-power
-/// "whenever is convenient" tier worth distinguishing further.
+/// `apns-priority`: digests are never urgent; APNs has no finer tier.
 const fn apns_priority(message: &PushMessage) -> &'static str {
     match message.priority() {
         Priority::Min | Priority::Low => "5",
@@ -474,8 +343,7 @@ const fn apns_priority(message: &PushMessage) -> &'static str {
     }
 }
 
-/// Whether a value is the shape Apple assigns a Team ID or a Key ID: exactly ten
-/// ASCII alphanumeric characters.
+/// Whether a value is ten ASCII alphanumerics, the shape of an Apple Team or Key ID.
 fn is_apple_id(value: &str) -> bool {
     value.len() == 10
         && value
@@ -483,11 +351,7 @@ fn is_apple_id(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric())
 }
 
-/// A deterministic ES256 key for tests, built rather than pasted — the same reason
-/// and the same construction `notify-push-webpush::test_vapid_key` uses: a PEM
-/// literal in a source file is exactly what `task audit` (trivy) and the gitleaks
-/// pre-commit hook exist to catch, and a fixed scalar is valid, deterministic, and
-/// not a secret in any sense a scanner could confuse with one.
+/// A deterministic ES256 test key, derived from a fixed scalar so no PEM literal trips secret scanners.
 #[cfg(any(test, feature = "test-utils"))]
 #[must_use]
 pub fn test_apns_key() -> String {
@@ -517,6 +381,9 @@ mod tests {
     use notify_ports::PushBody;
     use time::OffsetDateTime;
     use x25519_dalek::{PublicKey, StaticSecret};
+
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     use super::*;
 
@@ -735,8 +602,7 @@ mod tests {
 
     #[test]
     fn outcomes_revoke_on_dead_tokens_and_not_on_our_own_oversized_payload() {
-        // 2xx never reaches `outcome()` — `Apns::deliver` answers `Delivered`
-        // itself before it would — so there is no `200` case to assert here.
+        // 2xx never reaches `outcome()`.
         assert_eq!(outcome(410, Some("Unregistered")), PushOutcome::Expired);
         assert_eq!(outcome(400, Some("BadDeviceToken")), PushOutcome::Expired);
         assert_eq!(
@@ -776,9 +642,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_relay_that_cannot_be_reached_is_a_metric_and_not_an_error() {
-        // A port nothing listens on, same as the sibling transports' own version of
-        // this test: the request fails at the socket, which also means signing the
-        // provider token and sealing the payload both ran for real above it.
+        // Nothing listens there: fails at the socket after signing and sealing ran.
         let transport = Apns::at(&config(), "http://127.0.0.1:1").unwrap();
         let device = device_with(&"a".repeat(64), device_key());
 

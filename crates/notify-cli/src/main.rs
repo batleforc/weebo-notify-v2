@@ -1,13 +1,5 @@
-//! The `notify` binary (design §9).
-//!
-//! One executable, two modes: scriptable one-shot commands (clap) and, from
-//! milestone M2, a full-screen real-time client (ratatui). The TUI is the default
-//! mode — running `notify` with no subcommand opens it — while any subcommand
-//! short-circuits straight to one-shot mode.
-//!
-//! Parity between the two is not maintained by hand: the TUI's `:` command mode
-//! feeds the line it is given to *this same* clap parser, so a new subcommand is
-//! available in the TUI by construction (design §9.2).
+//! The `notify` binary (§9): one-shot clap commands, or the TUI when run without a subcommand.
+//! The TUI's `:` mode feeds the same clap parser, so every subcommand works there too (§9.2).
 
 use std::process::ExitCode;
 
@@ -19,8 +11,7 @@ mod manage;
 mod publish;
 mod tui;
 
-/// Exit codes are part of the CLI contract so scripts can branch on them
-/// without parsing output (design §9.1).
+/// Exit codes are part of the CLI contract (§9.1).
 const EXIT_OK: u8 = 0;
 const EXIT_API_ERROR: u8 = 1;
 const EXIT_USAGE: u8 = 2;
@@ -34,8 +25,7 @@ const EXIT_USAGE: u8 = 2;
                   Any subcommand runs one-shot and exits."
 )]
 pub(crate) struct Cli {
-    /// Server profile to talk to, letting one machine hold several servers
-    /// (personal, work). Selects the config section and the local store.
+    /// Server profile to talk to (selects the config section and the local store).
     #[arg(long, global = true, env = "WNK_PROFILE", default_value = "default")]
     profile: String,
 
@@ -63,8 +53,7 @@ pub(crate) enum Command {
         #[arg(long, short = 'c', env = "WNK_CHANNEL")]
         channel: String,
 
-        /// Replayed for 24 hours: sending the same key twice publishes once.
-        /// Exactly what a CI job that may be retried wants (design §8).
+        /// Replayed for 24 hours: sending the same key twice publishes once (§8).
         #[arg(long)]
         idempotency_key: Option<String>,
 
@@ -72,10 +61,7 @@ pub(crate) enum Command {
         content: publish::Content,
     },
 
-    /// Create or revise a notification by your own identifier.
-    ///
-    /// The idempotent path: the same call creates on the first run and revises on
-    /// the retry, so a pipeline never has to ask which one it is doing.
+    /// Create or revise a notification by your own identifier (idempotent: safe to retry).
     Update {
         /// Which channel it lives in.
         #[arg(long, short = 'c', env = "WNK_CHANNEL")]
@@ -131,26 +117,18 @@ pub(crate) enum Command {
         command: TokenCommand,
     },
 
-    /// Mint a personal API key in the browser and save it here (design §9.1).
+    /// Mint a personal API key in the browser and save it here (§9.1).
     ///
-    /// Opens (or prints, under `NO_BROWSER`) a link to the web client's own
-    /// login, where a self-service key is a couple of clicks away; pasting it
-    /// back here is what `notify` reads from then on. See `notify_cli::login`
-    /// for why this is not an OAuth client of its own.
+    /// Opens (or prints, under `NO_BROWSER`) a link to the web client, where the key is minted.
     Login {
-        /// Where the web client lives — a different origin than the API server
-        /// this profile talks to, so it cannot be derived from `--profile`.
+        /// Where the web client lives (a different origin than the API server).
         #[arg(long, env = "WNK_WEB_URL", default_value = "http://localhost:5173")]
         web_url: String,
     },
 
     /// Open the terminal UI. Explicit alias of running `notify` with no subcommand.
     Watch {
-        /// Also relay arrivals to the desktop (§9.2).
-        ///
-        /// Off by default: a TUI that starts popping system notifications because
-        /// somebody opened it is a TUI people close. The do-not-disturb of §7.4 is
-        /// honoured either way — the popup is suppressed, the inbox still fills.
+        /// Also relay arrivals to the desktop (§9.2); do-not-disturb (§7.4) is honoured either way.
         #[arg(long)]
         notify_send: bool,
     },
@@ -165,14 +143,9 @@ pub(crate) enum Command {
 /// The federation exchange (design §5.3, §9.1).
 #[derive(Debug, Subcommand)]
 pub(crate) enum TokenCommand {
-    /// Trade a forge ID token for a short-lived weebo-notify token.
-    ///
-    /// The whole reason CI holds no long-lived secret: a pipeline already has a
-    /// token saying who it is, and this turns it into fifteen minutes of publish
-    /// rights. Prints the token alone, so a shell can capture it.
+    /// Trade a forge ID token for a short-lived weebo-notify token (§5.3), printed alone.
     Exchange {
-        /// The forge ID token. Prefer the environment: an argument lands in `ps`
-        /// and in the shell history of whoever is debugging the runner.
+        /// The forge ID token; prefer the environment (an argument shows in `ps`).
         #[arg(long, env = "WNK_CI_TOKEN", hide_env_values = true)]
         token: String,
     },
@@ -183,9 +156,7 @@ fn main() -> ExitCode {
 
     match run(cli) {
         Ok(rendered) => {
-            // Printed *here* and nowhere else. Every command returns what it has to
-            // say instead of writing it out, which is what lets the TUI run the same
-            // command and show the same answer in its popup (§9.2, §9.3).
+            // Printed only here: commands return their output so the TUI can show it too (§9.2).
             if !rendered.is_empty() {
                 println!("{rendered}");
             }
@@ -204,13 +175,10 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Watch { notify_send }) => {
             tui::run(&cli.profile, notify_send).map(|()| String::new())
         }
-        // Interactive (prompts on stdin) and needs no prior credential — the
-        // opposite of what the generic arm below assumes, so it is dispatched
-        // before a `Session` is built rather than through one.
+        // Interactive and needs no credential, so dispatched before a `Session` exists.
         Some(Command::Login { web_url }) => on_runtime(|| login::run(&cli.profile, &web_url)),
         None => tui::run(&cli.profile, false).map(|()| String::new()),
-        // Only the commands that talk to a server pay for a runtime; `completions`
-        // in a shell's startup path should not start tokio to print a script.
+        // Only server commands start tokio; `completions` shouldn't.
         Some(command) => on_runtime(|| async move {
             let session = Session::open(&Profile::load(&cli.profile)?)?;
 
@@ -219,13 +187,8 @@ fn run(cli: Cli) -> Result<String, CliError> {
     }
 }
 
-/// Run one parsed command and give back what it has to say.
-///
-/// The single dispatch point, called by the shell above and by the TUI's `:` mode
-/// (design §9.2). Two callers and one table is the mechanism §9 promises: a
-/// subcommand added to [`Command`] is available in both without a line of TUI code —
-/// and the match below stops compiling until it is handled, which is what keeps the
-/// promise mechanical rather than remembered.
+/// Run one parsed command and give back what it has to say. The single dispatch point for
+/// the shell and the TUI's `:` mode (§9.2), so the match keeps both in step.
 pub(crate) async fn execute(
     session: &Session,
     profile: &str,
@@ -265,21 +228,17 @@ pub(crate) async fn execute(
             command: TokenCommand::Exchange { token },
         } => {
             let minted = session.exchange(&token).await?;
-            // The token and nothing else on stdout: `T=$(notify token exchange)` is
-            // the shape a pipeline uses, and a banner would end up in the variable.
+            // The token alone, for `T=$(notify token exchange)`.
             Ok(minted.token)
         }
         Command::Completions { shell } => Ok(completions(shell)),
-        // Refused rather than ignored: from the shell this is handled before a
-        // session is opened, and from inside the TUI it can only mean somebody typed
-        // `:watch` in the window it would have opened.
+        // From the shell this is handled earlier; from the TUI it means `:watch` inside the TUI.
         Command::Watch { .. } => Err(CliError::Usage(
             "`watch` opens the terminal UI, which is not something a command can do \
              from inside it"
                 .to_owned(),
         )),
-        // Same reasoning as `watch`, and a second one of its own: `login` reads a
-        // pasted line from stdin, which the TUI's raw mode has already claimed.
+        // As `watch`; also `login` reads stdin, which the TUI's raw mode owns.
         Command::Login { .. } => Err(CliError::Usage(
             "`login` ne peut pas s'exécuter depuis le TUI — lance `notify login` dans \
              un autre terminal"
@@ -295,8 +254,6 @@ fn completions(shell: clap_complete::Shell) -> String {
     let mut rendered = Vec::new();
     clap_complete::generate(shell, &mut command, name, &mut rendered);
 
-    // Completion scripts are ASCII shell code; a generator that emitted anything
-    // else is a bug worth seeing rather than one worth papering over.
     String::from_utf8_lossy(&rendered).into_owned()
 }
 
@@ -323,16 +280,14 @@ pub(crate) enum CliError {
 
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
-        // The stable code goes in the message rather than being swallowed: a script
-        // that greps for `field.empty` should find it on stderr (design §9.1).
+        // The stable code stays in the message so scripts can grep stderr (§9.1).
         Self::Api(error.to_string())
     }
 }
 
 impl From<ConfigError> for CliError {
     fn from(error: ConfigError) -> Self {
-        // Configuration is part of the invocation, so a bad profile exits 2 with
-        // the usage codes rather than looking like the server refused something.
+        // A bad profile is a usage error (exit 2), not a server refusal.
         Self::Usage(error.to_string())
     }
 }
@@ -364,18 +319,13 @@ mod tests {
 
     #[test]
     fn the_command_tree_is_well_formed() {
-        // clap's own check for the things that only fail at runtime: a duplicate
-        // long flag, an argument referring to a group that does not exist, a
-        // conflict naming an unknown id. Free, and it fails here rather than the
-        // first time somebody runs that subcommand.
+        // Catches clap misconfiguration here rather than on first use.
         Cli::command().debug_assert();
     }
 
     #[test]
     fn both_spellings_of_enrol_reach_the_same_command() {
-        // §9.1 writes `notify device enroll`; this crate spells the variant with one
-        // `l`. Without the alias, the line copied out of the design document answers
-        // "unrecognized subcommand", which is a poor first five minutes.
+        // §9.1 writes `enroll`; the variant is `enrol`.
         for spelling in ["enrol", "enroll"] {
             let cli = Cli::try_parse_from(["notify", "device", spelling]).unwrap();
 
@@ -393,18 +343,14 @@ mod tests {
 
     #[test]
     fn every_command_can_be_asked_for_json() {
-        // §9.1 promises `--output json|table` on *each* command, and it is the
-        // property a script depends on: one that holds for eight subcommands out of
-        // nine is discovered in a pipeline, not here.
+        // §9.1 promises `--output json|table` on every command.
         for command in Cli::command().get_subcommands() {
             let name = command.get_name();
             assert!(
                 command
                     .get_arguments()
                     .chain(
-                        // A global argument is declared once, on the root, and shows
-                        // up on the subcommand only after propagation — so look at
-                        // both rather than trusting where it happens to be spelled.
+                        // Global args show on subcommands only after propagation; check both.
                         Cli::command().get_arguments()
                     )
                     .any(|argument| argument.get_long() == Some("output")),

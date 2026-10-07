@@ -1,19 +1,7 @@
 /**
- * The login screen has two failure shapes, and only one of them looks like one.
- *
- * A provider that refuses is easy: `login()` rejects, the message lands on screen,
- * the primary button re-enables. The other shape is the desktop one, and it is why
- * the second button exists at all — the shell asks the OS to open a browser, the
- * launcher opens nothing and still reports success (`web/src-tauri/src/oauth.rs`
- * says so at length), so `login()` neither resolves nor rejects: it sits on the
- * loopback listener for the five minutes `DEADLINE` allows. Nothing has failed, so
- * a retry gated on failure is not on screen; `going` is true, so the primary button
- * is disabled. That state used to have no way out but waiting it out.
- *
- * What is pinned here, therefore, is mostly about *when* the button exists and what
- * it does in each state — reopen while there is still a listener to reach, ask again
- * once there is not. Re-running the sign-in during the pending window would not
- * retry anything: it would collide with our own listener on port 1420.
+ * Login failures. On desktop a launcher can open nothing yet report success, so
+ * `login()` hangs on the loopback listener: the reopen button must exist then,
+ * and a fresh sign-in only once the listener is gone (port 1420).
  */
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,10 +12,7 @@ import { createMemoryHistory, createRouter } from "vue-router";
 import en from "@/locales/en.json";
 import LoginView from "./LoginView.vue";
 
-// The i18n plugin precompiles these JSON messages into an AST at import time, so
-// `en.login.signIn` is a compiled node here and not the string the button renders.
-// The labels are therefore written out, and `locales.spec.ts` is what keeps the two
-// locale files honest about having the keys at all.
+// Messages are precompiled ASTs, so labels are written out; `locales.spec.ts` checks the keys.
 const SIGN_IN = "Sign in";
 const RETRY = "Retry";
 const REOPEN = "Reopen the browser";

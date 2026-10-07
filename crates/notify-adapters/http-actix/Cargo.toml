@@ -13,39 +13,34 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# The `openapi` feature is what lets the spec describe the types the server
-# actually serialises, rather than a mirror of them (ADR-0013).
+# `openapi`: the spec describes the types actually serialised (ADR-0013).
 notify-app = { workspace = true, features = ["openapi"] }
 notify-domain = { workspace = true, features = ["openapi"] }
 notify-ports = { workspace = true, features = ["openapi"] }
-# The one adapter this layer depends on directly rather than only through a port
-# (ADR-0022): a filesystem-backed presign points back at this crate's own routes,
-# and those routes need `FsAttachments::verify` — deliberately not on
-# `AttachmentStore`, since no other backend serves its own bytes over HTTP.
+# Direct, not via a port (ADR-0022): the fs routes need `FsAttachments::verify`.
 notify-attachments-fs = { workspace = true }
 
 actix-web = { workspace = true }
 actix-web-lab = { workspace = true }
 actix-ws = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
-# Only for the bounded channel behind an SSE response: no runtime is started here,
-# actix brings its own.
+# Only for the SSE channel; actix brings the runtime.
 tokio = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 utoipa = { workspace = true }
 utoipa-actix-web = { workspace = true }
 
 [dev-dependencies]
-# The real decoder in the HTTP suite: an avatar test that stubbed it would prove
-# the route works and nothing about what reaches the bucket (design §15).
+# The real decoder, so avatar tests prove what reaches the bucket (design §15).
 notify-avatars = { workspace = true }
 notify-ports = { workspace = true, features = ["openapi", "test-utils"] }
-# The suite builds its own fixtures — a 900x300 JPEG is the only way to prove the
-# server resized and re-encoded rather than stored what it was given.
+# Builds the JPEG fixtures that prove the server re-encodes avatars.
 image = { workspace = true, features = ["jpeg"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }
-url = { workspace = true }

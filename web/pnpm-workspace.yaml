@@ -31,3 +31,16 @@ overrides:
   # pulled in at build time by @vue/compiler-sfc — same "only a build tool"
   # reasoning as js-yaml above, and the same one-line fix.
   nanoid: ^3.3.17
+
+# Advisories with no fixed release, accepted with a reachability argument.
+auditConfig:
+  ignoreGhsas:
+    # GHSA-vfj7-8cjw-p6xm — braces <=3.0.3 stack exhaustion on deeply nested
+    # patterns; no patched version exists. Dev-only, via @intlify/unplugin-vue-i18n >
+    # fast-glob, matching globs written in this repository at build time. Remove when
+    # braces ships a fix or the plugin drops fast-glob.
+    - GHSA-vfj7-8cjw-p6xm
+
+# Same supply-chain gate CI's pnpm enforces: never resolve a version published less
+# than a day ago, so a local install cannot produce a lockfile CI then refuses.
+minimumReleaseAge: 1440

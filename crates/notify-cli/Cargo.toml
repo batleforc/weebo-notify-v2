@@ -20,33 +20,18 @@ path = "src/main.rs"
 notify-client-core.workspace = true
 
 anyhow.workspace = true
-# For the "arrived late" badge (§7.2): the same date type the generated client and
-# the local store already speak, rather than a third one to convert between.
+# The "arrived late" badge (§7.2), in the date type the client and store already use.
 chrono.workspace = true
 chrono-tz.workspace = true
-# The desktop relay of §9.2. Pure Rust on every platform this ships to: zbus on
-# Linux, the OS APIs elsewhere — no C toolchain, the rule this workspace has kept
-# since M1.
-#
-# `z` and not `d`, and the difference is not cosmetic: upstream's `d` is the
-# *libdbus C bindings* (`d = ["dbus"]`), `z` is the zbus client the paragraph above
-# describes (`default = ["z"]`). The manifest said one thing and selected the other
-# until the first real image build failed on it — `libdbus-sys`'s build script wants
-# `pkg-config` and `libdbus-1-dev`, and `rust:slim` has neither. Vendoring (`d_vendored`)
-# would have traded that for a C compiler and cmake in the builder, and left the
-# published `notify` binary linking `libdbus.so.3` on whatever desktop downloads it
-# from `GET /api/v1/cli`. `z` leaves nothing to link.
+# Desktop relay (§9.2). Feature `z` (pure-Rust zbus), not `d` (libdbus C bindings):
+# nothing to link in the image or the published binary.
 notify-rust = { version = "4", default-features = false, features = ["z"] }
 base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
-# `unstable-rendered-line-info` for `Paragraph::line_count`: the Détail pane's
-# scroll bound needs the *wrapped* row count, not the logical line count, or
-# scrolling stops well short of the end on a heavily-wrapped body. Marked
-# unstable upstream (API shape, not correctness) — pinned via Cargo.lock like
-# every other dependency here, so a shape change surfaces at the next
-# deliberate `cargo update`, not silently.
+# `unstable-rendered-line-info` for `Paragraph::line_count`: the Détail scroll bound
+# needs the wrapped row count (unstable API shape only; pinned by Cargo.lock).
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde.workspace = true
 serde_json.workspace = true

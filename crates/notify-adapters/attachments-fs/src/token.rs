@@ -1,11 +1,5 @@
-//! Signing the bearer URLs the filesystem store hands out.
-//!
-//! An S3 bucket signs its own presigned URLs (`SigV4`); a directory on disk has no
-//! signature of its own, so this crate mints one instead. Same construction as the
-//! webhook signer (`notify-sinks-webhook`) — HMAC-SHA256 over a short string, hex
-//! encoded, compared in constant time — because that is already a reviewed answer
-//! to "how do we sign a short string in this codebase", not a reason to invent a
-//! second one.
+//! Bearer tokens for the filesystem store's URLs: HMAC-SHA256, hex, constant-time compare,
+//! the same construction as the webhook signer.
 
 use core::fmt::Write as _;
 
@@ -14,29 +8,8 @@ use notify_domain::AttachmentId;
 use sha2::Sha256;
 use time::OffsetDateTime;
 
-/// What a token authorises.
-///
-/// Bound into the signature so an upload token cannot be replayed as a download.
-/// A thumbnail has no purpose of its own here: it is served by the existing
-/// authenticated `GET /attachments/{id}/thumbnail` route, backend-agnostic since
-/// M1, and never a filesystem-presigned URL.
-///
-/// # Why `Upload` carries the content type
-///
-/// S3 puts `content-type` among its `SigV4` signed headers, so a presigned PUT that
-/// arrives declaring something else fails the signature. This adapter promised the
-/// same guarantee and did not implement it: the content type was validated at
-/// presign time and then taken from the request header at upload time, with nothing
-/// comparing the two. A caller could be approved for `image/png` and store
-/// `text/html`, which the download route then echoed back — arbitrary markup served
-/// from this origin, past an allowlist that had been satisfied with a different
-/// answer.
-///
-/// It is data on the variant rather than a parameter alongside it so that the
-/// compiler enforces the pairing: there is no way to mint or check an upload token
-/// without saying which content type it is for. `Download` carries none because
-/// nothing about a download is the caller's to declare — the stored type is read
-/// from the sidecar the upload wrote.
+/// What a token authorises; bound into the signature so an upload token cannot be a download.
+/// `Upload` pins the content type so approval for `image/png` cannot store `text/html`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose<'a> {
     /// Store bytes of exactly this (normalised) content type, and no other.
@@ -91,11 +64,8 @@ pub fn sign(
     token
 }
 
-/// Check that a token names this `id` and `purpose`, and has not expired.
-///
-/// For [`Purpose::Upload`] the content type passed here is the one the *request*
-/// declared: it goes through the same MAC, so a value the presign never approved
-/// simply fails to match. There is no separate comparison to forget.
+/// Check that a token names this `id` and `purpose` and has not expired.
+/// For `Upload`, pass the request's declared content type: it goes through the same MAC.
 ///
 /// # Errors
 ///
@@ -120,9 +90,7 @@ pub fn verify(
         let _ = write!(expected_hex, "{byte:02x}");
     }
 
-    // Constant time over the rendered hex, same reasoning as the webhook signer:
-    // a length mismatch is public (SHA-256 hex is always 64 characters), but which
-    // byte first differs must not be.
+    // Constant time: which byte differs must not leak.
     let matched = expected_hex.len() == given_hex.len()
         && expected_hex
             .bytes()
@@ -138,10 +106,7 @@ pub fn verify(
 }
 
 fn digest(secret: &[u8], purpose: Purpose<'_>, id: AttachmentId, expires_unix: i64) -> Vec<u8> {
-    // HMAC accepts a key of any length, so the fallback is unreachable — an
-    // infallible zero key rather than an `expect`, because panicking is denied in
-    // this workspace and the worst a wrong key can do is mint a token nobody signed
-    // with the real secret would accept.
+    // HMAC accepts any key length, so the fallback is unreachable (panics are denied here).
     let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(secret).unwrap_or_else(|_| {
         <Hmac<Sha256> as hmac::digest::KeyInit>::new(&hmac::digest::Key::<Hmac<Sha256>>::default())
     });
@@ -152,12 +117,7 @@ fn digest(secret: &[u8], purpose: Purpose<'_>, id: AttachmentId, expires_unix: i
     mac.update(b".");
     mac.update(expires_unix.to_string().as_bytes());
 
-    // Last, and only when the purpose has one. The three fields above cannot contain
-    // a `.` — the discriminant is one of two literals, an id is Crockford base32
-    // behind a fixed prefix, and the expiry is digits — so appending here cannot be
-    // slid backwards into them. A content type can contain neither `.` nor anything
-    // else exotic by the time it arrives: it is the normalised, allowlisted form
-    // (`notify_app::normalised_content_type`), never the raw header.
+    // Appended last: no earlier field can contain `.`, and the content type is already normalised.
     if let Some(bound) = purpose.bound() {
         mac.update(b".");
         mac.update(bound.as_bytes());
@@ -210,8 +170,7 @@ mod tests {
 
     #[test]
     fn a_token_approved_for_one_content_type_does_not_verify_for_another() {
-        // The whole point: being approved for an image must not authorise storing
-        // markup that the download route would then serve from this origin.
+        // Approval for an image must not authorise storing markup served from this origin.
         let now = OffsetDateTime::now_utc();
         let id = AttachmentId::generate();
         let token = sign(SECRET, PNG, id, ttl(now));
@@ -235,10 +194,7 @@ mod tests {
 
     #[test]
     fn the_content_type_cannot_be_slid_into_the_expiry_field() {
-        // The content type is appended after the expiry, so a token whose fields
-        // concatenate to the same bytes as another's must still not verify. Signing
-        // for `""` and presenting `.image/png` is the shape that would do it if the
-        // separator were ambiguous.
+        // Field concatenation must be unambiguous: `""` signed vs `.image/png` presented.
         let now = OffsetDateTime::now_utc();
         let id = AttachmentId::generate();
         let token = sign(SECRET, Purpose::Upload { content_type: "" }, id, ttl(now));

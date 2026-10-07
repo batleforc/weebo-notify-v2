@@ -1,9 +1,5 @@
-//! Interactions and the per-user silence state (design §2.3).
-//!
-//! The deduplication rules are the domain's: `ack` is idempotent per (user, key),
-//! `choice` is exclusive and last-write-wins. They are enforced *again* here by
-//! unique indexes, and that duplication is deliberate — the domain reasons about a
-//! snapshot, and two acknowledgements arriving together are a race it cannot see.
+//! Interactions and per-user silences (design §2.3). The domain's dedup rules are re-enforced by
+//! unique indexes, since concurrent acks are a race the domain's snapshot cannot see.
 
 use notify_domain::{
     ActionKey, Author, Cursor, Interaction, InteractionId, InteractionRecord, NotificationId,
@@ -17,12 +13,9 @@ use time::OffsetDateTime;
 use crate::PgStore;
 use crate::mapping::{append_event, fail, from_json, parse, to_json};
 
-/// The textual form a silence indexes under, so re-silencing the same thing
-/// extends the existing silence rather than stacking a second one nobody can see
-/// to lift.
+/// The key a silence indexes under, so re-silencing extends rather than stacks.
 fn target_reference(target: &SilenceTarget) -> String {
-    // Namespaced by kind: a group key and a notification id could otherwise
-    // collide, and silencing one would lift the other.
+    // Namespaced so a group key and a notification id cannot collide.
     match target {
         SilenceTarget::Group { key } => format!("group:{key}"),
         SilenceTarget::Notification { id } => format!("notification:{id}"),
@@ -32,8 +25,7 @@ fn target_reference(target: &SilenceTarget) -> String {
 #[async_trait::async_trait]
 impl InteractionRepository for PgStore {
     async fn apply(&self, outcome: &Recorded) -> PortResult<Option<Cursor>> {
-        // `Unchanged` writes nothing and broadcasts nothing — that is the whole
-        // point of the domain returning it rather than a bare record.
+        // `Unchanged` writes and broadcasts nothing.
         let Some(record) = outcome.record() else {
             return Ok(None);
         };
@@ -61,8 +53,7 @@ impl InteractionRepository for PgStore {
         )?;
 
         if let Recorded::Replaced { previous, .. } = outcome {
-            // The pick it displaced goes before the new one lands, so the exclusive
-            // index has room.
+            // Remove the displaced pick first so the exclusive index has room.
             sqlx::query("DELETE FROM interactions WHERE id = $1")
                 .bind(previous.to_string())
                 .execute(&mut *transaction)
@@ -111,9 +102,7 @@ impl InteractionRepository for PgStore {
     }
 
     async fn list_for(&self, notification: NotificationId) -> PortResult<Vec<InteractionRecord>> {
-        // The whole set rather than a page: this is what a service waiting on its
-        // `approve` polls, and an approval that fell off page two would be a very
-        // confusing bug.
+        // The whole set: services poll this for an `approve`, which must not fall off a page.
         let rows = sqlx::query(
             "SELECT id, notification_id, author, interaction, recorded_at
              FROM interactions WHERE notification_id = $1 ORDER BY recorded_at, id",
@@ -148,12 +137,7 @@ impl InteractionRepository for PgStore {
         .await
         .map_err(|error| fail("silence", error))?;
 
-        // The event carries the whole preference state rather than a delta: a
-        // client that missed one would otherwise apply the next to the wrong
-        // baseline, and "my phone kept buzzing after I turned on do-not-disturb" is
-        // not a bug anybody enjoys chasing (design §8.1). Both halves of it —
-        // including the do-not-disturb this write did not touch — which is why it
-        // is built in one place rather than here (see `preferences`).
+        // The event carries the whole preference state, built in one place (`preferences`, §8.1).
         let cursor = self
             .announce_preference(&mut transaction, silence.user, silence.since)
             .await?;
@@ -184,9 +168,7 @@ impl InteractionRepository for PgStore {
 }
 
 impl PgStore {
-    /// Every silence still in force for a user, read inside the caller's
-    /// transaction so the event it goes into cannot disagree with the row that
-    /// caused it.
+    /// Every silence in force for a user, read inside the caller's transaction.
     pub(crate) async fn silences_for(
         &self,
         transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,

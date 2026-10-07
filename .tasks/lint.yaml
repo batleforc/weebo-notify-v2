@@ -1,21 +1,17 @@
 version: "3"
 
-# Two flavours of every target:
-#   * the plain one APPLIES fixes — that is what the pre-commit hook wants, so a
-#     formatting slip never costs a round trip;
-#   * `:check` only REPORTS — that is what CI wants, so a pull request cannot be
-#     green on code nobody formatted.
+# Plain targets apply fixes (pre-commit hook); `:check` targets only report (CI).
 
 tasks:
   default:
-    desc: "Lint and format everything (Rust + web + docs) — run by the cocogitto pre-commit hook"
+    desc: "Lint and format Rust, web and docs, applying fixes (pre-commit hook)."
     cmds:
       - task: rust
       - task: web
       - task: docs
 
   check:
-    desc: "Read-only lint of everything — fails instead of fixing (used by the CI check job)"
+    desc: "Lint Rust, web and docs read-only, failing instead of fixing (CI)."
     cmds:
       - task: rust:check
       - task: web:check

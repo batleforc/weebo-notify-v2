@@ -1,23 +1,5 @@
-//! The one push that ends a quiet period (design §7.4, §11).
-//!
-//! §7.4 asks for **a digest, not a burst**: somebody who set quiet hours from ten to
-//! eight does not want twelve notifications arriving at 08:00:01, they want one
-//! saying "12 notifications while you were away (2 failure)". Same spirit as the
-//! "N expired while you were away" counter of §7.2bis, and for the same reason —
-//! the information is worth having, the interruption is not worth twelve of.
-//!
-//! # Why it is a job and not a moment
-//!
-//! Nothing *happens* when a quiet period ends. A schedule ending is the absence of
-//! an event, so somebody has to look — which makes this a timer, and therefore
-//! leader-only (§11): every replica running it would send one digest each.
-//!
-//! # What decides that it is over
-//!
-//! [`Dnd::is_active`] and nothing else. The store hands back everyone with something
-//! held back *and* their preference, and the filtering happens here, because "is this
-//! person still not to be disturbed" is a domain question and a store that answered
-//! it would be a second implementation of what §7.4 means.
+//! The one push that ends a quiet period (§7.4, §11): a digest, not a burst. A timer
+//! job, so leader-only; [`notify_domain::Dnd::is_active`] alone decides it is over.
 
 use std::sync::Arc;
 
@@ -28,8 +10,7 @@ use notify_ports::{
 
 use crate::fanout::Fanout;
 
-/// How many tallies to consider per pass. A quiet period ending is not urgent to the
-/// minute, and a bounded pass is what lets the loop notice it has lost the lock.
+/// How many tallies to consider per pass; bounded so a lost lock is noticed.
 const BATCH: u32 = 200;
 
 /// What one pass did.
@@ -63,7 +44,6 @@ impl SendDndDigests {
     /// The name this job takes its lock under.
     pub const JOB: &'static str = "dnd-digest";
 
-    /// Wire it.
     #[must_use]
     pub fn new(
         preferences: Arc<dyn PreferenceRepository>,
@@ -93,9 +73,7 @@ impl SendDndDigests {
             ..DigestReport::default()
         };
 
-        // Paged past everyone who is still quiet: they keep their tallies, so a
-        // single fixed-size read would return the same people every pass and
-        // nobody sorted after them would ever get a digest.
+        // Page past everyone still quiet, or they would fill every pass and starve the rest.
         let mut after = None;
         'pages: loop {
             let page = self.preferences.deferred_tallies(after, BATCH).await?;
@@ -103,17 +81,14 @@ impl SendDndDigests {
             after = page.last().map(|tally| tally.dnd.user);
 
             for tally in page {
-                // Re-checked per user rather than once at the top: a partition
-                // mid-pass must stop this replica before it sends anything else,
-                // the same rule the purge follows (scenario T22).
+                // Re-checked per user: a partition mid-pass must stop this replica (T22).
                 if !guard.is_held().await {
                     tracing::warn!("lost leadership mid-digest; stopping");
                     break 'pages;
                 }
 
                 if tally.dnd.is_active(now) {
-                    // Still quiet. Leaving the tally alone is the whole point: it
-                    // keeps counting until there is somebody to tell.
+                    // Still quiet: the tally keeps counting.
                     report.still_quiet += 1;
                     continue;
                 }
@@ -131,10 +106,8 @@ impl SendDndDigests {
                     self.fanout.push_digest(&device, &message).await;
                 }
 
-                // Cleared whether or not a device took it. A digest that failed to
-                // send must not be re-sent on the next tick: a person who missed
-                // one summary has an inbox, and a person who gets the same summary
-                // every minute has a bug (§7.4 — the burst this exists to prevent).
+                // Cleared whether or not a device took it: re-sending each tick would be the burst
+                // this exists to prevent (§7.4).
                 self.preferences
                     .clear_deferred(tally.dnd.user, tally.total, tally.failures)
                     .await?;
@@ -385,8 +358,7 @@ mod tests {
         quiet_until(&fixture, 8).await;
         defer(&fixture, 5, 0).await;
 
-        // Redefining it: a digest counting the old period would be reporting
-        // something that, under the new preference, did not happen.
+        // The new preference redefines the period.
         quiet_until(&fixture, -1).await;
 
         assert_eq!(fixture.job.execute().await.unwrap().sent, 0);

@@ -1,30 +1,7 @@
-//! Outbound sinks: the loop that empties the queue, and the two DLQ operations
-//! (design §7.1bis, §10.4bis).
-//!
-//! Enqueueing happens in [`crate::fanout::Fanout`], next to the bus poke and the
-//! push, because it is the same moment: a write landed and everything that wants to
-//! hear about it has to. Everything *after* that moment is here.
-//!
-//! # Why a webhook is never sent on the publish path
-//!
-//! A publisher gets an answer as soon as the write is durable. Calling somebody
-//! else's endpoint before answering would put their latency, their outage and their
-//! TLS handshake in front of a CI job that only asked us to record a line — and the
-//! first timeout would turn a green pipeline red for a reason nobody could act on.
-//! So a publish *queues*, and the leader drains.
-//!
-//! That has a consequence worth stating rather than discovering: a sink is delivered
-//! within one drain interval of the publish, not within one round trip. The interval
-//! is seconds, and the queue is what makes the delivery survive a restart in
-//! exchange.
-//!
-//! # Where each half of the retry decision lives
-//!
-//! The *schedule* is [`notify_domain::RetryPolicy`] — a value with tests, so "30 s
-//! doubling to 1 h, abandoned after 24 h" is written once. The *classification* is
-//! the adapter's [`SinkOutcome`]: only the thing that spoke HTTP knows whether a 410
-//! means "stop" and a 503 means "later". This module does neither; it puts the two
-//! together and writes the result down.
+//! Outbound sinks (§7.1bis, §10.4bis): the leader's drain loop and the two DLQ
+//! operations. A publish only queues (see [`crate::fanout::Fanout`]) so a consumer's
+//! latency never reaches a publisher. Schedule: [`notify_domain::RetryPolicy`];
+//! classification: the adapter's [`SinkOutcome`].
 
 use std::sync::Arc;
 
@@ -36,17 +13,11 @@ use notify_ports::{
 
 use crate::authz::Caller;
 
-/// How many deliveries one pass takes on.
-///
-/// Bounded for the same reason the purge is: a pass has to end so the loop can
-/// notice it has lost the lock (scenario T22).
+/// How many deliveries one pass takes on; bounded so a lost lock is noticed (T22).
 const BATCH: u32 = 100;
 
-/// How long a claimed delivery stays claimed.
-///
-/// Long enough for a slow consumer to answer within it — the dispatcher's own
-/// timeout is well under this — and short enough that a leader killed mid-attempt
-/// leaves the delivery owed again within a minute rather than at the next restart.
+/// How long a claimed delivery stays claimed: above the dispatcher timeout, short
+/// enough that a killed leader's delivery is owed again within minutes.
 const LEASE: time::Duration = time::Duration::minutes(2);
 
 /// What one drain pass did.
@@ -85,7 +56,6 @@ impl DrainSinks {
     /// The name this job takes its lock under.
     pub const JOB: &'static str = "sink-drain";
 
-    /// Wire it.
     #[must_use]
     pub fn new(
         queue: Arc<dyn SinkQueue>,
@@ -104,8 +74,7 @@ impl DrainSinks {
         }
     }
 
-    /// Run this pass on a schedule other than the published one — tests only, so a
-    /// backoff can be observed without waiting thirty seconds for it.
+    /// Override the retry schedule (tests only).
     #[must_use]
     pub const fn with_policy(mut self, policy: RetryPolicy) -> Self {
         self.policy = policy;
@@ -125,9 +94,7 @@ impl DrainSinks {
         };
 
         for delivery in self.queue.claim_due(now, BATCH, now + LEASE).await? {
-            // Re-checked per delivery rather than once at the top: a partition
-            // mid-pass must stop this replica before it POSTs anything else, the same
-            // rule the purge and the digest follow (scenario T22).
+            // Re-checked per delivery: a partition mid-pass must stop this replica (T22).
             if !guard.is_held().await {
                 tracing::warn!("lost leadership mid-drain; stopping");
                 break;
@@ -140,13 +107,8 @@ impl DrainSinks {
         Ok(report)
     }
 
-    /// How deep the dead-letter queue is, per channel (design §13,
-    /// `sink_dlq_depth`).
-    ///
-    /// Asked for by the drain loop after a pass it led, and by nobody else — which
-    /// is what keeps the gauge a leader's answer. A follower reporting zero would be
-    /// claiming nothing is stuck, which is a different sentence from "this replica
-    /// does not know".
+    /// How deep the dead-letter queue is, per channel (§13, `sink_dlq_depth`). Only the
+    /// leader asks, so the gauge is the leader's answer.
     pub async fn dead_letter_depth(&self) -> Result<Vec<(ChannelId, u64)>, Failure> {
         Ok(self.queue.dead_letter_depth().await?)
     }
@@ -158,10 +120,7 @@ impl DrainSinks {
         report: &mut DrainReport,
     ) -> Result<(), Failure> {
         let Some(target) = self.registry.target(&delivery.channel, &delivery.sink) else {
-            // The operator removed the sink while this was queued. Dropped rather
-            // than buried: a dead letter exists to be requeued, and there is nowhere
-            // left to requeue it to. Said out loud, because silently discarding a
-            // delivery is the one thing a queue must never do quietly.
+            // The sink was removed while queued: nowhere to requeue, so drop it, loudly.
             tracing::info!(
                 delivery = %delivery.delivery_id,
                 channel = %delivery.channel,
@@ -178,10 +137,7 @@ impl DrainSinks {
             ..delivery.clone()
         };
 
-        // A dispatcher that is unusable — no HTTP client, no SMTP session — is an
-        // infrastructure failure and not this delivery's fault, so it is treated as a
-        // retryable outcome rather than propagated: one broken transport must not
-        // abandon the rest of the batch.
+        // An unusable dispatcher is infrastructure, not this delivery: retry, don't abort the batch.
         let outcome = match self.dispatcher.deliver(&attempted, &target).await {
             Ok(outcome) => outcome,
             Err(error) => SinkOutcome::Retry {
@@ -196,8 +152,7 @@ impl DrainSinks {
                 report.delivered += 1;
             }
             SinkOutcome::Rejected { reason } => {
-                // It will keep failing. Twenty-four hours of retrying a `410 Gone`
-                // helps nobody and delays the moment a human sees it.
+                // It will keep failing (e.g. `410 Gone`): bury now.
                 self.queue.bury(&attempted, &reason, now).await?;
                 report.buried += 1;
             }
@@ -240,19 +195,13 @@ impl core::fmt::Debug for ListDeadLetters {
 }
 
 impl ListDeadLetters {
-    /// Wire it.
     #[must_use]
     pub fn new(queue: Arc<dyn SinkQueue>) -> Self {
         Self { queue }
     }
 
-    /// Every dead letter, or one channel's.
-    ///
-    /// Inside the §5.4 boundary, and it is worth saying why, because this one carries
-    /// more than a count: a dead letter names a channel, a sink and an error — it
-    /// does **not** carry the event it failed to deliver. That is deliberate. An
-    /// admin who is not a member of the channel would otherwise read its content
-    /// through the queue, which is exactly the door the boundary closes.
+    /// Every dead letter, or one channel's. Inside the §5.4 boundary: a dead letter
+    /// names channel, sink and error, never the event content.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -278,7 +227,6 @@ impl core::fmt::Debug for RequeueDeadLetter {
 }
 
 impl RequeueDeadLetter {
-    /// Wire it.
     #[must_use]
     pub fn new(queue: Arc<dyn SinkQueue>, audit: Arc<dyn AuditLog>, clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -288,18 +236,13 @@ impl RequeueDeadLetter {
         }
     }
 
-    /// Put one back in the queue. Answers whether there was one to put back.
-    ///
-    /// Audited, like every other operation the platform role performs (§5.4): a
-    /// delivery being sent again is a thing that happened to somebody else's endpoint,
-    /// and "who asked for that" is a question an incident review will have.
+    /// Put one back in the queue and audit it (§5.4); answers whether there was one.
     pub async fn execute(&self, caller: &Caller, id: &DeliveryId) -> Result<bool, Failure> {
         caller.ensure_platform_admin()?;
 
         let now = self.clock.now();
         if !self.queue.requeue(id, now).await? {
-            // No entry, no audit line: recording an act that did not happen is how an
-            // audit log stops being evidence.
+            // No entry, no audit line.
             return Ok(false);
         }
 
@@ -373,8 +316,7 @@ mod tests {
         }
     }
 
-    /// The event a publish would have queued — built here rather than published,
-    /// because what this module does with it does not depend on what is in it.
+    /// The event a publish would have queued.
     fn event(at: OffsetDateTime) -> notify_ports::Event {
         let alice = Principal::User {
             id: UserId::generate(),
@@ -541,16 +483,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_day_of_failing_ends_in_the_dead_letter_queue() {
-        // T17's last clause before the requeue: an endpoint that stays down does not
-        // get retried for ever.
+        // An endpoint that stays down is not retried for ever (T17).
         let fixture = fixture();
         let delivery = queue_one(&fixture).await;
         fixture.dispatcher.always(SinkOutcome::Retry {
             reason: "connection refused".to_owned(),
         });
 
-        // Already failing since yesterday, which is what a day of retries looks like
-        // from the last attempt's point of view.
+        // Already failing since yesterday.
         SinkQueue::enqueue(
             &fixture.store,
             &SinkDelivery {
@@ -571,13 +511,8 @@ mod tests {
         assert_eq!(letters[0].attempts, 13);
     }
 
-    /// T17's second half, end to end: an endpoint that is down is retried on the
-    /// published schedule, abandoned after a day, and requeued by hand into a queue
-    /// that can actually deliver it (design §3.4, §7.1bis).
-    ///
-    /// One test rather than four because the scenario is the *sequence*: each of
-    /// these steps passing on its own is what the four tests above already say, and
-    /// what a consumer is promised is that they happen in this order.
+    /// T17 end to end: a down endpoint is retried on schedule, abandoned after a day,
+    /// then requeued by hand and delivered (§3.4, §7.1bis).
     #[tokio::test]
     async fn critical_t17_an_endpoint_that_is_down_backs_off_dies_and_comes_back() {
         let fixture = fixture();

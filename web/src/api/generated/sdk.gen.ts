@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddMemberData, AddMemberErrors, AddMemberResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, DlqData, DlqErrors, DlqResponses, DownloadData, DownloadErrors, DownloadResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, FsDownloadData, FsDownloadErrors, FsDownloadResponses, FsUploadData, FsUploadErrors, FsUploadResponses, GetOneData, GetOneErrors, GetOneResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, PresignData, PresignDownloadData, PresignDownloadErrors, PresignDownloadResponses, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadChannelData, ReadChannelErrors, ReadChannelResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RequeueDeadLetterData, RequeueDeadLetterErrors, RequeueDeadLetterResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SetKeyLimitData, SetKeyLimitErrors, SetKeyLimitResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, ThumbnailData, ThumbnailErrors, ThumbnailResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UnreadData, UnreadErrors, UnreadResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
+import type { AddMemberData, AddMemberErrors, AddMemberResponses, AlertmanagerData, AlertmanagerErrors, AlertmanagerResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, DisconnectStreamData, DisconnectStreamErrors, DisconnectStreamResponses, DlqData, DlqErrors, DlqResponses, DownloadData, DownloadErrors, DownloadResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, FsDownloadData, FsDownloadErrors, FsDownloadResponses, FsUploadData, FsUploadErrors, FsUploadResponses, GetOneData, GetOneErrors, GetOneResponses, GotifyData, GotifyErrors, GotifyResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, ListStreamsData, ListStreamsErrors, ListStreamsResponses, NtfyData, NtfyErrors, NtfyJsonData, NtfyJsonErrors, NtfyJsonResponses, NtfyPutData, NtfyPutResponses, NtfyResponses, PresignData, PresignDownloadData, PresignDownloadErrors, PresignDownloadResponses, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadChannelData, ReadChannelErrors, ReadChannelResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RequeueDeadLetterData, RequeueDeadLetterErrors, RequeueDeadLetterResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SearchUsersData, SearchUsersErrors, SearchUsersResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SetKeyLimitData, SetKeyLimitErrors, SetKeyLimitResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, ThumbnailData, ThumbnailErrors, ThumbnailResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UnreadData, UnreadErrors, UnreadResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -120,11 +120,8 @@ export const revokeKey = <ThrowOnError extends boolean = false>(options: Options
 });
 
 /**
- * Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24).
- *
- * Deliberately not open to the key's own owner — see
- * [`notify_app::SetApiKeyLimit`]'s docs for why a self-service ceiling would not
- * be one.
+ * Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24);
+ * not open to the key's owner.
  */
 export const setKeyLimit = <ThrowOnError extends boolean = false>(options: Options<SetKeyLimitData, ThrowOnError>): RequestResult<SetKeyLimitResponses, SetKeyLimitErrors, ThrowOnError> => (options.client ?? client).patch<SetKeyLimitResponses, SetKeyLimitErrors, ThrowOnError>({
     responseType: 'json',
@@ -180,12 +177,8 @@ export const presignDownload = <ThrowOnError extends boolean = false>(options: O
 });
 
 /**
- * Fetch the small square derived from an attachment (design §2.3, §10.3, D30).
- *
- * Bytes and not a signed URL, unlike its sibling above — the reason is the same
- * one the avatar route documents: a thumbnail renders next to every visible row
- * of a possibly virtualised list, and a presign per render would mean a signing
- * round trip per row.
+ * Fetch the small square derived from an attachment (design §2.3, §10.3, D30); bytes
+ * rather than a signed URL, to avoid a signing round trip per rendered row.
  */
 export const thumbnail = <ThrowOnError extends boolean = false>(options: Options<ThumbnailData, ThrowOnError>): RequestResult<ThumbnailResponses, ThumbnailErrors, ThrowOnError> => (options.client ?? client).get<ThumbnailResponses, ThumbnailErrors, ThrowOnError>({
     responseType: 'blob',
@@ -252,10 +245,6 @@ export const deleteChannel = <ThrowOnError extends boolean = false>(options: Opt
 
 /**
  * One channel: its policy, its members, and where it came from.
- *
- * Listed by §8 since M1 and served by no build until now — a client wanting one
- * channel had to walk `GET /channels` until it found it, which works right up to
- * the page where it does not.
  */
 export const readChannel = <ThrowOnError extends boolean = false>(options: Options<ReadChannelData, ThrowOnError>): RequestResult<ReadChannelResponses, ReadChannelErrors, ThrowOnError> => (options.client ?? client).get<ReadChannelResponses, ReadChannelErrors, ThrowOnError>({
     responseType: 'json',
@@ -326,17 +315,85 @@ export const upsert = <ThrowOnError extends boolean = false>(options: Options<Up
 });
 
 /**
- * Download the `notify` CLI binary this server was built with.
- *
- * No scope beyond "logged in" (`Authenticated` alone, the same weakest
- * requirement `GET /whoami` uses) — a person and a CI service account are
- * equally allowed to fetch it, which is why the principal is never narrowed.
+ * Download the `notify` CLI binary this server was built with; any authenticated caller.
  */
 export const download = <ThrowOnError extends boolean = false>(options?: Options<DownloadData, ThrowOnError>): RequestResult<DownloadResponses, DownloadErrors, ThrowOnError> => (options?.client ?? client).get<DownloadResponses, DownloadErrors, ThrowOnError>({
     responseType: 'blob',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/cli',
     ...options
+});
+
+/**
+ * Receive an Alertmanager webhook: one notification per alert, upserted by fingerprint.
+ */
+export const alertmanager = <ThrowOnError extends boolean = false>(options: Options<AlertmanagerData, ThrowOnError>): RequestResult<AlertmanagerResponses, AlertmanagerErrors, ThrowOnError> => (options.client ?? client).post<AlertmanagerResponses, AlertmanagerErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/compat/alertmanager/{channel}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Publish a message the way a Gotify client does.
+ */
+export const gotify = <ThrowOnError extends boolean = false>(options: Options<GotifyData, ThrowOnError>): RequestResult<GotifyResponses, GotifyErrors, ThrowOnError> => (options.client ?? client).post<GotifyResponses, GotifyErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/compat/gotify/message',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Publish an ntfy JSON message; the channel is its `topic`.
+ */
+export const ntfyJson = <ThrowOnError extends boolean = false>(options: Options<NtfyJsonData, ThrowOnError>): RequestResult<NtfyJsonResponses, NtfyJsonErrors, ThrowOnError> => (options.client ?? client).post<NtfyJsonResponses, NtfyJsonErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/compat/ntfy',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Publish to an ntfy topic: the body is the message, headers carry the rest.
+ */
+export const ntfy = <ThrowOnError extends boolean = false>(options: Options<NtfyData, ThrowOnError>): RequestResult<NtfyResponses, NtfyErrors, ThrowOnError> => (options.client ?? client).post<NtfyResponses, NtfyErrors, ThrowOnError>({
+    bodySerializer: null,
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/compat/ntfy/{channel}',
+    ...options,
+    headers: {
+        'Content-Type': 'text/plain',
+        ...options.headers
+    }
+});
+
+/**
+ * Same as `POST`: ntfy clients use either.
+ */
+export const ntfyPut = <ThrowOnError extends boolean = false>(options: Options<NtfyPutData, ThrowOnError>): RequestResult<NtfyPutResponses, unknown, ThrowOnError> => (options.client ?? client).put<NtfyPutResponses, unknown, ThrowOnError>({
+    bodySerializer: null,
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/compat/ntfy/{channel}',
+    ...options,
+    headers: {
+        'Content-Type': 'text/plain',
+        ...options.headers
+    }
 });
 
 /**
@@ -373,12 +430,7 @@ export const revokeDevice = <ThrowOnError extends boolean = false>(options: Opti
 });
 
 /**
- * Who the caller is.
- *
- * A user only: an API key or a channel key acts *for* someone or something
- * else, and has no identity of its own to hand back (design §5.2bis) — the
- * same restriction `GET /users/me/profile` already applies, for the same
- * reason.
+ * Who the caller is; users only, since keys act for someone else (design §5.2bis).
  */
 export const whoami = <ThrowOnError extends boolean = false>(options?: Options<WhoamiData, ThrowOnError>): RequestResult<WhoamiResponses, WhoamiErrors, ThrowOnError> => (options?.client ?? client).get<WhoamiResponses, WhoamiErrors, ThrowOnError>({
     responseType: 'json',
@@ -590,10 +642,27 @@ export const stream = <ThrowOnError extends boolean = false>(options?: Options<S
 });
 
 /**
- * Replay everything the caller missed.
- *
- * The same cursor the live stream stamps on each event, so a client that was
- * offline for a week and one whose connection blipped take this identical path
+ * Every realtime connection the caller holds, oldest first.
+ */
+export const listStreams = <ThrowOnError extends boolean = false>(options?: Options<ListStreamsData, ThrowOnError>): RequestResult<ListStreamsResponses, ListStreamsErrors, ThrowOnError> => (options?.client ?? client).get<ListStreamsResponses, ListStreamsErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/streams',
+    ...options
+});
+
+/**
+ * Disconnect one of the caller's connections. Its credential is kept off realtime
+ * for up to 12 h; to remove access for good, revoke the key or the device.
+ */
+export const disconnectStream = <ThrowOnError extends boolean = false>(options: Options<DisconnectStreamData, ThrowOnError>): RequestResult<DisconnectStreamResponses, DisconnectStreamErrors, ThrowOnError> => (options.client ?? client).delete<DisconnectStreamResponses, DisconnectStreamErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/streams/{id}',
+    ...options
+});
+
+/**
+ * Replay everything the caller missed, off the same cursor the live stream stamps
  * (ADR-0001, ADR-0012).
  */
 export const sync = <ThrowOnError extends boolean = false>(options?: Options<SyncData, ThrowOnError>): RequestResult<SyncResponses, SyncErrors, ThrowOnError> => (options?.client ?? client).get<SyncResponses, SyncErrors, ThrowOnError>({
@@ -614,11 +683,17 @@ export const unread = <ThrowOnError extends boolean = false>(options?: Options<U
 });
 
 /**
- * Replace your own avatar.
- *
- * The body is the image itself rather than a multipart form: there is exactly one
- * field, and a multipart parser is a parser more on a path that already decodes
- * user-supplied media (§15).
+ * Find people to add to a channel (at most 10). Not available to API keys of bots.
+ */
+export const searchUsers = <ThrowOnError extends boolean = false>(options: Options<SearchUsersData, ThrowOnError>): RequestResult<SearchUsersResponses, SearchUsersErrors, ThrowOnError> => (options.client ?? client).get<SearchUsersResponses, SearchUsersErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/users',
+    ...options
+});
+
+/**
+ * Replace your own avatar; the body is the image itself, not a multipart form.
  */
 export const setAvatar = <ThrowOnError extends boolean = false>(options: Options<SetAvatarData, ThrowOnError>): RequestResult<SetAvatarResponses, SetAvatarErrors, ThrowOnError> => (options.client ?? client).put<SetAvatarResponses, SetAvatarErrors, ThrowOnError>({
     bodySerializer: null,

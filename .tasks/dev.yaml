@@ -3,23 +3,11 @@ version: "3"
 # Task echoes multi-line scripts verbatim; the scripts below print what matters themselves.
 silent: true
 
-# Local development environment (design §12).
-#
-# Parity rule: compose and the Eclipse Che devfile expose THE SAME services, on the
-# SAME ports, with the SAME credentials — so a single config/dev.toml works in both
-# worlds and no `if env == che` ever reaches the code. In Che the sidecars are
-# started by the devfile itself, so the compose tasks below detect $DEVWORKSPACE_ID
-# and no-op cleanly instead of failing on a missing container engine.
+# Local development environment (§12). Compose and the Che devfile expose the same services,
+# ports and credentials, so one config/dev.toml works in both; compose tasks no-op in Che.
 
 vars:
-  # Detected, not hardcoded. `docker compose` was spelled out here, and on a machine
-  # with podman and no docker — a Fedora Silverblue workstation, say, where the
-  # engine is the one the base image ships — every compose task failed on `docker:
-  # command not found` before it ever read dev/compose.yaml. Podman's `compose`
-  # subcommand delegates to the same external provider docker uses, so the only
-  # thing that differs is the word in front. `ENGINE=… task dev:up` still wins, for
-  # a machine that has both and a preference; the same variable name and the same
-  # precedence as build.yaml, which had the override and not the detection.
+  # `ENGINE=` wins; otherwise docker if present, else podman (same as build.yaml).
   ENGINE:
     sh: |
       if [ -n "${ENGINE:-}" ]; then echo "$ENGINE"
@@ -32,11 +20,7 @@ vars:
       echo "Eclipse Che workspace detected — the sidecars come from devfile.yaml, nothing to do."
       exit 0
     fi
-  # The inverse of CHE_GUARD: the `:public` tasks below wire a process to the
-  # workspace's public route with the `url` CLI the base image ships (design
-  # §12.1), which reads DEVWORKSPACE_NAMESPACE/DEVWORKSPACE_NAME and fails on an
-  # unbound variable outside Che. Checked up front for a message that says why,
-  # rather than that shell error.
+  # The inverse of CHE_GUARD: the `:public` tasks need the Che `url` CLI and its env vars (§12.1).
   REQUIRE_CHE: |
     if [ -z "${DEVWORKSPACE_ID:-}" ]; then
       echo "Not an Eclipse Che workspace — \`url\` has nothing to resolve. Use the non-\`:public\` task instead." >&2
@@ -45,12 +29,8 @@ vars:
 
 tasks:
   setup:
-    desc: "Create everything a fresh clone needs before the stack runs: Authentik credentials, VAPID and federation keys"
-    # The single entry point, and every task that needs any of it depends on this
-    # one rather than on a piece of it. Each step below is idempotent and guarded
-    # by its own `status:`, so running it on every `dev:up` costs nothing and
-    # removes the failure mode this exists for: a secret that has to be created by
-    # hand is one somebody will not create, and the symptom lands somewhere else.
+    desc: "Create what a fresh clone needs before the stack runs: Authentik credentials, VAPID and federation keys."
+    # The single entry point; each step is idempotent and guarded by its own `status:`.
     cmds:
       - task: env
       - task: vapid
@@ -79,9 +59,7 @@ tasks:
 
   vapid:
     desc: "Mint the P-256 VAPID key that [push.webpush] reads, into dev/secrets/ (gitignored)"
-    # Rust rather than `openssl genpkey`: nothing here assumes a tool the Che image
-    # may not ship, and the generator prints the `applicationServerKey` that a
-    # browser subscribes with — which openssl cannot do in one command (§12.5).
+    # Rust rather than openssl: no assumed tool, and it prints the browser's applicationServerKey (§12.5).
     status:
       - test -f dev/secrets/vapid.pem
     cmds:
@@ -89,9 +67,7 @@ tasks:
 
   federation-key:
     desc: "Mint the Ed25519 key that [federation] signs CI tokens with, into dev/secrets/ (gitignored)"
-    # Same reasoning as `vapid`, and one more: this key cannot be generated at boot
-    # because a replica would sign what its neighbour cannot verify (§11 `[ha]`), so
-    # it has to exist on disk before the server starts.
+    # Must exist before boot: replicas must verify each other's signatures (§11 `[ha]`).
     status:
       - test -f dev/secrets/federation.pem
     cmds:
@@ -109,7 +85,7 @@ tasks:
           echo "  task dev:oidc    # in another terminal, on :9110"
 
   core:
-    desc: "Start Postgres + RustFS only — for domain work with the in-memory TokenVerifier (no OIDC)"
+    desc: "Start only Postgres and RustFS, for domain work with the in-memory TokenVerifier."
     deps: [setup]
     cmds:
       - cmd: |
@@ -117,12 +93,8 @@ tasks:
           {{.COMPOSE}} up -d --wait postgres rustfs
 
   oidc:
-    desc: "Run the development identity provider on :9110 — alice/bob/carol, password weebo-dev"
-    # A binary in this workspace rather than a container (ADR-0014): one provider
-    # for compose, Che and CI, with no image to pull and nothing to keep in sync.
-    # In Che, export WNK_OIDC_MOCK_ISSUER (and WNK_OIDC__ISSUER for the server) to
-    # the workspace's public route first — browser redirects cannot reach the pod's
-    # localhost (§12.1).
+    desc: "Run the development identity provider on :9110 (alice/bob/carol, password weebo-dev)."
+    # A workspace binary, not a container (ADR-0014). In Che, use `dev:oidc:public` instead (§12.1).
     cmds:
       - cargo run -p notify-oidc-mock -- --identities dev/oidc-mock/identities.toml
 
@@ -141,7 +113,7 @@ tasks:
           cargo run -p notify-oidc-mock -- --identities dev/oidc-mock/identities.toml
 
   auth:
-    desc: "Add real Authentik on top (profile `authentik`) — for work touching the OIDC flow itself"
+    desc: "Add real Authentik (profile `authentik`) for work on the OIDC flow itself."
     deps: [setup]
     cmds:
       - cmd: |
@@ -152,7 +124,7 @@ tasks:
           echo "  WNK_OIDC__ISSUER=http://localhost:9100/application/o/weebo-notify/ task dev:run"
 
   sinks:
-    desc: "Add Mailpit (profile `sinks`) to exercise the email sink — UI on http://localhost:8025"
+    desc: "Add Mailpit (profile `sinks`) to exercise the email sink, UI on http://localhost:8025."
     deps: [setup]
     cmds:
       - cmd: |
@@ -160,18 +132,12 @@ tasks:
           {{.COMPOSE}} --profile sinks up -d --wait
 
   dex:
-    desc: "Add Dex (profile `dex`) — the no-groups leg of the identity matrix (T29), on :5556"
-    # Here so a red `oidc-compat` run can be reproduced by hand, which is the only
-    # moment anybody wants Dex. The config is rendered first because its password is
-    # generated per run and never committed (§3.2); the rendered file is gitignored.
+    desc: "Add Dex (profile `dex`), the no-groups leg of the identity matrix (T29), on :5556."
+    # For reproducing a red `oidc-compat` run; the config's password is generated per run (§3.2).
     cmds:
       - cmd: |
           set -eu
-          # The guard is NOT at the top here, unlike its neighbours. Those no-op
-          # under Che because the devfile starts their sidecar with everything it
-          # needs; this config does not exist until the line below writes it, so the
-          # rendering is the half that has to happen in both worlds. Only the
-          # bringing-up differs, and that is what the branch says.
+          # No guard at the top: the config must be rendered in both worlds; only bringing it up differs.
           dev/dex/render.sh dev/dex/config.local.yaml > dev/dex/env.local
           if [ -n "${DEVWORKSPACE_ID:-}" ]; then
             echo "Config rendered. The sidecar is already scheduled, so start the"
@@ -196,18 +162,9 @@ tasks:
       - dev/seed/seed.sh
 
   argocd-key:
-    desc: "Mint the bot-argocd API key once, into dev/secrets/ (gitignored) — needs `task dev:oidc` and `task dev:run` already running"
-    # Same idempotency shape as `vapid`/`federation-key` above, but this one cannot
-    # be a dependency of `setup`/`seed`: minting a key means calling the running
-    # server, which those two do not assume. Run by hand once `dev:oidc`/`dev:run`
-    # are both up.
-    #
-    # Without this, `config/dev.toml`'s `[[service_accounts]]` reconciliation
-    # (§5.2bis) keeps the *account* stable across restarts, but its API key is a
-    # secret shown exactly once (§5.2) with nowhere durable to land — so every
-    # restart where nobody has last time's secret handy mints a fresh one via the
-    # API/UI, and the old key is left behind. From outside that reads as "the
-    # account gets recreated". It never did; only the key kept multiplying.
+    desc: "Mint the bot-argocd API key once into dev/secrets/ (needs `task dev:oidc` and `task dev:run` running)."
+    # Not a `setup` dependency: it calls the running server. Persisting the once-shown key stops
+    # every restart minting a fresh one for the reconciled service account (§5.2, §5.2bis).
     status:
       - test -f dev/secrets/bot-argocd.key
     cmds:
@@ -227,8 +184,7 @@ tasks:
           token=$(curl -sS -d "grant_type=authorization_code&code=$code&code_verifier=$verifier&redirect_uri=http://localhost:5173/auth/callback&client_id=weebo-notify" \
             http://localhost:9110/token | grep -oP '"access_token":\s*"\K[^"]+')
 
-          # $user must hold `manage` on ci-infra to mint a service-account key there
-          # (design §5.2) — alice (infra-admins) does, per config/dev.toml.
+          # $user must hold `manage` on ci-infra (§5.2): alice does, per config/dev.toml.
           secret=$(curl -sS -X POST http://localhost:8080/api/v1/apikeys \
             -H "authorization: Bearer $token" \
             -H "content-type: application/json" \
@@ -245,15 +201,13 @@ tasks:
 
   run:
     desc: "Run the weebo-notify server against config/dev.toml (outside any container)"
-    # The one task that genuinely cannot start without the key: `config/dev.toml`
-    # declares `[push.webpush]`, and the composition root refuses a key it cannot
-    # read rather than starting mute (M3.5).
+    # `config/dev.toml` declares `[push.webpush]`, and the server refuses an unreadable key.
     deps: [setup]
     cmds:
       - cargo run -p notify-server -- --config config/dev.toml
 
   run:public:
-    desc: "Run the server wired to this Che workspace's public routes: OIDC issuer + the public web origin in CORS (§12.1)"
+    desc: "Run the server wired to this Che workspace's public OIDC issuer and web origin (§12.1)."
     deps: [setup]
     cmds:
       - cmd: |
@@ -263,29 +217,21 @@ tasks:
           echo "oidc issuer : $issuer"
           echo "cors origin : $web"
           WNK_OIDC__ISSUER="$issuer" \
-          # The whole list, not just `$web`: this variable replaces
-          # `config/dev.toml`'s rather than adding to it, so anything left out here
-          # is an origin the server stops accepting for as long as this task runs —
-          # including the desktop shell's `tauri://localhost` (see that file).
+          # The whole list: this replaces `config/dev.toml`'s origins (including `tauri://localhost`).
           WNK_SERVER__CORS_ORIGINS="[\"http://localhost:5173\",\"http://localhost:8080\",\"tauri://localhost\",\"http://tauri.localhost\",\"$web\"]" \
           cargo run -p notify-server -- --config config/dev.toml
 
   web:
     desc: "Run the Vite dev server for the web frontend (http://localhost:5173)"
-    # `web:env` first, always: the backend this page talks to is a file Vite serves,
-    # not something it computes, so starting without rendering it means serving
-    # whatever the last run left — see that task for why it is one task and not two.
+    # `web:env` first: Vite serves `web/public/env.js` as-is.
     deps: [web:env]
     cmds:
       - pnpm -C web dev
 
   cli:
-    desc: "Open the terminal UI (`notify watch`) against the local dev server — mints a throwaway token from the oidc mock unless WNK_TOKEN is already set (needs `task dev:oidc` and `task dev:run` running)"
-    # `notify-client-core::Profile` already defaults to http://localhost:8080 (§9.1),
-    # so the one thing missing for a second terminal to `notify watch` alongside a
-    # browser tab is a credential. WNK_TUI_USER picks which of the throwaway
-    # identities (dev/oidc-mock/identities.toml) to mint one for; a real deployment
-    # has no such flow; the PKCE dance below is the same one a browser runs.
+    desc: "Open the TUI against the local dev server, minting a throwaway token unless WNK_TOKEN is set."
+    # The profile defaults to localhost:8080 (§9.1); this mints a token for WNK_TUI_USER from the
+    # dev identities via the same PKCE flow a browser runs.
     cmds:
       - cmd: |
           set -eu
@@ -311,27 +257,11 @@ tasks:
           echo "watching as $user"
           WNK_TOKEN="$token" cargo run -p notify-cli -- watch
 
-  # `web/public/env.js` is a static file the Vite dev server just serves — nothing
-  # templates it per request — so it has to say the right thing *before* `web`
-  # above starts, which is why that task depends on this one.
-  #
-  # One task and not the `:local`/`:public` pair this replaced. That pair asked the
-  # developer to know which world they were in and to remember to say so, and the
-  # cost of forgetting was not an error: it was a dev server that came up pointing
-  # at the other world's backend and failed later, in the browser, as CORS or a
-  # refused token. The machine already knows the answer — DEVWORKSPACE_ID is set in
-  # a Che workspace and unset everywhere else, which is the same test CHE_GUARD
-  # makes at the top of this file — so it answers instead of asking.
-  #
-  # In Che the routes come from `url`, never from a pattern guessed here: the
-  # hostname template belongs to the Che installation, not to this repository, and
-  # a convention this file assumed would break silently the day it changed.
-  #
-  # On a plain machine the values written are the ones committed, so `task dev:web`
-  # leaves a clean tree. In Che it does not, and cannot: `git checkout --
-  # web/public/env.js` puts it back.
+  # `web/public/env.js` is served as-is, so render it before `web` starts. Che is detected via
+  # DEVWORKSPACE_ID and its routes come from `url`; elsewhere the committed values are written.
+  # In Che this dirties the tree: `git checkout -- web/public/env.js` restores it.
   web:env:
-    desc: "Render web/public/env.js for wherever this runs — the Che routes via `url`, the compose defaults otherwise"
+    desc: "Render web/public/env.js for wherever this runs (Che routes or compose defaults)."
     cmds:
       - cmd: |
           set -eu
@@ -380,16 +310,7 @@ tasks:
 
   logs:tail:
     desc: "Print the last N lines (TAIL, default 50) of every dev service and exit"
-    # `logs` above follows, which is right at a terminal and wrong everywhere else:
-    # CI wants the tail of a stack that has already failed, and `-f` there is a job
-    # that hangs until the timeout. Split rather than parameterised because "follow"
-    # and "dump and exit" are different intents, and a flag would make the common
-    # one longer to type.
-    #
-    # It also keeps the compose invocation in this file. The one place that spelled
-    # `docker compose -f dev/compose.yaml …` out by hand — the Authentik leg of
-    # oidc-compat — dropped both `--env-file` flags and failed on the first run it
-    # ever had.
+    # The non-following variant for CI, which wants the tail of a failed stack without hanging.
     vars:
       TAIL: '{{.TAIL | default "50"}}'
     cmds:
@@ -399,8 +320,7 @@ tasks:
 
   down:
     desc: "Stop every dev service, keeping the volumes"
-    # `env` and not `setup`: compose needs the env file to resolve, and tearing a
-    # stack down has no use for a push key.
+    # `env`, not `setup`: compose needs the env file; teardown needs no keys.
     deps: [env]
     cmds:
       - cmd: |
@@ -408,7 +328,7 @@ tasks:
           {{.COMPOSE}} --profile "*" down
 
   reset:
-    desc: "Stop every dev service AND wipe the volumes — next `dev:up` starts from a blank slate"
+    desc: "Stop every dev service and wipe the volumes for a blank-slate `dev:up`."
     deps: [env]
     cmds:
       - cmd: |

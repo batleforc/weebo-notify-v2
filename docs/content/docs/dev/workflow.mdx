@@ -42,6 +42,8 @@ is usually caught before it reaches CI at all.
 | `task test` | Domain and use cases, in-memory | Sub-second |
 | `task test:critical` | The `critical` suite — blocking on every PR | Seconds to minutes |
 | `task test:e2e` | Against the real binary, via testcontainers | Minutes |
+| `task test:browser` | A real browser against a running stack — or any release with `WNK_E2E_WEB_URL`, `WNK_E2E_API_URL`, `WNK_E2E_USER`, `WNK_E2E_PASSWORD` | Seconds |
+| `task test:browser:ci` | Boots `config/e2e.toml` (server, oidc-mock, built bundle) and runs the browser suite, as CI does | Minutes |
 | `task cover` | Everything, with merged Rust + web coverage | Minutes |
 
 The **`critical` suite** is never skipped and only grows: every bug fix adds its

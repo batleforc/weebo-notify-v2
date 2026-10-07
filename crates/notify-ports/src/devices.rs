@@ -11,23 +11,17 @@ pub trait DeviceRepository: Send + Sync {
     /// Fetch one.
     async fn get(&self, id: DeviceId) -> PortResult<Option<Device>>;
 
-    /// A principal's devices (design §8, `GET /devices`).
-    ///
-    /// Includes revoked ones so a device list can show what was revoked and when;
-    /// delivery filters them out itself.
+    /// A principal's devices, revoked ones included (§8, `GET /devices`).
     async fn list_for(&self, owner: &Principal) -> PortResult<Vec<Device>>;
 
     /// Enrol or update a device.
     async fn upsert(&self, device: &Device) -> PortResult<()>;
 
-    /// Revoke a device: push subscription, cursor and public key all go
-    /// (design §8, §15, scenario T18). Returns whether one was there to revoke.
+    /// Revoke a device: push subscription, cursor and public key all go (§8, §15, T18).
+    /// Returns whether one was there to revoke.
     async fn revoke(&self, id: DeviceId, at: OffsetDateTime) -> PortResult<bool>;
 
-    /// Record how far a device has read.
-    ///
-    /// Monotonic, and enforced here as well as in the domain: two tabs of the same
-    /// client acknowledging different positions must not let the older one win and
+    /// Record how far a device has read. Monotonic, so an older tab cannot
     /// re-deliver what was already seen.
     async fn advance_cursor(
         &self,
@@ -36,24 +30,13 @@ pub trait DeviceRepository: Send + Sync {
         at: OffsetDateTime,
     ) -> PortResult<()>;
 
-    /// The active devices to deliver a channel's notification to.
-    ///
-    /// Returns the devices of every member with `subscribe`, individually bound or
-    /// reached through a group snapshot (see [`DeviceRepository::remember_groups`]),
-    /// which is what the fan-out iterates. Silenced and do-not-disturb recipients
-    /// are filtered by the use case, not here: this port answers "who could be
-    /// reached", the use case answers "who should be" (design §7.4).
+    /// The active devices of every member with `subscribe`, direct or via a group
+    /// snapshot. Silence/DND filtering is the use case's job (§7.4).
     async fn delivery_targets(&self, channel: &ChannelId) -> PortResult<Vec<Device>>;
 
-    /// Remember the groups a principal's token carried, so `delivery_targets` can
-    /// still reach them through a group-only channel binding once they are offline.
-    ///
-    /// Group membership is otherwise never persisted — it is resolved against the
-    /// live token everywhere else, on purpose (design §11) — so this is the one
-    /// place that promise bends, and only for push. Called wherever a principal is
-    /// next seen with a fresh token: at device enrolment and at the start of a
-    /// sync/stream session (§8), so the snapshot goes no staler than "since this
-    /// principal was last active" rather than "since they last enrolled a device."
+    /// Snapshot the groups a principal's token carried, so `delivery_targets` can
+    /// reach them through group-only bindings while offline. The only place group
+    /// membership is persisted (§11), refreshed at enrolment and sync start.
     async fn remember_groups(
         &self,
         principal: &Principal,
@@ -61,10 +44,8 @@ pub trait DeviceRepository: Send + Sync {
         at: OffsetDateTime,
     ) -> PortResult<()>;
 
-    /// The groups [`DeviceRepository::remember_groups`] last saw for `principal`,
-    /// empty if none or if that observation is older than `since`. Lets a personal
-    /// API key — which carries no token, so no groups — be capped by what its owner
-    /// could still reach recently enough to be believed.
+    /// The groups last remembered for `principal`, empty if none or older than
+    /// `since`; caps token-less personal API keys.
     async fn remembered_groups(
         &self,
         principal: &Principal,

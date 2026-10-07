@@ -8,7 +8,8 @@
     "redirecting": "Redirecting…",
     "signIn": "Sign in",
     "retry": "Retry",
-    "reopen": "Reopen the browser"
+    "reopen": "Reopen the browser",
+    "headline": "One notification. Its whole life."
   },
   "callback": {
     "failed": "Sign-in failed.",
@@ -47,7 +48,8 @@
       "live": "live",
       "reconnecting": "reconnecting…",
       "offline": "offline",
-      "tooltip": "SSE stream — resumed by cursor on reconnect (§8.1)."
+      "tooltip": "SSE stream — resumed by cursor on reconnect (§8.1).",
+      "disconnected": "disconnected"
     },
     "channels": {
       "title": "Channels",
@@ -76,7 +78,10 @@
     }
   },
   "layout": {
-    "closeDetail": "Close detail"
+    "closeDetail": "Close detail",
+    "tabs": "Sections",
+    "channels": "Channels",
+    "search": "Search"
   },
   "console": {
     "title": "Platform console",
@@ -156,7 +161,23 @@
       "receiptsOn": "Receipts enabled",
       "receiptsOff": "Receipts disabled",
       "defaultTtlPlaceholder": "default TTL (7d)",
-      "maxTtlPlaceholder": "ceiling (48h) — empty = none"
+      "maxTtlPlaceholder": "ceiling (48h) — empty = none",
+      "id": "Channel id",
+      "name": "Display name",
+      "namePlaceholder": "display name (optional)",
+      "create": "Create channel",
+      "memberCount": "{count} member | {count} members",
+      "closeAfter": "Auto-close",
+      "receipts": "Receipts",
+      "retention": "Retention",
+      "members": "Members",
+      "memberId": "Member id",
+      "addMember": "Add",
+      "removeMember": "Remove",
+      "delete": "Delete channel",
+      "deleteConfirm": "Delete channel {id} and everything in it? This cannot be undone.",
+      "person": "Person",
+      "personPlaceholder": "name or email"
     },
     "devices": {
       "title": "Devices",
@@ -174,7 +195,10 @@
       "unnamed": "unnamed",
       "lastUsed": "used {at}",
       "neverUsed": "never used",
-      "revoked": "revoked"
+      "revoked": "revoked",
+      "limit": "Publish limit per minute",
+      "limitPlaceholder": "per min",
+      "setLimit": "Limit"
     },
     "accounts": {
       "title": "Service accounts",
@@ -198,7 +222,10 @@
       "hint": "New notifications arrive here in real time."
     },
     "loading": "Loading…",
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "summary": "{total} shown · {live} running",
+    "filtered": "Filtered",
+    "errorTitle": "Sync failed"
   },
   "palette": {
     "hints": {
@@ -327,14 +354,23 @@
     },
     "appearance": {
       "title": "Appearance",
-      "theme": "Theme: {theme}",
-      "density": "Density: {density}",
-      "detail": "Detail: {position}",
       "detailHint": "Where a notification's timeline opens next to the list — no effect on a narrow screen, where it always takes the whole screen.",
       "detailPosition": {
         "right": "on the right",
         "left": "on the left",
         "under": "underneath"
+      },
+      "themeLabel": "Theme",
+      "densityLabel": "Density",
+      "detailLabel": "Detail panel",
+      "themes": {
+        "system": "System",
+        "light": "Light",
+        "dark": "Dark"
+      },
+      "densities": {
+        "compact": "Compact",
+        "comfortable": "Comfortable"
       }
     },
     "keys": {
@@ -404,6 +440,28 @@
       "enable": "Enable on this browser",
       "disable": "Disable on this browser",
       "fallbackError": "Subscription failed. Try again."
+    },
+    "apps": {
+      "title": "Apps",
+      "description": "The same inbox, from a terminal or installed on this device.",
+      "cli": "Command line & TUI",
+      "pwa": "This device",
+      "install": "Install the app"
+    },
+    "connections": {
+      "title": "Active connections",
+      "description": "Every device holding a live connection to your inbox. Disconnecting one cuts it now and keeps that sign-in off realtime for up to 12 h; to remove its access for good, revoke its key or device, or sign out there.",
+      "empty": "No live connection.",
+      "current": "this device",
+      "disconnect": "Disconnect",
+      "refresh": "Refresh",
+      "since": "connected {at}",
+      "credential": {
+        "session": "browser session",
+        "key": "API key",
+        "ci": "CI token",
+        "device": "enrolled device"
+      }
     }
   },
   "problem": {

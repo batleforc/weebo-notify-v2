@@ -5,17 +5,10 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
 use notify_ports::{PortError, PortResult, SecretHasher};
 
-/// The label this hasher reports failures under. Not a `/readyz` dependency: a KDF
-/// that cannot run is a broken process, not an unreachable service.
+/// Failure label; not a `/readyz` dependency, since a broken KDF is a broken process.
 const WHAT: &str = "hasher";
 
-/// Argon2id, at the crate's default cost.
-///
-/// The cost is the point, so it is *not* tuned down: the whole reason a stolen
-/// database of hashes is survivable is that each guess is expensive. Which is also
-/// why [`notify_ports::SecretHasher`] is a port — the test suite runs on a stub
-/// rather than paying it thousands of times, instead of the usual resolution of
-/// lowering the production parameters until the tests are bearable.
+/// Argon2id at default cost, deliberately not tuned down; tests use a stub [`notify_ports::SecretHasher`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Argon2SecretHasher;
 
@@ -24,8 +17,7 @@ impl SecretHasher for Argon2SecretHasher {
     async fn hash(&self, secret: &str) -> PortResult<String> {
         let secret = secret.to_owned();
 
-        // Deliberately expensive and entirely CPU-bound: left on an async worker it
-        // would stall every other request that worker was serving.
+        // CPU-bound: keep it off async workers.
         blocking(move || {
             let salt = SaltString::generate(&mut OsRng);
             Argon2::default()
@@ -41,15 +33,11 @@ impl SecretHasher for Argon2SecretHasher {
         let hash = hash.to_owned();
 
         blocking(move || {
-            // A hash we cannot parse is our data being wrong, not the caller's
-            // secret being wrong — answering `false` would tell somebody holding a
-            // perfectly good key that it is invalid.
+            // An unparseable hash is our corruption, not a wrong secret.
             let parsed = PasswordHash::new(&hash)
                 .map_err(|error| PortError::corrupt("apikey.secret_hash", error))?;
 
-            // Argon2's own comparison is constant-time; a mismatch is an ordinary
-            // answer rather than an error, so a key-scanning attempt costs no log
-            // line with a stack trace.
+            // Constant-time; a mismatch is an ordinary answer, not an error.
             Ok(Argon2::default()
                 .verify_password(secret.as_bytes(), &parsed)
                 .is_ok())
@@ -70,8 +58,7 @@ where
     }
 }
 
-/// `argon2::password_hash::Error` is not a `std::error::Error`, and [`PortError`]
-/// keeps the cause. This carries it across.
+/// Carries `argon2::password_hash::Error` (not a `std::error::Error`) into [`PortError`].
 #[derive(Debug)]
 struct HashingFailed(argon2::password_hash::Error);
 

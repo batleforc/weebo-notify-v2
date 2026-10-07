@@ -2,13 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createFrameParser } from "./stream";
 
-/**
- * The SSE decoder, which is where a real-time client quietly loses events.
- *
- * Every case below is one the server actually produces (design §8.1): the
- * 25-second keep-alive comment, an `id:` that is the cursor, and — the one that
- * only shows up under load — a frame split across two network chunks.
- */
+/** The SSE decoder against real server output (§8.1): keep-alives, cursors, split frames. */
 describe("createFrameParser", () => {
   it("decodes one frame", () => {
     const parse = createFrameParser();

@@ -61,3 +61,7 @@ web/src-tauri/gen/schemas/
 # regenerated parts — `build`, `.gradle`, `local.properties`, the `jniLibs/**/*.so`
 # symlinks into `target/`, and `keystore.properties`. Repeating them at this level
 # would be a second source of truth that drifts the first time Tauri changes theirs.
+
+# Playwright
+web/test-results/
+web/playwright-report/

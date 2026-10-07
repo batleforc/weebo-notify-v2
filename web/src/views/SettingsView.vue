@@ -1,13 +1,5 @@
 <script setup lang="ts">
-/**
- * Settings — profile, avatar, theme, density (§10.4, §2.4).
- *
- * The screen exists to make one thing visible that the API models and no other
- * client shows: **which fields you own**. §2.4 says a field you edited stops being
- * overwritten by your identity provider, and without a way to see and undo that,
- * the rule is invisible until it surprises somebody. So every field says whose it
- * is, and offers to hand it back.
- */
+/** Settings (§10.4, §2.4). Every profile field shows whether you own it or the IdP does, and can hand it back. */
 import { KeyRound, RotateCcw, Trash2, Upload } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
@@ -29,6 +21,7 @@ import type {
 } from "@/api/generated/types.gen";
 import { failureOf } from "@/api/problem";
 import { useSession } from "@/auth/session";
+import ConnectionsPanel from "@/components/settings/ConnectionsPanel.vue";
 import DndPanel from "@/components/settings/DndPanel.vue";
 import PushPanel from "@/components/settings/PushPanel.vue";
 import { Badge } from "@/components/ui/badge";
@@ -61,19 +54,7 @@ const claimed = computed(
   () => new Set<ProfileField>(profile.value?.overridden ?? []),
 );
 
-const detailPositionLabel = computed(() =>
-  t(`settings.appearance.detailPosition.${ui.detailPosition}`),
-);
-
-/**
- * The avatar, as an object URL.
- *
- * Not `<img src="${apiBaseUrl}/api/v1/avatars/${id}">`, which is what this was
- * and which could never have worked: that route is authenticated and this
- * application keeps zero cookies (§5.1), so a browser `<img>` request carries no
- * credential and answered 401 every time. The bytes are fetched through the API
- * client instead — see `lib/avatar`.
- */
+/** An object URL: the avatar route needs a bearer an `<img>` can't send (§5.1, `lib/avatar`). */
 const avatarUrl = ref<string | null>(null);
 
 async function showAvatar(id: string | null | undefined): Promise<void> {
@@ -82,23 +63,14 @@ async function showAvatar(id: string | null | undefined): Promise<void> {
 
 function hydrate(next: Profile): void {
   profile.value = next;
-  // Here rather than in `load`, because this is the one funnel every answer goes
-  // through — `load`, `save`, `release` and `upload` all end up in it. Wiring it to
-  // any single caller is how `showAvatar` ended up with no caller at all, and the
-  // symptom was silent: `avatarUrl` stayed null, `v-if` hid the `<img>`, and the
-  // fallback initials rendered exactly as they do for somebody with no avatar.
-  //
-  // Not awaited: the profile has to paint now, and the face arrives when it
-  // arrives. `avatarObjectUrl` caches by id and never rejects, so a repeat call
-  // costs nothing and a failure leaves the initials up.
+  // Every answer funnels here. Not awaited; `avatarObjectUrl` caches and never rejects.
   void showAvatar(next.avatar);
   draft.value = {
     display_name: next.display_name ?? "",
     timezone: next.timezone ?? "",
   };
 
-  // Inherit the account's chosen UI language the first time the app opens on
-  // this browser — but never fight a choice already made here (§ C5).
+  // Adopt the account's UI language once, never over a local choice (§ C5).
   const prefix = next.locale?.slice(0, 2).toLowerCase();
   if (
     !localStorage.getItem(LOCALE_KEY) &&
@@ -120,29 +92,10 @@ async function load(): Promise<void> {
   }
 }
 
-/**
- * Send only what changed.
- *
- * An absent field means "leave it alone" and an explicit `null` means "hand it
- * back to the provider" (§2.4) — so sending the whole form on every save would
- * claim three fields when somebody edited one.
- */
-async function save(): Promise<void> {
-  if (!profile.value) {
-    return;
-  }
+/** Absent = leave alone, `null` = hand back to the IdP (§2.4). */
+async function patch(body: Record<string, string | null>): Promise<void> {
   saving.value = true;
   error.value = null;
-
-  const body: Record<string, string | null> = {};
-  const current = profile.value;
-  if (draft.value.display_name !== (current.display_name ?? "")) {
-    body.display_name = draft.value.display_name || null;
-  }
-  if (draft.value.timezone !== (current.timezone ?? "")) {
-    body.timezone = draft.value.timezone || null;
-  }
-
   try {
     const answer = await updateProfile({ body, throwOnError: true });
     hydrate(answer.data);
@@ -153,45 +106,30 @@ async function save(): Promise<void> {
   }
 }
 
-/**
- * Set the UI language — immediately (localStorage, live retranslation via
- * `ui.locale`'s own watcher) and, same as any other claimed profile field,
- * persisted server-side so a next device inherits it (§ C5).
- */
-async function setLocale(value: Locale): Promise<void> {
-  ui.locale = value;
-  saving.value = true;
-  error.value = null;
-  try {
-    const answer = await updateProfile({
-      body: { locale: value },
-      throwOnError: true,
-    });
-    hydrate(answer.data);
-  } catch (caught) {
-    error.value = failureOf(caught).message;
-  } finally {
-    saving.value = false;
+/** Send only what changed, so editing one field doesn't claim the others. */
+async function save(): Promise<void> {
+  if (!profile.value) {
+    return;
   }
+  const body: Record<string, string | null> = {};
+  const current = profile.value;
+  if (draft.value.display_name !== (current.display_name ?? "")) {
+    body.display_name = draft.value.display_name || null;
+  }
+  if (draft.value.timezone !== (current.timezone ?? "")) {
+    body.timezone = draft.value.timezone || null;
+  }
+  await patch(body);
 }
 
-/** Hand one field back to the identity provider. */
-async function release(
-  field: "display_name" | "timezone" | "locale",
-): Promise<void> {
-  saving.value = true;
-  error.value = null;
-  try {
-    const answer = await updateProfile({
-      body: { [field]: null },
-      throwOnError: true,
-    });
-    hydrate(answer.data);
-  } catch (caught) {
-    error.value = failureOf(caught).message;
-  } finally {
-    saving.value = false;
-  }
+/** Applied locally at once, and persisted so other devices inherit it (§ C5). */
+async function setLocale(value: Locale): Promise<void> {
+  ui.locale = value;
+  await patch({ locale: value });
+}
+
+function release(field: "display_name" | "timezone" | "locale"): Promise<void> {
+  return patch({ [field]: null });
 }
 
 async function upload(event: globalThis.Event): Promise<void> {
@@ -204,34 +142,20 @@ async function upload(event: globalThis.Event): Promise<void> {
   error.value = null;
   try {
     const answer = await setAvatar({
-      // The `File` itself: the generated type is binary, and reading it into an
-      // ArrayBuffer first would only copy 512 KiB for nothing.
       body: picked,
       headers: { "content-type": "application/octet-stream" },
       throwOnError: true,
     });
     hydrate(answer.data);
   } catch (caught) {
-    // The server refuses a file that is too big, animated or not an image at all
-    // (§2.4) — and its `code` is what turns that into a sentence.
+    // The problem `code` explains size/animation/format refusals (§2.4).
     error.value = failureOf(caught).message;
   } finally {
     saving.value = false;
   }
 }
 
-/**
- * A personal token for the CLI/TUI (`notify login`, §9.1).
- *
- * Owner is always the caller — never offered as a choice, unlike the admin
- * screen's service-account keys: §5.2 draws that line at "a durable bot never
- * runs on a human's key", and the reverse (a human's tool running on a key
- * that is unmistakably theirs) is exactly what this is for.
- *
- * The caller's own [`UserId`] has to be asked for explicitly (`whoami`):
- * nothing else the browser holds carries it — the OIDC `sub` claim is a
- * different identifier than the server's internal id.
- */
+/** Personal CLI keys (§9.1, §5.2): always owned by the caller, whose id needs `whoami`. */
 const cliKeys = ref<ApiKey[]>([]);
 const cliKeyLabel = ref(
   `notify-cli · ${new Date().toISOString().slice(0, 10)}`,
@@ -245,27 +169,16 @@ const cliKeyError = ref<string | null>(null);
 async function loadCliKeys(): Promise<void> {
   try {
     const answer = await listKeys({ throwOnError: true });
-    // Scoped by the server to the caller's own keys plus those of the service
-    // accounts they administer (`ListApiKeys::execute`); this screen is personal.
+    // The server also returns administered service accounts' keys.
     cliKeys.value = answer.data.filter((key) => key.owner.owner === "user");
   } catch (caught) {
     cliKeyError.value = failureOf(caught).message;
   }
 }
 
-function toggleCliKeyChannel(id: string): void {
-  if (cliKeyChannels.value.has(id)) {
-    cliKeyChannels.value.delete(id);
-  } else {
-    cliKeyChannels.value.add(id);
-  }
-}
-
-function toggleCliKeyScope(scope: Scope): void {
-  if (cliKeyScopes.value.has(scope)) {
-    cliKeyScopes.value.delete(scope);
-  } else {
-    cliKeyScopes.value.add(scope);
+function toggle<T>(set: Set<T>, value: T): void {
+  if (!set.delete(value)) {
+    set.add(value);
   }
 }
 
@@ -286,7 +199,7 @@ async function mintCliKey(): Promise<void> {
       },
       throwOnError: true,
     });
-    // The one moment this value exists outside the caller's hands (§5.2).
+    // Shown once (§5.2).
     cliKeyMinted.value = answer.data.secret;
     await loadCliKeys();
   } catch (caught) {
@@ -314,18 +227,69 @@ onMounted(() => {
   void channels.load();
   void loadCliKeys();
 });
+
+const origin = window.location.origin;
+
+/** The browser's own install offer, when it makes one (Chromium only). */
+const installPrompt = ref<{ prompt: () => Promise<unknown> } | null>(null);
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  installPrompt.value = event as unknown as { prompt: () => Promise<unknown> };
+});
+
+async function install(): Promise<void> {
+  await installPrompt.value?.prompt();
+  installPrompt.value = null;
+}
+
+const appearance = computed(() => [
+  {
+    label: t("settings.appearance.themeLabel"),
+    current: ui.theme,
+    set: (v: string) => {
+      ui.theme = v as typeof ui.theme;
+    },
+    options: (["system", "light", "dark"] as const).map((value) => ({
+      value,
+      label: t(`settings.appearance.themes.${value}`),
+    })),
+  },
+  {
+    label: t("settings.appearance.densityLabel"),
+    current: ui.density,
+    set: (v: string) => {
+      ui.density = v as typeof ui.density;
+    },
+    options: (["compact", "comfortable"] as const).map((value) => ({
+      value,
+      label: t(`settings.appearance.densities.${value}`),
+    })),
+  },
+  {
+    label: t("settings.appearance.detailLabel"),
+    current: ui.detailPosition,
+    set: (v: string) => {
+      ui.detailPosition = v as typeof ui.detailPosition;
+    },
+    options: (["right", "left", "under"] as const).map((value) => ({
+      value,
+      label: t(`settings.appearance.detailPosition.${value}`),
+    })),
+  },
+]);
 </script>
 
 <template>
-  <div class="h-full space-y-4 overflow-y-auto p-6">
-    <h1 class="text-lg font-semibold">{{ t("settings.title") }}</h1>
+  <div class="h-full overflow-y-auto">
+    <div class="mx-auto max-w-3xl px-4 pb-16 pt-6 sm:px-8 sm:pt-10">
+    <h1 class="display mb-6 uppercase">{{ t("settings.title") }}</h1>
 
-    <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+    <p v-if="error" class="text-sm text-signal">{{ error }}</p>
 
     <Card>
       <CardHeader>
         <CardTitle>{{ t("settings.profile.title") }}</CardTitle>
-        <p class="text-sm text-muted-foreground">
+        <p class="text-sm text-ink-dim">
           {{ t("settings.profile.description") }}
         </p>
       </CardHeader>
@@ -336,11 +300,11 @@ onMounted(() => {
             v-if="avatarUrl"
             :src="avatarUrl"
             alt=""
-            class="size-16 rounded-full border border-border object-cover"
+            class="size-16 border border-rule object-cover"
           />
           <div
             v-else
-            class="flex size-16 items-center justify-center rounded-full border border-dashed border-border text-xs text-muted-foreground"
+            class="flex size-16 items-center justify-center border border-dashed border-rule text-xs text-ink-dim"
           >
             {{ t("settings.profile.noAvatar") }}
           </div>
@@ -350,7 +314,7 @@ onMounted(() => {
               <Upload />
               {{ t("settings.profile.changeAvatar") }}
             </Button>
-            <p class="text-xs text-muted-foreground">
+            <p class="text-xs text-ink-dim">
               {{ t("settings.profile.avatarHint") }}
             </p>
           </div>
@@ -408,7 +372,7 @@ onMounted(() => {
             placeholder="Europe/Paris"
             :disabled="loading || saving"
           />
-          <span class="text-xs text-muted-foreground">
+          <span class="text-xs text-ink-dim">
             {{ t("settings.profile.timezoneHint") }}
           </span>
         </label>
@@ -431,23 +395,13 @@ onMounted(() => {
               {{ t("settings.profile.releaseToIdp") }}
             </Button>
           </span>
-          <div class="flex gap-1">
-            <Button
-              :variant="ui.locale === 'fr' ? 'secondary' : 'outline'"
-              size="sm"
-              :disabled="loading || saving"
-              @click="setLocale('fr')"
-            >
+          <div class="seg max-w-xs" role="group" :aria-label="t('settings.locale.title')">
+            <button type="button" :aria-pressed="ui.locale === 'fr'" :disabled="loading || saving" @click="setLocale('fr')">
               {{ t("settings.locale.fr") }}
-            </Button>
-            <Button
-              :variant="ui.locale === 'en' ? 'secondary' : 'outline'"
-              size="sm"
-              :disabled="loading || saving"
-              @click="setLocale('en')"
-            >
+            </button>
+            <button type="button" :aria-pressed="ui.locale === 'en'" :disabled="loading || saving" @click="setLocale('en')">
               {{ t("settings.locale.en") }}
-            </Button>
+            </button>
           </div>
         </div>
 
@@ -461,27 +415,44 @@ onMounted(() => {
       <CardHeader>
         <CardTitle>{{ t("settings.appearance.title") }}</CardTitle>
       </CardHeader>
-      <CardContent class="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" @click="ui.cycleTheme()">
-          {{ t("settings.appearance.theme", { theme: ui.theme }) }}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          @click="ui.density = ui.density === 'compact' ? 'comfortable' : 'compact'"
-        >
-          {{ t("settings.appearance.density", { density: ui.density }) }}
-        </Button>
-        <Button variant="outline" size="sm" @click="ui.cycleDetailPosition()">
-          {{ t("settings.appearance.detail", { position: detailPositionLabel }) }}
-        </Button>
+      <CardContent class="space-y-4">
+        <div v-for="group in appearance" :key="group.label" class="grid gap-2 sm:grid-cols-[10rem_1fr] sm:items-center">
+          <span class="meta">{{ group.label }}</span>
+          <div class="seg" role="group" :aria-label="group.label">
+            <button
+              v-for="option in group.options"
+              :key="option.value"
+              type="button"
+              :aria-pressed="group.current === option.value"
+              @click="group.set(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+        <p class="text-xs text-ink-dim">{{ t("settings.appearance.detailHint") }}</p>
       </CardContent>
-      <p class="px-6 pb-4 -mt-2 text-xs text-muted-foreground">
-        {{ t("settings.appearance.detailHint") }}
-      </p>
+    </Card>
+
+    <!-- §10.4 "Apps": the other clients, and how to reach them from here. -->
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t("settings.apps.title") }}</CardTitle>
+        <p class="max-w-[64ch] text-sm text-ink-dim">{{ t("settings.apps.description") }}</p>
+      </CardHeader>
+      <CardContent class="space-y-3 text-sm">
+        <p class="meta">{{ t("settings.apps.cli") }}</p>
+        <code class="block select-all border border-rule bg-ground-sunk p-3 text-xs [overflow-wrap:anywhere]">notify login --web-url {{ origin }}</code>
+        <template v-if="installPrompt">
+          <p class="meta pt-2">{{ t("settings.apps.pwa") }}</p>
+          <Button variant="outline" size="sm" @click="install">{{ t("settings.apps.install") }}</Button>
+        </template>
+      </CardContent>
     </Card>
 
     <!-- Web Push is a browser's; the desktop shell notifies natively (§10bis). -->
+    <ConnectionsPanel />
+
     <PushPanel v-if="!desktop" />
 
     <DndPanel />
@@ -489,21 +460,20 @@ onMounted(() => {
     <Card>
       <CardHeader>
         <CardTitle>{{ t("settings.keys.title") }}</CardTitle>
-        <p class="text-sm text-muted-foreground">
+        <p class="text-sm text-ink-dim">
           {{ t("settings.keys.description") }}
         </p>
       </CardHeader>
       <CardContent class="space-y-3">
-        <p v-if="cliKeyError" class="text-sm text-destructive">{{ cliKeyError }}</p>
+        <p v-if="cliKeyError" class="text-sm text-signal">{{ cliKeyError }}</p>
 
-        <!-- Montré une fois, jamais réaffiché : seul le hachage est conservé
-             (§5.2), exactement la même règle que pour une clé de bot. -->
-        <Card v-if="cliKeyMinted" class="border-status-warning">
+        <!-- Shown once: only the hash is kept (§5.2). -->
+        <Card v-if="cliKeyMinted" class="border border-copper p-4">
           <CardContent class="space-y-2 pt-4">
-            <p class="text-sm text-muted-foreground">
+            <p class="text-sm text-ink-dim">
               {{ t("settings.keys.mintedHint") }}
             </p>
-            <code class="block break-all rounded-md bg-muted p-3 text-xs">{{
+            <code class="block select-all border border-rule bg-ground-sunk p-3 text-xs [overflow-wrap:anywhere]">{{
               cliKeyMinted
             }}</code>
             <Button variant="outline" size="sm" @click="cliKeyMinted = null">
@@ -516,7 +486,7 @@ onMounted(() => {
           <Input v-model="cliKeyLabel" :placeholder="t('settings.keys.labelPlaceholder')" />
 
           <div class="space-y-1">
-            <p class="text-xs font-medium text-muted-foreground">
+            <p class="text-xs font-medium text-ink-dim">
               {{ t("settings.keys.channels") }}
             </p>
             <label
@@ -527,17 +497,17 @@ onMounted(() => {
               <input
                 type="checkbox"
                 :checked="cliKeyChannels.has(channel.id)"
-                @change="toggleCliKeyChannel(channel.id)"
+                @change="toggle(cliKeyChannels, channel.id)"
               />
               {{ channel.display_name || channel.id }}
             </label>
-            <p v-if="!channels.all.length" class="text-xs text-muted-foreground">
+            <p v-if="!channels.all.length" class="text-xs text-ink-dim">
               {{ t("settings.keys.noChannels") }}
             </p>
           </div>
 
           <div class="space-y-1">
-            <p class="text-xs font-medium text-muted-foreground">
+            <p class="text-xs font-medium text-ink-dim">
               {{ t("settings.keys.scope") }}
             </p>
             <label
@@ -548,7 +518,7 @@ onMounted(() => {
               <input
                 type="checkbox"
                 :checked="cliKeyScopes.has(scope)"
-                @change="toggleCliKeyScope(scope)"
+                @change="toggle(cliKeyScopes, scope)"
               />
               {{ scope }}
             </label>
@@ -566,12 +536,12 @@ onMounted(() => {
         <div
           v-for="key in cliKeys"
           :key="key.id"
-          class="flex items-center justify-between gap-2 border-b border-border pb-2 text-sm last:border-0"
+          class="rule-row flex flex-wrap items-center justify-between gap-2 py-2 text-sm last:border-0"
         >
           <span class="min-w-0">
             <code class="text-xs">{{ key.prefix }}…</code>
             <span class="ml-2">{{ key.label ?? t("settings.keys.unnamed") }}</span>
-            <span class="ml-2 text-xs text-muted-foreground">
+            <span class="ml-2 text-xs text-ink-dim">
               {{
                 key.last_used_at
                   ? t("settings.keys.lastUsed", { at: exact(key.last_used_at) })
@@ -601,10 +571,10 @@ onMounted(() => {
         <CardTitle>{{ t("settings.session.title") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-2 text-sm">
-        <p class="text-muted-foreground">
+        <p class="text-ink-dim">
           {{ t("settings.session.connectedAs", { name: session.displayName }) }}
         </p>
-        <p v-if="session.groups.length" class="text-xs text-muted-foreground">
+        <p v-if="session.groups.length" class="text-xs text-ink-dim">
           {{ t("settings.session.groups", { groups: session.groups.join(", ") }) }}
         </p>
         <Button variant="outline" size="sm" @click="session.logout()">
@@ -612,5 +582,6 @@ onMounted(() => {
         </Button>
       </CardContent>
     </Card>
+    </div>
   </div>
 </template>

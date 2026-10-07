@@ -9,13 +9,8 @@ use url::Url;
 
 use crate::state::{AuthRequest, GrantRefusal, Mock, Tokens};
 
-/// Mount the provider.
-///
-/// CORS is wide open, and only here: the web client performs its own token
-/// exchange from the browser (a public client has no back end to do it for it), so
-/// a provider that refused cross-origin calls would be unusable by the very client
-/// it exists to serve. This binary never runs anywhere but a laptop, a Che
-/// workspace or a CI job.
+/// Mount the provider. CORS is wide open: the web client is public and exchanges tokens from
+/// the browser, and this binary only ever runs in dev and CI.
 pub fn configure(config: &mut web::ServiceConfig) {
     config.service(
         web::scope("")
@@ -84,9 +79,7 @@ impl ResponseError for Refusal {
 async fn discovery(mock: web::Data<Mock>) -> impl Responder {
     let issuer = mock.issuer();
 
-    // The issuer is echoed exactly as configured. The server compares this string
-    // against its own `[oidc] issuer` and refuses a mismatch, which is the check
-    // that stops a token from one provider being accepted by another.
+    // Echoed exactly: the server refuses an issuer that doesn't match its own `[oidc] issuer`.
     HttpResponse::Ok().json(json!({
         "issuer": issuer,
         "authorization_endpoint": format!("{issuer}/authorize"),
@@ -103,8 +96,6 @@ async fn discovery(mock: web::Data<Mock>) -> impl Responder {
             "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce",
             "preferred_username", "name", "email", "email_verified", "groups",
         ],
-        // S256 only. `plain` is in the RFC for clients that cannot hash, and no
-        // client of this product is one of them.
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
     }))
@@ -135,9 +126,7 @@ async fn authorize(
     let params = params.into_inner();
     let client = mock.client();
 
-    // Client and redirect URI are checked before anything else, and a failure is a
-    // page rather than a redirect. Redirecting to an unregistered URI to report an
-    // error is how an open redirect gets built by accident.
+    // Checked first, and refused as a page: redirecting to an unregistered URI is an open redirect.
     if params.client_id.as_deref() != Some(client.id.as_str()) {
         return Err(Refusal::bad_request(
             "unauthorized_client",
@@ -164,8 +153,7 @@ async fn authorize(
         ));
     };
 
-    // From here the URI is trusted, so problems travel back to the client the way
-    // RFC 6749 §4.1.2.1 says they should.
+    // From here the URI is trusted, so errors travel back per RFC 6749 §4.1.2.1.
     let state = params.state.clone();
     let fail = |code: &str, description: &str| {
         redirect_error(&redirect_uri, code, description, state.as_deref())
@@ -187,9 +175,7 @@ async fn authorize(
         return Ok(fail("invalid_request", "code_challenge is required"));
     };
 
-    // Scopes the client did not register are dropped rather than refused: that is
-    // what providers do, and it keeps a client that asks for one extra scope
-    // working instead of stuck on a login page.
+    // Unregistered scopes are dropped, not refused, as real providers do.
     let scope = granted_scopes(mock.client(), params.scope.as_deref());
 
     let id = mock.begin(AuthRequest {
@@ -228,8 +214,7 @@ async fn login(mock: web::Data<Mock>, form: web::Form<LoginForm>) -> Result<Http
         .authenticate(&form.username, &form.password)
         .cloned()
     else {
-        // Re-render rather than redirect: a typo should cost a retry, not the whole
-        // flow. The message says neither which half was wrong, out of habit.
+        // Re-render rather than redirect, without saying which half was wrong.
         return Ok(HttpResponse::Unauthorized()
             .content_type("text/html; charset=utf-8")
             .body(login_page(
@@ -272,8 +257,6 @@ struct TokenForm {
 async fn token(mock: web::Data<Mock>, form: web::Form<TokenForm>) -> Result<HttpResponse, Refusal> {
     let form = form.into_inner();
 
-    // A public client authenticates with nothing but its id; sending someone
-    // else's is still a refusal.
     if let Some(client_id) = &form.client_id
         && client_id != &mock.client().id
     {
@@ -329,8 +312,6 @@ fn as_token_response(tokens: Tokens) -> HttpResponse {
         body["refresh_token"] = json!(refresh);
     }
 
-    // Tokens are never cacheable, and a shared proxy holding one is exactly the
-    // sort of thing a dev environment teaches people not to notice.
     HttpResponse::Ok()
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .insert_header((header::PRAGMA, "no-cache"))
@@ -389,8 +370,7 @@ async fn end_session(
     mock: web::Data<Mock>,
     params: web::Query<LogoutParams>,
 ) -> Result<HttpResponse, Refusal> {
-    // There is no server-side session to end — the whole model is token-only
-    // (§5.1). Logout exists so the client's redirect actually lands somewhere.
+    // Token-only model (§5.1): logout just gives the client's redirect somewhere to land.
     let Some(target) = params.post_logout_redirect_uri.clone() else {
         return Ok(HttpResponse::Ok()
             .content_type("text/html; charset=utf-8")
@@ -415,8 +395,7 @@ async fn end_session(
 }
 
 async fn rotate_keys(mock: web::Data<Mock>) -> Result<HttpResponse, Refusal> {
-    // Not part of OIDC: a hook so the auth suite can test key rotation on demand
-    // (T29) instead of waiting for a provider to feel like rotating.
+    // Not OIDC: a hook so the auth suite can rotate keys on demand (T29).
     let kid = mock.rotate_keys().map_err(|error| {
         Refusal::bad_request(
             "server_error",
@@ -431,8 +410,7 @@ async fn rotate_keys(mock: web::Data<Mock>) -> Result<HttpResponse, Refusal> {
 
 fn parse_redirect(uri: &str) -> Result<Url, Refusal> {
     Url::parse(uri).map_err(|error| {
-        // Unreachable through the HTTP surface — the URI came out of the registered
-        // list — but a committed typo should say so plainly rather than panic.
+        // Unreachable over HTTP (the URI came from the registered list); still no panic.
         Refusal::bad_request(
             "invalid_request",
             format!("`{uri}` in dev/oidc-mock/identities.toml is not a URL: {error}"),
@@ -884,8 +862,7 @@ mod tests {
         );
     }
 
-    // `use actix_web::test` shadows the built-in attribute, so even the synchronous
-    // cases below go through actix's macro.
+    // `use actix_web::test` shadows the built-in attribute.
     #[actix_web::test]
     async fn scopes_the_client_never_registered_are_dropped_rather_than_refused() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

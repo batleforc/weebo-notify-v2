@@ -1,6 +1,4 @@
-/**
- * Theme cycling and its interaction with the OS preference (design §10.2).
- */
+/** Theme cycling and the OS preference (§10.2). */
 
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,9 +6,7 @@ import { nextTick } from "vue";
 
 import { useUi } from "@/stores/ui";
 
-/** A `matchMedia` stub whose `matches` can be flipped per test, since jsdom does
- * not implement the real thing and the store's `system` behaviour is exactly
- * what needs to be under test control here. */
+/** A flippable `matchMedia` stub; jsdom has none. */
 function stubMatchMedia(prefersDark: boolean): void {
   vi.stubGlobal(
     "matchMedia",
@@ -51,12 +47,8 @@ describe("theme cycling", () => {
   it("system resolves to whatever the OS says, not a fixed choice", async () => {
     stubMatchMedia(false);
     const ui = useUi();
-    // Pinia's `watch` (like Vue's) flushes on the microtask queue, not
-    // synchronously — every mutation below needs its own tick before its
-    // effect on `<html>`'s class list is observable, and *before the next
-    // mutation*: two synchronous writes that start and end on the same value
-    // (`system` → `light` → `system`, both before either flushes) look like no
-    // change at all to the watcher, which then never re-reads `matchMedia`.
+    // Watchers flush on microtasks: tick after each write, or `system → light →
+    // system` looks like no change at all.
     await nextTick();
     expect(document.documentElement.classList.contains("dark")).toBe(false);
 

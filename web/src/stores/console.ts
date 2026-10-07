@@ -1,23 +1,6 @@
 /**
- * The platform console (§5.4, §10.4bis) — a console, not a dashboard.
- *
- * # How the app learns it may show this at all
- *
- * With one probe, and deliberately not with a flag on the session. The server
- * decides the role from `[admin] oidc_groups` intersected with the token's claims
- * (§14.2), so it is the only thing that can answer, and asking it once at open is
- * both the cheapest way and the honest one: what the nav shows is then exactly what
- * the API permits, rather than a copy of it that can drift.
- *
- * The `403` a non-admin gets is expected and is not an error worth showing. It is
- * the answer, and it arrives once per session.
- *
- * # What is not here
- *
- * Notifications. §5.4 gives this role metadata and operations and never content,
- * and the endpoints behind this store cannot return a notification at all — see
- * `notify-app/src/platform.rs`. Reading a channel means joining it, which is a
- * button here and a line in the audit log.
+ * The platform console (§5.4, §10.4bis): metadata and operations, never content.
+ * Visibility comes from one probe; the server decides the role (§14.2).
  */
 
 import { defineStore } from "pinia";
@@ -42,25 +25,14 @@ import type {
 import { failureOf } from "@/api/problem";
 
 export const useConsole = defineStore("console", () => {
-  /**
-   * `null` until the first probe: "we have not asked" and "you may not" are
-   * different, and a nav that flickers between them is worse than one that waits.
-   */
+  /** `null` until probed, so the nav waits rather than flickers. */
   const allowed = ref<boolean | null>(null);
   const channels = ref<ChannelCard[]>([]);
   const policies = ref<TrustPolicyCard[]>([]);
   const entries = ref<AuditEntry[]>([]);
-  /**
-   * The last GitOps pass — `null` when none has finished on the replica that
-   * answered (§11 gates only the purge on leadership, so every replica
-   * reconciles and two reads can differ by a tick).
-   */
+  /** Last GitOps pass on the answering replica; `null` if none finished yet (§11). */
   const gitops = ref<Reconciliation | null>(null);
-  /**
-   * Sink deliveries that were given up on (§7.1bis). Empty is a real answer here
-   * and worth showing as one: it means nothing is stuck, on an instance that
-   * actually has sinks to get stuck.
-   */
+  /** Given-up sink deliveries (§7.1bis). */
   const stuck = ref<DeadLetter[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
@@ -80,23 +52,18 @@ export const useConsole = defineStore("console", () => {
       allowed.value = true;
     } catch (caught) {
       const failure = failureOf(caught);
-      if (failure.status === 403) {
-        // The expected answer for almost everybody. Not an error, and not shown.
-        allowed.value = false;
-        return;
-      }
       allowed.value = false;
-      error.value = failure.message;
+      // 403 is the expected answer for non-admins, not an error.
+      if (failure.status !== 403) {
+        error.value = failure.message;
+      }
     }
   }
 
-  /** Load everything the console shows. */
   async function load(): Promise<void> {
     loading.value = true;
     error.value = null;
     try {
-      // One round trip per concern, in parallel: five endpoints, none waiting on
-      // another.
       const [
         inventoryAnswer,
         policyAnswer,
@@ -125,13 +92,7 @@ export const useConsole = defineStore("console", () => {
     }
   }
 
-  /**
-   * Join a channel as this admin (§5.4).
-   *
-   * Reloads afterwards rather than patching the card locally, because the point of
-   * the act is the **audit entry** it produces, and a console that showed the join
-   * without showing the record would be hiding the half that matters.
-   */
+  /** Join as this admin (§5.4); reload to show the audit entry it produces. */
   async function join(channel: string): Promise<void> {
     try {
       await postSelfJoin({ path: { channel }, throwOnError: true });
@@ -141,14 +102,7 @@ export const useConsole = defineStore("console", () => {
     }
   }
 
-  /**
-   * Put one dead letter back in the queue (§7.1bis, T17).
-   *
-   * Reloads for the same reason `join` does: the act produces an audit entry, and
-   * a console that showed the requeue without showing the record would hide the
-   * half that a later reader needs. A `409` means somebody else got there first —
-   * shown as the answer it is, not as a failure.
-   */
+  /** Requeue a dead letter (§7.1bis, T17); reload for the audit entry. A 409 means someone else did. */
   async function requeue(id: string): Promise<void> {
     try {
       await postRequeue({ path: { id }, throwOnError: true });

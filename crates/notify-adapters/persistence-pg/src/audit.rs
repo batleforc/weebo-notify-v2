@@ -1,12 +1,5 @@
-//! The audit log (design §13).
-//!
-//! Append-only, and enforced by the absence of any `UPDATE` or `DELETE` in this
-//! file rather than by a database grant: an audit log somebody can edit is a log
-//! nobody can rely on after an incident.
-//!
-//! Its pagination cursor is its own sequence, deliberately not `events.seq`. An
-//! administrative act is not something a client replays, and borrowing the stream's
-//! order would put "somebody revoked a key" into everybody's backlog.
+//! The audit log (design §13): append-only (no `UPDATE`/`DELETE` here), with its own sequence
+//! rather than `events.seq` so admin acts never reach client backlogs.
 
 use notify_domain::ChannelId;
 use notify_ports::{AuditActor, AuditEntry, AuditLog, AuditQuery, Page, PortResult};
@@ -19,9 +12,7 @@ use crate::mapping::{cursor, fail, from_json, parse, sequence, to_json};
 #[async_trait::async_trait]
 impl AuditLog for PgStore {
     async fn record(&self, entry: &AuditEntry) -> PortResult<()> {
-        // Mirrored to the structured logs as well as stored, so the record survives
-        // the database it is written to (design §13). `audit = true` is what keeps
-        // it a separate stream from the million request lines around it.
+        // Mirrored to logs (`audit = true`) so the record survives the database (§13).
         tracing::info!(
             audit = true,
             actor = %entry.actor.reference(),
@@ -51,8 +42,7 @@ impl AuditLog for PgStore {
     async fn query(&self, query: &AuditQuery) -> PortResult<Page<AuditEntry>> {
         let limit = query.page.effective_limit();
 
-        // Newest first: an incident review starts from what just happened and works
-        // backwards, so the cursor walks *down* the sequence.
+        // Newest first: the cursor walks down the sequence.
         let rows = sqlx::query(
             "SELECT seq, at, actor, action, target, channel_id, detail
              FROM audit_entries
@@ -110,10 +100,7 @@ fn hydrate(row: &PgRow) -> PortResult<AuditEntry> {
 
     Ok(AuditEntry {
         actor: from_json::<AuditActor>("audit.actor", actor)?,
-        // `AuditEntry::action` is a `&'static str` because the vocabulary is a
-        // closed set an incident review filters on. Interning here rather than
-        // leaking the `String` keeps that true on the way back out — and a value
-        // this build does not know is reported rather than silently renamed.
+        // Interned against the closed vocabulary; an unknown value is reported, not renamed.
         action: intern_action(&action)?,
         target: row.try_get("target").map_err(|e| fail("audit", e))?,
         channel: channel
@@ -125,11 +112,7 @@ fn hydrate(row: &PgRow) -> PortResult<AuditEntry> {
     })
 }
 
-/// The vocabulary lives in the port (`notify_ports::AUDIT_ACTIONS`), not here.
-///
-/// It used to live here, privately, while the emitters wrote literals — and the
-/// two drifted in both directions without anything failing until a row was read.
-/// Interning against the same list the writers name is what makes that impossible.
+/// Intern against the port's `notify_ports::AUDIT_ACTIONS`, the same list the writers use.
 fn intern_action(action: &str) -> PortResult<notify_ports::AuditAction> {
     notify_ports::AuditAction::parse(action).ok_or_else(|| {
         notify_ports::PortError::corrupt(
@@ -147,11 +130,7 @@ mod tests {
 
     #[test]
     fn every_action_in_the_vocabulary_interns() {
-        // This test used to hold its **own** copy of the list, which is why it
-        // passed while two actions the build emits were missing from the one it was
-        // supposed to be checking: a hand-written mirror of a hand-written list
-        // agrees with itself and with nothing else. It now walks the shared
-        // vocabulary, so there is no second copy to be right about.
+        // Walks the shared vocabulary, so there is no second copy to drift.
         for action in notify_ports::AUDIT_ACTIONS {
             assert!(
                 intern_action(action.as_str()).is_ok(),

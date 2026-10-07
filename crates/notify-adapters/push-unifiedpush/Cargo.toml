@@ -15,13 +15,9 @@ workspace = true
 [dependencies]
 notify-domain = { workspace = true }
 notify-ports = { workspace = true }
-# The sealed box (design §6.2): ephemeral X25519 ECDH, HKDF-SHA256, then
-# XChaCha20-Poly1305. Its own crate since M7, shared with `notify-push-apns` — see
-# `notify-sealed-box`'s module doc for why.
 notify-sealed-box = { workspace = true }
 
 async-trait = { workspace = true }
-base64 = { workspace = true }
 reqwest = { workspace = true }
 # `lookup_host`, for the resolver that refuses non-public addresses.
 tokio = { workspace = true, features = ["net"] }
@@ -32,7 +28,5 @@ thiserror = { workspace = true }
 [dev-dependencies]
 time = { workspace = true }
 tokio = { workspace = true }
-# Only to build a device key for this crate's own envelope tests — the crypto
-# itself (and the T18 guarantee) is proven once, in `notify-sealed-box`'s own test
-# suite, not re-proven here.
+# Device keys for envelope tests only.
 x25519-dalek = { version = "3", features = ["static_secrets"] }

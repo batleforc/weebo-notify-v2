@@ -1,21 +1,5 @@
-//! The sync cursor: one total order over everything a client may have missed.
-//!
-//! Three things need that order — the offline backlog (`GET /sync?cursor=`), the
-//! `id:` field of the live stream, and reconnect via `Last-Event-ID` — and
-//! [ADR-0001] promises they are *the same* cursor. [ADR-0012] makes that true by
-//! backing it with a single append-only events table whose sequence value **is**
-//! the cursor. Deriving the order from timestamps or per-notification revision
-//! numbers gives duplicates and gaps under concurrency, which is exactly when it
-//! matters.
-//!
-//! The value is **opaque by contract**: clients round-trip it and never parse it.
-//! The rendered form is deliberately not a bare integer, so that a client author
-//! who was going to do arithmetic on it thinks twice — but it is encoding, not
-//! encryption. Anyone holding a cursor can infer a rough activity volume, which
-//! [ADR-0012] accepts.
-//!
-//! [ADR-0001]: https://github.com/batleforc/weebo-notify-v2/blob/main/docs/content/docs/adr/0001-sse-as-the-reference-realtime-transport.mdx
-//! [ADR-0012]: https://github.com/batleforc/weebo-notify-v2/blob/main/docs/content/docs/adr/0012-single-events-table-as-the-cursor.mdx
+//! The sync cursor: one total order shared by `GET /sync`, the stream `id:` and
+//! `Last-Event-ID` (ADR-0001, ADR-0012). Opaque by contract (encoding, not encryption).
 
 use core::fmt;
 use core::str::FromStr;
@@ -27,8 +11,7 @@ use crate::error::{DomainError, Result};
 /// A position in the global event sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-// Documented as the opaque string it is on the wire, not as the integer it happens
-// to wrap: a client that sees `integer` in the spec will do arithmetic on it.
+// Documented as an opaque string so clients don't do arithmetic on it.
 #[cfg_attr(
     feature = "openapi",
     schema(value_type = String, example = "evt_00000000000042")
@@ -39,8 +22,7 @@ impl Cursor {
     /// The textual prefix, so a cursor is recognisable in a log line.
     pub const PREFIX: &'static str = "evt_";
 
-    /// Before the first event. A client syncing from here gets everything still
-    /// retained.
+    /// Before the first event: syncing from here gets everything still retained.
     pub const START: Self = Self(0);
 
     /// Wrap a sequence value from storage.
@@ -55,9 +37,7 @@ impl Cursor {
         self.0
     }
 
-    /// The next position. Saturating: the sequence is a `bigserial`, so reaching
-    /// the ceiling is not a scenario, but wrapping silently would be a correctness
-    /// bug rather than an overflow.
+    /// The next position, saturating rather than wrapping.
     #[must_use]
     pub const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
@@ -66,9 +46,7 @@ impl Cursor {
 
 impl fmt::Display for Cursor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Zero-padded so cursors sort the same as strings and as numbers — which
-        // makes them pleasant to eyeball in a log, and harmless if a client sorts
-        // them despite being told not to.
+        // Zero-padded so cursors sort the same as strings and as numbers.
         write!(f, "{}{:016x}", Self::PREFIX, self.0)
     }
 }
@@ -116,8 +94,6 @@ mod tests {
 
     #[test]
     fn cursors_order_the_same_as_text_and_as_numbers() {
-        // A client that sorts cursors as strings — against instructions — still
-        // gets the right answer, which is worth the zero padding.
         let earlier = Cursor::from_sequence(9);
         let later = Cursor::from_sequence(4_521);
         assert!(earlier < later);

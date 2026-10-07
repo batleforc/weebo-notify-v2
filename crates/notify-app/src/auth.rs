@@ -1,30 +1,6 @@
-//! Turning a credential into a [`Caller`] (design §5).
-//!
-//! Four identities reach the API and this is the single funnel that collapses them
-//! into one typed value, so no use case ever inspects a header or a token format.
-//! Three doors are wired: OIDC bearer tokens and API keys since M1, and CI
-//! federation since M4.2.
-//!
-//! # Two kinds of bearer token, told apart by trying
-//!
-//! An OIDC access token and one of our own minted CI tokens arrive on the same
-//! header, and nothing in the header distinguishes them — an API key at least has a
-//! `wnk_` prefix. So the minted verifier is tried first and the OIDC one second.
-//!
-//! Trying rather than sniffing is deliberate: reading `iss` out of an unverified
-//! JWT to decide which verifier to use means routing on data an attacker supplies.
-//! A failed attempt costs one local Ed25519 header parse, which fails on the
-//! algorithm before it touches a key, and a deployment with no federation
-//! configured skips the attempt entirely.
-//!
-//! # Why a rejected credential is always the same 401
-//!
-//! A bad signature, an unknown key prefix, a wrong secret and an expired token all
-//! answer `401`. The *log* records which; the response does not. Distinguishing
-//! them turns the endpoint into an oracle: "unknown prefix" versus "wrong secret"
-//! tells an attacker which of their guesses hit a real key. Expiry and revocation
-//! are the deliberate exceptions (design §5.2) — a caller holding a key that was
-//! genuinely theirs is entitled to know why it stopped working.
+//! Turns a credential into a [`Caller`] (§5). Minted CI tokens are tried before OIDC
+//! rather than sniffing `iss` from an unverified JWT. Every rejection is the same 401
+//! (no oracle), except expiry and revocation, which the holder may know about (§5.2).
 
 use std::sync::Arc;
 
@@ -38,17 +14,10 @@ use time::OffsetDateTime;
 use crate::authz::{Caller, Grant};
 
 /// How stale `last_used_at` may get before a request pays to refresh it.
-///
-/// One minute: fine enough that "is this key still in use" is answered honestly,
-/// coarse enough that a pipeline publishing every second writes once rather than
-/// sixty times.
 const LAST_USED_GRANULARITY: time::Duration = time::Duration::minutes(1);
 
 /// How old an owner's remembered groups may be and still widen what a personal key
-/// reaches. Past it, the key keeps only its owner's direct memberships.
-///
-/// ponytail: fixed at 7 days; make it `[auth]` config if an instance needs a
-/// tighter bound than "logged in this week".
+/// reaches; past it, the key keeps only its owner's direct memberships.
 const GROUP_SNAPSHOT_TTL: time::Duration = time::Duration::days(7);
 
 /// What arrived on the request.
@@ -65,10 +34,6 @@ pub enum Credential {
 pub struct Authenticate {
     tokens: Arc<dyn TokenVerifier>,
     /// Absent on a deployment with no `[federation]` block.
-    ///
-    /// An `Option` rather than a double that always refuses (§14.3): this is not a
-    /// use case discovering a missing capability, it is the hot path of every
-    /// request deciding whether there is a second door to try at all.
     federation: Option<Arc<dyn FederationVerifier>>,
     /// The identity-provider groups that carry the platform role (§5.4).
     platform_admins: Vec<String>,
@@ -87,7 +52,6 @@ impl core::fmt::Debug for Authenticate {
 }
 
 impl Authenticate {
-    /// Wire it.
     #[must_use]
     pub fn new(
         tokens: Arc<dyn TokenVerifier>,
@@ -111,32 +75,21 @@ impl Authenticate {
         }
     }
 
-    /// Which identity-provider groups carry the platform role (design §5.4, §11).
-    ///
-    /// Configuration, and only configuration: §5.4 says no API path may grant this,
-    /// so there is nowhere else it could come from. Empty — the default — means the
-    /// instance has no platform admins, and every `/admin/*` call is a `403`. That
-    /// is the right default: an operator who has not said who administers the
-    /// platform has not said "everybody".
+    /// Which identity-provider groups carry the platform role (§5.4). Configuration only;
+    /// empty (the default) means no platform admins.
     #[must_use]
     pub fn with_platform_admins(mut self, groups: Vec<String>) -> Self {
         self.platform_admins = groups;
         self
     }
 
-    /// Also accept the CI tokens this instance mints (design §5.3, M4.2).
-    ///
-    /// Separate from [`new`] so that wiring federation is a visible line in the
-    /// composition root rather than a `None` somebody has to notice.
-    ///
-    /// [`new`]: Authenticate::new
+    /// Also accept the CI tokens this instance mints (§5.3).
     #[must_use]
     pub fn with_federation(mut self, federation: Arc<dyn FederationVerifier>) -> Self {
         self.federation = Some(federation);
         self
     }
 
-    /// Authenticate.
     pub async fn execute(&self, credential: Credential) -> Result<Caller, Failure> {
         match credential {
             Credential::Bearer(token) => self.bearer(&token).await,
@@ -155,10 +108,8 @@ impl Authenticate {
         })
     }
 
-    /// OIDC: validate against JWKS, then find or create the user (design §5.1).
-    ///
-    /// No session is stored. The token *is* the session, which is what keeps HA
-    /// trivial and means an IdP outage stops new logins rather than stopping work.
+    /// OIDC: validate against JWKS, then find or create the user (§5.1). No session is
+    /// stored: the token is the session.
     async fn bearer(&self, token: &str) -> Result<Caller, Failure> {
         if let Some(caller) = self.minted(token).await? {
             return Ok(caller);
@@ -172,14 +123,8 @@ impl Authenticate {
             }
         };
 
-        // First login creates the account; later logins refresh what the provider
-        // owns, leaving whatever its owner claimed alone (design §2.4).
-        //
-        // The write is conditional, and that matters more than it looks: bearer
-        // auth re-runs on every single request (§5.1), so writing unconditionally
-        // meant one database write per authenticated call — the exact cost §14.2
-        // refuses when it declines to materialise groups, on the hottest path in
-        // the API.
+        // First login creates the account; later logins refresh what the provider owns (§2.4).
+        // Conditional write: bearer auth runs on every request.
         let existing = self.users.find_by_subject(&claims.subject).await?;
         let (user, changed) = match existing {
             Some(mut found) => {
@@ -202,8 +147,7 @@ impl Authenticate {
             self.users.upsert(&user).await?;
         }
 
-        // The groups ride on the caller rather than being stored: they are a claim
-        // this token carries, and the next token may carry different ones (§11).
+        // Groups are a claim of this token, not stored: the next token may differ (§11).
         let platform_admin = self.is_platform_admin(&claims.groups);
         Ok(Caller {
             platform_admin,
@@ -212,15 +156,8 @@ impl Authenticate {
         })
     }
 
-    /// One of our own CI tokens, if that is what this is (design §5.3).
-    ///
-    /// `Ok(None)` means "not one of ours" and the caller falls through to OIDC — a
-    /// refusal here would make every human login depend on the federation adapter
-    /// being happy. A token that *is* ours but expired still falls through, and then
-    /// fails as an OIDC token: the answer is `401` either way, and §5.2's exception
-    /// for telling a holder their credential expired is about **API keys**, which a
-    /// person rotates by hand. A CI job re-exchanges; it has nothing to do with the
-    /// information.
+    /// One of our own CI tokens, if that is what this is (§5.3). `Ok(None)` falls through
+    /// to OIDC, so human logins never depend on the federation adapter.
     async fn minted(&self, token: &str) -> Result<Option<Caller>, Failure> {
         let Some(federation) = &self.federation else {
             return Ok(None);
@@ -232,32 +169,23 @@ impl Authenticate {
             return Ok(None);
         }
 
-        // The grant is read off the token, not re-derived: the policies were
-        // resolved once at the exchange, against the configuration of that moment
-        // (§11, `reload`). Re-deriving here would make two requests of one pipeline
-        // able to disagree, which is the whole reason minting exists.
+        // The grant is read off the token, resolved once at the exchange, so two requests
+        // of one pipeline cannot disagree.
         Ok(Some(Caller {
             principal: Principal::ci_job(claims.issuer, &claims.subject)?,
             grant: Grant::Federated {
                 grants: claims.grants,
             },
-            // A CI job carries no groups: its rights come from the trust policy, and
-            // a forge's token has no notion of this instance's identity provider.
+            // A CI job's rights come from the trust policy, not groups.
             groups: Vec::new(),
-            // And never the platform role. §5.4 reserves it to OIDC users, so this
-            // is a `false` the type system keeps rather than a check somebody has to
-            // remember to write in every admin handler.
+            // Never the platform role: §5.4 reserves it to OIDC users.
             platform_admin: false,
             expires_at: Some(claims.expires_at),
         }))
     }
 
-    /// Whether this token's groups carry the platform role (design §5.4).
-    ///
-    /// Derived per request from the claim, exactly like channel access (§14.2). An
-    /// empty configured list can never match, which is what makes "no admins
-    /// configured" mean "nobody"; and an issuer that sends no groups at all reaches
-    /// the same answer rather than a default grant (scenario T29).
+    /// Whether this token's groups carry the platform role (§5.4). An empty configured
+    /// list never matches.
     fn is_platform_admin(&self, groups: &[String]) -> bool {
         groups
             .iter()
@@ -266,14 +194,12 @@ impl Authenticate {
 
     /// API key: parse, look up by prefix, verify the secret (design §5.2).
     async fn api_key(&self, presented: &str) -> Result<Caller, Failure> {
-        // Shape check first: it is free, and it means a flood of malformed keys
-        // costs no database round trip and no Argon2 comparison.
+        // Shape check first: malformed keys cost no database round trip and no Argon2.
         let presented = PresentedApiKey::parse(presented)
             .map_err(|_| Failure::Domain(DomainError::InvalidCredential))?;
 
         let Some(stored) = self.keys.find_by_prefix(&presented.prefix).await? else {
-            // Same answer as a wrong secret: "no such prefix" would confirm which
-            // guesses landed on a real key.
+            // Same answer as a wrong secret, so prefixes cannot be probed.
             return Err(DomainError::InvalidCredential.into());
         };
 
@@ -286,14 +212,12 @@ impl Authenticate {
         }
 
         let now = self.clock.now();
-        // Expiry and revocation *are* distinguished: the holder had a real key and
-        // is entitled to know why it stopped working (design §5.2, scenario T12).
+        // Expiry and revocation are distinguished on purpose (§5.2).
         stored.key.ensure_usable(now)?;
 
         let principal = stored.key.principal();
         if let Principal::ServiceAccount { id } = &principal {
-            // Deactivating an account cuts its keys immediately, whatever their own
-            // dates say (design §5.2bis, scenario T25).
+            // Deactivating an account cuts its keys immediately (§5.2bis).
             let account = self
                 .accounts
                 .get(id)
@@ -302,27 +226,16 @@ impl Authenticate {
             account.ensure_active()?;
         }
 
-        // Best-effort by contract: this is the hot path of every authenticated
-        // request, and failing a publish over a `last_used` write would be a poor
-        // trade.
-        //
-        // Throttled as well as best-effort. Unthrottled this is one row update per
-        // authenticated request — a write amplifying the busiest read path in the
-        // product, on the single Postgres that is also the event bus, the rate
-        // limiter and the leader lock. `last_used_at` answers "is this key still in
-        // use", a question no operator asks to the second, so a granularity of
-        // [`LAST_USED_GRANULARITY`] costs nothing anybody wanted and removes a write
-        // from every request a CI fleet makes.
+        // Best-effort and throttled to `LAST_USED_GRANULARITY`: otherwise every
+        // authenticated request would write a row.
         if Self::should_touch(stored.key.last_used_at, now)
             && let Err(error) = self.keys.touch(stored.key.id, now).await
         {
             tracing::warn!(?error, "could not record api key usage");
         }
 
-        // A personal key is capped by its owner's membership (`Authorizer`), and a
-        // key carries no token, so the groups come from the owner's last login.
-        // Only a recent login counts: a user dropped from a group who never logs in
-        // again loses the group-derived reach after `GROUP_SNAPSHOT_TTL`.
+        // A key carries no token, so the owner's groups come from their last login, and
+        // only a recent one (`GROUP_SNAPSHOT_TTL`).
         let owner_groups = match &principal {
             Principal::User { .. } => {
                 self.devices
@@ -341,29 +254,22 @@ impl Authenticate {
                 publish_per_minute: stored.key.publish_per_minute,
                 owner_groups,
             },
-            // A key carries its own scopes and its own channel list (§5.2). Giving
-            // it its owner's groups on top would hand it rights nobody granted it —
-            // and the platform role least of all, which is why an admin's personal
-            // key administers channels and never the instance (§5.4).
+            // A key carries its own scopes and channels (§5.2); never its owner's groups or
+            // platform role (§5.4).
             groups: Vec::new(),
             platform_admin: false,
             expires_at: stored.key.expires_at,
         })
     }
 
-    /// Whether `last_used_at` is stale enough to be worth a write.
-    ///
-    /// A key that has never been used is always recorded — the first use is the one
-    /// somebody actually looks for, when they are asking whether a key they just
-    /// minted works. A clock that has gone backwards (an NTP step) also writes,
-    /// rather than going quiet until the wall clock catches up.
+    /// Whether `last_used_at` is stale enough to be worth a write. A never-used key and
+    /// a clock that went backwards always write.
     fn should_touch(last_used_at: Option<OffsetDateTime>, now: OffsetDateTime) -> bool {
         last_used_at.is_none_or(|last| now - last >= LAST_USED_GRANULARITY || now < last)
     }
 
     const fn unauthenticated(_rejection: TokenRejection) -> Failure {
-        // One answer for every reason, so the endpoint is not an oracle. The
-        // rejection itself was already logged by the caller.
+        // One answer for every reason; the caller already logged the rejection.
         Failure::Domain(DomainError::InvalidCredential)
     }
 }
@@ -414,9 +320,6 @@ mod tests {
     }
 
     /// A user repository that counts what it was asked to write.
-    ///
-    /// The point of the test below is a write that must *not* happen, and the only
-    /// way to assert on something not happening is to count.
     #[derive(Clone)]
     struct CountingUsers {
         inner: InMemory,
@@ -435,6 +338,10 @@ mod tests {
 
         async fn find_by_email(&self, email: &str) -> notify_ports::PortResult<Option<User>> {
             self.inner.find_by_email(email).await
+        }
+
+        async fn lookup(&self, text: &str, limit: u32) -> notify_ports::PortResult<Vec<User>> {
+            self.inner.lookup(text, limit).await
         }
 
         async fn upsert(&self, user: &User) -> notify_ports::PortResult<()> {
@@ -502,11 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_repeated_request_with_unchanged_claims_writes_nothing() {
-        // Bearer auth re-runs on **every request** (§5.1), so an unconditional
-        // upsert here was one database write per authenticated call — the exact
-        // cost §14.2 refuses when it declines to materialise groups, sitting on the
-        // hottest path in the API. Counting is the only way to assert on a write
-        // that must not happen.
+        // Bearer auth runs on every request, so an unchanged login must not write.
         let store = InMemory::new();
         let clock = TestClock::new();
         let verifier = StaticTokenVerifier::with_clock(Arc::new(clock.clone()));
@@ -562,10 +465,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_token_minted_without_an_email_scope_does_not_erase_the_stored_one() {
-        // The stored address is what `[[channels.managed.access]] email = …`
-        // resolves against (§11, T29) — the only binding an IdP with no groups
-        // claim can offer. A client that asks for fewer scopes must not revoke
-        // somebody's channel access as a side effect.
+        // The stored address is what managed `email` bindings resolve against (§11); a
+        // client asking for fewer scopes must not erase it.
         let fixture = fixture();
         fixture.verifier.register(
             "full",
@@ -860,7 +761,7 @@ mod tests {
                 .is_err()
         );
     }
-    // --- Federated CI tokens (design §5.3, M4.2) -------------------------
+    // --- Federated CI tokens (design §5.3) ---------------------------------
 
     fn federated() -> (Fixture, StaticFederationVerifier) {
         let fixture = fixture();
@@ -976,8 +877,7 @@ mod last_used_tests {
 
     #[test]
     fn a_key_that_has_never_been_used_is_always_recorded() {
-        // The first use is the one somebody is actually watching for, right after
-        // they mint a key and want to know it works.
+        // The first use is the one somebody is watching for.
         assert!(Authenticate::should_touch(None, at(0)));
     }
 
@@ -991,8 +891,7 @@ mod last_used_tests {
 
     #[test]
     fn a_clock_that_went_backwards_writes_rather_than_going_quiet() {
-        // An NTP step must not leave `last_used_at` frozen in the future until the
-        // wall clock catches up to it.
+        // An NTP step must not freeze `last_used_at` in the future.
         assert!(Authenticate::should_touch(Some(at(1_000)), at(900)));
     }
 }

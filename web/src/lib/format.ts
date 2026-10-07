@@ -1,11 +1,4 @@
-/**
- * Dates and durations, without pulling in a date library.
- *
- * `Intl.RelativeTimeFormat` ships in every browser this app targets, and an inbox
- * needs exactly two things from it: "3 min ago" on a row and a full timestamp
- * in the tooltip next to it. Both formatters are cached per UI locale rather
- * than built once at import time, since `ui.locale` can change at runtime.
- */
+/** Dates and durations via `Intl`, formatters cached per UI locale. */
 
 import { type Locale, useUi } from "@/stores/ui";
 
@@ -77,13 +70,7 @@ export function exact(iso: string): string {
   return Number.isNaN(at) ? iso : absoluteFormatter(useUi().locale).format(at);
 }
 
-/**
- * A delay as the late badge words it: `+2h13` (§7.2).
- *
- * Deliberately not `Intl.RelativeTimeFormat`: this is a magnitude, not a moment,
- * and "about 2 hours ago" hides the thirteen minutes an incident review cares
- * about.
- */
+/** A delay as the late badge shows it: `+2h13` (§7.2), a magnitude, not a moment. */
 export function delay(ms: number): string {
   const units = DELAY_UNITS[useUi().locale];
   const seconds = Math.max(0, Math.round(ms / 1000));

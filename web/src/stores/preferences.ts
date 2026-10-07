@@ -1,34 +1,7 @@
 /**
- * Do-not-disturb and silences, as this client holds them (design §7.4, §8.1).
- *
- * The server is the authority: it decides what to push and it suppresses what a
- * quiet period covers, on every device at once. This store exists for the one
- * thing the server cannot do — decide whether an *open tab* should raise a toast
- * for something arriving on its own stream.
- *
- * §7.4 is explicit about that case: "les clients connectés respectent le DND
- * localement […] pendant un DND (ou un `silence` actif), ils suppriment ces popups
- * tout en continuant d'alimenter l'inbox. Sans cette règle, le SSE contournerait le
- * DND sur les clients ouverts."
- *
- * # Why the rule is written twice, and where the copy stops
- *
- * M3.1 says nothing but the domain gets to decide what "DND" means, and this file
- * is a second implementation of `Dnd::is_muted`. The alternative was asking the
- * server per arrival, which is a round trip to decide whether to draw a toast for
- * an event that already arrived — on the path where latency is the whole feature.
- *
- * So the copy is bounded on purpose: it decides **local popups only**. Nothing here
- * suppresses a push (the server did that), removes anything from the inbox, or is
- * ever asked by another module. The two are kept honest by shape rather than by
- * hope — [`muted`] mirrors `is_muted` clause for clause, in the same order, and the
- * tests use the scenarios of §7.4 that the Rust tests use.
- *
- * # It stays fresh without polling
- *
- * The `preference` event of §8.1 carries the whole state — never a delta — so a
- * client that missed one still lands on the right answer, and turning DND on from a
- * phone silences this tab within the round trip of the stream.
+ * Do-not-disturb and silences (§7.4, §8.1). The server decides pushes; this store
+ * only decides whether an open tab raises a toast for a stream arrival. Kept fresh
+ * by the `preference` event, which always carries the whole state.
  */
 
 import { defineStore } from "pinia";
@@ -51,15 +24,7 @@ function minutes(wallClock: string): number {
 /** The wire's day names, in the order `Date.getDay()` counts them from Sunday. */
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
-/**
- * What the clocks read in a given IANA zone at a given instant.
- *
- * `Intl` is the browser's copy of the same IANA database `chrono-tz` compiles into
- * the server, which is what lets the two agree across a DST boundary without this
- * file knowing anything about one. An unknown zone throws — refused at the door by
- * the API (§7.4), so reaching here means a preference written before a browser
- * update, and the honest answer is "not quiet" rather than a crash in a toast.
- */
+/** Wall clock in an IANA zone, via `Intl`. An unknown zone yields `null` ("not quiet"), never a crash. */
 function localise(
   timezone: string,
   at: Date,
@@ -88,14 +53,7 @@ function localise(
   }
 }
 
-/**
- * Whether one recurring window covers this instant.
- *
- * Mirrors `QuietHours::covers`, including the part that is easy to get wrong: a
- * window crossing midnight belongs to the day it **starts** on, so the small hours
- * of Saturday are covered by *Friday's* entry — which is what a person means by
- * "Friday night".
- */
+/** Mirrors `QuietHours::covers`: a window crossing midnight belongs to the day it starts on. */
 export function covers(
   window: { start: string; end: string; timezone: string; days?: string[] },
   at: Date,
@@ -154,14 +112,7 @@ export const usePreferences = defineStore("preferences", () => {
     }
   }
 
-  /**
-   * Replace the whole preference.
-   *
-   * `PUT` replaces rather than merges, and the API says why: a body that omits a
-   * window cannot be told apart from one asking to drop it. So the caller sends
-   * the whole thing, every time — which is also what makes the panel's "cancel"
-   * mean something.
-   */
+  /** `PUT` replaces, so the caller always sends the whole preference. */
   async function save(draft: DndDraft): Promise<void> {
     const answer = await setDnd({ body: draft, throwOnError: true });
     dnd.value = answer.data;
@@ -178,12 +129,7 @@ export const usePreferences = defineStore("preferences", () => {
     await save({ ...draftOf(dnd.value), until: null });
   }
 
-  /**
-   * Fold a `preference` event (§8.1).
-   *
-   * Whole state in, whole state out — no merging, deliberately: the event carries
-   * everything precisely so a client that missed one does not compound the miss.
-   */
+  /** Fold a `preference` event (§8.1): whole state, never merged. */
   function ingest(event: StreamEvent): void {
     if (event.event !== "preference") {
       return;
@@ -192,44 +138,20 @@ export const usePreferences = defineStore("preferences", () => {
     silences.value = event.silences;
   }
 
-  /**
-   * Whether a local popup should be suppressed for this arrival.
-   *
-   * Both halves of "stop notifying me" are asked, which is why §8.1 ships them in
-   * one event: a silence is reactive and targeted, a do-not-disturb is planned and
-   * wide, and a client holding one without the other has a window where it buzzes
-   * for something somebody just muted.
-   */
+  /** Whether a local popup should be suppressed: silenced, or muted by DND per the server. */
   function stayQuiet(arrival: {
     notification: string;
     groupKey?: string | null;
-    /**
-     * What the **server** said about this delivery: `muted_by_dnd` on the event
-     * (§7.4, §8.1).
-     *
-     * Passed in rather than recomputed here, which is D22: the do-not-disturb rule
-     * has four clauses, one of them a quiet window whose small hours belong to the
-     * previous day, and it used to exist three times — in the domain for push, in
-     * the CLI for its desktop relay, and here. The server holds the preference and
-     * applies it per reader; this client reads the answer.
-     *
-     * Undefined for anything that did not come from an event — a push handed over
-     * by the worker, say — and undefined means "nobody said", which is not muted.
-     */
+    /** The server's `muted_by_dnd` (§7.4, D22); undefined (e.g. a forwarded push) means not muted. */
     mutedByDnd?: boolean;
   }): boolean {
-    // Mirrors `Silence::covers`: a group silence matches by `group_key`, and a
-    // notification silence by id. A row with no group key matches neither, which
-    // is why the comparison is against a value rather than against `undefined`.
+    // Mirrors `Silence::covers`; a row without a group key never matches a group silence.
     const silenced = silences.value.some((silence) =>
       silence.target.scope === "group"
         ? arrival.groupKey != null && silence.target.key === arrival.groupKey
         : silence.target.id === arrival.notification,
     );
 
-    // Silence stays local, and that is not an oversight: it is per notification
-    // and per group (§2.3), the client already holds every one of them from the
-    // `preference` event, and no server round trip is involved in answering it.
     return silenced || (arrival.mutedByDnd ?? false);
   }
 

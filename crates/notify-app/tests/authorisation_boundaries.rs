@@ -1,19 +1,5 @@
-//! Authorisation, written as attacks (advisory SEC-P2-38).
-//!
-//! The existing suite in `authz.rs` reads as scenarios: it confirms that the
-//! intended thing is allowed and that the obvious neighbour is not. This file asks
-//! a different question of the same code — **what is the cheapest way to reach
-//! something I was not granted** — and asserts each answer is "you cannot".
-//!
-//! The distinction matters because of how these two kinds of test fail. A scenario
-//! test fails when a feature breaks. A boundary test fails when a refactor
-//! *widens* a grant, which is the change nobody writes a ticket for and everybody
-//! believes is inert: a `match` arm that starts falling through, a check moved
-//! above the lookup it depended on, an `||` that used to be an `&&`.
-//!
-//! Each test below names the escalation it is preventing. If one starts failing,
-//! read it as a claim about the product — "an API key scoped to one channel can now
-//! read another" — rather than as a broken assertion.
+//! Authorisation, written as attacks (SEC-P2-38): each test names an escalation and
+//! asserts it is refused, so a refactor that widens a grant fails here.
 
 #![allow(
     clippy::expect_used,
@@ -96,9 +82,7 @@ async fn a_key_scoped_to_one_channel_cannot_reach_another() {
 
 #[tokio::test]
 async fn a_members_own_rights_do_not_leak_into_their_key() {
-    // The escalation: an admin mints a narrow key for a script, and the key turns
-    // out to carry everything its owner can do. §5.2 — a key carries its own
-    // scopes, never its owner's.
+    // A narrow key must not carry its owner's scopes (§5.2).
     let owner = user();
     let store = InMemory::new();
     store.seed_channel(channel_with(
@@ -129,15 +113,12 @@ async fn a_members_own_rights_do_not_leak_into_their_key() {
 
 #[tokio::test]
 async fn a_key_naming_a_channel_it_was_never_granted_is_not_enough() {
-    // The escalation: forge or edit the channel list on a key and get access. The
-    // list is what the grant carries, so this asserts the *other* half — naming a
-    // channel the key does carry still requires the scope.
+    // Naming a channel the key carries still requires the scope.
     let owner = user();
     let authorizer = two_channels(&owner, vec![Scope::Subscribe]);
     let caller = api_key(owner, vec![Scope::Subscribe], vec!["ci-infra", "payroll"]);
 
-    // Even listed, `payroll` has no membership backing it — but a key's rights come
-    // from itself, so this documents exactly how far the key list reaches.
+    // A key's rights come from itself, not membership.
     assert!(
         authorizer
             .authorize(&caller, &channel_id("payroll"), Scope::Publish)
@@ -151,9 +132,7 @@ async fn a_key_naming_a_channel_it_was_never_granted_is_not_enough() {
 
 #[tokio::test]
 async fn groups_on_a_token_do_not_apply_to_an_api_key() {
-    // The escalation: attach group claims to a key-authenticated caller and inherit
-    // whatever those groups open. A key's grant is not `Membership`, so the group
-    // door must not be consulted at all.
+    // Group claims on a key-authenticated caller must not open the group door.
     let owner = user();
     let store = InMemory::new();
     let mut channel = Channel::dynamic(channel_id("payroll"), None).expect("a channel");
@@ -177,8 +156,7 @@ async fn groups_on_a_token_do_not_apply_to_an_api_key() {
 
 #[tokio::test]
 async fn an_empty_group_list_matches_no_group_binding() {
-    // Scenario T29, as an attack: an issuer that sends no groups must reach its
-    // individual bindings and nothing else — never "no groups means all groups".
+    // T29: no groups means individual bindings only, never all groups.
     let alice = user();
     let authorizer = two_channels(&alice, vec![Scope::Subscribe]);
 
@@ -232,9 +210,7 @@ async fn one_users_membership_does_not_authorise_another() {
 
 #[tokio::test]
 async fn the_platform_role_is_not_a_channel_grant() {
-    // §5.4 reserves the platform role for `/admin/*`. It must not become a skeleton
-    // key for channel content: an instance administrator is not automatically a
-    // reader of every channel.
+    // The platform role (§5.4) is not a skeleton key for channel content.
     let alice = user();
     let authorizer = two_channels(&alice, vec![Scope::Subscribe]);
 
@@ -254,8 +230,7 @@ async fn the_platform_role_is_not_a_channel_grant() {
 
 #[tokio::test]
 async fn a_refusal_never_reveals_whether_the_channel_exists() {
-    // The reconnaissance step before any of the above: enumerate the instance by
-    // comparing "no such channel" against "not allowed". Both must be one answer.
+    // "No such channel" and "not allowed" must be one answer.
     let alice = user();
     let authorizer = two_channels(&alice, vec![Scope::Subscribe]);
     let caller = Caller::member(alice);

@@ -1,27 +1,10 @@
-//! What the `:` line remembers between runs (design §9.2, §9.3bis).
-//!
-//! §9.2 asks for a persisted history, and the reason it is persisted rather than
-//! kept in the `App` is the same reason the store is a file: a TUI is opened and
-//! closed all day, and a history that dies with the process is a history nobody
-//! learns to reach for.
-//!
-//! # Where it lives, and what that costs
-//!
-//! Beside the store, in the profile's data directory (§9.3bis) — so two profiles
-//! keep two histories, exactly as they keep two stores and two devices. It is
-//! written `0600` on Unix for the reason a shell history is: a `:publish` line can
-//! carry a channel name, a run id, a title, and none of that is other users'
-//! business on a shared machine.
-//!
-//! It is **not** in the store's SQLite: the store is a cache that §9.3bis says may
-//! be deleted at any moment to force a re-sync, and losing the history to a cache
-//! wipe would be a surprise nobody asked for.
+//! The `:` line's persisted history (§9.2): per profile beside the store but not in it (the
+//! store may be wiped to re-sync), written 0600 like a shell history.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-/// How many lines are kept. Enough to hold a working session, small enough that
-/// the file is read in one gulp at start-up.
+/// How many lines are kept.
 const CAPACITY: usize = 200;
 
 /// The `:` line's memory: the lines, and where the caller is inside them.
@@ -29,12 +12,9 @@ const CAPACITY: usize = 200;
 pub(crate) struct History {
     /// Oldest first, so pushing is appending — the same order as the file.
     lines: Vec<String>,
-    /// Where an up-arrow walk currently is. `None` means "on the empty line the
-    /// caller is typing", which is where a fresh walk starts from.
+    /// Where an up-arrow walk currently is; `None` means on the line being typed.
     at: Option<usize>,
-    /// Where it is written, or `None` when this profile has no data directory —
-    /// an ephemeral `notify watch` out of a debug pod (§9.3bis) still gets a
-    /// history for as long as it runs.
+    /// Where it is written, or `None` without a data directory (history then lives in memory).
     path: Option<PathBuf>,
 }
 
@@ -59,10 +39,7 @@ impl History {
         }
     }
 
-    /// Remember a line that was just run, and write it down.
-    ///
-    /// Repeating the previous line does not grow the file: a `:sync` pressed four
-    /// times in a row is one thing somebody did, not four.
+    /// Remember a line that was just run, and write it down; an immediate repeat isn't added.
     pub(crate) fn push(&mut self, line: &str) {
         self.at = None;
 
@@ -77,9 +54,7 @@ impl History {
             self.lines.drain(..excess);
         }
 
-        // Rewritten whole rather than appended: the file is at most `CAPACITY`
-        // short lines, and a rewrite is what keeps the cap honest without a second
-        // pass to trim it.
+        // Rewritten whole: at most `CAPACITY` short lines, and that keeps the cap honest.
         if let Some(path) = &self.path {
             let _ = write_private(path, &self.lines);
         }
@@ -100,8 +75,7 @@ impl History {
         self.lines.get(next).map(String::as_str)
     }
 
-    /// The next line, walking forwards. `None` once the walk is back on the line
-    /// the caller was typing — which is the signal to clear it.
+    /// The next line, walking forwards; `None` once back on the line being typed (clear it).
     pub(crate) fn next(&mut self) -> Option<&str> {
         let current = self.at?;
         if current + 1 >= self.lines.len() {
@@ -125,8 +99,7 @@ fn write_private(path: &Path, lines: &[String]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        // On creation only — an existing file keeps whatever the owner set, which
-        // is the same rule `ssh` applies to its own files.
+        // On creation only; an existing file keeps its owner's mode.
         options.mode(0o600);
     }
 
@@ -157,7 +130,6 @@ mod tests {
 
     #[test]
     fn a_line_survives_the_process_that_typed_it() {
-        // The whole reason this is a file: the TUI is opened and closed all day.
         let path = temp_path("survives");
         let mut first = History::load(Some(path.clone()));
         first.push(":publish -c ci-infra -t rebuilt");
@@ -234,8 +206,6 @@ mod tests {
     fn the_file_is_readable_by_its_owner_and_nobody_else() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        // A `:publish` line carries a channel, a run id, a title. Same rule as a
-        // shell history, and as the token fallback of §9.1.
         let path = temp_path("perms");
         let mut history = History::load(Some(path.clone()));
         history.push("publish -c ci-infra -t 'deploy 42'");
@@ -247,8 +217,6 @@ mod tests {
 
     #[test]
     fn a_front_end_with_nowhere_to_write_still_remembers_while_it_runs() {
-        // The ephemeral `notify watch` of §9.3bis: no store, no device, no file —
-        // and no reason to lose the last line typed.
         let mut history = History::load(None);
         history.push("ls");
 
@@ -257,8 +225,6 @@ mod tests {
 
     #[test]
     fn the_history_sits_beside_the_store_rather_than_inside_it() {
-        // Not in the SQLite: §9.3bis says the store may be deleted at any moment to
-        // force a re-sync, and a history lost to a cache wipe is a surprise.
         let path = history_path("work");
 
         assert_eq!(path.file_name().unwrap(), "history");

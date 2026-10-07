@@ -14,41 +14,23 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-# Bcrypting the Dex development password (design §3.2, D7). Dex wants bcrypt and
-# nothing else, and this is what lets `dev/dex/render.sh` run on a machine that has
-# neither caddy nor htpasswd — which is every Eclipse Che workspace.
+base64 = { workspace = true }
+# Dex development password: lets `dev/dex/render.sh` run without caddy or htpasswd.
 bcrypt = { version = "0.19", default-features = false, features = ["std", "zeroize", "getrandom"] }
 clap.workspace = true
-# The stub notification daemon behind `task desktop:notifyd` (D19). This is the one
-# libdbus link left in the workspace, and it is why every workflow that touches
-# `--workspace` still installs `libdbus-1-dev` and `pkg-config`. It used to be free —
-# `notify-rust`'s `d` feature was the same bindings — but the client moved to zbus
-# when the first container build failed on those headers (see
-# `crates/notify-cli/Cargo.toml`), so this now costs a C dependency on its own.
-#
-# `xtask` is a developer tool: it is not in the image, not in the release artefacts,
-# and not on anybody's machine but a contributor's. Porting the stub daemon to zbus
-# would take the last system dependency out of CI; nothing shipping is waiting on it.
-dbus = "0.9"
-# The VAPID key generator: `pkcs8` on top of the workspace's features, because the
-# key is written in the PKCS#8 PEM form `[push.webpush]` reads.
+# Stub notification daemon (`task desktop:notifyd`); `vendored` avoids needing libdbus-1-dev.
+dbus = { version = "0.9", features = ["vendored"] }
 getrandom = "0.3"
-# The federation signing key (design §5.3): Ed25519 in the PKCS#8 PEM form
-# `jsonwebtoken` loads. Both are already in the graph through that crate's
-# `rust_crypto` feature, so this adds a name to a manifest and nothing to a build.
+# Federation signing key (§5.3), in the PKCS#8 PEM form `jsonwebtoken` loads.
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 jsonwebtoken.workspace = true
 openapiv3 = "2.2"
+# VAPID key generator: PKCS#8 PEM is the form `[push.webpush]` reads.
 p256 = { workspace = true, features = ["pkcs8"] }
 prettyplease = "0.2"
 progenitor.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 syn = "2"
-# Rasterising the desktop icons (M5). Pure Rust on purpose: `librsvg`, Inkscape and
-# ImageMagick are system packages, and this workspace has no root (§12.4) — the
-# same constraint that keeps the shell itself unbuildable here.
-#
-# No `text` feature: the marks are paths, so font shaping would be a font stack
-# pulled in to render nothing.
+# Desktop icon rasteriser: pure Rust (no root for system packages, §12.4); no `text`, the marks are paths.
 resvg = { version = "0.48.1", default-features = false }

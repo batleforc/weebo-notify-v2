@@ -1,24 +1,10 @@
 version: "3"
 
-# The Tauri desktop shell (design §10bis.3, milestone M5).
-#
-# `doctor` answers, in one command and before anybody spends an afternoon on a link
-# error, whether *this machine* can build the shell at all — because on Linux Tauri
-# v2 links against a GTK/WebKit stack that is neither vendored nor installable by
-# `mise`.
-#
-# `build` and `dev` exist since M5 was started ahead of that stack: the shell is
-# written in `web/src-tauri`, outside the cargo workspace, and **has never been
-# compiled by anything**. Both tasks run the doctor first, so the answer on a machine
-# without the libraries is a paragraph rather than a wall of `pkg-config` output.
-#
-# What *is* built and tested everywhere is the half that does not need a webview:
-# `notify_client_core::tray` (§10bis.3ter) and `::deeplink` (§10bis.3quater) are
-# ordinary library code under `task test`.
+# The Tauri desktop shell (§10bis.3), outside the cargo workspace: it links a GTK/WebKit stack
+# mise can't install. `doctor` says whether this machine can build it; the others run it first.
 
 vars:
-  # Reported by `doctor`, reused as a gate by the two below. Duplicating the library
-  # list would be two lists to keep in step, so this asks the task instead.
+  # Reported by `doctor`, reused as a gate below.
   NEED_STACK: |
     if ! pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
       task tauri:doctor
@@ -29,15 +15,8 @@ vars:
 
 tasks:
   doctor:
-    desc: "Say whether this machine can build the Tauri shell, and what is missing (§10bis.3)"
-    # Why this exists as a task rather than as a paragraph in a README: the answer
-    # differs per machine and changes when an image is rebuilt, so a sentence in a
-    # document is out of date the moment somebody fixes their environment. A check
-    # that runs is never out of date.
-    #
-    # It reports rather than fails: `task tauri:doctor` on a machine that cannot
-    # build is answering its question correctly, and an exit code of 1 would make
-    # it unusable from a shell with `set -e`.
+    desc: "Report whether this machine can build the Tauri shell and what is missing (§10bis.3)."
+    # Reports rather than fails, so it stays usable under `set -e`.
     silent: true
     cmds:
       - cmd: |
@@ -104,50 +83,23 @@ tasks:
           EOF
 
   build:
-    desc: "Build the desktop shell — needs the GTK/WebKit stack (§10bis.3, M5)"
+    desc: "Build the desktop shell (needs the GTK/WebKit stack, §10bis.3)."
     cmds:
       - cmd: |
           {{.NEED_STACK}}
-          # `--no-default-features` is not used: the shell wants the tray, and a
-          # build that quietly dropped it would produce an app that runs and has no
-          # way to live in the background (§10bis.3ter).
-          #
-          # `--features custom-protocol` is what `cargo tauri build` adds on its own
-          # and what plain `cargo build` cannot know to add. Without it the binary
-          # keeps Tauri's dev behaviour and loads `build.devUrl` (:5173) instead of
-          # the bundle in `web/dist` — so `task desktop:up`, which builds that bundle
-          # in its first step, ran a shell that ignored it and showed a connection
-          # error. The flag is declared in this crate's `[features]`.
-          #
-          # `TAURI_CONFIG` pins the policy to the API and identity provider in
-          # `web/public/env.js` (`web/scripts/tauri-csp.ts`); tauri-build merges it
-          # over `tauri.conf.json`, whose looser policy is only the fallback.
+          # Keep default features (the tray). `custom-protocol` makes the binary load `web/dist` instead
+          # of `build.devUrl`. `TAURI_CONFIG` pins the CSP to `web/public/env.js`'s origins.
           set -eu
           csp="$(node web/scripts/tauri-csp.ts)"
           cd web/src-tauri && TAURI_CONFIG="$csp" cargo build --release --features custom-protocol
 
   bundle:
-    desc: "Package the desktop shell as a .deb and an AppImage (§10bis.3, M5)"
-    # Distinct from `build` above, which compiles and stops. That is the fast loop —
-    # it answers "does it still build" without spending minutes on packaging. This is
-    # the one that produces something somebody can install, and it is `cargo tauri
-    # build` rather than `cargo build` because the bundlers live in the Tauri CLI.
-    #
-    # The targets come from `tauri.conf.json` (`bundle.targets`: deb, appimage), not
-    # from a list here — two lists would disagree, and the config is what the
-    # release path will read too.
-    #
-    # Unsigned, and on Linux that is the normal state rather than a gap: `.deb` and
-    # AppImage carry no OS-enforced signature the way an APK or a notarised `.dmg`
-    # does. What §3.2bis signs for these is the *updater* manifest (minisign) and
-    # their provenance (cosign) — neither is this task's job, and neither exists yet.
+    desc: "Package the desktop shell as a .deb and an AppImage (§10bis.3)."
+    # `cargo tauri build` with the bundlers; targets come from `tauri.conf.json`. Unsigned (normal
+    # on Linux); updater/provenance signing is §3.2bis's job, not this task's.
     cmds:
       - cmd: |
-          # `set -e` is not decoration here. Without it the `echo` below is the last
-          # command in the block, so its exit code is the task's: a bundler that
-          # failed produced a green task and a "Bundles:" line pointing at a
-          # directory holding whatever the previous run left. That is exactly how
-          # this was first written, and CI would have uploaded a stale artefact.
+          # `set -e`: otherwise a failed bundler yields a green task and a stale "Bundles:" line.
           set -eu
           {{.NEED_STACK}}
           if ! command -v cargo-tauri >/dev/null 2>&1; then
@@ -163,17 +115,16 @@ tasks:
           echo "Bundles: web/src-tauri/target/release/bundle/"
 
   dev:
-    desc: "Run the desktop shell against the Vite dev server (§10bis.3, M5)"
+    desc: "Run the desktop shell against the Vite dev server (§10bis.3)."
     cmds:
       - cmd: |
           {{.NEED_STACK}}
-          # Single quotes: backticks inside a double-quoted string are command
-          # substitution, so this line used to *run* the dev server it names.
+          # Single quotes: backticks in double quotes would run the command.
           echo 'Start `task dev:web` in another terminal first — the shell loads :5173.'
           cd web/src-tauri && cargo run
 
   check:
-    desc: "Type-check the desktop shell without building it — still needs the stack"
+    desc: "Type-check the desktop shell without building it (still needs the stack)."
     cmds:
       - cmd: |
           {{.NEED_STACK}}

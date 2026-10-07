@@ -1,8 +1,4 @@
-/**
- * The policy is a security control that fails in two directions — too loose and it
- * protects nothing, too tight and the application is a blank page — so both are
- * pinned here.
- */
+/** The CSP fails both ways (too loose, or a blank page), so both are pinned. */
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -73,13 +69,7 @@ describe("the shipped policy", () => {
   });
 
   it("names the object store when there is one, so attachments can render", () => {
-    // D26's second half. `contentSecurityPolicy` no longer strips a path off this
-    // value itself (ADR-0021) — that was only ever safe when the caller held a
-    // real URL to call `originOf` on, and the build-time caller now hands over a
-    // shell placeholder it cannot parse. Passing something with a path in it is
-    // the deployer's mistake to make and the deployment's own docs to prevent —
-    // this test pins that `contentSecurityPolicy` uses the value verbatim rather
-    // than silently swallowing the difference.
+    // Used verbatim (ADR-0021): the build-time caller passes an unparseable placeholder.
     const images = directive(
       contentSecurityPolicy({
         ...INPUTS,
@@ -144,10 +134,7 @@ describe("the inline script hashes", () => {
   });
 
   it("covers every inline script the shipped index.html actually has", () => {
-    // The test that would have caught the mistake worth catching: the page has
-    // one inline script (the pre-paint theme switch, §10.2), and a second one
-    // added without a thought for the policy would be blocked in the browser and
-    // nowhere else. This fails first instead.
+    // A second inline script would be blocked in the browser only; fail here first.
     const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
     const hashes = inlineScriptHashes(html);
 

@@ -1,11 +1,4 @@
-/**
- * The console's half of §5.4.
- *
- * What is worth locking down is not the tables — the server builds those — but the
- * two ways the client could quietly betray the boundary: treating the `403` that
- * almost every user gets as an error worth showing, and letting the nav claim a
- * role the API would refuse.
- */
+/** The console's side of §5.4: a 403 is not an error, and the nav never claims a refused role. */
 
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,13 +33,7 @@ vi.mock("@/api/generated", () => ({
   requeueDeadLetter: requeueMock,
 }));
 
-/**
- * What the axios client throws for a `problem+json` refusal.
- *
- * `isAxiosError` is the flag `failureOf` narrows on, so a bare object with a
- * `response` would be read as "unexpected error" — which is the failure this file
- * exists to distinguish from a `403`.
- */
+/** An axios-shaped refusal: `failureOf` narrows on `isAxiosError`. */
 function refusal(status: number, code: string) {
   return {
     isAxiosError: true,
@@ -175,9 +162,7 @@ describe("what it shows", () => {
   });
 
   it("never receives the event a dead letter failed to deliver", async () => {
-    // The §5.4 boundary, checked on the client's side of it too: the shape the
-    // server sends has no room for a payload, and a console that started rendering
-    // one would be reading a channel's content through a failed webhook.
+    // §5.4: a dead letter carries no payload.
     inventoryMock.mockResolvedValue({ data: [CARD] });
     trustPoliciesMock.mockResolvedValue({ data: [] });
     auditMock.mockResolvedValue({ data: { items: [], next: null } });

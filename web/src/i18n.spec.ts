@@ -1,17 +1,6 @@
 /**
- * `en.json` and `fr.json` must translate exactly the same keys — a key added
- * to one and forgotten in the other degrades silently at runtime (vue-i18n
- * falls back rather than erroring), so this is the one place that mismatch is
- * caught at all.
- *
- * Read straight off disk with `path.join`, not `new URL("./locales/…json",
- * import.meta.url)`: `@intlify/unplugin-vue-i18n` (`vite.config.ts`) scans the
- * whole source tree for exactly that shape — its lazy-locale-loading feature —
- * and rewrites it into its own loader wherever it appears, this file included.
- * The rewritten call resolves to something that is not a `file:` URL at all,
- * so `fileURLToPath` throws; splitting the "locales" segment out of the `new
- * URL()` call (or off it entirely, as below) keeps this file invisible to
- * that scan.
+ * `en.json` and `fr.json` must have the same keys (vue-i18n falls back silently).
+ * Read via `path.join`, not `new URL(...)`: the i18n plugin rewrites that shape.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

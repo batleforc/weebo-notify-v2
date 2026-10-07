@@ -2864,6 +2864,7 @@ version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043"
 dependencies = [
+ "cc",
  "pkg-config",
 ]
 
@@ -3214,6 +3215,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
+ "etcetera",
  "figment",
  "notify-client-api",
  "progenitor-client",
@@ -3262,6 +3264,7 @@ dependencies = [
  "actix-web",
  "actix-web-lab",
  "actix-ws",
+ "base64 0.22.1",
  "futures",
  "image",
  "notify-app",
@@ -3271,6 +3274,7 @@ dependencies = [
  "notify-ports",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "time",
  "tokio",
@@ -3396,7 +3400,6 @@ name = "notify-push-unifiedpush"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "notify-domain",
  "notify-ports",
  "notify-sealed-box",
@@ -3447,6 +3450,7 @@ dependencies = [
 name = "notify-sealed-box"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chacha20poly1305",
  "hkdf 0.12.4",
  "notify-domain",
@@ -7346,6 +7350,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bcrypt",
  "clap",
  "dbus",

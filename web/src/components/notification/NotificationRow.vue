@@ -1,21 +1,16 @@
 <script setup lang="ts">
-/**
- * One row of the inbox (§10.3).
- *
- * The row is a `<button>` rather than a `<div>` with a click handler, which is
- * what gets it keyboard focus, Enter and Space for free — the inbox has to be
- * drivable without a mouse to match the TUI (§10.1).
- */
-import { computed } from "vue";
+/** One inbox row (§10.3); a `<button>` for keyboard parity with the TUI (§10.1). */
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ago, delay, exact } from "@/lib/format";
 import {
-  accentOf,
   authorLabel,
   isLoud,
+  lookOf,
   priorityLabel,
+  stateLabel,
 } from "@/lib/notification";
 import type { Row } from "@/stores/inbox";
 import NotificationThumb from "./NotificationThumb.vue";
@@ -27,10 +22,7 @@ const props = defineProps<{
   selected?: boolean;
   /** How many notifications this row stands for, when it heads a group (§10.4). */
   groupSize?: number;
-  /**
-   * How late this row reached us, in milliseconds — set only for rows the stream
-   * replayed after a reconnect (§7.2).
-   */
+  /** Delivery delay in ms, set only for late stream rows (§7.2). */
   lateBy?: number;
 }>();
 
@@ -40,6 +32,26 @@ const { t } = useI18n();
 const head = computed(() => props.row.head);
 const tags = computed(() => head.value.content.tags ?? []);
 const progress = computed(() => head.value.content.progress ?? null);
+
+/** The word under the matrix: the status once closed, the state before. */
+const word = computed(() =>
+  head.value.state === "closed"
+    ? lookOf(head.value.status).label
+    : stateLabel(head.value.state),
+);
+
+// The one authored motion: a row resolves when a new revision lands — never on
+// first render.
+const resolving = ref(false);
+watch(
+  () => props.row.last_seq,
+  () => {
+    resolving.value = false;
+    requestAnimationFrame(() => {
+      resolving.value = true;
+    });
+  },
+);
 </script>
 
 <template>
@@ -47,52 +59,52 @@ const progress = computed(() => head.value.content.progress ?? null);
     type="button"
     :aria-current="selected ? 'true' : undefined"
     :class="[
-      'group flex w-full items-start gap-3 border-l-2 px-3 py-row text-left transition-colors',
-      'hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:outline-none',
-      accentOf(head.priority),
-      selected ? 'bg-accent' : 'bg-transparent',
+      'rule-row group flex w-full items-start gap-3 border-l px-4 py-row text-left sm:px-5',
+      'hover:bg-ground-raised',
+      selected ? 'border-l-signal bg-ground-raised' : 'border-l-transparent',
+      resolving && 'resolve',
     ]"
     @click="$emit('open')"
   >
-    <StatusDot :status="head.status" :state="head.state" class="mt-0.5 shrink-0" />
+    <StatusDot :status="head.status" :state="head.state" class="mt-1" />
 
     <!-- §10.3, D30: the fourth surface a notification's image reaches. -->
     <NotificationThumb v-if="head.content.image" :image="head.content.image" />
 
     <span class="min-w-0 flex-1">
       <span class="flex items-baseline gap-2">
-        <span class="truncate text-sm font-medium">{{ head.content.title }}</span>
-        <Badge v-if="groupSize && groupSize > 1" variant="muted" class="shrink-0">
-          +{{ groupSize - 1 }}
-        </Badge>
-        <Badge v-if="isLoud(head.priority)" variant="outline" class="shrink-0">
-          {{ priorityLabel(head.priority) }}
-        </Badge>
-      </span>
-
-      <span class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-        <span class="font-medium">{{ channelName }}</span>
-        <span aria-hidden="true">·</span>
-        <span>{{ authorLabel(head.author) }}</span>
+        <span
+          :class="[
+            'min-w-0 flex-1 truncate text-[0.9375rem] group-hover:underline group-hover:decoration-rule-strong',
+            selected ? 'font-bold text-ink' : 'text-ink',
+          ]"
+        >{{ head.content.title }}</span>
         <Tooltip>
-          <span class="cursor-default">{{ ago(head.received_at) }}</span>
+          <span class="hidden shrink-0 text-xs tabular-nums text-ink-dim sm:inline">{{ ago(head.received_at) }}</span>
           <template #content>{{ exact(head.received_at) }}</template>
         </Tooltip>
+      </span>
+
+      <span class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-dim">
+        <span :class="['meta', head.state === 'closed' ? lookOf(head.status).color : 'text-copper']">{{ word }}</span>
+        <span class="tabular-nums sm:hidden">{{ ago(head.received_at) }}</span>
+        <Badge v-if="isLoud(head.priority)" :variant="head.priority === 'urgent' ? 'default' : 'outline'" :class="head.priority === 'high' ? 'border-copper text-copper' : ''">
+          {{ priorityLabel(head.priority) }}
+        </Badge>
+        <span class="truncate">{{ channelName }}</span>
+        <span aria-hidden="true">·</span>
+        <span class="truncate">{{ authorLabel(head.author) }}</span>
         <span v-if="row.last_seq > 1" class="tabular-nums">
           · {{ t("notification.row.revisionCount", { count: row.last_seq }) }}
         </span>
-        <Badge
-          v-for="tag in tags.slice(0, 3)"
-          :key="tag"
-          variant="muted"
-          class="font-normal"
-        >
+        <Badge v-if="groupSize && groupSize > 1" variant="secondary">+{{ groupSize - 1 }}</Badge>
+        <Badge v-for="tag in tags.slice(0, 3)" :key="tag" variant="muted" class="hidden sm:inline-flex">
           {{ tag }}
         </Badge>
 
         <!-- §7.2: the two timestamps come from the server, the wording is ours. -->
         <Tooltip v-if="lateBy">
-          <Badge variant="outline" class="border-status-warning text-status-warning">
+          <Badge variant="outline" class="border-copper text-copper">
             {{ t("notification.row.lateBadge", { delay: delay(lateBy) }) }}
           </Badge>
           <template #content>
@@ -102,18 +114,13 @@ const progress = computed(() => head.value.content.progress ?? null);
       </span>
 
       <!-- A running operation says how far it got, when the publisher said so. -->
-      <span
-        v-if="progress && head.state !== 'closed'"
-        class="mt-1.5 flex items-center gap-2"
-      >
+      <span v-if="progress && head.state !== 'closed'" class="mt-2 flex items-center gap-2">
         <progress
-          class="h-1 w-32 overflow-hidden rounded-full [&::-moz-progress-bar]:bg-primary [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:bg-primary"
+          class="h-1 w-32 appearance-none bg-rule [&::-moz-progress-bar]:bg-copper [&::-webkit-progress-bar]:bg-rule [&::-webkit-progress-value]:bg-copper"
           :value="progress.current"
           :max="progress.total"
         />
-        <span class="text-xs tabular-nums text-muted-foreground">
-          {{ progress.current }}/{{ progress.total }}
-        </span>
+        <span class="text-xs tabular-nums text-ink-dim">{{ progress.current }}/{{ progress.total }}</span>
       </span>
     </span>
   </button>

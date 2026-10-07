@@ -1,22 +1,12 @@
-//! Lower an OpenAPI 3.1 document to the 3.0 subset progenitor understands.
-//!
-//! Why this exists: utoipa 5 can only emit 3.1 (its `OpenApiVersion` has a single
-//! variant), while progenitor parses through `openapiv3`, which is 3.0. The two
-//! differ in a handful of JSON-Schema constructs, all of which have an exact 3.0
-//! equivalent — so the conversion is lossless for the shapes we emit, not a
-//! best-effort approximation. See ADR-0009.
-//!
-//! Deliberately narrow: it rewrites only what utoipa actually produces. Anything
-//! else is left untouched so an unsupported construct fails loudly in progenitor
-//! rather than being silently mangled here.
+//! Lowers utoipa's OpenAPI 3.1 to the 3.0 subset progenitor reads (ADR-0009). Only the
+//! constructs utoipa emits are rewritten; anything else is left for progenitor to reject.
 
 use serde_json::{Map, Value};
 
 /// The 3.0 patch version we target — the one `openapiv3` is built against.
 const TARGET_VERSION: &str = "3.0.3";
 
-/// Rewrite `document` in place. Returns the number of nodes changed, which the
-/// caller reports so a silent no-op is visible.
+/// Rewrite `document` in place, returning how many nodes changed (so a no-op is visible).
 pub(crate) fn to_openapi_30(document: &mut Value) -> usize {
     let mut changes = 0;
 
@@ -34,13 +24,8 @@ pub(crate) fn to_openapi_30(document: &mut Value) -> usize {
     changes + walk(document) + unnullify_parameters(document)
 }
 
-/// Drop `nullable` from parameter schemas.
-///
-/// A parameter is either sent or not sent; there is no wire form for "sent, and
-/// null". utoipa emits the flag anyway for an `Option<T>` parameter, and progenitor
-/// reads it literally — it generates `Option<Option<&str>>` and then calls
-/// `to_string` on the inner option, which does not compile. Optionality survives:
-/// it is what `required: false` already says.
+/// Drop `nullable` from parameter schemas: progenitor would generate an uncompilable
+/// `Option<Option<&str>>`, and `required: false` already says it.
 fn unnullify_parameters(document: &mut Value) -> usize {
     let mut changes = 0;
 
@@ -104,8 +89,7 @@ fn lower_nullable_type(object: &mut Map<String, Value>) -> usize {
         .filter(|variant| *variant != "null")
         .collect();
 
-    // A genuine union of two non-null types has no 3.0 equivalent; leave it alone
-    // so progenitor reports it instead of us guessing.
+    // A genuine two-type union has no 3.0 equivalent; let progenitor report it.
     let [single] = concrete.as_slice() else {
         return 0;
     };
@@ -118,13 +102,8 @@ fn lower_nullable_type(object: &mut Map<String, Value>) -> usize {
     1
 }
 
-/// The same optionality, expressed the other way utoipa reaches for.
-///
-/// When the inner type is a `$ref` — `Option<HumanDuration>`, `Option<Progress>` —
-/// 3.1 cannot use a type union, so it emits `oneOf: [{"type": "null"}, {"$ref": …}]`.
-/// 3.0 has no null type at all: the null branch is dropped and the remainder is
-/// marked `nullable`. Only the two-branch shape is handled; a genuine union with a
-/// null in it is left for progenitor to reject.
+/// `oneOf: [{"type": "null"}, {"$ref": …}]` (what utoipa emits for `Option<Ref>`) becomes
+/// the inlined branch plus `nullable`; other unions with null are left for progenitor.
 fn lower_nullable_composition(object: &mut Map<String, Value>) -> usize {
     for keyword in ["oneOf", "anyOf"] {
         let Some(Value::Array(branches)) = object.get(keyword) else {
@@ -142,8 +121,7 @@ fn lower_nullable_composition(object: &mut Map<String, Value>) -> usize {
         let survivor = branches[1 - position].clone();
         object.remove(keyword);
 
-        // A sibling of `$ref` is ignored by most 3.0 tooling, so the surviving
-        // branch is inlined wholesale rather than wrapped.
+        // 3.0 tooling ignores `$ref` siblings, so the branch is inlined wholesale.
         if let Value::Object(fields) = survivor {
             for (key, value) in fields {
                 object.insert(key, value);
@@ -226,8 +204,7 @@ mod tests {
 
     #[test]
     fn an_optional_ref_loses_its_null_branch_and_gains_nullable() {
-        // What utoipa emits for `Option<HumanDuration>`: a type union is impossible
-        // across a `$ref`, so it composes instead.
+        // What utoipa emits for `Option<HumanDuration>`.
         let mut document = serde_json::json!({
             "oneOf": [
                 { "type": "null" },

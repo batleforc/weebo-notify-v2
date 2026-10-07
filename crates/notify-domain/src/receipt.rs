@@ -1,15 +1,5 @@
-//! Delivery and read receipts (design §7.3).
-//!
-//! Opt-in per channel, and deliberately unsigned. Signing receipts on the device
-//! was tried and dropped (ADR-0005): authenticity rests on the device having
-//! authenticated to the server, which is already the trust model everywhere else
-//! (design §6). A principal may only post receipts for its own devices, and the
-//! server — which is trusted — stamps the time. Forging one means owning a
-//! device session, which is outside the threat model.
-//!
-//! The count that reaches users, "seen by 3/5", counts **people**. A service
-//! account holding a subscription is not somebody who has been informed
-//! (design §5.2bis, scenario T25), so it never moves that number.
+//! Delivery and read receipts (§7.3): opt-in per channel and unsigned (ADR-0005).
+//! "Seen by 3/5" counts people only; service accounts never move it (§5.2bis, T25).
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -38,8 +28,7 @@ pub struct Receipt {
     pub notification_id: NotificationId,
     /// Who. Only ever a principal's own devices.
     pub principal: Principal,
-    /// Which device. Absent for a principal with no device of its own — a service
-    /// account holding a logical subscription (design §5.2bis).
+    /// Which device; absent for a service account's logical subscription (§5.2bis).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceId>,
     /// How far it got.
@@ -49,65 +38,33 @@ pub struct Receipt {
     pub at: OffsetDateTime,
 }
 
-/// One person, and when they first looked (design §7.3, §10.3).
-///
-/// Serialize only, here and on [`Readership`]: a roll is computed and sent, never
-/// read back in. Deriving `Deserialize` would describe an input that does not
-/// exist, and leave the code that parses it untested for as long as that stays
-/// true.
+/// One person and when they first saw the notification (§7.3, §10.3).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Sighting {
-    /// Who. Carries the display name where the reader is entitled to it — a hover
-    /// card that listed raw identifiers would answer a question nobody asked
-    /// (design §2.4).
+    /// Who, with a display name where the reader is entitled to it (§2.4).
     pub author: Author,
-    /// When they *first* saw it. Somebody who opens a notification on their laptop
-    /// and again on their phone read it once, at the first of the two.
+    /// When they first saw it, across all their devices.
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
 }
 
-/// What "seen by 3/5" unfolds into (design §7.3, §10.3).
-///
-/// The number on the badge is the headline; the hover card is the answer to the
-/// question the badge provokes — *who*, and *when*. Delivery stays folded underneath
-/// as a device count, because "it reached four screens" and "three people read it"
-/// are different facts and only the second one is about readership.
+/// The "seen by 3/5" readership: who saw it and when, plus a delivered-device count (§7.3, §10.3).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Readership {
     /// Who saw it, oldest sighting first — reading order, like the timeline.
     pub seen: Vec<Sighting>,
-    /// How many people could see it, where that is a knowable number.
-    ///
-    /// `None` on a channel whose access is derived rather than stored — see
-    /// [`Readership::of`]. A client shows "vu par 3" then, not "vu par 3/3".
+    /// How many people could see it, or `None` when access is group-derived (show "seen by 3").
     pub audience: Option<usize>,
-    /// Distinct devices that acknowledged delivery. A receipt without a device is
-    /// a logical subscription (design §5.2bis), and a subscription is not a screen.
+    /// Distinct devices that acknowledged delivery.
     pub delivered_devices: usize,
 }
 
 impl Readership {
-    /// Fold a notification's receipts into what a reader is shown.
-    ///
-    /// # Why the denominator is optional
-    ///
-    /// A channel grants access two ways (design §11): membership rows, which can be
-    /// counted, and bindings against a `groups` claim, which cannot — §5.1 keeps
-    /// zero server-side session and §14.2 derives group access per request *on
-    /// purpose*, so that leaving a group takes effect at the next call rather than
-    /// at the next reconciliation. Nothing therefore knows how many people are in
-    /// `infra-admins`.
-    ///
-    /// Dividing by the member rows that happen to exist would render "vu par 3/3"
-    /// on a channel thirty people can read, which is worse than no fraction at all:
-    /// it says "everyone has seen this" and it is wrong. So a channel with group
-    /// bindings passes `None` and the badge shows a bare count.
-    ///
-    /// When the number *is* knowable it is still a floor, because a member can be
-    /// removed after reading and "4/3" is not something anybody can read.
+    /// Fold a notification's receipts into what a reader is shown. Pass `None` as
+    /// the audience for channels with group bindings, whose size is unknowable (§14.2);
+    /// a known audience is a floor so the count never exceeds it.
     #[must_use]
     pub fn of(receipts: &[Receipt], audience: Option<usize>) -> Self {
         let mut seen: Vec<Sighting> = Vec::new();
@@ -115,8 +72,7 @@ impl Readership {
 
         for receipt in receipts {
             match receipt.kind {
-                // A bot holding a subscription is not somebody who has been
-                // informed (design §5.2bis, scenario T25).
+                // Bots are not readers (§5.2bis, T25).
                 ReceiptKind::Seen if receipt.principal.is_human() => {
                     match seen
                         .iter_mut()
@@ -292,10 +248,7 @@ mod tests {
 
     #[test]
     fn an_audience_nobody_can_count_stays_uncounted() {
-        // A channel whose access comes from a `groups` claim (design §14.2): the
-        // readers are real, the membership rows are not, and inventing a
-        // denominator out of the rows that exist would say "everybody has read
-        // this" on a channel thirty people can see.
+        // Group-derived access: no denominator from member rows.
         let roll = Readership::of(
             &[
                 at(user(), ReceiptKind::Seen, 1_785_000_000),
@@ -310,8 +263,7 @@ mod tests {
 
     #[test]
     fn the_roll_says_on_the_wire_what_the_hover_card_reads() {
-        // The names matter: a client renders this and nothing in the OpenAPI
-        // document would catch a rename that still compiles (the D1 lesson, §14.4).
+        // The field names are wire contract (§14.4).
         let alice = user();
         let roll = Readership::of(&[at(alice, ReceiptKind::Seen, 1_785_000_000)], None);
 

@@ -1,27 +1,6 @@
-//! Background work: closing what nobody is attending to (design §7.2bis).
-//!
-//! # Why this job has to exist
-//!
-//! A lifecycle notification does not age until it closes, and until this job there
-//! was nothing in the system that ever closed one. So the retention a channel
-//! configured applied to simple notifications and silently did not apply to
-//! lifecycle ones: a publisher that crashed, was decommissioned, or just forgot the
-//! final call left a row that would outlive the deployment that produced it.
-//!
-//! The symptom is not "storage grows". It is an inbox that keeps showing a deploy
-//! that failed a week ago as though it were still running, which is worse, because
-//! a person reading it cannot tell the difference between "still going" and
-//! "abandoned" — and the whole promise of a lifecycle notification is that its state
-//! means something.
-//!
-//! # Leader-only, and re-checked between batches
-//!
-//! Same shape and same reason as [`PurgeExpired`](crate::PurgeExpired): a replica
-//! that took the lock, lost it during a partition and kept closing notifications is
-//! the failure this guards against (scenario T22). Closing is less destructive than
-//! deleting — a wrongly closed notification is reopened by its next revision, which
-//! is exactly what a publisher coming back to life sends — but "less destructive"
-//! is not a reason to run two of these against one another.
+//! Background work: closing lifecycle notifications nobody is attending to (§7.2bis),
+//! so an abandoned deploy stops looking "still running" and starts ageing. Leader-only,
+//! re-checked between batches (T22).
 
 use std::sync::Arc;
 
@@ -31,9 +10,7 @@ use notify_ports::{
 };
 use time::OffsetDateTime;
 
-/// How many to close per batch. Same size and same reasoning as the purge's:
-/// small enough that losing leadership is noticed quickly, large enough that a
-/// backlog of abandoned notifications does not take all day.
+/// How many to close per batch; same reasoning as the purge's.
 const BATCH: u32 = 200;
 
 /// What one pass did, for the log and for the tests.
@@ -41,12 +18,9 @@ const BATCH: u32 = 200;
 pub struct ClosureReport {
     /// Notifications closed for want of activity.
     pub closed: u64,
-    /// Channels whose policy asked for anything at all — the denominator behind
-    /// `closed`, and the number that says "nothing was closed because nothing was
-    /// due" apart from "nothing was closed because every channel opted out".
+    /// Channels whose policy asked for anything at all, the denominator behind `closed`.
     pub channels_watched: u64,
-    /// Whether this replica was the leader. `false` means the pass did nothing and
-    /// that this is the expected outcome on all but one replica.
+    /// Whether this replica was the leader.
     pub led: bool,
 }
 
@@ -68,14 +42,9 @@ impl core::fmt::Debug for CloseStale {
 }
 
 impl CloseStale {
-    /// The name this job takes its lock under.
-    ///
-    /// Its own lock rather than the purge's: the two run on the same timer and one
-    /// feeds the other, but a slow purge must not stop closures from happening, and
-    /// a shared lock would make them serialise across the whole fleet for no reason.
+    /// The name this job takes its lock under; its own, so a slow purge cannot block closures.
     pub const JOB: &'static str = "close-stale";
 
-    /// Wire it.
     #[must_use]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
@@ -110,8 +79,7 @@ impl CloseStale {
             ..ClosureReport::default()
         };
 
-        // Every channel said "never". Asked here rather than left to the repository
-        // so the report can tell the two silences apart.
+        // Every channel said "never"; the report tells this apart from "nothing due".
         if deadlines.is_empty() {
             guard.release().await;
             return Ok(report);
@@ -133,11 +101,8 @@ impl CloseStale {
             }
             report.closed += closed.len() as u64;
 
-            // Tell the instance, so a connected client marks its copy closed
-            // instead of showing a week-old deploy as still running. One poke per
-            // channel per batch: a poke means "go read from your cursor", so a
-            // second one for the same channel would only send its streams to read
-            // the same rows again — and one head read covers the whole batch.
+            // So connected clients mark their copy closed. One poke per channel per batch: a
+            // poke means "read from your cursor".
             let cursor = self.events.head().await?;
             let mut channels: Vec<&ChannelId> = closed
                 .iter()
@@ -155,9 +120,7 @@ impl CloseStale {
                 }
             }
 
-            // A short batch means the backlog is drained. Asked this way rather
-            // than by looping until empty so a steady trickle costs one extra
-            // query rather than two.
+            // A short batch means the backlog is drained.
             if closed.len() < BATCH as usize {
                 break;
             }
@@ -167,13 +130,8 @@ impl CloseStale {
         Ok(report)
     }
 
-    /// Turn every channel's `close_after` into the instant its notifications must
-    /// have been idle since.
-    ///
-    /// Channels that opted out are absent rather than present with a far-away
-    /// deadline, which is what the repository contract asks for: "no deadline" and
-    /// "a deadline in the year 3000" have to be different things, or an opt-out
-    /// becomes a bet on arithmetic.
+    /// Turn every channel's `close_after` into the cutoff its notifications must have
+    /// been idle since. Opted-out channels are absent, not given a far-away deadline.
     async fn deadlines(
         &self,
         now: OffsetDateTime,
@@ -184,10 +142,7 @@ impl CloseStale {
             .await?
             .into_iter()
             .filter_map(|(id, policy)| {
-                // `due_at` reads forwards — "active at T is due at T + close_after" —
-                // and what is needed here is the inverse: the cutoff a notification's
-                // last activity must predate. Subtracting is that inverse, and it is
-                // done once per channel rather than once per row.
+                // The inverse of `due_at`, computed once per channel.
                 let idle_for = policy.close_after.duration()?;
                 let cutoff = now.checked_sub(time::Duration::seconds(
                     i64::try_from(idle_for.as_secs()).ok()?,
@@ -273,8 +228,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The scenario this job was written for, end to end: a lifecycle notification
-    /// that reported `failure` and then went quiet.
+    /// A lifecycle notification that reported `failure` and then went quiet.
     #[tokio::test]
     async fn an_abandoned_lifecycle_notification_is_closed_and_starts_ageing() {
         let store = InMemory::new();
@@ -329,8 +283,7 @@ mod tests {
         );
     }
 
-    /// The counterpart, and the one a false positive would break: a publisher that
-    /// is still calling keeps its notification open however old it is.
+    /// A publisher that is still calling keeps its notification open however old it is.
     #[tokio::test]
     async fn a_notification_that_is_still_being_revised_is_left_alone() {
         let store = InMemory::new();
@@ -369,8 +322,7 @@ mod tests {
         assert_eq!(reload(&store, id).await.head.state, State::Working);
     }
 
-    /// `"0"` has to reach all the way through: a channel that opted out must not
-    /// appear in the deadlines at all, whatever the arithmetic would have said.
+    /// A channel that opted out (`"0"`) must not appear in the deadlines at all.
     #[tokio::test]
     async fn a_channel_that_opted_out_is_never_swept() {
         let store = InMemory::new();
@@ -396,8 +348,7 @@ mod tests {
         assert_eq!(reload(&store, id).await.head.state, State::Open);
     }
 
-    /// Per-channel and not global: a channel with a short fuse must not drag its
-    /// neighbour's notifications down with it.
+    /// Per-channel: a short fuse must not drag a neighbour's notifications down.
     #[tokio::test]
     async fn each_channel_gets_its_own_deadline() {
         let store = InMemory::new();
@@ -432,9 +383,7 @@ mod tests {
         assert_eq!(reload(&store, spared).await.head.state, State::Open);
     }
 
-    /// A simple notification is born closed, so it is none of this job's business —
-    /// and sweeping one would push its retention deadline back by a week every time
-    /// the sweep ran.
+    /// A simple notification is born closed; sweeping it would push its retention back.
     #[tokio::test]
     async fn a_simple_notification_is_not_touched() {
         let store = InMemory::new();

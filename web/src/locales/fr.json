@@ -8,7 +8,8 @@
     "redirecting": "Redirection…",
     "signIn": "Se connecter",
     "retry": "Réessayer",
-    "reopen": "Rouvrir le navigateur"
+    "reopen": "Rouvrir le navigateur",
+    "headline": "Une notification. Toute sa vie."
   },
   "callback": {
     "failed": "La connexion a échoué.",
@@ -47,7 +48,8 @@
       "live": "temps réel",
       "reconnecting": "reconnexion…",
       "offline": "hors ligne",
-      "tooltip": "Flux SSE — reprise par curseur à la reconnexion (§8.1)."
+      "tooltip": "Flux SSE — reprise par curseur à la reconnexion (§8.1).",
+      "disconnected": "déconnecté"
     },
     "channels": {
       "title": "Canaux",
@@ -76,7 +78,10 @@
     }
   },
   "layout": {
-    "closeDetail": "Fermer le détail"
+    "closeDetail": "Fermer le détail",
+    "tabs": "Sections",
+    "channels": "Canaux",
+    "search": "Rechercher"
   },
   "console": {
     "title": "Console plateforme",
@@ -156,7 +161,23 @@
       "receiptsOn": "Receipts activés",
       "receiptsOff": "Receipts désactivés",
       "defaultTtlPlaceholder": "TTL par défaut (7d)",
-      "maxTtlPlaceholder": "plafond (48h) — vide = aucun"
+      "maxTtlPlaceholder": "plafond (48h) — vide = aucun",
+      "id": "Identifiant du canal",
+      "name": "Nom affiché",
+      "namePlaceholder": "nom affiché (facultatif)",
+      "create": "Créer le canal",
+      "memberCount": "{count} membre | {count} membres",
+      "closeAfter": "Fermeture auto",
+      "receipts": "Accusés",
+      "retention": "Rétention",
+      "members": "Membres",
+      "memberId": "Identifiant du membre",
+      "addMember": "Ajouter",
+      "removeMember": "Retirer",
+      "delete": "Supprimer le canal",
+      "deleteConfirm": "Supprimer le canal {id} et tout son contenu ? C'est irréversible.",
+      "person": "Personne",
+      "personPlaceholder": "nom ou e-mail"
     },
     "devices": {
       "title": "Devices",
@@ -174,7 +195,10 @@
       "unnamed": "sans nom",
       "lastUsed": "utilisée {at}",
       "neverUsed": "jamais utilisée",
-      "revoked": "révoquée"
+      "revoked": "révoquée",
+      "limit": "Limite de publication par minute",
+      "limitPlaceholder": "par min",
+      "setLimit": "Limiter"
     },
     "accounts": {
       "title": "Service accounts",
@@ -198,7 +222,10 @@
       "hint": "Les nouvelles notifications arrivent ici en temps réel."
     },
     "loading": "Chargement…",
-    "loadMore": "Charger la suite"
+    "loadMore": "Charger la suite",
+    "summary": "{total} affichées · {live} en cours",
+    "filtered": "Filtré",
+    "errorTitle": "Synchronisation échouée"
   },
   "palette": {
     "hints": {
@@ -327,14 +354,23 @@
     },
     "appearance": {
       "title": "Apparence",
-      "theme": "Thème : {theme}",
-      "density": "Densité : {density}",
-      "detail": "Détail : {position}",
       "detailHint": "Où la timeline d'une notification s'ouvre à côté de la liste — sans effet sur un écran étroit, où elle prend tout l'écran quoi qu'il arrive.",
       "detailPosition": {
         "right": "à droite",
         "left": "à gauche",
         "under": "en dessous"
+      },
+      "themeLabel": "Thème",
+      "densityLabel": "Densité",
+      "detailLabel": "Panneau détail",
+      "themes": {
+        "system": "Système",
+        "light": "Clair",
+        "dark": "Sombre"
+      },
+      "densities": {
+        "compact": "Compacte",
+        "comfortable": "Confortable"
       }
     },
     "keys": {
@@ -404,6 +440,28 @@
       "enable": "Activer sur ce navigateur",
       "disable": "Désactiver sur ce navigateur",
       "fallbackError": "L'abonnement a échoué. Réessayez."
+    },
+    "apps": {
+      "title": "Applications",
+      "description": "La même inbox, depuis un terminal ou installée sur cet appareil.",
+      "cli": "Ligne de commande & TUI",
+      "pwa": "Cet appareil",
+      "install": "Installer l'application"
+    },
+    "connections": {
+      "title": "Connexions actives",
+      "description": "Chaque appareil connecté en temps réel à ton inbox. Déconnecter le coupe tout de suite et tient cette connexion à l'écart du temps réel jusqu'à 12 h ; pour lui retirer l'accès pour de bon, révoque sa clé ou son appareil, ou déconnecte-toi depuis celui-ci.",
+      "empty": "Aucune connexion en cours.",
+      "current": "cet appareil",
+      "disconnect": "Déconnecter",
+      "refresh": "Actualiser",
+      "since": "connecté {at}",
+      "credential": {
+        "session": "session navigateur",
+        "key": "clé API",
+        "ci": "jeton CI",
+        "device": "appareil enrôlé"
+      }
     }
   },
   "problem": {

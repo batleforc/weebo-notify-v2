@@ -5,38 +5,23 @@ use time::OffsetDateTime;
 
 use crate::error::PortResult;
 
-/// Silences, which are per-user delivery state rather than interactions, but live
-/// alongside them because they are set from the same buttons (design §2.3).
+/// Silences live here because they are set from the same buttons (§2.3).
 use notify_domain::Silence;
 
 /// Interactions and the per-user silence state.
 #[async_trait::async_trait]
 pub trait InteractionRepository: Send + Sync {
-    /// Apply the domain's decision about an interaction.
-    ///
-    /// The uniqueness rules — `ack` idempotent per (user, key), `choice` exclusive
-    /// and last-write-wins — are decided by the domain and enforced *again* here by
-    /// a unique index. That duplication is deliberate: the domain reasons about a
-    /// snapshot, and two concurrent acknowledgements are a race it cannot see.
-    ///
-    /// Returns the resulting cursor when something was actually written;
-    /// [`Recorded::Unchanged`] writes nothing and broadcasts nothing.
+    /// Apply the domain's decision about an interaction. Uniqueness is re-enforced by
+    /// a unique index because concurrent acks race past the domain's snapshot.
+    /// Returns the cursor when something was written.
     async fn apply(&self, outcome: &Recorded) -> PortResult<Option<Cursor>>;
 
-    /// Every interaction on a notification (design §8, `GET .../interactions`).
-    ///
-    /// This is the endpoint a waiting service polls for its `approve`, so it reads
-    /// the whole set rather than a page: an approval that fell off page two would
-    /// be a very confusing bug.
+    /// Every interaction on a notification, unpaged so a polled approval is never missed (§8).
     async fn list_for(&self, notification: NotificationId) -> PortResult<Vec<InteractionRecord>>;
 
-    /// Start a silence for a user (design §2.3).
-    ///
-    /// Replaces any existing silence on the same target: re-silencing a group
-    /// extends it rather than stacking a second one nobody can see to lift.
+    /// Start a silence for a user, replacing any existing one on the same target (§2.3).
     async fn silence(&self, silence: &Silence) -> PortResult<Cursor>;
 
-    /// Every silence still in force for a user, which is what a `preference` event
-    /// carries (design §8.1).
+    /// Every silence still in force for a user (§8.1).
     async fn active_silences(&self, user: UserId, now: OffsetDateTime) -> PortResult<Vec<Silence>>;
 }

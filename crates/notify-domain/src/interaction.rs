@@ -1,22 +1,5 @@
-//! What comes back from a notification (design §2.3).
-//!
-//! `ack`, `reply` and `choice` are recorded on the server and read back by
-//! whichever service is waiting on them — the script blocked on its `approve`, the
-//! deploy pipeline waiting for a human. No device ever calls out to a third party
-//! on a notification's behalf, which is what keeps a notification from being a way
-//! to make somebody else's browser do work.
-//!
-//! Two deduplication rules, both scoped to *(principal, action key)*:
-//!
-//! * **`ack` is idempotent.** Clicking twice records once. A retrying client, a
-//!   double tap on a phone and a notification mirrored on three devices all
-//!   converge on the same single acknowledgement.
-//! * **`choice` is exclusive, last write wins.** Changing your mind replaces the
-//!   previous pick rather than adding to it — the same arbitration rule as the
-//!   notification state machine (design §2.2).
-//!
-//! `reply` deduplicates nothing: replies are comments, and the design gives them
-//! no key to be unique on. They accumulate in arrival order.
+//! What comes back from a notification (§2.3), deduplicated per (principal, key):
+//! `ack` is idempotent, `choice` is last-write-wins, `reply` accumulates.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -38,7 +21,7 @@ pub enum Interaction {
         /// The action acknowledged.
         key: ActionKey,
     },
-    /// Free text. Unkeyed, because the design gives `reply` actions no key.
+    /// Free text (reply actions have no key).
     Reply {
         /// The text, sanitised like any other user content.
         text: String,
@@ -72,13 +55,8 @@ impl Interaction {
         }
     }
 
-    /// Check this interaction against the action set of the current revision, and
-    /// sanitise whatever text it carries.
-    ///
-    /// Actions are replaced wholesale by every revision (design §2.3), so an
-    /// interaction arriving against an action that has since disappeared is an
-    /// ordinary race, not an attack — it is refused with a specific code so a
-    /// client can say "this button is gone" rather than "something failed".
+    /// Check this interaction against the current revision's actions and sanitise its
+    /// text; a since-replaced action gets a specific "button is gone" error (§2.3).
     pub fn validate(self, actions: &Actions) -> Result<Self> {
         match self {
             Self::Ack { key } => {
@@ -153,7 +131,7 @@ pub struct InteractionRecord {
     pub id: InteractionId,
     /// The notification it answers.
     pub notification_id: NotificationId,
-    /// Who answered — shown in the timeline and in the stream (design §8.1).
+    /// Who answered (§8.1).
     pub author: Author,
     /// What they answered.
     pub interaction: Interaction,
@@ -162,10 +140,7 @@ pub struct InteractionRecord {
     pub recorded_at: OffsetDateTime,
 }
 
-/// What recording an interaction actually did.
-///
-/// The caller needs the distinction: only `Created` and `Replaced` are worth
-/// broadcasting on the stream, and only those two are worth writing.
+/// What recording an interaction did; only `Created` and `Replaced` are written and broadcast.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recorded {
     /// First time — store it and broadcast.
@@ -192,12 +167,8 @@ impl Recorded {
     }
 }
 
-/// The interactions recorded against one notification.
-///
-/// Held as a plain collection so the deduplication rules are testable without a
-/// database; the persistence adapter enforces the same uniqueness with an index,
-/// because two concurrent acknowledgements must not both win a race the domain
-/// cannot see.
+/// The interactions recorded against one notification. Storage re-enforces the
+/// same uniqueness with an index to win concurrent races.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -218,8 +189,7 @@ impl InteractionLog {
         &self.records
     }
 
-    /// Validate an interaction against the current action set and apply the
-    /// deduplication rules.
+    /// Validate an interaction against the current action set and apply the dedup rules.
     pub fn record(
         &mut self,
         actions: &Actions,
@@ -260,33 +230,9 @@ impl InteractionLog {
             }
         }
     }
-
-    /// The option a principal picked for a given `choice` action, if any.
-    #[must_use]
-    pub fn choice_of(&self, principal: &Principal, key: &ActionKey) -> Option<&ChoiceOptionKey> {
-        self.records
-            .iter()
-            .find_map(|record| match &record.interaction {
-                Interaction::Choice {
-                    key: recorded_key,
-                    option,
-                } if recorded_key == key && &record.author.principal == principal => Some(option),
-                _ => None,
-            })
-    }
-
-    /// Whether a principal has acknowledged a given key.
-    #[must_use]
-    pub fn has_acked(&self, principal: &Principal, key: &ActionKey) -> bool {
-        self.records.iter().any(|record| {
-            matches!(&record.interaction, Interaction::Ack { key: recorded } if recorded == key)
-                && &record.author.principal == principal
-        })
-    }
 }
 
-/// Whether two interactions occupy the same "one per user per key" slot. Replies
-/// never do — they have no key and are meant to accumulate.
+/// Whether two interactions occupy the same "one per user per key" slot (never for replies).
 fn is_same_slot(
     record: &InteractionRecord,
     principal: &Principal,
@@ -368,7 +314,7 @@ mod tests {
         (InteractionLog::default(), NotificationId::generate())
     }
 
-    // --- T4 · Interactions (design §3.4) ----------------------------------
+    // --- T4 · Interactions ------------------------------------------------
 
     #[test]
     fn critical_t4_acknowledging_twice_records_once() {
@@ -404,7 +350,6 @@ mod tests {
             "a retrying client must not double-acknowledge"
         );
         assert_eq!(log.records().len(), 1);
-        assert!(log.has_acked(&alice, &key("ack-incident")));
     }
 
     #[test]
@@ -444,10 +389,10 @@ mod tests {
 
         assert!(matches!(changed, Recorded::Replaced { .. }));
         assert_eq!(log.records().len(), 1);
-        assert_eq!(
-            log.choice_of(&alice, &key("escalate")).unwrap().as_str(),
-            "oncall"
-        );
+        assert!(matches!(
+            &log.records()[0].interaction,
+            Interaction::Choice { option, .. } if option.as_str() == "oncall"
+        ));
     }
 
     #[test]

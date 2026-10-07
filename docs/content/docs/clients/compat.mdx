@@ -1,0 +1,73 @@
+---
+title: Gotify, ntfy & Alertmanager
+description: Point tools that already speak Gotify, ntfy or the Alertmanager webhook at weebo-notify — only the URL and the token change.
+---
+
+Uptime Kuma, Watchtower (shoutrrr), Proxmox, `curl` scripts and Alertmanager can
+publish here unchanged. Each route feeds the same publish path as
+`POST /api/v1/notifications`: same scopes, quotas and size limits.
+
+## The token
+
+Mint an API key with the `publish` scope (`POST /api/v1/apikeys`), and send it any
+way these tools do:
+
+- `Authorization: Bearer wnk_…`
+- `Authorization: Basic` with the key as the password (the username is ignored)
+- `X-Gotify-Key: wnk_…`
+- `?token=wnk_…` — only on these routes, and kept out of the access log
+
+## Gotify
+
+Base URL: `https://weebo.example/api/v1/compat/gotify`. The key's channel is used
+when it has exactly one; otherwise add `?channel=`, or the server answers `422`.
+
+```bash
+curl "https://weebo.example/api/v1/compat/gotify/message?token=$KEY" \
+  -F title=Backup -F message="nightly backup done" -F priority=5
+```
+
+JSON and urlencoded forms work too. Priority `0-3` is low, `4-7` default, `8` high, `9+` urgent; an
+`extras["client::notification"].click.url` becomes a link button. The answer is
+Gotify's `{id, appid, message, title, priority, date}`.
+
+## ntfy
+
+Base URL: `https://weebo.example/api/v1/compat/ntfy`; the topic is the channel id.
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  -H "Title: Disk almost full" -H "Priority: high" -H "Tags: nas,disk" \
+  -H "Click: https://nas.local" \
+  -d "98% used on /volume1" \
+  https://weebo.example/api/v1/compat/ntfy/homelab
+```
+
+`POST` or `PUT`, with headers `Title`/`X-Title`/`t`, `Priority`/`X-Priority`/`p`
+(`1-5` or `min`…`urgent`, `max`), `Tags`/`X-Tags`/`ta` and `Click`/`X-Click`. A
+JSON body `{topic, message, title, priority, tags, click}` POSTed to the base URL
+works as well.
+
+## Alertmanager
+
+```yaml
+receivers:
+  - name: weebo
+    webhook_configs:
+      - url: https://weebo.example/api/v1/compat/alertmanager/alerts
+        http_config:
+          authorization: { credentials: wnk_… }
+```
+
+Each alert is upserted by its fingerprint, so a resolution closes the notification
+its firing opened:
+
+| Alert | State | Status | Priority |
+| --- | --- | --- | --- |
+| firing, `severity=critical` | open | failure | urgent |
+| firing, `severity=warning` | open | warning | high |
+| firing, other | open | info | channel default |
+| resolved | closed | success | as above |
+
+The title is `alertname: summary`, the body the `description` annotation, and the
+`severity`, `job` and `namespace` labels become tags.

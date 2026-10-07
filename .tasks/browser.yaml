@@ -2,49 +2,17 @@ version: "3"
 
 silent: true
 
-# Driving the browser that the devfile schedules next door (design §12.4).
-#
-# Three debts were open on the same three words — « écrit, jamais vu » (D19, D21,
-# D26). M4tervicies put a real Chrome in the pod and stopped there, because a
-# browser nobody can drive is a browser nobody looks through. This is the other
-# half, and it is deliberately small: `dev/browser/cdp.mjs` speaks CDP over the
-# WebSocket Node 24 already ships, so there is no dependency to install and no
-# browser to download — the one to use is already running.
-#
-# Two ways in, for two questions:
-#   * these tasks, for a question with an answer (`shot`, `eval`);
-#   * the `novnc` route Che publishes, for a human who wants to *look*. Open it
-#     from the endpoints list; it is the same browser, so a page opened here is
-#     the page seen there.
-#
-# Chrome itself is parked at boot (`NO_START` in the devfile) and the tasks that
-# need it wake it, so nothing here asks you to remember an extra command — see
-# `NEED_BROWSER` below for why the status task is the one exception.
-#
-# Outside Che these no-op rather than fail: the sidecar comes from the devfile,
-# and `dev/compose.yaml` has no browser — looking at a page on a laptop is what
-# the laptop's own browser is for.
+# Driving the Chrome sidecar the devfile schedules (§12.4) over CDP (`dev/browser/cdp.mjs`,
+# no dependency). Humans can look through the Che `novnc` route; outside Che these no-op.
 
 vars:
   CDP: curl -sf -o /dev/null http://127.0.0.1:9222/json/version
-  # `sidecar-app` toggles the flag file the sidecar's respawn loop watches. It is in
-  # that image and in no other, so every use of it goes through `kubectl exec`.
-  #
-  # The prefix is not decoration: on Task 3.52 a `vars:` name defined in two included
-  # taskfiles resolves to whichever include won the race, differently from run to run
-  # — this was first written as `APP` here and in `.tasks/desktop.yaml`, and
-  # `task browser:check` exec'd into the `desktop` container about half the time.
-  # Every top-level var in `.tasks/` therefore has to be unique across all of them.
+  # `sidecar-app` exists only in that image, hence `kubectl exec`. Top-level vars must be
+  # unique across `.tasks/`: Task resolves duplicates across includes nondeterministically.
   BROWSER_APP: kubectl exec "$HOSTNAME" -c browser -- sidecar-app
 
-  # Chrome is parked at boot since the devfile sets NO_START (see the `browser`
-  # component). The VNC stack is not, so the `novnc` route works from the first
-  # second — it is the browser itself that has to be woken.
-  #
-  # Waking it here rather than telling you to: a task that does its own prerequisite
-  # is one command, and a task that prints "run this other task first" is two plus
-  # the second's latency anyway. `check` below deliberately does NOT — a status
-  # command that changes the status it reports is a bad status command.
+  # Chrome is parked at boot (NO_START); tasks that need it wake it. `check` doesn't: a status
+  # command must not change what it reports.
   NEED_BROWSER: |
     if ! {{.CDP}}; then
       if [ -z "${DEVWORKSPACE_ID:-}" ]; then
@@ -66,9 +34,7 @@ vars:
 
 tasks:
   check:
-    desc: "Say whether the browser sidecar is reachable, and which page it is showing"
-    # Reports, never starts: this is the task you run to find out what state things
-    # are in, and `task browser:start` is the one that changes it.
+    desc: "Report whether the browser sidecar is reachable and which page it shows, without starting it."
     cmds:
       - cmd: |
           if [ -z "${DEVWORKSPACE_ID:-}" ]; then
@@ -84,7 +50,7 @@ tasks:
           node dev/browser/cdp.mjs where
 
   start:
-    desc: "Wake the parked Chrome and wait until CDP answers — printed with its noVNC route"
+    desc: "Wake the parked Chrome, wait for CDP, and print its noVNC route."
     cmds:
       - cmd: |
           {{.NEED_BROWSER}}
@@ -93,11 +59,8 @@ tasks:
           echo "password: $(cat /projects/.sidecar/vnc-password-browser.txt 2>/dev/null || echo '/projects/.sidecar/vnc-password-browser.txt')"
 
   pwd:
-    desc: "Print the noVNC route and its password — what you need to look through this browser"
-    # It used to `kubectl exec ... cat /tmp/vnc_password.txt`, which named a file the
-    # image does not write: `/tmp/vnc.pass` is x11vnc's *hashed* form. The plaintext
-    # is dropped on the shared `/projects/.sidecar/`, precisely so this side can read
-    # it without entering the container at all.
+    desc: "Print the noVNC route and password for looking through this browser."
+    # The plaintext password is dropped on the shared `/projects/.sidecar/` (`/tmp/vnc.pass` is hashed).
     cmds:
       - cmd: |
           if [ -z "${DEVWORKSPACE_ID:-}" ]; then
@@ -108,9 +71,7 @@ tasks:
           echo "password: $(cat /projects/.sidecar/vnc-password-browser.txt)"
 
   stop:
-    desc: "Park Chrome again, keeping the VNC stack and the route up (§12.4)"
-    # Worth doing between two pieces of work rather than only at the end of the day:
-    # this pod also carries a second headed sidecar now, and neither of them is small.
+    desc: "Park Chrome again, keeping the VNC stack and route up (§12.4)."
     cmds:
       - cmd: |
           if [ -z "${DEVWORKSPACE_ID:-}" ]; then
@@ -120,7 +81,7 @@ tasks:
           {{.BROWSER_APP}} stop
 
   open:
-    desc: "Point the browser at a URL — `task browser:open URL=http://localhost:5173/`"
+    desc: "Point the browser at a URL (task browser:open URL=http://localhost:5173/)."
     cmds:
       - cmd: |
           {{.NEED_BROWSER}}
@@ -129,9 +90,8 @@ tasks:
       vars: [URL]
 
   shot:
-    desc: "Screenshot the current page — `task browser:shot OUT=/tmp/inbox.png`"
-    # Deliberately separate from `open`: a Vue app mounts after the load event, so
-    # the useful sequence is open, look, and shoot again if it caught a skeleton.
+    desc: "Screenshot the current page (task browser:shot OUT=/tmp/inbox.png)."
+    # Separate from `open`: a Vue app mounts after load, so shoot again if it caught a skeleton.
     cmds:
       - cmd: |
           {{.NEED_BROWSER}}
@@ -140,7 +100,7 @@ tasks:
       vars: [OUT]
 
   eval:
-    desc: "Evaluate JavaScript in the page — `task browser:eval JS='location.href'`"
+    desc: "Evaluate JavaScript in the page (task browser:eval JS='location.href')."
     cmds:
       - cmd: |
           {{.NEED_BROWSER}}
@@ -149,7 +109,7 @@ tasks:
       vars: [JS]
 
   logs:
-    desc: "Drain the page's console and errors for a second — where a CSP refusal shows up"
+    desc: "Drain the page's console and errors for a second (where CSP refusals show up)."
     cmds:
       - cmd: |
           {{.NEED_BROWSER}}

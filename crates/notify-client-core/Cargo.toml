@@ -16,14 +16,13 @@ workspace = true
 notify-client-api = { workspace = true }
 
 chrono = { workspace = true }
-# The IANA database, for the "until the morning" preset (§10bis.3ter): §7.4 puts the
-# timezone on the preference, so resolving one is a client concern too.
+# IANA database for the "until the morning" preset (§10bis.3ter).
 chrono-tz = { workspace = true }
+# Per-platform config/data directories (XDG on Linux).
+etcetera = "0.11"
 figment = { workspace = true }
 progenitor-client = { workspace = true }
-# SQLite in WAL mode, because §9.3bis needs several processes reading while one
-# writes — see `store`. `bundled` compiles it from C, a cost the client pays and
-# the server does not.
+# SQLite in WAL mode: several processes read while one writes (§9.3bis).
 rusqlite = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

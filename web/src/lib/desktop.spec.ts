@@ -1,10 +1,4 @@
-/**
- * The one flag that decides whether the app dresses as a desktop app (§10bis.3bis).
- *
- * Worth its own tests despite being ten lines: getting it wrong in one direction
- * ships a desktop app that looks like a website — the review failure §10bis.3bis
- * names — and in the other dresses a browser tab as something it is not.
- */
+/** The desktop flag (§10bis.3bis): wrong either way, the app dresses as the wrong thing. */
 
 import { describe, expect, it, vi } from "vitest";
 

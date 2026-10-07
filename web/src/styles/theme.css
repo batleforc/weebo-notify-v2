@@ -1,152 +1,101 @@
 /*
- * The one file that decides what weebo-notify looks like (design §10.2).
+ * The one file that decides what weebo-notify looks like (DESIGN.md).
  *
- * Two layers of tokens, and the rule that makes the `monofolio` swap cheap
- * (§10.6): a component may reference a SEMANTIC token and nothing else. No raw
- * colour, no `oklch()` outside this file. That is the single blocking rule in a
- * front-end review, because it is what keeps the design system a token file
- * rather than a fork.
+ * A sibling of BatleHub's "Proof Sheet": one Monofolio palette on two grounds,
+ * square corners, hairline rules, no shadow, Silkscreen for identity and
+ * JetBrains Mono for every fact. Components reference semantic tokens only —
+ * no raw colour outside this file.
  *
- *   1. shadcn tokens — `--background`, `--primary`, `--muted`… the vocabulary the
- *      vendored components in `components/ui/` speak.
- *   2. business tokens — `--status-*`, `--priority-*`, `--state-*`. A notification
- *      row never says "red", it says "failure", and what failure looks like is
- *      decided here.
- *
- * Everything is OKLCH: it interpolates perceptually, so a theme can be re-toned by
- * moving lightness and chroma without the hue drifting.
- *
- * `monofolio` landed here rather than beside it: near-black crimson-tinted dark
- * (the app's own default, unchanged in spirit), copper as the second accent, sharp
- * 2px radius, glow standing in for soft shadows on elevated/urgent elements. Light
- * stays what the comment below already promised before this pass — complete, not
- * an afterthought — glow is dropped there on purpose: it reads as noise on a light
- * ground, so light elevation is a firm, faintly warm shadow instead.
- *
- * One deliberate token identity, not an oversight: `--status-failure` equals
- * `--primary`. Everywhere else semantic colour and brand accent are kept apart so
- * neither hides the other, but this is an alerting tool — the loudest colour in the
- * palette should be the one that means "look now", not merely "on-brand".
+ * `.dark` on <html> (set before first paint, index.html) selects the near-black
+ * rendition; paper is the base declaration.
  */
 
 @import "./fonts.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Dark is a class on <html>, set before first paint by the inline script in
- * index.html — a theme that flashes white on reload is a bug you ship once. */
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --radius: 0.125rem; /* 2px — sharp geometry is load-bearing to the brand, not a preference */
-
-  /* Light theme — complete, not an afterthought (§10.2). Brushed steel, not pure
-   * white: a neutral this palette's warm undertone still picked, not inherited. */
-  --background: oklch(0.965 0.004 90);
-  --foreground: oklch(0.22 0.012 30);
-  --card: oklch(0.99 0.002 90);
-  --card-foreground: oklch(0.22 0.012 30);
-  --popover: oklch(0.99 0.002 90);
-  --popover-foreground: oklch(0.22 0.012 30);
-  --primary: oklch(0.52 0.22 25);
-  --primary-foreground: oklch(0.99 0.005 0);
-  --secondary: oklch(0.94 0.008 40);
-  --secondary-foreground: oklch(0.52 0.22 25);
-  --muted: oklch(0.93 0.006 90);
-  --muted-foreground: oklch(0.44 0.02 30);
-  --accent: oklch(0.5 0.13 52);
-  --accent-foreground: oklch(0.99 0.005 90);
-  --destructive: oklch(0.5 0.24 25);
-  --destructive-foreground: oklch(0.99 0.005 0);
-  --border: oklch(0.55 0.03 30 / 0.22);
-  --input: oklch(0.55 0.03 30 / 0.22);
-  --ring: oklch(0.52 0.22 25 / 0.45);
-
-  /* Glow-free elevation on a light ground — a firm, faintly warm shadow instead. */
-  --elevation-sm: 0 1px 2px oklch(0.3 0.02 30 / 0.07);
-  --elevation-md: 0 2px 6px oklch(0.3 0.02 30 / 0.09);
-  --elevation-lg: 0 4px 14px oklch(0.3 0.02 30 / 0.12);
-
-  /* Status: what the notification is saying (§2.2). Never used alone — every
-   * component pairs it with an icon, because colour alone excludes a portion of
-   * the people reading an incident feed (§10.3). */
-  --status-success: oklch(0.5 0.15 150);
-  --status-failure: oklch(
-    0.52 0.22 25
-  ); /* == primary, deliberately — see file header */
-  --status-warning: oklch(0.55 0.15 70);
-  --status-info: oklch(0.5 0.13 220);
-  --status-cancelled: oklch(0.55 0.02 30);
-
-  /* Priority: a discrete scale, not a gradient (§10.2). `min` and `low` are
-   * deliberately quiet enough to read as "not for you right now". */
-  --priority-min: oklch(0.6 0.02 30);
-  --priority-low: oklch(0.55 0.04 40);
-  --priority-default: oklch(0.5 0.13 220);
-  --priority-high: oklch(0.55 0.15 70);
-  --priority-urgent: oklch(0.52 0.22 25);
-
-  /* State: where it is in its lifecycle (§2.2). */
-  --state-open: oklch(0.5 0.13 220);
-  --state-working: oklch(0.55 0.15 70);
-  --state-closed: oklch(0.55 0.02 30);
-
-  /* Density (§10.2): compact is the desktop default because the inbox is a tool,
-   * comfortable is what a touch target needs. Set on <html> by the UI store. */
-  --density-row-y: 0.5rem;
-  --density-gap: 0.5rem;
+  /* World tokens — paper rendition. Every pair is AA (ratios from BatleHub). */
+  --ground: oklch(0.97 0.008 18);
+  --ground-raised: oklch(0.935 0.01 18);
+  --ground-sunk: oklch(0.99 0.004 18);
+  --ink: oklch(0.2 0.022 20); /* 16.64:1 */
+  --ink-dim: oklch(0.44 0.04 25); /* 7.24:1 */
+  --rule-soft: oklch(0.8 0.02 25);
+  --rule-strong: oklch(0.62 0.05 25); /* 3.41:1, interactive boundaries */
+  --signal: oklch(0.52 0.21 25); /* crimson, 5.63:1 */
+  --signal-ink: oklch(0.99 0.004 18);
+  --copper: oklch(0.5 0.12 52); /* 5.74:1, waiting / held */
+  --verdigris: oklch(0.48 0.11 160); /* success, weebo-notify's own */
+  --focus: oklch(0.55 0.11 85);
 }
 
 .dark {
-  --background: oklch(0.07 0.018 18);
-  --foreground: oklch(0.93 0.018 25);
-  --card: oklch(0.1 0.018 18);
-  --card-foreground: oklch(0.93 0.018 25);
-  --popover: oklch(0.1 0.018 18);
-  --popover-foreground: oklch(0.93 0.018 25);
-  --primary: oklch(0.65 0.26 25);
-  --primary-foreground: oklch(0.97 0.01 0);
-  --secondary: oklch(0.14 0.022 18);
-  --secondary-foreground: oklch(0.65 0.26 25);
-  --muted: oklch(0.13 0.016 18);
-  --muted-foreground: oklch(0.58 0.04 30);
-  --accent: oklch(0.72 0.14 52);
-  --accent-foreground: oklch(0.07 0.018 18);
-  --destructive: oklch(0.55 0.28 25);
-  --destructive-foreground: oklch(0.97 0.01 0);
-  --border: oklch(0.65 0.26 25 / 0.2);
-  --input: oklch(0.65 0.26 25 / 0.12);
-  --ring: oklch(0.65 0.26 25 / 0.45);
-
-  /* Glow is the elevation system here — reserved for what needs attention (this
-   * token, urgent/failure accents, focus), never applied to plain surfaces. */
-  --elevation-sm: 0 0 4px oklch(0.65 0.26 25 / 0.35);
-  --elevation-md:
-    0 0 6px oklch(0.65 0.26 25 / 0.5), 0 0 18px oklch(0.65 0.26 25 / 0.22);
-  --elevation-lg:
-    0 0 8px oklch(0.65 0.26 25 / 0.55), 0 0 28px oklch(0.65 0.26 25 / 0.28);
-
-  /* Lifted for contrast against a dark surface — same hues, more lightness. */
-  --status-success: oklch(0.72 0.17 150);
-  --status-failure: oklch(
-    0.65 0.26 25
-  ); /* == primary, deliberately — see file header */
-  --status-warning: oklch(0.75 0.15 70);
-  --status-info: oklch(0.78 0.13 220);
-  --status-cancelled: oklch(0.48 0.025 30);
-
-  --priority-min: oklch(0.4 0.02 30);
-  --priority-low: oklch(0.5 0.05 40);
-  --priority-default: oklch(0.78 0.13 220);
-  --priority-high: oklch(0.75 0.15 70);
-  --priority-urgent: oklch(0.65 0.26 25);
-
-  --state-open: oklch(0.78 0.13 220);
-  --state-working: oklch(0.75 0.15 70);
-  --state-closed: oklch(0.48 0.025 30);
+  --ground: oklch(0.07 0.018 18);
+  --ground-raised: oklch(0.155 0.022 18);
+  --ground-sunk: oklch(0.045 0.014 18);
+  --ink: oklch(0.93 0.018 25); /* 16.88:1 */
+  --ink-dim: oklch(0.62 0.045 30); /* 5.62:1 */
+  --rule-soft: oklch(0.34 0.03 25);
+  --rule-strong: oklch(0.52 0.06 25); /* 3.68:1 */
+  --signal: oklch(0.65 0.235 25); /* 5.76:1 */
+  --signal-ink: oklch(0.1 0.02 18);
+  --copper: oklch(0.72 0.14 52); /* 8.06:1 */
+  --verdigris: oklch(0.76 0.13 160);
+  --focus: oklch(0.85 0.16 85);
 }
 
-/* `comfortable` is the mobile and Tauri default; the same components read it. */
+:root,
+.dark {
+  /* shadcn vocabulary, mapped onto the world. */
+  --background: var(--ground);
+  --foreground: var(--ink);
+  --card: var(--ground);
+  --card-foreground: var(--ink);
+  --popover: var(--ground-sunk);
+  --popover-foreground: var(--ink);
+  --primary: var(--signal);
+  --primary-foreground: var(--signal-ink);
+  --secondary: var(--ground-raised);
+  --secondary-foreground: var(--ink);
+  --muted: var(--ground-raised);
+  --muted-foreground: var(--ink-dim);
+  --accent: var(--ground-raised);
+  --accent-foreground: var(--ink);
+  --destructive: var(--signal);
+  --destructive-foreground: var(--signal-ink);
+  --border: var(--rule-soft);
+  --input: var(--rule-strong);
+  --ring: var(--focus);
+
+  /* Business tokens (design §10.2). Never hue alone: the matrix and the word
+   * carry the same state. */
+  --status-success: var(--verdigris);
+  --status-failure: var(--signal);
+  --status-warning: var(--copper);
+  --status-info: var(--ink);
+  --status-cancelled: var(--ink-dim);
+
+  --priority-min: var(--rule-strong);
+  --priority-low: var(--ink-dim);
+  --priority-default: var(--ink);
+  --priority-high: var(--copper);
+  --priority-urgent: var(--signal);
+
+  --state-open: var(--ink);
+  --state-working: var(--copper);
+  --state-closed: var(--ink-dim);
+
+  --radius: 0px;
+  --density-row-y: 0.625rem;
+  --density-gap: 0.5rem;
+
+  /* The one authored motion: a row resolving when its lifecycle moves. */
+  --resolve: 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .density-comfortable {
   --density-row-y: 0.875rem;
   --density-gap: 0.75rem;
@@ -173,6 +122,17 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  --color-ground: var(--ground);
+  --color-ground-raised: var(--ground-raised);
+  --color-ground-sunk: var(--ground-sunk);
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-rule: var(--rule-soft);
+  --color-rule-strong: var(--rule-strong);
+  --color-signal: var(--signal);
+  --color-copper: var(--copper);
+  --color-focus: var(--focus);
+
   --color-status-success: var(--status-success);
   --color-status-failure: var(--status-failure);
   --color-status-warning: var(--status-warning);
@@ -189,31 +149,28 @@
   --color-state-working: var(--state-working);
   --color-state-closed: var(--state-closed);
 
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-full: 0px;
 
   --spacing-row: var(--density-row-y);
   --spacing-dense: var(--density-gap);
 
-  /* `shadow-sm/md/lg` had no token layer before this pass — every call site used
-   * Tailwind's own untinted grey scale. Indirection through `--elevation-*` (raw
-   * values re-toned per theme above) rather than naming these `--shadow-*`
-   * directly in `:root`/`.dark`, for the same reason `--color-*` does: the plain
-   * name would collide with the one `@theme` generates the utility from. */
-  --shadow-sm: var(--elevation-sm);
-  --shadow-md: var(--elevation-md);
-  --shadow-lg: var(--elevation-lg);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
 
-  /* JetBrains Mono for structure (labels, timestamps, section titles, buttons),
-   * IBM Plex Sans for prose — self-hosted, see `fonts.css`. Falls through to the
-   * system stack Tailwind ships by default if a face ever fails to load. */
+  /* Mono carries every fact; Silkscreen only ever at multiples of 8px. */
   --font-sans:
-    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    sans-serif;
+    "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --font-mono:
     "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-pixel: "Silkscreen", monospace;
+
+  --text-meta: 0.75rem;
+  --text-meta--line-height: 1.6;
 }
 
 @layer base {
@@ -221,61 +178,51 @@
     border-color: var(--border);
   }
 
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
     background-color: var(--background);
     color: var(--foreground);
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    font-variant-ligatures: none;
     -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
   }
 
-  /* The circuit-grid wash (source system: `.cyber-grid-bg`) — kept to the one
-   * place the approved concept put it, a header a person watches all day, not
-   * spread across every surface. 28px rather than the source's 48px: this app's
-   * headers are shorter than a portfolio hero, and the coarser grid read as too
-   * sparse at that height. */
-  .cyber-grid {
-    background-image:
-      linear-gradient(var(--border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border) 1px, transparent 1px);
-    background-size: 28px 28px;
+  ::selection {
+    background: var(--ink);
+    color: var(--ground);
   }
 
-  /* The glow reserved for the one piece of text that earns it: the wordmark.
-   * `--elevation-md` is a valid `text-shadow` value as-is (offset-x/y 0, blur,
-   * colour) — no separate token needed for the one non-box use. */
-  .cyber-text-glow {
-    text-shadow: var(--elevation-md);
+  input,
+  textarea {
+    caret-color: var(--signal);
   }
 
-  /* --- Desktop hygiene (§10bis.3bis) ------------------------------------
-   *
-   * "Zéro artefact navigateur" — the review test is that no screen feels like a
-   * site in a window. Everything below hangs off `.is-desktop`, which
-   * `lib/desktop.ts` puts on the root element only inside the Tauri shell, so the
-   * browser build keeps browser conventions and neither has to know about the
-   * other.
-   *
-   * All of it is presentation. Nothing here changes behaviour, and nothing may:
-   * the flag comes from the embedder, and a branch on it that gated *capability*
-   * would be a branch an embedder could lie its way through.
-   */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rule-strong) transparent;
+  }
+
+  /* One focus ring, everywhere, never suppressed for the keyboard. */
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  a {
+    text-underline-offset: 3px;
+  }
+
+  /* Desktop shell hygiene (§10bis.3bis) — presentation only. */
   .is-desktop {
-    /* A native app does not let you drag-select its chrome. The exception is
-     * content — a notification body is text somebody may want to copy — so this
-     * is re-enabled below rather than applied narrowly here, because the default
-     * for an app is "not selectable" and the exceptions are few. */
     user-select: none;
     -webkit-user-select: none;
-
-    /* §10bis.3bis names this one specifically: `cursor: pointer` on a button is a
-     * web convention. Desktop toolkits keep the arrow, and the hand reads as "this
-     * is a link in a page". */
     cursor: default;
-
-    /* The system stack, so the webview renders like the apps beside it rather than
-     * like a website. `system-ui` resolves to SF Pro, Segoe UI, or whatever the
-     * Linux desktop chose. */
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   }
 
   .is-desktop button,
@@ -284,8 +231,6 @@
     cursor: default;
   }
 
-  /* Content stays selectable: it is the thing somebody came to read, and a
-   * notification body they cannot copy is a worse app, not a more native one. */
   .is-desktop [data-selectable],
   .is-desktop [data-selectable] * {
     user-select: text;
@@ -293,38 +238,199 @@
     cursor: auto;
   }
 
-  /* No ghost image when a mark or an avatar is dragged — dragging an image out of
-   * a native window does nothing, and the translucent thumbnail is the giveaway
-   * that this is a browser. */
   .is-desktop img {
     -webkit-user-drag: none;
     user-select: none;
   }
 
-  /* Thin overlay scrollbars, the desktop idiom. The web build keeps the browser's
-   * own, which is what a browser's users expect. */
-  .is-desktop * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
-  }
-
-  /* The focus ring belongs to the keyboard. A native control that draws it on
-   * click looks wrong; one that never draws it is unusable without a mouse, which
-   * is why this narrows the ring rather than removing it. */
   .is-desktop :focus:not(:focus-visible) {
     outline: none;
   }
 
-  /* §10.5: animations are utilitarian, and somebody who asked their system to
-   * stop moving things has already told us what they want. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
-      animation-duration: 0.01ms !important;
-      animation-iteration-count: 1 !important;
-      transition-duration: 0.01ms !important;
+      animation: none !important;
+      transition: none !important;
       scroll-behavior: auto !important;
     }
+  }
+}
+
+@layer components {
+  /* Uppercase tracked label: column heads, section labels, state words. */
+  .meta {
+    font-size: var(--text-meta);
+    line-height: 1.6;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  .pixel {
+    font-family: var(--font-pixel);
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+  }
+
+  /* Page titles: the one form set at poster scale per view. */
+  .display {
+    font-family: var(--font-pixel);
+    font-weight: 700;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+  }
+
+  @media (min-width: 640px) {
+    .display {
+      font-size: 40px;
+    }
+  }
+
+  /* Dashed at rest, solid when engaged. */
+  .rule-row {
+    border-bottom: 1px dashed var(--rule-soft);
+  }
+
+  .rule-row:hover,
+  .rule-row[aria-current="true"] {
+    border-bottom-style: solid;
+    border-bottom-color: var(--rule-strong);
+  }
+
+  /* The dot field: texture confined to boxes that never hold text. */
+  .dot-field {
+    background-image: radial-gradient(var(--rule-soft) 1px, transparent 1.5px);
+    background-size: 9px 9px;
+    mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 20%,
+      #000 80%,
+      transparent
+    );
+  }
+
+  .resolve {
+    animation: resolve var(--resolve) both;
+  }
+
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
+@keyframes resolve {
+  from {
+    filter: blur(2.5px) contrast(1.7);
+    opacity: 0.55;
+  }
+}
+
+/* The working matrix's chase — the only loop, and only while working. */
+@keyframes chase {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.18;
+  }
+}
+
+@layer components {
+  /* A mutually-exclusive choice set: one frame, 1px dividers, no gaps; the
+   * chosen cell reverses to an ink block (nav, filters, preferences). */
+  .seg {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1px;
+    background: var(--rule-strong);
+    border: 1px solid var(--rule-strong);
+  }
+
+  .seg > * {
+    flex: 1 1 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 2rem;
+    padding: 4px 10px;
+    background: var(--ground);
+    color: var(--ink-dim);
+    font-size: var(--text-meta);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .seg > *:hover {
+    color: var(--ink);
+  }
+
+  .seg > [aria-pressed="true"],
+  .seg > [aria-current="page"],
+  .seg > .router-link-exact-active {
+    background: var(--ink);
+    color: var(--ground);
+    font-weight: 700;
+  }
+
+  @media (pointer: coarse) {
+    .seg > * {
+      min-height: 2.75rem;
+    }
+  }
+
+  /* A ranked list row (channels): selection is four channels — ink, signal
+   * edge, raised fill, weight — because no single one is dependable. */
+  .bay-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 2.25rem;
+    padding: 4px 12px 4px 11px;
+    border-left: 1px solid transparent;
+    color: var(--ink-dim);
+    text-align: left;
+  }
+
+  .bay-item:hover {
+    color: var(--ink);
+    background: var(--ground-raised);
+  }
+
+  .bay-item[aria-current="page"] {
+    color: var(--ink);
+    background: var(--ground-raised);
+    border-left-color: var(--signal);
+    font-weight: 700;
+  }
+
+  @media (pointer: coarse) {
+    .bay-item {
+      min-height: 2.75rem;
+    }
+  }
+}
+
+@layer base {
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--ink);
+    width: 1rem;
+    height: 1rem;
+  }
+
+  select {
+    color: var(--ink);
   }
 }

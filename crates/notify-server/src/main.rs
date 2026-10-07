@@ -1,12 +1,5 @@
-//! weebo-notify server binary — the composition root (design §4).
-//!
-//! Everything the server does is wired here: configuration is layered
-//! (defaults < TOML file < `WNK_*` environment), adapters are constructed once,
-//! and the use cases of [`notify_app`] are handed the ports they need.
-//!
-//! The binary is deliberately more than a `run` command: `dump-openapi` lets
-//! `task recu` export the OpenAPI document without booting a server, database or
-//! object store, which is what keeps the `contract` CI job cheap (design §3.2).
+//! weebo-notify server binary: the composition root (design §4).
+//! Config layers: defaults < TOML file < `WNK_*` env. `dump-openapi` exports the spec with no infra (§3.2).
 
 use std::path::PathBuf;
 
@@ -52,22 +45,14 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Write the OpenAPI document to a file (or stdout) and exit.
-    ///
-    /// The output is committed to the repository, so the generated Rust and
-    /// TypeScript clients can never drift from the server (design §3.2).
     DumpOpenapi {
         /// Destination file. Defaults to stdout.
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
 
-    /// Review this deployment's configuration against the hardening checklist,
-    /// print what it finds, and exit non-zero on anything that looks wrong.
-    ///
-    /// Reads configuration only — it connects to nothing, so it is safe to run
-    /// against a live deployment and its output is safe to paste into an issue.
-    /// The guarantees it *cannot* check are listed in the output rather than
-    /// quietly omitted.
+    /// Review this deployment's configuration against the hardening checklist, print what it finds,
+    /// and exit non-zero on anything that looks wrong. Connects to nothing; safe to paste into an issue.
     Doctor,
 }
 
@@ -87,16 +72,14 @@ fn doctor_report(config_path: &std::path::Path) -> anyhow::Result<()> {
     if doctor::report(&config) {
         Ok(())
     } else {
-        // Non-zero, so this is usable in a deployment pipeline as a gate rather
-        // than only as something a human reads.
+        // Non-zero, so it can gate a deployment pipeline.
         std::process::exit(1);
     }
 }
 
 fn dump_openapi(output: Option<&std::path::Path>) -> anyhow::Result<()> {
     let document = openapi::document();
-    // Pretty-printed with a trailing newline so the committed file is diff-friendly
-    // and the `contract` job only ever reports real API changes.
+    // Pretty-printed with a trailing newline so the committed file diffs cleanly.
     let mut rendered =
         serde_json::to_string_pretty(&document).context("serialising the OpenAPI document")?;
     rendered.push('\n');
@@ -116,59 +99,37 @@ fn dump_openapi(output: Option<&std::path::Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// How often the background jobs wake.
-///
-/// The purge is leader-only and re-checks leadership between batches, so a short
-/// interval costs one advisory-lock attempt per replica per minute and nothing else.
+/// How often the background jobs wake; costs one advisory-lock attempt per replica.
 const JOB_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// How often the reconciler re-applies the configuration.
-///
-/// At boot and on `SIGHUP` is what design §11 asks for. The timer is here for one
-/// case those two miss: a `[[channels.managed.access]]` binding by `email` or
-/// `oidc_sub` cannot become a membership until that person has logged in once, so
-/// without it they would wait for the next restart. Group bindings need none of
-/// this — they resolve from the token.
+/// How often the reconciler re-applies the configuration, so `email`/`oidc_sub` bindings resolve
+/// after that person's first login without waiting for a restart or `SIGHUP`.
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// How often the leader looks for sink deliveries that are due (design §7.1bis).
-///
-/// Shorter than the others, and that is the whole difference between "a webhook
-/// arrives" and "a webhook arrives eventually": a publish queues rather than sends
-/// (`notify_app::sinks`), so this interval *is* the delivery latency for the first
-/// attempt. Five seconds costs one advisory-lock attempt per replica per five
-/// seconds and buys a consumer that sees an incident while it is still an incident.
+/// How often the leader looks for due sink deliveries (design §7.1bis): this is first-attempt latency.
 const SINK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[actix_web::main]
 async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
-    // Read before the subscriber exists, because `[telemetry]` decides what the
-    // subscriber is. The window is deliberately this short: a failure in here is
-    // reported by `main` on stderr, and everything after it is logged properly.
+    // Read before the subscriber exists, since `[telemetry]` shapes it; failures go to stderr.
     let config = config::Config::load(config_path)?;
     let traces = telemetry::install(config.telemetry.as_ref())?;
 
     for pending in config.unhonoured() {
-        // Parsed and not acted on. Saying so at startup is the difference between
-        // "this build does not do that yet" and an afternoon of debugging.
+        // Parsed but not acted on: say so at startup.
         tracing::warn!(%pending, "configuration key not honoured by this build");
     }
 
-    // The deployment-owed guarantees, said out loud once per boot. Every item in
-    // `hardening.mdx` fails silently — nothing logs "your bucket is world-readable"
-    // — so an operator who never reads the documentation still meets the list here.
-    // `notify-server doctor` prints the same review on demand.
+    // The deployment-owed guarantees, once per boot (see `doctor`).
     doctor::log_review(&config);
     doctor::refuse_development_defaults(&config)?;
 
     let application = wiring::Application::build(&config).await?;
 
-    // Migrations before anything is served: a replica that answers requests against
-    // a schema it has not finished applying is worse than one that is slow to start.
+    // Migrate before serving.
     application.store.migrate().await?;
 
-    // Under the reconcile lock like every other pass, so replicas booting together
-    // do not write the same channels at once and deadlock each other.
+    // Under the reconcile lock, so replicas booting together do not deadlock.
     let election: std::sync::Arc<dyn notify_ports::LeaderElection> = std::sync::Arc::new(
         notify_persistence_pg::PgLeaderElection::new(application.store.pool().clone()),
     );
@@ -195,8 +156,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     };
 
     if application.routes.len() > 0 {
-        // Counts and kinds, never destinations: a webhook url is where the sink's
-        // secret is keyed, and a startup log is the least private file on the host.
+        // Counts and kinds only: URLs key the sink secrets.
         tracing::info!(
             sinks = application.routes.len(),
             kinds = ?application.routes.kinds(),
@@ -208,19 +168,16 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let cors_origins = config.server.cors_origins.clone();
     let serve_docs = config.server.docs;
     let state = actix_web::web::Data::new(application.state);
+    let streams = std::sync::Arc::clone(&state.streams);
     let readiness = actix_web::web::Data::new(health::Dependencies::new(
         application.store.clone(),
         application.transports.names(),
     ));
-    // The same registry the HTTP layer and the drain loop write to — `/metrics`
-    // renders it, and a second one here would export an empty document while
-    // everything counted into the first.
+    // One registry shared with the HTTP layer and drain loop, which `/metrics` renders.
     let exporter = actix_web::web::Data::new(application.metrics.clone());
 
     let server = actix_web::HttpServer::new(move || {
-        // Closed by default (§5.1): an origin that is not listed cannot call the
-        // API from a browser, and there is no cookie to protect because there is no
-        // session at all.
+        // Closed by default (§5.1); there are no cookies to protect.
         let mut cors = actix_cors::Cors::default()
             .allow_any_method()
             .allow_any_header()
@@ -230,9 +187,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             cors = cors.allowed_origin(origin);
         }
 
-        // The routes register themselves *and* their OpenAPI paths in one pass, so
-        // the document Scalar serves is the route table rather than a description
-        // of it (design §3.2 — the `contract` job diffs the same document).
+        // Routes register with their OpenAPI paths, so the docs are the route table (§3.2).
         let (app, api) = actix_web::App::new()
             .into_utoipa_app()
             .openapi(openapi::base())
@@ -241,25 +196,22 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             .app_data(exporter.clone())
             .map(|app| {
                 app.wrap(cors)
-                    // The default format minus the query string (`%U`, not `%r`):
-                    // the filesystem store's `?token=` is a bearer credential, and
-                    // an access log is not where one should outlive its request.
+                    .wrap(security_headers())
+                    // Default format without the query string: `?token=` is a bearer credential.
                     .wrap(
                         actix_web::middleware::Logger::new(
                             r#"%a "%m %U" %s %b "%{Referer}i" "%{User-Agent}i" %T"#,
                         )
                         .log_target("http"),
                     )
-                    // Outermost of the two, so the access log line lands inside the
-                    // request span rather than beside it (design §13).
+                    // Outermost, so the access log line lands inside the request span (§13).
                     .wrap(actix_web::middleware::from_fn(telemetry::continue_trace))
                     .configure(health::configure)
             })
             .configure(notify_http_actix::configure)
             .split_for_parts();
 
-        // `[server] docs = false` unmounts it entirely rather than answering `401`:
-        // a route that exists and refuses still confirms it is there.
+        // Unmounted rather than `401`, which would confirm it exists.
         if serve_docs {
             app.service(utoipa_scalar::Scalar::with_url("/api/docs", api))
         } else {
@@ -267,8 +219,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         }
     })
     .bind(bind)?
-    // A drain that outlives an in-flight publish, and no longer: SSE connections
-    // are long-lived by design, so waiting for *them* would never finish.
+    // Long enough for an in-flight publish; SSE connections never finish by themselves.
     .shutdown_timeout(15)
     .run();
 
@@ -291,19 +242,15 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         },
         store.clone(),
     ));
+    let leases = actix_web::rt::spawn(renew_leases(streams));
 
     tracing::info!(%bind, "weebo-notify is listening");
     let outcome = server.await;
 
-    // Everything below happens while the runtime is still alive, and that is the
-    // whole point. A sqlx connection dropped after it has gone panics in its
-    // destructor, and a panic in a destructor aborts the process — so a `SIGTERM`
-    // would end in a core dump rather than a clean exit.
-    //
-    // Stopping the jobs first also releases the leader lock immediately, rather
-    // than leaving the instance leaderless until the connection is recycled
-    // (design §11).
+    // Stop jobs while the runtime lives: dropping a sqlx connection after it aborts the process.
+    // This also releases the leader lock immediately (§11).
     jobs.abort();
+    leases.abort();
     let _ = jobs.await;
     pump.abort();
     let _ = pump.await;
@@ -311,33 +258,34 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
 
     tracing::info!("stopped");
 
-    // Last, so the line above is in the batch: the exporter holds finished spans
-    // until its next tick, and a process that exits without flushing drops exactly
-    // the spans of whatever made somebody restart it.
+    // Last, so everything above is flushed.
     traces.shutdown();
 
     outcome.map_err(Into::into)
 }
 
+/// Headers every response carries unless its route set its own: no sniffing, no
+/// framing, no caching of authorised JSON, and no `?token=` leaking via `Referer`.
+fn security_headers() -> actix_web::middleware::DefaultHeaders {
+    actix_web::middleware::DefaultHeaders::new()
+        .add(("x-content-type-options", "nosniff"))
+        .add(("x-frame-options", "DENY"))
+        .add(("referrer-policy", "no-referrer"))
+        .add(("cache-control", "no-store"))
+}
+
 /// Everything the reconciliation half of [`background`] needs (design §11).
-///
-/// One struct rather than a list of parameters, and it earns its place: these move
-/// together — the file is re-read on `SIGHUP`, applied by the reconciler, and left
-/// on the log for the console. Passing them separately made the signature longer
-/// than the loop it configures.
 struct Reconciling {
     reconciler: reconcile::Reconciler,
     log: notify_app::ReconciliationLog,
     config: config::Config,
-    /// The path and not the contents, because the point of the signal is that the
-    /// file has changed since it was last read.
+    /// The path, re-read on `SIGHUP`.
     path: std::path::PathBuf,
-    /// The set the token exchange consults, swapped on reload (§5.3, D31).
+    /// The set the token exchange consults, swapped on reload (§5.3).
     policies: notify_app::LivePolicies,
     /// Who may run a pass right now: one replica at a time.
     election: std::sync::Arc<dyn notify_ports::LeaderElection>,
-    /// This replica read its file (at boot or on `SIGHUP`) and has not managed to
-    /// apply it yet, so its next timer pass is a full one.
+    /// Set when this replica read its file but has not applied it yet, so the next timer pass is full.
     owed: bool,
 }
 
@@ -346,22 +294,16 @@ impl Reconciling {
     async fn on_hangup(&mut self) {
         match config::Config::load(&self.path) {
             Ok(file) => {
-                // Named before anything is applied: an operator who edited
-                // `[database]` and sent a signal has to learn that here, and not
-                // from the absence of an effect.
+                // Named before anything is applied, so the operator learns it was ignored.
                 for pending in self.config.unreloadable(&file) {
                     tracing::warn!(%pending, "changed in the file, not adopted by a reload");
                 }
                 self.config = self.config.reloaded_from(file);
 
-                // Swapped before the pass, not after: the pass journals what the
-                // trust policies became (§13, D28), and an entry written before the
-                // process adopted them would date the change to the wrong hour.
+                // Swapped before the pass, so the journal dates the change correctly (§13).
                 match wiring::trust_policies(&self.config) {
                     Ok(policies) => self.policies.adopt(policies),
-                    // The rest of the reload still stands. A malformed pattern is
-                    // one section being wrong, and refusing the channels because of
-                    // it would make one typo undo an unrelated edit.
+                    // The rest of the reload still stands.
                     Err(error) => tracing::warn!(
                         ?error,
                         "SIGHUP: the trust policies did not build; keeping the running set"
@@ -370,9 +312,7 @@ impl Reconciling {
 
                 tracing::info!("configuration re-read on SIGHUP");
             }
-            // The last good configuration keeps running. A reload is not a restart,
-            // and a typo must not take a serving replica down — least of all at the
-            // moment somebody is editing the file.
+            // The last good configuration keeps running: a typo must not take a replica down.
             Err(error) => tracing::warn!(
                 ?error,
                 "SIGHUP: the configuration did not load; keeping the running one"
@@ -384,23 +324,12 @@ impl Reconciling {
     }
 
     /// One reconciliation pass, recorded for the console (§10.4bis).
-    ///
-    /// # Which replica's file wins
-    ///
-    /// Every replica holds its own copy of the file, and during a rolling deploy or
-    /// after a `SIGHUP` that reached only some pods those copies differ. Letting
-    /// each apply its own every minute would have them undo each other — an old pod
-    /// archiving the channel a new one just declared, disabling the account it just
-    /// re-enabled. So a file is applied **when it is read** (boot, `SIGHUP`), and
-    /// the timer only re-applies the file the database last recorded (which is
-    /// what lets a binding waiting on a first login resolve): a timer pass whose
-    /// copy differs belongs to a replica that is out of date, and it stands aside
-    /// rather than winning by being scheduled later.
+    /// A file is applied when read (boot, `SIGHUP`); timer passes only re-apply what the database
+    /// last recorded, and a replica whose copy differs stands aside so stale pods cannot undo new ones.
     async fn pass(&mut self, trigger: notify_app::Trigger) {
         let full = self.owed || trigger != notify_app::Trigger::Timer;
 
-        // One pass at a time across the whole deployment: two at once write the
-        // same rows in different orders and journal the same change twice.
+        // One pass at a time across the deployment.
         let Some(guard) = lead_reconciliation(self.election.as_ref(), full).await else {
             return;
         };
@@ -426,8 +355,7 @@ impl Reconciling {
         match self.reconciler.execute(&self.config).await {
             Ok(report) => {
                 self.owed = false;
-                // Recorded only on success: a failed pass must leave the last good
-                // one on the console, not replace it with nothing.
+                // Recorded only on success, keeping the last good pass on the console.
                 self.log
                     .record(report.as_pass(OffsetDateTime::now_utc(), trigger));
                 tracing::info!(
@@ -448,11 +376,7 @@ impl Reconciling {
     }
 }
 
-/// Take the reconcile lock, waiting for it when `wait` is set.
-///
-/// A timer pass does not wait: somebody else running one is as good. A pass that
-/// applies a freshly read file does, for as long as a pass plausibly takes, because
-/// giving up would leave that file unapplied until the next timer.
+/// Take the reconcile lock; a fresh-file pass waits (`wait`), a timer pass does not.
 async fn lead_reconciliation(
     election: &dyn notify_ports::LeaderElection,
     wait: bool,
@@ -482,13 +406,8 @@ fn every(period: std::time::Duration) -> actix_web::rt::time::Interval {
     interval
 }
 
-/// The background loops: TTL purge, stale closure, do-not-disturb digests, sink
-/// delivery and reconciliation, all leader-tolerant.
-///
-/// Each job is its own loop and the loops run concurrently. One `select!` over all
-/// of them ran each arm's body to completion before polling the next, so a
-/// reconcile pass or an SMTP send that took a minute held the five-second sink
-/// tick for that whole minute.
+/// The leader-tolerant background loops: TTL purge, stale closure, DND digests, sink delivery and
+/// reconciliation. Separate concurrent loops, so a slow job never delays another's tick.
 async fn background(
     purge: notify_app::PurgeExpired,
     close_stale: notify_app::CloseStale,
@@ -500,7 +419,7 @@ async fn background(
 ) {
     let purging = async {
         let mut tick = every(JOB_INTERVAL);
-        // The first tick fires immediately, and every job has just run at boot.
+        // The first tick fires immediately; every job just ran at boot.
         tick.tick().await;
         loop {
             tick.tick().await;
@@ -512,24 +431,19 @@ async fn background(
                         events_pruned = report.events_pruned,
                         "purge pass complete"
                     );
-                    // Rides on the purge's leadership: a counter whose window rolled
-                    // over is dead weight, and one replica clearing it is enough.
+                    // Rides on the purge's leadership.
                     if let Err(error) = store.prune_rate_limits(OffsetDateTime::now_utc()).await {
                         tracing::warn!(?error, "could not prune rate-limit counters");
                     }
                 }
-                // Not leading is the normal answer on all but one replica.
+                // Not leading is normal on all but one replica.
                 Ok(_) => {}
                 Err(error) => tracing::warn!(?error, "purge pass failed; retrying next tick"),
             }
         }
     };
 
-    // Its own loop on the same interval rather than a step inside the purge: the
-    // two are independent jobs with independent leader locks, and a purge that
-    // fails must not stop notifications from being closed. What this closes
-    // becomes what the *next* purge can expire — a lifecycle notification does
-    // not age until it closes (§7.2bis).
+    // Independent of the purge (separate lock); what this closes the next purge can expire (§7.2bis).
     let closing = async {
         let mut tick = every(JOB_INTERVAL);
         tick.tick().await;
@@ -549,8 +463,7 @@ async fn background(
         }
     };
 
-    // A quiet period ending is the absence of an event, so somebody has to look —
-    // which is why this is a timer rather than a moment (§7.4).
+    // A quiet period ending is the absence of an event, so poll (§7.4).
     let digesting = async {
         let mut tick = every(JOB_INTERVAL);
         tick.tick().await;
@@ -568,8 +481,7 @@ async fn background(
         }
     };
 
-    // The sinks of §7.1bis. Logged only when something moved: a quiet instance
-    // ticks twelve times a minute, and a line each would bury everything else.
+    // The sinks of §7.1bis; logged only when something moved.
     let draining = async {
         let mut tick = every(SINK_INTERVAL);
         tick.tick().await;
@@ -587,10 +499,7 @@ async fn background(
                         );
                     }
 
-                    // `sink_dlq_depth` is refreshed by the leader and by nobody else
-                    // (§13): a follower publishing zero would claim nothing is stuck
-                    // on an instance where something is. The series is simply absent
-                    // on the replicas that do not know.
+                    // Leader-only (§13): followers leave the series absent rather than claim zero.
                     if report.led {
                         match drain.dead_letter_depth().await {
                             Ok(depths) => metrics.dlq_depth(&depths),
@@ -614,19 +523,24 @@ async fn background(
     );
 }
 
-/// Reconciliation on the timer and on `SIGHUP`.
-///
-/// The two share one loop because they share `reconciling`: a reload and a timer
-/// pass over the same configuration must not interleave.
+/// Every replica keeps its own stream leases alive and closes the ones their owner
+/// disconnected from another replica (§8.2).
+async fn renew_leases(streams: std::sync::Arc<notify_http_actix::StreamSlots>) {
+    let mut tick = every(notify_persistence_pg::LEASE_RENEW);
+    loop {
+        tick.tick().await;
+        if let Err(error) = streams.renew().await {
+            tracing::warn!(?error, "could not renew stream leases");
+        }
+    }
+}
+
+/// Reconciliation on the timer and on `SIGHUP`, in one loop so passes never interleave.
 async fn reconcile_loop(mut reconciling: Reconciling) {
     let mut tick = every(RECONCILE_INTERVAL);
     tick.tick().await;
 
-    // A process that cannot listen for the signal keeps running: reconciliation
-    // still happens at boot and on the timer, so the failure is "no SIGHUP" and not
-    // "no server". It is reported rather than swallowed, because an operator
-    // sending a signal into a process that never registered for it would get
-    // silence and no way to tell why.
+    // Without a SIGHUP handler we keep running, but report it.
     let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
         Ok(stream) => Some(stream),
         Err(error) => {
@@ -637,8 +551,7 @@ async fn reconcile_loop(mut reconciling: Reconciling) {
 
     loop {
         tokio::select! {
-            // `Option::None` would make this branch fire in a loop, so it is
-            // disabled outright when the handler could not be installed.
+            // Disabled outright, or `None` would make this branch spin.
             Some(()) = async {
                 match hangups.as_mut() {
                     Some(stream) => stream.recv().await,
@@ -647,5 +560,48 @@ async fn reconcile_loop(mut reconciling: Reconciling) {
             } => reconciling.on_hangup().await,
             _ = tick.tick() => reconciling.pass(notify_app::Trigger::Timer).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
+
+    use actix_web::{App, HttpResponse, test, web};
+
+    #[actix_web::test]
+    async fn responses_carry_the_security_headers_without_overriding_a_route() {
+        let app = test::init_service(
+            App::new()
+                .wrap(super::security_headers())
+                .route("/json", web::get().to(HttpResponse::Ok))
+                .route(
+                    "/bytes",
+                    web::get().to(|| async {
+                        HttpResponse::Ok()
+                            .insert_header(("cache-control", "private, max-age=60"))
+                            .finish()
+                    }),
+                ),
+        )
+        .await;
+
+        let json =
+            test::call_service(&app, test::TestRequest::get().uri("/json").to_request()).await;
+        for (name, value) in [
+            ("x-content-type-options", "nosniff"),
+            ("x-frame-options", "DENY"),
+            ("referrer-policy", "no-referrer"),
+            ("cache-control", "no-store"),
+        ] {
+            assert_eq!(json.headers().get(name).unwrap(), value, "{name}");
+        }
+
+        let bytes =
+            test::call_service(&app, test::TestRequest::get().uri("/bytes").to_request()).await;
+        assert_eq!(
+            bytes.headers().get("cache-control").unwrap(),
+            "private, max-age=60"
+        );
     }
 }

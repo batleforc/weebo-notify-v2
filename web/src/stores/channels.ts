@@ -1,11 +1,4 @@
-/**
- * The channels the signed-in principal can see (§8, `GET /channels`).
- *
- * "Can see" is the server's word, not ours: access is derived per request from the
- * token's groups and the stored memberships (§14.2), so this store never decides
- * anything — it renders what came back. A channel that stops being visible simply
- * stops being in the next answer.
- */
+/** The channels the principal can see (§8). The server decides visibility (§14.2). */
 
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";

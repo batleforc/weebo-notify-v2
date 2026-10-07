@@ -78,7 +78,7 @@ pub mod types {
     ///      }
     ///    },
     ///    {
-    ///      "description": "Acknowledge. Idempotent per user and per key: clicking twice is a no-op\n(design §2.3, scenario T4).",
+    ///      "description": "Acknowledge; idempotent per user and key (§2.3, T4).",
     ///      "type": "object",
     ///      "required": [
     ///        "key",
@@ -129,7 +129,7 @@ pub mod types {
     ///      }
     ///    },
     ///    {
-    ///      "description": "Pick exactly one option. Last pick wins, consistently with the rest of the\nmodel (design §2.2).",
+    ///      "description": "Pick exactly one option; the last pick wins (§2.2).",
     ///      "type": "object",
     ///      "required": [
     ///        "key",
@@ -202,8 +202,7 @@ pub mod types {
             ///Where to go. `http(s)` only, checked here and again before opening.
             url: ::std::string::String,
         },
-        /**Acknowledge. Idempotent per user and per key: clicking twice is a no-op
-(design §2.3, scenario T4).*/
+        ///Acknowledge; idempotent per user and key (§2.3, T4).
         #[serde(rename = "ack")]
         Ack {
             key: ActionKey,
@@ -219,8 +218,7 @@ pub mod types {
             #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
             placeholder: ::std::option::Option<::std::string::String>,
         },
-        /**Pick exactly one option. Last pick wins, consistently with the rest of the
-model (design §2.2).*/
+        ///Pick exactly one option; the last pick wins (§2.2).
         #[serde(rename = "choice")]
         Choice {
             key: ActionKey,
@@ -239,15 +237,14 @@ model (design §2.2).*/
             scope: SilenceScope,
         },
     }
-    /**The key an `ack` or `choice` action is addressed by. Interactions are
-deduplicated per user *and* per key (design §2.3), so it has to be stable
-across revisions — which is why the publisher chooses it.*/
+    /**The publisher-chosen key an `ack` or `choice` action is addressed by, stable
+across revisions (interactions dedup per user and key, §2.3).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The key an `ack` or `choice` action is addressed by. Interactions are\ndeduplicated per user *and* per key (design §2.3), so it has to be stable\nacross revisions — which is why the publisher chooses it.",
+    ///  "description": "The publisher-chosen key an `ack` or `choice` action is addressed by, stable\nacross revisions (interactions dedup per user and key, §2.3).",
     ///  "type": "string"
     ///}
     /// ```
@@ -292,17 +289,14 @@ across revisions — which is why the publisher chooses it.*/
             self.0.fmt(f)
         }
     }
-    /**The action set of one revision: at most [`MAX_ACTIONS`], with unique keys.
-
-Order is meaningful — it is display priority. Mobile push transports only
-surface the first two or three, the rest are reachable by opening the client
-(design §2.3).*/
+    /**The action set of one revision: at most [`MAX_ACTIONS`] with unique keys, in
+display priority order (§2.3).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The action set of one revision: at most [`MAX_ACTIONS`], with unique keys.\n\nOrder is meaningful — it is display priority. Mobile push transports only\nsurface the first two or three, the rest are reachable by opening the client\n(design §2.3).",
+    ///  "description": "The action set of one revision: at most [`MAX_ACTIONS`] with unique keys, in\ndisplay priority order (§2.3).",
     ///  "type": "array",
     ///  "items": {
     ///    "$ref": "#/components/schemas/Action"
@@ -362,16 +356,105 @@ surface the first two or three, the rest are reachable by opening the client
         ///What they may do there.
         pub scopes: ::std::vec::Vec<Scope>,
     }
-    /**The public half of an API key: everything `GET /apikeys` may show (design §5.2).
-
-The secret is returned exactly once, at creation, and is not reconstructible
-from this — by design and by test (scenario T12).*/
+    ///One alert of an Alertmanager webhook.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The public half of an API key: everything `GET /apikeys` may show (design §5.2).\n\nThe secret is returned exactly once, at creation, and is not reconstructible\nfrom this — by design and by test (scenario T12).",
+    ///  "description": "One alert of an Alertmanager webhook.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "status"
+    ///  ],
+    ///  "properties": {
+    ///    "annotations": {
+    ///      "description": "`summary` joins the title, `description` is the body.",
+    ///      "type": "object",
+    ///      "additionalProperties": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "fingerprint": {
+    ///      "description": "Upsert key, so a resolution revises the notification its firing created.",
+    ///      "type": "string"
+    ///    },
+    ///    "labels": {
+    ///      "description": "`alertname` and `severity` are read; `severity`, `job` and `namespace` become tags.",
+    ///      "type": "object",
+    ///      "additionalProperties": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "status": {
+    ///      "description": "`firing` or `resolved`.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Alert {
+        ///`summary` joins the title, `description` is the body.
+        #[serde(
+            default,
+            skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+        )]
+        pub annotations: ::std::collections::HashMap<
+            ::std::string::String,
+            ::std::string::String,
+        >,
+        ///Upsert key, so a resolution revises the notification its firing created.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub fingerprint: ::std::option::Option<::std::string::String>,
+        ///`alertname` and `severity` are read; `severity`, `job` and `namespace` become tags.
+        #[serde(
+            default,
+            skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+        )]
+        pub labels: ::std::collections::HashMap<
+            ::std::string::String,
+            ::std::string::String,
+        >,
+        ///`firing` or `resolved`.
+        pub status: ::std::string::String,
+    }
+    ///The Alertmanager webhook payload; only the fields used here are described.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The Alertmanager webhook payload; only the fields used here are described.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "alerts"
+    ///  ],
+    ///  "properties": {
+    ///    "alerts": {
+    ///      "description": "One notification is upserted per alert.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Alert"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AlertmanagerBody {
+        ///One notification is upserted per alert.
+        pub alerts: ::std::vec::Vec<Alert>,
+    }
+    ///The public half of an API key: everything `GET /apikeys` may show (§5.2, T12).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The public half of an API key: everything `GET /apikeys` may show (§5.2, T12).",
     ///  "type": "object",
     ///  "required": [
     ///    "channels",
@@ -383,7 +466,7 @@ from this — by design and by test (scenario T12).*/
     ///  ],
     ///  "properties": {
     ///    "channels": {
-    ///      "description": "Which channels it may do it in. Empty means none: a key with no channel\nlist is inert, never universal.",
+    ///      "description": "Which channels it may do it in; empty means none.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/ChannelId"
@@ -395,7 +478,7 @@ from this — by design and by test (scenario T12).*/
     ///      "format": "date-time"
     ///    },
     ///    "expires_at": {
-    ///      "description": "Optional expiry. Absent is allowed on purpose: rotation is a policy an\noperator may want, not one the product imposes (design §5.2).",
+    ///      "description": "Optional expiry; rotation is left to operator policy (§5.2).",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -413,7 +496,7 @@ from this — by design and by test (scenario T12).*/
     ///      ]
     ///    },
     ///    "last_used_at": {
-    ///      "description": "Last successful authentication. What makes \"is anything still using this?\"\nanswerable before a revocation.",
+    ///      "description": "Last successful authentication.",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -427,7 +510,7 @@ from this — by design and by test (scenario T12).*/
     ///      "$ref": "#/components/schemas/ApiKeyPrefix"
     ///    },
     ///    "publish_per_minute": {
-    ///      "description": "This key's own publish ceiling, overriding the channel's (design §8.2, D24).\n\n`None` on every key by default — the channel's own `publish_per_minute`\nstill applies, this only *narrows* it further for one noisy key. Settable\nonly by a platform-admin (§5.4): a key that could raise its own ceiling\nwould not be a ceiling.",
+    ///      "description": "This key's own publish ceiling, narrowing the channel's (§8.2); set by platform admins only.",
     ///      "type": [
     ///        "integer",
     ///        "null"
@@ -456,33 +539,25 @@ from this — by design and by test (scenario T12).*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiKey {
-        /**Which channels it may do it in. Empty means none: a key with no channel
-list is inert, never universal.*/
+        ///Which channels it may do it in; empty means none.
         pub channels: ::std::vec::Vec<ChannelId>,
         ///When it was created.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        /**Optional expiry. Absent is allowed on purpose: rotation is a policy an
-operator may want, not one the product imposes (design §5.2).*/
+        ///Optional expiry; rotation is left to operator policy (§5.2).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         pub id: ApiKeyId,
         ///A label so a human can tell two keys apart before revoking one.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub label: ::std::option::Option<::std::string::String>,
-        /**Last successful authentication. What makes "is anything still using this?"
-answerable before a revocation.*/
+        ///Last successful authentication.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub last_used_at: ::std::option::Option<
             ::chrono::DateTime<::chrono::offset::Utc>,
         >,
         pub owner: ApiKeyOwner,
         pub prefix: ApiKeyPrefix,
-        /**This key's own publish ceiling, overriding the channel's (design §8.2, D24).
-
-`None` on every key by default — the channel's own `publish_per_minute`
-still applies, this only *narrows* it further for one noisy key. Settable
-only by a platform-admin (§5.4): a key that could raise its own ceiling
-would not be a ceiling.*/
+        ///This key's own publish ceiling, narrowing the channel's (§8.2); set by platform admins only.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
         ///Set on revocation, which takes effect immediately.
@@ -552,7 +627,7 @@ would not be a ceiling.*/
     ///  "type": "object",
     ///  "properties": {
     ///    "publish_per_minute": {
-    ///      "description": "The new ceiling, or `null` to remove it and fall back to the channel's own\n(design §8.2).",
+    ///      "description": "The new ceiling, or `null` to fall back to the channel's own (design §8.2).",
     ///      "type": [
     ///        "integer",
     ///        "null"
@@ -566,8 +641,7 @@ would not be a ceiling.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiKeyLimitBody {
-        /**The new ceiling, or `null` to remove it and fall back to the channel's own
-(design §8.2).*/
+        ///The new ceiling, or `null` to fall back to the channel's own (design §8.2).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
     }
@@ -578,21 +652,16 @@ would not be a ceiling.*/
             }
         }
     }
-    /**The owner of an API key, which is what decides who a publish is attributed to
-(design §5.2).
-
-Modelled as its own type rather than as a bare [`Principal`] so that the
-authentication adapter cannot accidentally mint a `CiJob` principal out of a
-long-lived key: federation and keys are different doors.*/
+    ///The owner of an API key, which decides publish attribution (§5.2).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The owner of an API key, which is what decides who a publish is attributed to\n(design §5.2).\n\nModelled as its own type rather than as a bare [`Principal`] so that the\nauthentication adapter cannot accidentally mint a `CiJob` principal out of a\nlong-lived key: federation and keys are different doors.",
+    ///  "description": "The owner of an API key, which decides publish attribution (§5.2).",
     ///  "oneOf": [
     ///    {
-    ///      "description": "A personal key. Scripting for one human; never the identity a team bot runs\non, or offboarding that human kills the bot (design §5.2).",
+    ///      "description": "A personal key, for one human's scripting; never for team bots (§5.2).",
     ///      "type": "object",
     ///      "required": [
     ///        "id",
@@ -655,8 +724,7 @@ long-lived key: federation and keys are different doors.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "owner", content = "id")]
     pub enum ApiKeyOwner {
-        /**A personal key. Scripting for one human; never the identity a team bot runs
-on, or offboarding that human kills the bot (design §5.2).*/
+        ///A personal key, for one human's scripting; never for team bots (§5.2).
         #[serde(rename = "user")]
         User(UserId),
         ///A service account key — the recommended shape for anything durable.
@@ -732,14 +800,13 @@ on, or offboarding that human kills the bot (design §5.2).*/
             self.0.fmt(f)
         }
     }
-    /**An uploaded attachment, referenced by a payload rather than embedded in it
-(design §2.3).*/
+    ///An uploaded attachment, referenced by a payload rather than embedded (§2.3).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "An uploaded attachment, referenced by a payload rather than embedded in it\n(design §2.3).",
+    ///  "description": "An uploaded attachment, referenced by a payload rather than embedded (§2.3).",
     ///  "type": "string"
     ///}
     /// ```
@@ -784,31 +851,13 @@ on, or offboarding that human kills the bot (design §5.2).*/
             self.0.fmt(f)
         }
     }
-    /**Who performed an audited action.
-
-# Why this is not just a [`Principal`]
-
-§5 has four kinds of principal and every one of them authenticated: a person, a
-bot, a channel key, a CI job. The reconciler is none of them. It applies a file
-(§11), at boot or on `SIGHUP`, and nobody "did" that — which is exactly why §13's
-promise that trust policy changes are journalled had no emitter for so long
-(D28): there was no honest value to put in this field.
-
-Widening it here rather than adding a fifth `Principal` is deliberate. A
-`Principal` is what publishes, holds a membership and reads a channel; a fifth
-variant would be representable in all of those, and every match over the four
-would gain an arm that means "cannot happen". The configuration is an actor of
-the **audit log** and of nothing else, so it is named here and nowhere else.
-
-The wire form stays flat — `{"kind":"user","id":…}` beside `{"kind":
-"configuration"}` — so a reader that already switches on `kind` gains a case
-rather than a nesting level.*/
+    ///Who performed an audited action: an authenticated principal, or the GitOps configuration.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Who performed an audited action.\n\n# Why this is not just a [`Principal`]\n\n§5 has four kinds of principal and every one of them authenticated: a person, a\nbot, a channel key, a CI job. The reconciler is none of them. It applies a file\n(§11), at boot or on `SIGHUP`, and nobody \"did\" that — which is exactly why §13's\npromise that trust policy changes are journalled had no emitter for so long\n(D28): there was no honest value to put in this field.\n\nWidening it here rather than adding a fifth `Principal` is deliberate. A\n`Principal` is what publishes, holds a membership and reads a channel; a fifth\nvariant would be representable in all of those, and every match over the four\nwould gain an arm that means \"cannot happen\". The configuration is an actor of\nthe **audit log** and of nothing else, so it is named here and nowhere else.\n\nThe wire form stays flat — `{\"kind\":\"user\",\"id\":…}` beside `{\"kind\":\n\"configuration\"}` — so a reader that already switches on `kind` gains a case\nrather than a nesting level.",
+    ///  "description": "Who performed an audited action: an authenticated principal, or the GitOps configuration.",
     ///  "oneOf": [
     ///    {
     ///      "$ref": "#/components/schemas/Configured"
@@ -866,10 +915,10 @@ rather than a nesting level.*/
     ///      "$ref": "#/components/schemas/ChannelId"
     ///    },
     ///    "detail": {
-    ///      "description": "Extra context: the scopes granted, the previous value.\n\nNever secrets, never payloads. An audit log that quotes an API key is worse\nthan no audit log, because it is a credential store nobody thinks of as one."
+    ///      "description": "Extra context such as the scopes granted or the previous value; never secrets or payloads."
     ///    },
     ///    "target": {
-    ///      "description": "What it was done to, e.g. an id. Absent when the action has no single\ntarget.",
+    ///      "description": "What it was done to, e.g. an id. Absent when the action has no single target.",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -888,31 +937,20 @@ rather than a nesting level.*/
         pub at: ::chrono::DateTime<::chrono::offset::Utc>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub channel: ::std::option::Option<ChannelId>,
-        /**Extra context: the scopes granted, the previous value.
-
-Never secrets, never payloads. An audit log that quotes an API key is worse
-than no audit log, because it is a credential store nobody thinks of as one.*/
+        ///Extra context such as the scopes granted or the previous value; never secrets or payloads.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub detail: ::std::option::Option<::serde_json::Value>,
-        /**What it was done to, e.g. an id. Absent when the action has no single
-target.*/
+        ///What it was done to, e.g. an id. Absent when the action has no single target.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub target: ::std::option::Option<::std::string::String>,
     }
-    /**A principal as it is *rendered*: the identity plus the label a client shows
-next to a revision, an interaction or a receipt (design §2.4, §8.1).
-
-Carried alongside events rather than fetched, because there is deliberately no
-endpoint that reads someone else's profile: embedding it where it is legitimate
-is what mechanically enforces "visible only through a shared channel"
-(design §2.4). Profile *management* arrives with M2; M1 only needs to be able
-to say who published.*/
+    ///A principal plus the display label clients show next to revisions, interactions and receipts (§2.4, §8.1).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A principal as it is *rendered*: the identity plus the label a client shows\nnext to a revision, an interaction or a receipt (design §2.4, §8.1).\n\nCarried alongside events rather than fetched, because there is deliberately no\nendpoint that reads someone else's profile: embedding it where it is legitimate\nis what mechanically enforces \"visible only through a shared channel\"\n(design §2.4). Profile *management* arrives with M2; M1 only needs to be able\nto say who published.",
+    ///  "description": "A principal plus the display label clients show next to revisions, interactions and receipts (§2.4, §8.1).",
     ///  "allOf": [
     ///    {
     ///      "$ref": "#/components/schemas/Principal"
@@ -921,7 +959,7 @@ to say who published.*/
     ///      "type": "object",
     ///      "properties": {
     ///        "display_name": {
-    ///          "description": "The name to show. Absent for a principal that has no profile — an anonymous\nchannel key — in which case clients fall back to the reference.",
+    ///          "description": "The name to show; absent for principals without a profile (clients fall back to the reference).",
     ///          "type": [
     ///            "string",
     ///            "null"
@@ -937,16 +975,14 @@ to say who published.*/
     #[serde(untagged)]
     pub enum Author {
         Variant0 {
-            /**The name to show. Absent for a principal that has no profile — an anonymous
-channel key — in which case clients fall back to the reference.*/
+            ///The name to show; absent for principals without a profile (clients fall back to the reference).
             #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             id: UserId,
             kind: AuthorVariant0Kind,
         },
         Variant1 {
-            /**The name to show. Absent for a principal that has no profile — an anonymous
-channel key — in which case clients fall back to the reference.*/
+            ///The name to show; absent for principals without a profile (clients fall back to the reference).
             #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             id: ServiceAccountId,
@@ -954,16 +990,14 @@ channel key — in which case clients fall back to the reference.*/
         },
         Variant2 {
             channel: ChannelId,
-            /**The name to show. Absent for a principal that has no profile — an anonymous
-channel key — in which case clients fall back to the reference.*/
+            ///The name to show; absent for principals without a profile (clients fall back to the reference).
             #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             key: ApiKeyId,
             kind: AuthorVariant2Kind,
         },
         Variant3 {
-            /**The name to show. Absent for a principal that has no profile — an anonymous
-channel key — in which case clients fall back to the reference.*/
+            ///The name to show; absent for principals without a profile (clients fall back to the reference).
             #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             ///The OIDC issuer that vouched for the job.
@@ -1257,21 +1291,13 @@ channel key — in which case clients fall back to the reference.*/
             value.parse()
         }
     }
-    /**The body of an avatar upload: the image bytes, nothing wrapping them.
-
-Nothing reads it: the handler takes `web::Bytes` directly. It exists so the
-document has a name for "raw bytes".
-
-A named schema rather than an inline one because the wire type has to be
-`string` with `format: binary` — that is how OpenAPI spells "raw bytes", and a
-generator that reads anything else refuses the document outright rather than
-guessing (which is what `Vec<u8>` did: an array of integers).*/
+    ///The body of an avatar upload: the raw image bytes (`format: binary`).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The body of an avatar upload: the image bytes, nothing wrapping them.\n\nNothing reads it: the handler takes `web::Bytes` directly. It exists so the\ndocument has a name for \"raw bytes\".\n\nA named schema rather than an inline one because the wire type has to be\n`string` with `format: binary` — that is how OpenAPI spells \"raw bytes\", and a\ngenerator that reads anything else refuses the document outright rather than\nguessing (which is what `Vec<u8>` did: an array of integers).",
+    ///  "description": "The body of an avatar upload: the raw image bytes (`format: binary`).",
     ///  "type": "string",
     ///  "format": "binary"
     ///}
@@ -1340,7 +1366,7 @@ guessing (which is what `Vec<u8>` did: an array of integers).*/
     ///      ]
     ///    },
     ///    "group_access": {
-    ///      "description": "Access granted to whole identity-provider groups (design §11).\n\nResolved against the `groups` claim of the caller's token rather than stored\nper user — see [`GroupBinding`]. Defaulted on the wire so a client written\nagainst an older build still parses a channel.",
+    ///      "description": "Access granted to whole identity-provider groups (§11), resolved per request.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/GroupBinding"
@@ -1371,11 +1397,7 @@ guessing (which is what `Vec<u8>` did: an array of integers).*/
         ///Human label. Falls back to the id when unset.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
-        /**Access granted to whole identity-provider groups (design §11).
-
-Resolved against the `groups` claim of the caller's token rather than stored
-per user — see [`GroupBinding`]. Defaulted on the wire so a client written
-against an older build still parses a channel.*/
+        ///Access granted to whole identity-provider groups (§11), resolved per request.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub group_access: ::std::vec::Vec<GroupBinding>,
         pub id: ChannelId,
@@ -1384,17 +1406,13 @@ against an older build still parses a channel.*/
         pub origin: Origin,
         pub policy: ChannelPolicy,
     }
-    /**What the console shows for one channel.
-
-Counts rather than lists for members: the console's question is "is this channel
-configured the way we think", and a name here would put somebody's identity on a
-screen belonging to a channel they may not share with the reader (§2.4).*/
+    ///What the console shows for one channel; member counts, not names (§2.4).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "What the console shows for one channel.\n\nCounts rather than lists for members: the console's question is \"is this channel\nconfigured the way we think\", and a name here would put somebody's identity on a\nscreen belonging to a channel they may not share with the reader (§2.4).",
+    ///  "description": "What the console shows for one channel; member counts, not names (§2.4).",
     ///  "type": "object",
     ///  "required": [
     ///    "group_bindings",
@@ -1514,7 +1532,7 @@ screen belonging to a channel they may not share with the reader (§2.4).*/
     ///      "$ref": "#/components/schemas/Priority"
     ///    },
     ///    "publish_per_minute": {
-    ///      "description": "This channel's own publish ceiling, per minute, overriding the 600/min of\ndesign §8.2. `None` means the published default applies.\n\n**GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),\nand deliberately absent from the `PATCH /channels/{id}` body: a publisher\nwho could raise their own channel's ceiling through the API would be a\npublisher for whom the ceiling is a suggestion. A dynamic channel has no\nconfiguration file to be named in, so it keeps the default — which is the\nright answer rather than a gap, the default being what §8.2 publishes.\n\nDefaulted on the wire so a policy stored before this field existed still\ndeserialises; the policy is persisted as JSON, so there is no column and no\nmigration behind this.",
+    ///      "description": "This channel's own publish ceiling per minute, overriding the §8.2 default;\nset through GitOps only (§11).",
     ///      "type": [
     ///        "integer",
     ///        "null"
@@ -1523,7 +1541,7 @@ screen belonging to a channel they may not share with the reader (§2.4).*/
     ///      "minimum": 0.0
     ///    },
     ///    "receipts_enabled": {
-    ///      "description": "Whether delivery and read receipts are collected and shown as \"seen by\n3/5\" (design §7.3). Opt-in: a channel that tells publishers who read what\nis a product decision, not a default.",
+    ///      "description": "Whether delivery and read receipts are collected and shown as \"seen by 3/5\" (§7.3); opt-in.",
     ///      "type": "boolean"
     ///    },
     ///    "ttl": {
@@ -1537,51 +1555,22 @@ screen belonging to a channel they may not share with the reader (§2.4).*/
     pub struct ChannelPolicy {
         pub close_after: CloseAfter,
         pub default_priority: Priority,
-        /**This channel's own publish ceiling, per minute, overriding the 600/min of
-design §8.2. `None` means the published default applies.
-
-**GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),
-and deliberately absent from the `PATCH /channels/{id}` body: a publisher
-who could raise their own channel's ceiling through the API would be a
-publisher for whom the ceiling is a suggestion. A dynamic channel has no
-configuration file to be named in, so it keeps the default — which is the
-right answer rather than a gap, the default being what §8.2 publishes.
-
-Defaulted on the wire so a policy stored before this field existed still
-deserialises; the policy is persisted as JSON, so there is no column and no
-migration behind this.*/
+        /**This channel's own publish ceiling per minute, overriding the §8.2 default;
+set through GitOps only (§11).*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
-        /**Whether delivery and read receipts are collected and shown as "seen by
-3/5" (design §7.3). Opt-in: a channel that tells publishers who read what
-is a product decision, not a default.*/
+        ///Whether delivery and read receipts are collected and shown as "seen by 3/5" (§7.3); opt-in.
         pub receipts_enabled: bool,
         pub ttl: TtlPolicy,
     }
-    /**A partial change to a channel's policy (design §8).
-
-Absent fields are left alone, which is what makes this a `PATCH` rather than a
-`PUT`: a client that only wants to lower the TTL ceiling must not have to restate
-the priority and the receipts flag, and restating them is how two admins on two
-screens overwrite each other.
-
-Lifting a ceiling is spelled `"0"`, not `null`, and that is deliberate. §7.2bis
-already gives `"0"` the meaning "unbounded" everywhere a duration appears, and a
-ceiling of *forever* **is** the absence of a ceiling — so there is one spelling
-rather than two. The alternative, a `null` that means something different from an
-absent key, is a shape no generated client can express: progenitor renders every
-optional field with `skip_serializing_if`, so the Rust client could omit the key
-but never send it null (ADR-0009 promises clients come from the contract, which
-means the contract may not describe things they cannot say).
-
-`allow_forever` is not here on purpose — §7.2bis makes unbounded retention an
-operator decision, so it stays in configuration.*/
+    /**A partial change to a channel's policy (design §8): absent fields are left alone.
+Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A partial change to a channel's policy (design §8).\n\nAbsent fields are left alone, which is what makes this a `PATCH` rather than a\n`PUT`: a client that only wants to lower the TTL ceiling must not have to restate\nthe priority and the receipts flag, and restating them is how two admins on two\nscreens overwrite each other.\n\nLifting a ceiling is spelled `\"0\"`, not `null`, and that is deliberate. §7.2bis\nalready gives `\"0\"` the meaning \"unbounded\" everywhere a duration appears, and a\nceiling of *forever* **is** the absence of a ceiling — so there is one spelling\nrather than two. The alternative, a `null` that means something different from an\nabsent key, is a shape no generated client can express: progenitor renders every\noptional field with `skip_serializing_if`, so the Rust client could omit the key\nbut never send it null (ADR-0009 promises clients come from the contract, which\nmeans the contract may not describe things they cannot say).\n\n`allow_forever` is not here on purpose — §7.2bis makes unbounded retention an\noperator decision, so it stays in configuration.",
+    ///  "description": "A partial change to a channel's policy (design §8): absent fields are left alone.\nLifting a ceiling is spelled `\"0\"` (unbounded, §7.2bis), never `null`.",
     ///  "type": "object",
     ///  "properties": {
     ///    "close_after": {
@@ -1764,16 +1753,13 @@ operator decision, so it stays in configuration.*/
             self.0.fmt(f)
         }
     }
-    /**The single-valued tag behind [`AuditActor::Configuration`].
-
-A one-variant enum rather than a unit struct so that serde and utoipa both emit
-the `{"kind":"configuration"}` object the flat wire form needs.*/
+    ///The single-valued tag behind [`AuditActor::Configuration`] (an enum so it serialises as `{"kind":"configuration"}`).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The single-valued tag behind [`AuditActor::Configuration`].\n\nA one-variant enum rather than a unit struct so that serde and utoipa both emit\nthe `{\"kind\":\"configuration\"}` object the flat wire form needs.",
+    ///  "description": "The single-valued tag behind [`AuditActor::Configuration`] (an enum so it serialises as `{\"kind\":\"configuration\"}`).",
     ///  "oneOf": [
     ///    {
     ///      "type": "object",
@@ -1874,6 +1860,67 @@ the `{"kind":"configuration"}` object the flat wire form needs.*/
             value.parse()
         }
     }
+    ///One live connection.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One live connection.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "client",
+    ///    "credential",
+    ///    "current",
+    ///    "id",
+    ///    "opened_at",
+    ///    "transport"
+    ///  ],
+    ///  "properties": {
+    ///    "client": {
+    ///      "description": "What the client calls itself (its `User-Agent`).",
+    ///      "type": "string"
+    ///    },
+    ///    "credential": {
+    ///      "description": "How it signed in: `session`, `key`, `device:<id>` or `ci`.",
+    ///      "type": "string"
+    ///    },
+    ///    "current": {
+    ///      "description": "Whether it uses the credential of this very request (this browser, this CLI).",
+    ///      "type": "boolean"
+    ///    },
+    ///    "id": {
+    ///      "description": "The id `DELETE /streams/{id}` takes.",
+    ///      "type": "string"
+    ///    },
+    ///    "opened_at": {
+    ///      "description": "When it connected.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "transport": {
+    ///      "description": "`sse` or `websocket`.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Connection {
+        ///What the client calls itself (its `User-Agent`).
+        pub client: ::std::string::String,
+        ///How it signed in: `session`, `key`, `device:<id>` or `ci`.
+        pub credential: ::std::string::String,
+        ///Whether it uses the credential of this very request (this browser, this CLI).
+        pub current: bool,
+        ///The id `DELETE /streams/{id}` takes.
+        pub id: ::std::string::String,
+        ///When it connected.
+        pub opened_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///`sse` or `websocket`.
+        pub transport: ::std::string::String,
+    }
     ///The validated body of a revision.
     ///
     /// <details><summary>JSON schema</summary>
@@ -1890,21 +1937,21 @@ the `{"kind":"configuration"}` object the flat wire form needs.*/
     ///      "$ref": "#/components/schemas/Actions"
     ///    },
     ///    "body": {
-    ///      "description": "Markdown. Raw HTML in it is inert by contract, escaped at render time under\na strict CSP (design §2.3, §10.3).",
+    ///      "description": "Markdown; raw HTML is inert, escaped at render time (§2.3, §10.3).",
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
     ///    },
     ///    "group_key": {
-    ///      "description": "Client-side grouping key, and the unit a group-scoped silence acts on\n(design §2.3).",
+    ///      "description": "Client-side grouping key, and the unit a group-scoped silence acts on (§2.3).",
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
     ///    },
     ///    "icon": {
-    ///      "description": "Name of a client-side icon, e.g. `cluster`. Clients that do not know it\nfall back to their default.",
+    ///      "description": "Name of a client-side icon, e.g. `cluster`; unknown names fall back to the default.",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -1924,7 +1971,7 @@ the `{"kind":"configuration"}` object the flat wire form needs.*/
     ///      }
     ///    },
     ///    "title": {
-    ///      "description": "One line, always present. What a push notification shows when there is room\nfor nothing else.",
+    ///      "description": "One line, always present; what a push shows when there is room for nothing else.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -1935,16 +1982,13 @@ the `{"kind":"configuration"}` object the flat wire form needs.*/
     pub struct Content {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub actions: ::std::option::Option<Actions>,
-        /**Markdown. Raw HTML in it is inert by contract, escaped at render time under
-a strict CSP (design §2.3, §10.3).*/
+        ///Markdown; raw HTML is inert, escaped at render time (§2.3, §10.3).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub body: ::std::option::Option<::std::string::String>,
-        /**Client-side grouping key, and the unit a group-scoped silence acts on
-(design §2.3).*/
+        ///Client-side grouping key, and the unit a group-scoped silence acts on (§2.3).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub group_key: ::std::option::Option<::std::string::String>,
-        /**Name of a client-side icon, e.g. `cluster`. Clients that do not know it
-fall back to their default.*/
+        ///Name of a client-side icon, e.g. `cluster`; unknown names fall back to the default.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub icon: ::std::option::Option<::std::string::String>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -1954,24 +1998,16 @@ fall back to their default.*/
         ///Free-form labels, normalised to lowercase and deduplicated.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
-        /**One line, always present. What a push notification shows when there is room
-for nothing else.*/
+        ///One line, always present; what a push shows when there is room for nothing else.
         pub title: ::std::string::String,
     }
-    /**What a publisher sends, before validation.
-
-Unknown fields are tolerated here, unlike in the nested drafts: this struct is
-flattened into the publish request alongside the lifecycle fields (`state`,
-`status`, `ttl`…), and serde cannot reject unknown fields across a flatten.
-The nested drafts keep the check, which is where it earns its keep — a
-misspelled `url` in a `view` action would otherwise silently produce a button
-that goes nowhere.*/
+    ///What a publisher sends, before validation (unknown fields tolerated because it is flattened).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "What a publisher sends, before validation.\n\nUnknown fields are tolerated here, unlike in the nested drafts: this struct is\nflattened into the publish request alongside the lifecycle fields (`state`,\n`status`, `ttl`…), and serde cannot reject unknown fields across a flatten.\nThe nested drafts keep the check, which is where it earns its keep — a\nmisspelled `url` in a `view` action would otherwise silently produce a button\nthat goes nowhere.",
+    ///  "description": "What a publisher sends, before validation (unknown fields tolerated because it is flattened).",
     ///  "type": "object",
     ///  "properties": {
     ///    "actions": {
@@ -2012,7 +2048,7 @@ that goes nowhere.*/
     ///      }
     ///    },
     ///    "title": {
-    ///      "description": "See [`Content::title`].\n\nOptional on the wire, and absent means \"leave it alone\" on a revision — see\n[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so\nan absent title is the same refusal an empty one gets.",
+    ///      "description": "See [`Content::title`]; absent means \"inherit\" on a revision and is refused on creation.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -2039,11 +2075,7 @@ that goes nowhere.*/
         ///See [`Content::tags`].
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
-        /**See [`Content::title`].
-
-Optional on the wire, and absent means "leave it alone" on a revision — see
-[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
-an absent title is the same refusal an empty one gets.*/
+        ///See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
     }
@@ -2074,7 +2106,7 @@ an absent title is the same refusal an empty one gets.*/
     ///  ],
     ///  "properties": {
     ///    "description": {
-    ///      "description": "What it is for, read by whoever finds it in an audit log in six months.",
+    ///      "description": "What it is for, for whoever finds it in an audit log.",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -2088,7 +2120,7 @@ an absent title is the same refusal an empty one gets.*/
     ///      ]
     ///    },
     ///    "id": {
-    ///      "description": "The name it will be known by, everywhere it appears — as an `author`, in the\naudit log, in a member list. Chosen rather than generated for exactly that\nreason (§5.2bis).",
+    ///      "description": "The name it will be known by everywhere (author, audit log, member list).",
     ///      "type": "string"
     ///    }
     ///  }
@@ -2097,15 +2129,13 @@ an absent title is the same refusal an empty one gets.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateAccountBody {
-        ///What it is for, read by whoever finds it in an audit log in six months.
+        ///What it is for, for whoever finds it in an audit log.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub description: ::std::option::Option<::std::string::String>,
         ///What clients show instead of the id.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
-        /**The name it will be known by, everywhere it appears — as an `author`, in the
-audit log, in a member list. Chosen rather than generated for exactly that
-reason (§5.2bis).*/
+        ///The name it will be known by everywhere (author, audit log, member list).
         pub id: ::std::string::String,
     }
     ///Create a channel through the API. GitOps-managed ones come from config instead.
@@ -2163,7 +2193,7 @@ reason (§5.2bis).*/
     ///      }
     ///    },
     ///    "expires_at": {
-    ///      "description": "When it stops working. Absent means never, which is a policy choice rather\nthan a default anybody should reach for.",
+    ///      "description": "When it stops working; absent means never.",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -2195,8 +2225,7 @@ reason (§5.2bis).*/
     pub struct CreateKeyBody {
         ///Where it may do it.
         pub channels: ::std::vec::Vec<ChannelId>,
-        /**When it stops working. Absent means never, which is a policy choice rather
-than a default anybody should reach for.*/
+        ///When it stops working; absent means never.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///A label, so a key list is readable a year later.
@@ -2260,17 +2289,13 @@ than a default anybody should reach for.*/
             self.0.fmt(f)
         }
     }
-    /**A day of the week, as the wire spells it.
-
-Its own enum rather than `time::Weekday` because this one is API: `"mon"` is a
-contract, and the serde representation of somebody else's type is not ours to
-promise.*/
+    ///A day of the week, as the wire spells it (`"mon"`…).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A day of the week, as the wire spells it.\n\nIts own enum rather than `time::Weekday` because this one is API: `\"mon\"` is a\ncontract, and the serde representation of somebody else's type is not ours to\npromise.",
+    ///  "description": "A day of the week, as the wire spells it (`\"mon\"`…).",
     ///  "type": "string",
     ///  "enum": [
     ///    "mon",
@@ -2431,21 +2456,14 @@ promise.*/
         pub last_error: ::std::string::String,
         pub sink: SinkId,
     }
-    /**One outbound delivery chain, from first attempt to acceptance or dead letter
-(design §7.1bis).
-
-Sent as `X-Weebo-Delivery` and reused across retries — it is the consumer's
-idempotency key, which is the whole reason it exists. §7.1bis called it a
-UUID before anything was written, at a point where the only properties that
-mattered were "unique" and "stable across retries"; a ULID has both, sorts by
-time in the index the drain reads in order, and is what every other minted id
-in this product already is.*/
+    /**One outbound delivery chain (§7.1bis), sent as `X-Weebo-Delivery` and reused
+across retries as the consumer's idempotency key.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "One outbound delivery chain, from first attempt to acceptance or dead letter\n(design §7.1bis).\n\nSent as `X-Weebo-Delivery` and reused across retries — it is the consumer's\nidempotency key, which is the whole reason it exists. §7.1bis called it a\nUUID before anything was written, at a point where the only properties that\nmattered were \"unique\" and \"stable across retries\"; a ULID has both, sorts by\ntime in the index the drain reads in order, and is what every other minted id\nin this product already is.",
+    ///  "description": "One outbound delivery chain (§7.1bis), sent as `X-Weebo-Delivery` and reused\nacross retries as the consumer's idempotency key.",
     ///  "type": "string"
     ///}
     /// ```
@@ -2563,7 +2581,7 @@ in this product already is.*/
     ///      "$ref": "#/components/schemas/DeviceId"
     ///    },
     ///    "label": {
-    ///      "description": "What the owner calls it in the device list, so revoking the right one does\nnot require guessing.",
+    ///      "description": "What the owner calls it in the device list.",
     ///      "type": "string"
     ///    },
     ///    "last_seen_at": {
@@ -2602,8 +2620,7 @@ in this product already is.*/
         ///When it was enrolled.
         pub enrolled_at: ::chrono::DateTime<::chrono::offset::Utc>,
         pub id: DeviceId,
-        /**What the owner calls it in the device list, so revoking the right one does
-not require guessing.*/
+        ///What the owner calls it in the device list.
         pub label: ::std::string::String,
         ///Last time it was seen, for the device list.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2721,23 +2738,20 @@ not require guessing.*/
             self.0.fmt(f)
         }
     }
-    /**One user's delivery preferences (design §7.4).
-
-Carried whole by the `preference` event of §8.1 rather than as a delta: a client
-that missed one update would otherwise apply the next to the wrong baseline.*/
+    ///One user's delivery preferences (§7.4), carried whole by the `preference` event (§8.1).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "One user's delivery preferences (design §7.4).\n\nCarried whole by the `preference` event of §8.1 rather than as a delta: a client\nthat missed one update would otherwise apply the next to the wrong baseline.",
+    ///  "description": "One user's delivery preferences (§7.4), carried whole by the `preference` event (§8.1).",
     ///  "type": "object",
     ///  "required": [
     ///    "user"
     ///  ],
     ///  "properties": {
     ///    "exceptions": {
-    ///      "description": "Channels that ring anyway — the on-call case: mute everything *except* the\none that matters.",
+    ///      "description": "Channels that ring anyway (the on-call case).",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/ChannelId"
@@ -2762,7 +2776,7 @@ that missed one update would otherwise apply the next to the wrong baseline.*/
     ///      "format": "date-time"
     ///    },
     ///    "urgent_bypasses": {
-    ///      "description": "Whether `urgent` is allowed through.\n\nOff by default, and opt-in by the **recipient**: the publisher chooses how\ninsistent a notification is, the person receiving it chooses what may wake\nthem (§2.3, §7.4). Note that this never reaches an iOS critical alert — no\nentitlement, by decision.",
+    ///      "description": "Whether `urgent` is allowed through; the recipient's opt-in (§2.3, §7.4).",
     ///      "type": "boolean"
     ///    },
     ///    "user": {
@@ -2774,8 +2788,7 @@ that missed one update would otherwise apply the next to the wrong baseline.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Dnd {
-        /**Channels that ring anyway — the on-call case: mute everything *except* the
-one that matters.*/
+        ///Channels that ring anyway (the on-call case).
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub exceptions: ::std::vec::Vec<ChannelId>,
         ///Recurring weekly windows.
@@ -2786,36 +2799,19 @@ one that matters.*/
         ///The quick toggle: quiet until this instant, whatever the schedule says.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub until: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
-        /**Whether `urgent` is allowed through.
-
-Off by default, and opt-in by the **recipient**: the publisher chooses how
-insistent a notification is, the person receiving it chooses what may wake
-them (§2.3, §7.4). Note that this never reaches an iOS critical alert — no
-entitlement, by decision.*/
+        ///Whether `urgent` is allowed through; the recipient's opt-in (§2.3, §7.4).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub urgent_bypasses: ::std::option::Option<bool>,
         pub user: UserId,
     }
-    /**A do-not-disturb as somebody *states* it: everything except whose it is.
-
-The draft/entity split this codebase uses everywhere else ([`ContentDraft`],
-[`RevisionDraft`]), and here it carries a decision: **the subject is never an
-input.** A caller states quiet hours and exceptions; the use case decides who
-they belong to, because it is the only thing that knows.
-
-Leaving `user` on the request body was tried and it is worse than misleading —
-it is *required*, so a client that legitimately does not know its own id cannot
-build a body at all, and one that guesses gets a deserialisation error about a
-field the server was going to overwrite.
-
-[`ContentDraft`]: crate::content::ContentDraft
-[`RevisionDraft`]: crate::notification::RevisionDraft*/
+    /**A do-not-disturb as a caller states it; the subject is decided by the use case,
+never taken from input.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A do-not-disturb as somebody *states* it: everything except whose it is.\n\nThe draft/entity split this codebase uses everywhere else ([`ContentDraft`],\n[`RevisionDraft`]), and here it carries a decision: **the subject is never an\ninput.** A caller states quiet hours and exceptions; the use case decides who\nthey belong to, because it is the only thing that knows.\n\nLeaving `user` on the request body was tried and it is worse than misleading —\nit is *required*, so a client that legitimately does not know its own id cannot\nbuild a body at all, and one that guesses gets a deserialisation error about a\nfield the server was going to overwrite.\n\n[`ContentDraft`]: crate::content::ContentDraft\n[`RevisionDraft`]: crate::notification::RevisionDraft",
+    ///  "description": "A do-not-disturb as a caller states it; the subject is decided by the use case,\nnever taken from input.",
     ///  "type": "object",
     ///  "properties": {
     ///    "exceptions": {
@@ -2879,13 +2875,13 @@ field the server was going to overwrite.
             }
         }
     }
-    ///How wide a do-not-disturb reaches (design §7.4).
+    ///How wide a do-not-disturb reaches (§7.4).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "How wide a do-not-disturb reaches (design §7.4).",
+    ///  "description": "How wide a do-not-disturb reaches (§7.4).",
     ///  "oneOf": [
     ///    {
     ///      "description": "Every channel. What a preference means when it does not say.",
@@ -3301,8 +3297,7 @@ field the server was going to overwrite.
             priority: Priority,
             ///When this revision landed.
             revised_at: ::chrono::DateTime<::chrono::offset::Utc>,
-            /**Server-assigned sequence within the notification — the arbiter of
-last-write-wins (design §2.2).*/
+            ///Server-assigned sequence within the notification, the last-write-wins arbiter (§2.2).
             seq: i32,
             state: State,
             status: Status,
@@ -3399,7 +3394,7 @@ last-write-wins (design §2.2).*/
     ///  ],
     ///  "properties": {
     ///    "token": {
-    ///      "description": "The OIDC ID token the CI runner was given by its forge.\n\nIn the body rather than in `Authorization`, deliberately: it is not a\ncredential for *this* API — sending it as a bearer would invite a proxy or a\nlog to treat it as one, and would make this the one endpoint where the\nheader means something different.",
+    ///      "description": "The OIDC ID token the CI runner got from its forge; in the body, since it is not a\ncredential for this API.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -3408,12 +3403,8 @@ last-write-wins (design §2.2).*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ExchangeBody {
-        /**The OIDC ID token the CI runner was given by its forge.
-
-In the body rather than in `Authorization`, deliberately: it is not a
-credential for *this* API — sending it as a bearer would invite a proxy or a
-log to treat it as one, and would make this the one endpoint where the
-header means something different.*/
+        /**The OIDC ID token the CI runner got from its forge; in the body, since it is not a
+credential for this API.*/
         pub token: ::std::string::String,
     }
     ///"3 notifications expired in `ci-infra` while you were away."
@@ -3448,20 +3439,14 @@ header means something different.*/
         ///How many.
         pub count: i32,
     }
-    /**A publisher-supplied identifier used for idempotent upserts: the CI run id,
-the job name, the incident reference (design §2.2).
-
-Looser than a [`Slug`] on purpose — publishers paste values that already exist
-in their system (`run-4521`, `deploy/prod#88`) and rewriting those would break
-the idempotency they are reaching for. Only the hygiene rules apply, plus the
-requirement that nothing was rewritten: an id that changes under sanitisation
-would silently address a different notification than the caller believes.*/
+    /**A publisher-supplied identifier for idempotent upserts (§2.2), looser than a
+[`Slug`]; refused if sanitisation would change it.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A publisher-supplied identifier used for idempotent upserts: the CI run id,\nthe job name, the incident reference (design §2.2).\n\nLooser than a [`Slug`] on purpose — publishers paste values that already exist\nin their system (`run-4521`, `deploy/prod#88`) and rewriting those would break\nthe idempotency they are reaching for. Only the hygiene rules apply, plus the\nrequirement that nothing was rewritten: an id that changes under sanitisation\nwould silently address a different notification than the caller believes.",
+    ///  "description": "A publisher-supplied identifier for idempotent upserts (§2.2), looser than a\n[`Slug`]; refused if sanitisation would change it.",
     ///  "type": "string"
     ///}
     /// ```
@@ -3506,21 +3491,137 @@ would silently address a different notification than the caller believes.*/
             self.0.fmt(f)
         }
     }
-    /**The scopes everyone in an identity-provider group holds in one channel
-(design §11, `[[channels.managed.access]] oidc_group`).
-
-Deliberately *not* a [`Membership`]: there is no principal to name. Who is in
-`infra-admins` is a fact the identity provider owns and the token carries, and
-it changes without anyone telling us. Resolving it at authorisation time is what
-keeps design §5.1's promise — pure JWKS validation, zero server session — and it
-is why somebody removed from a group loses access on their next token rather
-than whenever a reconciler next runs.*/
+    ///A Gotify `POST /message` body, as JSON or a form.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The scopes everyone in an identity-provider group holds in one channel\n(design §11, `[[channels.managed.access]] oidc_group`).\n\nDeliberately *not* a [`Membership`]: there is no principal to name. Who is in\n`infra-admins` is a fact the identity provider owns and the token carries, and\nit changes without anyone telling us. Resolving it at authorisation time is what\nkeeps design §5.1's promise — pure JWKS validation, zero server session — and it\nis why somebody removed from a group loses access on their next token rather\nthan whenever a reconciler next runs.",
+    ///  "description": "A Gotify `POST /message` body, as JSON or a form.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "message"
+    ///  ],
+    ///  "properties": {
+    ///    "extras": {
+    ///      "description": "Gotify extras; `client::notification.click.url` becomes a `view` action.",
+    ///      "type": [
+    ///        "object",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "message": {
+    ///      "description": "The message text.",
+    ///      "type": "string"
+    ///    },
+    ///    "priority": {
+    ///      "description": "Gotify priority: 0-3 low, 4-7 default, 8 high, 9 and above urgent.",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int64"
+    ///    },
+    ///    "title": {
+    ///      "description": "Title; defaults to the channel id.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GotifyBody {
+        ///Gotify extras; `client::notification.click.url` becomes a `view` action.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub extras: ::std::option::Option<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        >,
+        ///The message text.
+        pub message: ::std::string::String,
+        ///Gotify priority: 0-3 low, 4-7 default, 8 high, 9 and above urgent.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub priority: ::std::option::Option<i64>,
+        ///Title; defaults to the channel id.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub title: ::std::option::Option<::std::string::String>,
+    }
+    ///What Gotify answers, so clients that parse the response keep working.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What Gotify answers, so clients that parse the response keep working.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "appid",
+    ///    "date",
+    ///    "id",
+    ///    "message",
+    ///    "priority",
+    ///    "title"
+    ///  ],
+    ///  "properties": {
+    ///    "appid": {
+    ///      "description": "Always 0: there are no Gotify applications here.",
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "date": {
+    ///      "description": "When the server received it (RFC 3339).",
+    ///      "type": "string"
+    ///    },
+    ///    "id": {
+    ///      "description": "The event-log position of this publish.",
+    ///      "type": "integer",
+    ///      "format": "int64",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "message": {
+    ///      "description": "The message text.",
+    ///      "type": "string"
+    ///    },
+    ///    "priority": {
+    ///      "description": "The priority as sent.",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "title": {
+    ///      "description": "The title as published.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GotifyMessage {
+        ///Always 0: there are no Gotify applications here.
+        pub appid: i32,
+        ///When the server received it (RFC 3339).
+        pub date: ::std::string::String,
+        ///The event-log position of this publish.
+        pub id: i64,
+        ///The message text.
+        pub message: ::std::string::String,
+        ///The priority as sent.
+        pub priority: i64,
+        ///The title as published.
+        pub title: ::std::string::String,
+    }
+    /**The scopes everyone in an identity-provider group holds in one channel (§11).
+Resolved from the token's `groups` claim at request time, never stored per user.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The scopes everyone in an identity-provider group holds in one channel (§11).\nResolved from the token's `groups` claim at request time, never stored per user.",
     ///  "type": "object",
     ///  "required": [
     ///    "group",
@@ -3570,7 +3671,7 @@ than whenever a reconciler next runs.*/
     ///      "type": "string"
     ///    },
     ///    "version": {
-    ///      "description": "Version of the running binary, so an operator can tell replicas apart\nduring a rolling update.",
+    ///      "description": "Version of the running binary, to tell replicas apart during a rolling update.",
     ///      "examples": [
     ///        "0.1.0"
     ///      ],
@@ -3584,21 +3685,16 @@ than whenever a reconciler next runs.*/
     pub struct Health {
         ///Always `"ok"` — the process answered, which is the whole question.
         pub status: ::std::string::String,
-        /**Version of the running binary, so an operator can tell replicas apart
-during a rolling update.*/
+        ///Version of the running binary, to tell replicas apart during a rolling update.
         pub version: ::std::string::String,
     }
-    /**A duration written the way people write them.
-
-Deliberately whole-second and single-unit: `"90m"` is fine, `"1h30m"` is not.
-A notification TTL is a rough intent, not a schedule, and one unit per value
-keeps the config, the payload and the client display identical.*/
+    ///A whole-second, single-unit duration: `"90m"` is fine, `"1h30m"` is not.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A duration written the way people write them.\n\nDeliberately whole-second and single-unit: `\"90m\"` is fine, `\"1h30m\"` is not.\nA notification TTL is a rough intent, not a schedule, and one unit per value\nkeeps the config, the payload and the client display identical.",
+    ///  "description": "A whole-second, single-unit duration: `\"90m\"` is fine, `\"1h30m\"` is not.",
     ///  "examples": [
     ///    "48h"
     ///  ],
@@ -3670,16 +3766,13 @@ keeps the config, the payload and the client display identical.*/
                 })
         }
     }
-    /**The image shown with a notification.
-
-Anything of real size goes to the object store and is referenced, so the
-payload stays small enough to ride inside a push transport (design §2.3, §6.1).*/
+    ///The image shown with a notification: an uploaded attachment, or a small inline `data:` URI (§2.3, §6.1).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The image shown with a notification.\n\nAnything of real size goes to the object store and is referenced, so the\npayload stays small enough to ride inside a push transport (design §2.3, §6.1).",
+    ///  "description": "The image shown with a notification: an uploaded attachment, or a small inline `data:` URI (§2.3, §6.1).",
     ///  "oneOf": [
     ///    {
     ///      "description": "A file already uploaded to the bucket through a presigned URL.",
@@ -3701,7 +3794,7 @@ payload stays small enough to ride inside a push transport (design §2.3, §6.1)
     ///      }
     ///    },
     ///    {
-    ///      "description": "A small image inlined in the payload. Capped at [`MAX_DATA_URI_BYTES`];\npast that, publishers upload an attachment instead.",
+    ///      "description": "A small image inlined in the payload, capped at [`MAX_DATA_URI_BYTES`].",
     ///      "type": "object",
     ///      "required": [
     ///        "kind",
@@ -3730,8 +3823,7 @@ payload stays small enough to ride inside a push transport (design §2.3, §6.1)
         ///A file already uploaded to the bucket through a presigned URL.
         #[serde(rename = "attachment")]
         Attachment { #[serde(rename = "ref")] ref_: AttachmentId },
-        /**A small image inlined in the payload. Capped at [`MAX_DATA_URI_BYTES`];
-past that, publishers upload an attachment instead.*/
+        ///A small image inlined in the payload, capped at [`MAX_DATA_URI_BYTES`].
         #[serde(rename = "data_uri")]
         DataUri {
             ///The `data:` URI, already checked for type and size.
@@ -3766,7 +3858,7 @@ past that, publishers upload an attachment instead.*/
     ///      }
     ///    },
     ///    {
-    ///      "description": "Free text. Unkeyed, because the design gives `reply` actions no key.",
+    ///      "description": "Free text (reply actions have no key).",
     ///      "type": "object",
     ///      "required": [
     ///        "text",
@@ -3818,7 +3910,7 @@ past that, publishers upload an attachment instead.*/
         ///Acknowledgement of the action registered under `key`.
         #[serde(rename = "ack")]
         Ack { key: ActionKey },
-        ///Free text. Unkeyed, because the design gives `reply` actions no key.
+        ///Free text (reply actions have no key).
         #[serde(rename = "reply")]
         Reply {
             ///The text, sanitised like any other user content.
@@ -4794,7 +4886,7 @@ past that, publishers upload an attachment instead.*/
     ///      "$ref": "#/components/schemas/Principal"
     ///    },
     ///    "scopes": {
-    ///      "description": "What they may do. Empty means a member with no rights, which is a\nconfiguration mistake rather than a state the domain needs to model — so it\nis refused at construction.",
+    ///      "description": "What they may do; never empty.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/Scope"
@@ -4807,23 +4899,16 @@ past that, publishers upload an attachment instead.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Membership {
         pub principal: Principal,
-        /**What they may do. Empty means a member with no rights, which is a
-configuration mistake rather than a state the domain needs to model — so it
-is refused at construction.*/
+        ///What they may do; never empty.
         pub scopes: ::std::vec::Vec<Scope>,
     }
-    /**A newly minted key — the only time its secret exists outside the caller.
-
-A DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no
-field that could carry a secret, and that is the property worth keeping
-(scenario T12). The secret lives here, in the one response that returns it, and
-nowhere else.*/
+    ///A newly minted key: the only response that ever carries its secret (T12).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A newly minted key — the only time its secret exists outside the caller.\n\nA DTO rather than a domain type on purpose: [`notify_domain::ApiKey`] has no\nfield that could carry a secret, and that is the property worth keeping\n(scenario T12). The secret lives here, in the one response that returns it, and\nnowhere else.",
+    ///  "description": "A newly minted key: the only response that ever carries its secret (T12).",
     ///  "allOf": [
     ///    {
     ///      "$ref": "#/components/schemas/ApiKey"
@@ -4849,33 +4934,25 @@ nowhere else.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MintedKey {
-        /**Which channels it may do it in. Empty means none: a key with no channel
-list is inert, never universal.*/
+        ///Which channels it may do it in; empty means none.
         pub channels: ::std::vec::Vec<ChannelId>,
         ///When it was created.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        /**Optional expiry. Absent is allowed on purpose: rotation is a policy an
-operator may want, not one the product imposes (design §5.2).*/
+        ///Optional expiry; rotation is left to operator policy (§5.2).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         pub id: ApiKeyId,
         ///A label so a human can tell two keys apart before revoking one.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub label: ::std::option::Option<::std::string::String>,
-        /**Last successful authentication. What makes "is anything still using this?"
-answerable before a revocation.*/
+        ///Last successful authentication.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub last_used_at: ::std::option::Option<
             ::chrono::DateTime<::chrono::offset::Utc>,
         >,
         pub owner: ApiKeyOwner,
         pub prefix: ApiKeyPrefix,
-        /**This key's own publish ceiling, overriding the channel's (design §8.2, D24).
-
-`None` on every key by default — the channel's own `publish_per_minute`
-still applies, this only *narrows* it further for one noisy key. Settable
-only by a platform-admin (§5.4): a key that could raise its own ceiling
-would not be a ceiling.*/
+        ///This key's own publish ceiling, narrowing the channel's (§8.2); set by platform admins only.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
         ///Set on revocation, which takes effect immediately.
@@ -4902,7 +4979,7 @@ would not be a ceiling.*/
     ///  ],
     ///  "properties": {
     ///    "channels": {
-    ///      "description": "The channels it resolved to, so the caller can be told what it actually got\nrather than having to decode its own token to find out.",
+    ///      "description": "The channels it resolved to.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/ChannelId"
@@ -4930,8 +5007,7 @@ would not be a ceiling.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MintedToken {
-        /**The channels it resolved to, so the caller can be told what it actually got
-rather than having to decode its own token to find out.*/
+        ///The channels it resolved to.
         pub channels: ::std::vec::Vec<ChannelId>,
         ///When it expires — 15 minutes at most (design §5.3).
         pub expires_at: ::chrono::DateTime<::chrono::offset::Utc>,
@@ -4963,7 +5039,7 @@ rather than having to decode its own token to find out.*/
     ///      "$ref": "#/components/schemas/ChannelId"
     ///    },
     ///    "closed_at": {
-    ///      "description": "When it last closed, and therefore when its retention clock started.\n`None` while it is live — which is exactly why a running incident cannot\nexpire (design §7.2bis).",
+    ///      "description": "When it last closed, starting its retention clock; `None` while live (§7.2bis).",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -4976,7 +5052,7 @@ rather than having to decode its own token to find out.*/
     ///      "format": "date-time"
     ///    },
     ///    "deleted_at": {
-    ///      "description": "Set on deletion; the row survives long enough to broadcast a tombstone and\nto keep sync cursors honest (design §7.2bis).",
+    ///      "description": "Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -5002,7 +5078,7 @@ rather than having to decode its own token to find out.*/
     ///      "minimum": 0.0
     ///    },
     ///    "revision_count": {
-    ///      "description": "How many revisions have been recorded. Equal to `last_seq` unless the\naggregate was rehydrated from a partial history.",
+    ///      "description": "How many revisions have been recorded (equals `last_seq` unless rehydrated partially).",
     ///      "type": "integer",
     ///      "format": "int32",
     ///      "minimum": 0.0
@@ -5017,15 +5093,12 @@ rather than having to decode its own token to find out.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Notification {
         pub channel: ChannelId,
-        /**When it last closed, and therefore when its retention clock started.
-`None` while it is live — which is exactly why a running incident cannot
-expire (design §7.2bis).*/
+        ///When it last closed, starting its retention clock; `None` while live (§7.2bis).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub closed_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///When the first revision landed.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        /**Set on deletion; the row survives long enough to broadcast a tombstone and
-to keep sync cursors honest (design §7.2bis).*/
+        ///Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub deleted_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -5035,8 +5108,7 @@ to keep sync cursors honest (design §7.2bis).*/
         pub kind: NotificationKind,
         ///Highest `seq` assigned. The next revision gets `last_seq + 1`.
         pub last_seq: i32,
-        /**How many revisions have been recorded. Equal to `last_seq` unless the
-aggregate was rehydrated from a partial history.*/
+        ///How many revisions have been recorded (equals `last_seq` unless rehydrated partially).
         pub revision_count: i32,
         pub ttl: Ttl,
     }
@@ -5091,13 +5163,13 @@ aggregate was rehydrated from a partial history.*/
             self.0.fmt(f)
         }
     }
-    ///Which of the two publishing shapes produced this notification (design §2.2).
+    ///Which of the two publishing shapes produced this notification (§2.2).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Which of the two publishing shapes produced this notification (design §2.2).",
+    ///  "description": "Which of the two publishing shapes produced this notification (§2.2).",
     ///  "type": "string",
     ///  "enum": [
     ///    "lifecycle",
@@ -5167,6 +5239,137 @@ aggregate was rehydrated from a partial history.*/
         ) -> ::std::result::Result<Self, self::error::ConversionError> {
             value.parse()
         }
+    }
+    ///An ntfy JSON publish, sent to the ntfy root.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An ntfy JSON publish, sent to the ntfy root.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "topic"
+    ///  ],
+    ///  "properties": {
+    ///    "click": {
+    ///      "description": "A link, published as a `view` action.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "message": {
+    ///      "description": "The message text.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "priority": {
+    ///      "description": "ntfy priority, 1 (min) to 5 (urgent).",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "tags": {
+    ///      "description": "Tags.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "title": {
+    ///      "description": "Title; defaults to the topic.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "topic": {
+    ///      "description": "The channel to publish into.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct NtfyBody {
+        ///A link, published as a `view` action.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub click: ::std::option::Option<::std::string::String>,
+        ///The message text.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub message: ::std::option::Option<::std::string::String>,
+        ///ntfy priority, 1 (min) to 5 (urgent).
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub priority: ::std::option::Option<i32>,
+        ///Tags.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub tags: ::std::vec::Vec<::std::string::String>,
+        ///Title; defaults to the topic.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub title: ::std::option::Option<::std::string::String>,
+        ///The channel to publish into.
+        pub topic: ::std::string::String,
+    }
+    ///What ntfy answers to a publish.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What ntfy answers to a publish.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "event",
+    ///    "id",
+    ///    "message",
+    ///    "time",
+    ///    "topic"
+    ///  ],
+    ///  "properties": {
+    ///    "event": {
+    ///      "description": "Always `message`.",
+    ///      "type": "string"
+    ///    },
+    ///    "id": {
+    ///      "description": "The notification id.",
+    ///      "type": "string"
+    ///    },
+    ///    "message": {
+    ///      "description": "The message text.",
+    ///      "type": "string"
+    ///    },
+    ///    "time": {
+    ///      "description": "Unix seconds when the server received it.",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "topic": {
+    ///      "description": "The channel it was published into.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct NtfyMessage {
+        ///Always `message`.
+        pub event: ::std::string::String,
+        ///The notification id.
+        pub id: ::std::string::String,
+        ///The message text.
+        pub message: ::std::string::String,
+        ///Unix seconds when the server received it.
+        pub time: i64,
+        ///The channel it was published into.
+        pub topic: ::std::string::String,
     }
     ///Where an object came from, and therefore who may change it.
     ///
@@ -5377,22 +5580,13 @@ aggregate was rehydrated from a partial history.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
-    /**This user's delivery preferences changed (design §7.4, §8.1).
-
-Carries the whole state rather than a delta: a client that missed one of these
-would otherwise apply the next one to the wrong baseline, and "my phone kept
-buzzing after I turned on do-not-disturb" is not a bug anybody enjoys chasing.
-
-Both halves of "stop notifying me" ride together for the same reason — a client
-deciding whether to raise a toast asks about the do-not-disturb *and* the
-silences (§7.4), so shipping them in separate events would give it a moment
-where it holds one and not the other.*/
+    ///This user's whole delivery preference state, DND and silences together (§7.4, §8.1).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "This user's delivery preferences changed (design §7.4, §8.1).\n\nCarries the whole state rather than a delta: a client that missed one of these\nwould otherwise apply the next one to the wrong baseline, and \"my phone kept\nbuzzing after I turned on do-not-disturb\" is not a bug anybody enjoys chasing.\n\nBoth halves of \"stop notifying me\" ride together for the same reason — a client\ndeciding whether to raise a toast asks about the do-not-disturb *and* the\nsilences (§7.4), so shipping them in separate events would give it a moment\nwhere it holds one and not the other.",
+    ///  "description": "This user's whole delivery preference state, DND and silences together (§7.4, §8.1).",
     ///  "type": "object",
     ///  "required": [
     ///    "dnd",
@@ -5439,7 +5633,7 @@ where it holds one and not the other.*/
     ///  ],
     ///  "properties": {
     ///    "channel": {
-    ///      "description": "Where the publisher intends to publish it.\n\nRequired, and it is the authorisation: uploading is a publisher's act, not\nsomething every authenticated principal may do. The attachment itself is not\nbound to the channel afterwards (design §6.1).",
+    ///      "description": "Where the publisher intends to publish it; requires `publish` there (design §6.1).",
     ///      "type": "string"
     ///    },
     ///    "content_length": {
@@ -5449,7 +5643,7 @@ where it holds one and not the other.*/
     ///      "minimum": 0.0
     ///    },
     ///    "content_type": {
-    ///      "description": "The declared media type. Imposed in the signature, so an upload that lies is\nrefused by the bucket rather than discovered later.",
+    ///      "description": "The declared media type, imposed in the signature.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -5458,16 +5652,11 @@ where it holds one and not the other.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PresignBody {
-        /**Where the publisher intends to publish it.
-
-Required, and it is the authorisation: uploading is a publisher's act, not
-something every authenticated principal may do. The attachment itself is not
-bound to the channel afterwards (design §6.1).*/
+        ///Where the publisher intends to publish it; requires `publish` there (design §6.1).
         pub channel: ::std::string::String,
         ///The declared size, checked against §8.2's ceiling **before** signing.
         pub content_length: i64,
-        /**The declared media type. Imposed in the signature, so an upload that lies is
-refused by the bucket rather than discovered later.*/
+        ///The declared media type, imposed in the signature.
         pub content_type: ::std::string::String,
     }
     ///A signed download.
@@ -5520,12 +5709,12 @@ refused by the bucket rather than discovered later.*/
     ///  ],
     ///  "properties": {
     ///    "expires_at": {
-    ///      "description": "When the signature stops working. Short: a presigned URL is a bearer\ncredential, and one that lives for a day is one that leaks into a log for a\nday.",
+    ///      "description": "When the signature stops working (short-lived: it is a bearer credential).",
     ///      "type": "string",
     ///      "format": "date-time"
     ///    },
     ///    "headers": {
-    ///      "description": "Headers the client must send verbatim — they are covered by the signature.\n\nA map and not a `Vec<(String, String)>`, which is what this was until the\nroute existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in\nJSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a\nboolean is not something OpenAPI 3.0 can express, so the Rust client stopped\ngenerating the moment this type reached the document. The same lesson as D1\nand D3: a shape no generator can model is not describable, however natural it\nreads in Rust (ADR-0009).\n\nIt is also the better shape here — headers are named, not ordered — and\n`BTreeMap` keeps the document and the response stable across runs.",
+    ///      "description": "Headers the client must send verbatim; they are covered by the signature.",
     ///      "type": "object",
     ///      "additionalProperties": {
     ///        "type": "string"
@@ -5545,22 +5734,9 @@ refused by the bucket rather than discovered later.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PresignedUpload {
-        /**When the signature stops working. Short: a presigned URL is a bearer
-credential, and one that lives for a day is one that leaks into a log for a
-day.*/
+        ///When the signature stops working (short-lived: it is a bearer credential).
         pub expires_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        /**Headers the client must send verbatim — they are covered by the signature.
-
-A map and not a `Vec<(String, String)>`, which is what this was until the
-route existed to expose it (M4.8). A Rust tuple is a *fixed-length array* in
-JSON Schema — `prefixItems` plus `items: false` in 2020-12 — and `items` as a
-boolean is not something OpenAPI 3.0 can express, so the Rust client stopped
-generating the moment this type reached the document. The same lesson as D1
-and D3: a shape no generator can model is not describable, however natural it
-reads in Rust (ADR-0009).
-
-It is also the better shape here — headers are named, not ordered — and
-`BTreeMap` keeps the document and the response stable across runs.*/
+        ///Headers the client must send verbatim; they are covered by the signature.
         pub headers: ::std::collections::HashMap<
             ::std::string::String,
             ::std::string::String,
@@ -5616,7 +5792,7 @@ It is also the better shape here — headers are named, not ordered — and
     ///      }
     ///    },
     ///    {
-    ///      "description": "A key attached to a channel and to nobody else. Publishes show as \"via key\n`key_…` of channel `ci-infra`\" — when attribution matters, the operator is\nmeant to reach for a service account instead (design §5.2).",
+    ///      "description": "A key attached to a channel and to nobody else; use a service account when attribution matters (§5.2).",
     ///      "type": "object",
     ///      "required": [
     ///        "channel",
@@ -5677,9 +5853,7 @@ It is also the better shape here — headers are named, not ordered — and
         ///A bot with a name of its own.
         #[serde(rename = "service_account")]
         ServiceAccount { id: ServiceAccountId },
-        /**A key attached to a channel and to nobody else. Publishes show as "via key
-`key_…` of channel `ci-infra`" — when attribution matters, the operator is
-meant to reach for a service account instead (design §5.2).*/
+        ///A key attached to a channel and to nobody else; use a service account when attribution matters (§5.2).
         #[serde(rename = "channel_key")]
         ChannelKey { channel: ChannelId, key: ApiKeyId },
         ///A CI job, identified by the claims of the token it exchanged (design §5.3).
@@ -5691,16 +5865,13 @@ meant to reach for a service account instead (design §5.2).*/
             subject: ::std::string::String,
         },
     }
-    /**How loudly a notification asks for attention (design §2.2).
-
-`Urgent` does not bypass a user's do-not-disturb unless that user opted in:
-the recipient decides what may wake them, never the publisher (design §7.4).*/
+    ///How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "How loudly a notification asks for attention (design §2.2).\n\n`Urgent` does not bypass a user's do-not-disturb unless that user opted in:\nthe recipient decides what may wake them, never the publisher (design §7.4).",
+    ///  "description": "How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).",
     ///  "type": "string",
     ///  "enum": [
     ///    "min",
@@ -5786,17 +5957,13 @@ the recipient decides what may wake them, never the publisher (design §7.4).*/
             value.parse()
         }
     }
-    /**The `application/problem+json` body every refusal carries.
-
-The field clients are told to match on is `code`, not `status` and certainly not
-`title` — statuses are coarse and titles are prose that gets reworded. A code is
-a promise (design §8, `notify-domain`'s error table).*/
+    ///The `application/problem+json` body every refusal carries; clients match on `code`.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The `application/problem+json` body every refusal carries.\n\nThe field clients are told to match on is `code`, not `status` and certainly not\n`title` — statuses are coarse and titles are prose that gets reworded. A code is\na promise (design §8, `notify-domain`'s error table).",
+    ///  "description": "The `application/problem+json` body every refusal carries; clients match on `code`.",
     ///  "type": "object",
     ///  "required": [
     ///    "status",
@@ -5805,7 +5972,7 @@ a promise (design §8, `notify-domain`'s error table).*/
     ///  ],
     ///  "properties": {
     ///    "code": {
-    ///      "description": "The stable code. Absent only when the failure is ours rather than the\ncaller's — there is nothing useful to branch on when a database is down.",
+    ///      "description": "The stable code to match on; absent only for server-side failures.",
     ///      "examples": [
     ///        "field.missing"
     ///      ],
@@ -5837,7 +6004,7 @@ a promise (design §8, `notify-domain`'s error table).*/
     ///      "type": "string"
     ///    },
     ///    "type": {
-    ///      "description": "Always `about:blank` for now: the `code` field carries the specificity a\n`type` URI usually would, and inventing URIs nobody dereferences is\nceremony.",
+    ///      "description": "Always `about:blank`; `code` carries the specificity.",
     ///      "examples": [
     ///        "about:blank"
     ///      ],
@@ -5849,8 +6016,7 @@ a promise (design §8, `notify-domain`'s error table).*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Problem {
-        /**The stable code. Absent only when the failure is ours rather than the
-caller's — there is nothing useful to branch on when a database is down.*/
+        ///The stable code to match on; absent only for server-side failures.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub code: ::std::option::Option<::std::string::String>,
         ///When to come back, on a `429`. Mirrors the `Retry-After` header.
@@ -5860,9 +6026,7 @@ caller's — there is nothing useful to branch on when a database is down.*/
         pub status: i32,
         ///A short, human-readable summary. Prose, and subject to change.
         pub title: ::std::string::String,
-        /**Always `about:blank` for now: the `code` field carries the specificity a
-`type` URI usually would, and inventing URIs nobody dereferences is
-ceremony.*/
+        ///Always `about:blank`; `code` carries the specificity.
         #[serde(rename = "type")]
         pub type_: ::std::string::String,
     }
@@ -5893,7 +6057,7 @@ ceremony.*/
     ///      ]
     ///    },
     ///    "overridden": {
-    ///      "description": "The fields this person set themselves.\n\nPublic because the API surfaces it: a settings screen has to be able to say\n\"this one is yours, and this one follows your identity provider\", which is\nthe difference between an editable field and a mysterious one.",
+    ///      "description": "The fields this person set themselves, rather than following the identity provider.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/ProfileField"
@@ -5901,7 +6065,7 @@ ceremony.*/
     ///      "uniqueItems": true
     ///    },
     ///    "timezone": {
-    ///      "description": "An IANA name such as `Europe/Paris`.\n\nValidated against the real database rather than a shape: this is the default\nquiet hours are resolved in (§7.4), so a plausible-looking `Europe/Pris`\naccepted today becomes a notification that does not arrive in six months,\nwith nothing connecting the two.",
+    ///      "description": "An IANA timezone name such as `Europe/Paris`, validated against the real database.",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -5921,19 +6085,10 @@ ceremony.*/
         ///A BCP 47 tag such as `fr-FR`.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub locale: ::std::option::Option<::std::string::String>,
-        /**The fields this person set themselves.
-
-Public because the API surfaces it: a settings screen has to be able to say
-"this one is yours, and this one follows your identity provider", which is
-the difference between an editable field and a mysterious one.*/
+        ///The fields this person set themselves, rather than following the identity provider.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub overridden: ::std::option::Option<Vec<ProfileField>>,
-        /**An IANA name such as `Europe/Paris`.
-
-Validated against the real database rather than a shape: this is the default
-quiet hours are resolved in (§7.4), so a plausible-looking `Europe/Pris`
-accepted today becomes a notification that does not arrive in six months,
-with nothing connecting the two.*/
+        ///An IANA timezone name such as `Europe/Paris`, validated against the real database.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub timezone: ::std::option::Option<::std::string::String>,
     }
@@ -5948,24 +6103,14 @@ with nothing connecting the two.*/
             }
         }
     }
-    /**A partial edit of the caller's profile.
-
-Every field is doubly optional on the wire, and the two levels mean different
-things — this is the whole reason the body is not just a `Profile`:
-
-* **absent** — leave the field exactly as it is;
-* **`null`** — hand the field back to the identity provider, so the next login
-  refreshes it;
-* **a value** — claim it, and stop later logins from overwriting it (§2.4).
-
-Without the middle case there is no way back: somebody who typed a display name
-once would be maintaining it by hand forever.*/
+    /**A partial edit of the caller's profile: an absent field is left alone, `null` hands it
+back to the identity provider, a value claims it against later logins (§2.4).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A partial edit of the caller's profile.\n\nEvery field is doubly optional on the wire, and the two levels mean different\nthings — this is the whole reason the body is not just a `Profile`:\n\n* **absent** — leave the field exactly as it is;\n* **`null`** — hand the field back to the identity provider, so the next login\n  refreshes it;\n* **a value** — claim it, and stop later logins from overwriting it (§2.4).\n\nWithout the middle case there is no way back: somebody who typed a display name\nonce would be maintaining it by hand forever.",
+    ///  "description": "A partial edit of the caller's profile: an absent field is left alone, `null` hands it\nback to the identity provider, a value claims it against later logins (§2.4).",
     ///  "type": "object",
     ///  "properties": {
     ///    "display_name": {
@@ -5983,7 +6128,7 @@ once would be maintaining it by hand forever.*/
     ///      ]
     ///    },
     ///    "timezone": {
-    ///      "description": "An IANA name such as `Europe/Paris`, validated against the real database.\nIt is the default quiet hours are resolved in (§7.4).",
+    ///      "description": "An IANA name such as `Europe/Paris`; the default timezone for quiet hours (§7.4).",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -6001,8 +6146,7 @@ once would be maintaining it by hand forever.*/
         ///A BCP 47 tag such as `fr-FR`.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub locale: ::std::option::Option<::std::string::String>,
-        /**An IANA name such as `Europe/Paris`, validated against the real database.
-It is the default quiet hours are resolved in (§7.4).*/
+        ///An IANA name such as `Europe/Paris`; the default timezone for quiet hours (§7.4).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub timezone: ::std::option::Option<::std::string::String>,
     }
@@ -6015,16 +6159,13 @@ It is the default quiet hours are resolved in (§7.4).*/
             }
         }
     }
-    /**A field of a profile that can be claimed by its owner.
-
-Named rather than positional: this set is persisted, and a variant added in the
-middle of a tuple would silently re-map what people had claimed.*/
+    ///A field of a profile that can be claimed by its owner.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A field of a profile that can be claimed by its owner.\n\nNamed rather than positional: this set is persisted, and a variant added in the\nmiddle of a tuple would silently re-map what people had claimed.",
+    ///  "description": "A field of a profile that can be claimed by its owner.",
     ///  "type": "string",
     ///  "enum": [
     ///    "display_name",
@@ -6100,14 +6241,13 @@ middle of a tuple would silently re-map what people had claimed.*/
             value.parse()
         }
     }
-    /**How far along a long-running thing is. Rendered as a bar; the units are the
-publisher's own (steps, files, percent).*/
+    ///How far along a long-running thing is, in the publisher's own units.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "How far along a long-running thing is. Rendered as a bar; the units are the\npublisher's own (steps, files, percent).",
+    ///  "description": "How far along a long-running thing is, in the publisher's own units.",
     ///  "type": "object",
     ///  "required": [
     ///    "current",
@@ -6137,23 +6277,19 @@ publisher's own (steps, files, percent).*/
         ///Where it finishes.
         pub total: i32,
     }
-    /**`POST /notifications`: a revision, plus the channel it belongs to.
-
-The channel is the only thing this shape adds to the upsert body — everything
-else is the same revision draft, because there is exactly one ingestion shape
-(design §8.3).*/
+    ///`POST /notifications`: the upsert body's revision draft plus its channel (§8.3).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "`POST /notifications`: a revision, plus the channel it belongs to.\n\nThe channel is the only thing this shape adds to the upsert body — everything\nelse is the same revision draft, because there is exactly one ingestion shape\n(design §8.3).",
+    ///  "description": "`POST /notifications`: the upsert body's revision draft plus its channel (§8.3).",
     ///  "allOf": [
     ///    {
     ///      "description": "The revision itself, flattened into the same object.",
     ///      "oneOf": [
     ///        {
-    ///          "description": "A revision as a publisher submits it: everything optional except the content.\n\nAn absent field means \"leave it as it is\" on an update, and takes the channel\ndefault on a creation. That is what lets a CI job push `state=closed,\nstatus=success` without restating the title, the tags and the buttons.",
+    ///          "description": "A revision as a publisher submits it; absent fields keep the head's value on\nupdate and take channel defaults on creation.",
     ///          "allOf": [
     ///            {
     ///              "$ref": "#/components/schemas/ContentDraft"
@@ -6221,27 +6357,19 @@ else is the same revision draft, because there is exactly one ingestion shape
         ///See [`Content::tags`].
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
-        /**See [`Content::title`].
-
-Optional on the wire, and absent means "leave it alone" on a revision — see
-[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
-an absent title is the same refusal an empty one gets.*/
+        ///See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub ttl: ::std::option::Option<Ttl>,
     }
-    /**What a publish produced.
-
-Serialisable because it *is* the stored idempotency response: replaying a key
-has to give back the same answer, and the only way to be sure of that is to
-return the same value rather than recompute it.*/
+    ///What a publish produced; also the stored idempotency response, replayed verbatim.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "What a publish produced.\n\nSerialisable because it *is* the stored idempotency response: replaying a key\nhas to give back the same answer, and the only way to be sure of that is to\nreturn the same value rather than recompute it.",
+    ///  "description": "What a publish produced; also the stored idempotency response, replayed verbatim.",
     ///  "type": "object",
     ///  "required": [
     ///    "cursor",
@@ -6289,7 +6417,7 @@ return the same value rather than recompute it.*/
     ///  "description": "How the server reaches a device when its client is not connected.",
     ///  "oneOf": [
     ///    {
-    ///      "description": "None. The device is reachable only while it holds a stream — a CLI, a TUI,\na service account's logical subscription.",
+    ///      "description": "None: reachable only while it holds a stream (CLI, TUI, service account).",
     ///      "type": "object",
     ///      "required": [
     ///        "transport"
@@ -6304,7 +6432,7 @@ return the same value rather than recompute it.*/
     ///      }
     ///    },
     ///    {
-    ///      "description": "Web Push (RFC 8030/8291), for browsers and installed PWAs. The browser\nholds the decryption keys; we never see one (design §6.2).",
+    ///      "description": "Web Push (RFC 8030/8291), for browsers and installed PWAs; the browser holds the keys (§6.2).",
     ///      "type": "object",
     ///      "required": [
     ///        "auth",
@@ -6335,7 +6463,7 @@ return the same value rather than recompute it.*/
     ///      }
     ///    },
     ///    {
-    ///      "description": "UnifiedPush, self-hosted end to end: we expose the push endpoint ourselves\nand the distributor lives on the device (design §7.1bis).",
+    ///      "description": "UnifiedPush, self-hosted end to end (§7.1bis).",
     ///      "type": "object",
     ///      "required": [
     ///        "endpoint",
@@ -6384,8 +6512,7 @@ return the same value rather than recompute it.*/
     pub enum PushTransport {
         #[serde(rename = "stream")]
         Stream,
-        /**Web Push (RFC 8030/8291), for browsers and installed PWAs. The browser
-holds the decryption keys; we never see one (design §6.2).*/
+        ///Web Push (RFC 8030/8291), for browsers and installed PWAs; the browser holds the keys (§6.2).
         #[serde(rename = "web_push")]
         WebPush {
             ///The subscription's `auth` secret, as given by the browser.
@@ -6395,8 +6522,7 @@ holds the decryption keys; we never see one (design §6.2).*/
             ///The subscription's `p256dh` key, as given by the browser.
             p256dh: ::std::string::String,
         },
-        /**UnifiedPush, self-hosted end to end: we expose the push endpoint ourselves
-and the distributor lives on the device (design §7.1bis).*/
+        ///UnifiedPush, self-hosted end to end (§7.1bis).
         #[serde(rename = "unified_push")]
         UnifiedPush {
             ///The distributor endpoint to POST to.
@@ -6424,7 +6550,7 @@ and the distributor lives on the device (design §7.1bis).*/
     ///  ],
     ///  "properties": {
     ///    "days": {
-    ///      "description": "The days it applies to. **Empty means every day** — the common case, and the\none nobody should have to spell out seven times.\n\nFor a window that crosses midnight the day is the one it **starts** on: a\nFriday `22:00–08:00` is the night from Friday to Saturday, which is what a\nperson means by \"Friday night\".",
+    ///      "description": "The days it applies to (**empty means every day**). A window crossing midnight\nbelongs to the day it starts on.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/Day"
@@ -6437,7 +6563,7 @@ and the distributor lives on the device (design §7.1bis).*/
     ///      "$ref": "#/components/schemas/WallClock"
     ///    },
     ///    "timezone": {
-    ///      "description": "The IANA zone `start` and `end` are read in — the preference's own, never the\ndevice's.",
+    ///      "description": "The IANA zone `start` and `end` are read in (the preference's, not the device's).",
     ///      "type": "string"
     ///    }
     ///  }
@@ -6446,18 +6572,13 @@ and the distributor lives on the device (design §7.1bis).*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QuietHours {
-        /**The days it applies to. **Empty means every day** — the common case, and the
-one nobody should have to spell out seven times.
-
-For a window that crosses midnight the day is the one it **starts** on: a
-Friday `22:00–08:00` is the night from Friday to Saturday, which is what a
-person means by "Friday night".*/
+        /**The days it applies to (**empty means every day**). A window crossing midnight
+belongs to the day it starts on.*/
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub days: ::std::vec::Vec<Day>,
         pub end: WallClock,
         pub start: WallClock,
-        /**The IANA zone `start` and `end` are read in — the preference's own, never the
-device's.*/
+        ///The IANA zone `start` and `end` are read in (the preference's, not the device's).
         pub timezone: ::std::string::String,
     }
     ///The raw attachment bytes.
@@ -6512,18 +6633,13 @@ device's.*/
             self.0.fmt(f)
         }
     }
-    /**What "seen by 3/5" unfolds into (design §7.3, §10.3).
-
-The number on the badge is the headline; the hover card is the answer to the
-question the badge provokes — *who*, and *when*. Delivery stays folded underneath
-as a device count, because "it reached four screens" and "three people read it"
-are different facts and only the second one is about readership.*/
+    ///The "seen by 3/5" readership: who saw it and when, plus a delivered-device count (§7.3, §10.3).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "What \"seen by 3/5\" unfolds into (design §7.3, §10.3).\n\nThe number on the badge is the headline; the hover card is the answer to the\nquestion the badge provokes — *who*, and *when*. Delivery stays folded underneath\nas a device count, because \"it reached four screens\" and \"three people read it\"\nare different facts and only the second one is about readership.",
+    ///  "description": "The \"seen by 3/5\" readership: who saw it and when, plus a delivered-device count (§7.3, §10.3).",
     ///  "type": "object",
     ///  "required": [
     ///    "delivered_devices",
@@ -6531,7 +6647,7 @@ are different facts and only the second one is about readership.*/
     ///  ],
     ///  "properties": {
     ///    "audience": {
-    ///      "description": "How many people could see it, where that is a knowable number.\n\n`None` on a channel whose access is derived rather than stored — see\n[`Readership::of`]. A client shows \"vu par 3\" then, not \"vu par 3/3\".",
+    ///      "description": "How many people could see it, or `None` when access is group-derived (show \"seen by 3\").",
     ///      "type": [
     ///        "integer",
     ///        "null"
@@ -6539,7 +6655,7 @@ are different facts and only the second one is about readership.*/
     ///      "minimum": 0.0
     ///    },
     ///    "delivered_devices": {
-    ///      "description": "Distinct devices that acknowledged delivery. A receipt without a device is\na logical subscription (design §5.2bis), and a subscription is not a screen.",
+    ///      "description": "Distinct devices that acknowledged delivery.",
     ///      "type": "integer",
     ///      "minimum": 0.0
     ///    },
@@ -6556,26 +6672,21 @@ are different facts and only the second one is about readership.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Readership {
-        /**How many people could see it, where that is a knowable number.
-
-`None` on a channel whose access is derived rather than stored — see
-[`Readership::of`]. A client shows "vu par 3" then, not "vu par 3/3".*/
+        ///How many people could see it, or `None` when access is group-derived (show "seen by 3").
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub audience: ::std::option::Option<u64>,
-        /**Distinct devices that acknowledged delivery. A receipt without a device is
-a logical subscription (design §5.2bis), and a subscription is not a screen.*/
+        ///Distinct devices that acknowledged delivery.
         pub delivered_devices: u64,
         ///Who saw it, oldest sighting first — reading order, like the timeline.
         pub seen: ::std::vec::Vec<Sighting>,
     }
-    /**Readiness answer: the overall verdict plus the per-dependency detail an
-operator needs to know *which* dependency is holding the replica back.*/
+    ///Readiness answer: the overall verdict plus per-dependency detail.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Readiness answer: the overall verdict plus the per-dependency detail an\noperator needs to know *which* dependency is holding the replica back.",
+    ///  "description": "Readiness answer: the overall verdict plus per-dependency detail.",
     ///  "type": "object",
     ///  "required": [
     ///    "checks",
@@ -6849,7 +6960,7 @@ operator needs to know *which* dependency is holding the replica back.*/
     ///      "minimum": 0.0
     ///    },
     ///    "pending": {
-    ///      "description": "Bindings by `oidc_sub` or `email` naming somebody who has never logged in.\n\nThe one thing on this screen that is *actionable and quiet otherwise*: such a\nbinding grants nothing until that person's first login (§14.1, M1.8), and\nwithout a place to see it the symptom is \"alice says she cannot see the\nchannel\" with nothing to connect it to.",
+    ///      "description": "Bindings by `oidc_sub` or `email` naming somebody who has never logged in, which\ngrant nothing until that person's first login (§14.1).",
     ///      "type": "array",
     ///      "items": {
     ///        "type": "string"
@@ -6875,29 +6986,20 @@ operator needs to know *which* dependency is holding the replica back.*/
         pub at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Managed channels written.
         pub channels: u64,
-        /**Bindings by `oidc_sub` or `email` naming somebody who has never logged in.
-
-The one thing on this screen that is *actionable and quiet otherwise*: such a
-binding grants nothing until that person's first login (§14.1, M1.8), and
-without a place to see it the symptom is "alice says she cannot see the
-channel" with nothing to connect it to.*/
+        /**Bindings by `oidc_sub` or `email` naming somebody who has never logged in, which
+grant nothing until that person's first login (§14.1).*/
         pub pending: ::std::vec::Vec<::std::string::String>,
         ///Channels that left the configuration and were archived or deleted.
         pub removed: u64,
         pub trigger: Trigger,
     }
-    /**What recording an interaction did.
-
-A DTO rather than the domain's [`Recorded`], because the distinction the domain
-draws — did this change anything worth broadcasting — is exactly what a client
-needs to hear, and the enum's shape (a tuple variant, a bare id) is not a good
-JSON contract.*/
+    ///What recording an interaction did: whether anything changed worth broadcasting.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "What recording an interaction did.\n\nA DTO rather than the domain's [`Recorded`], because the distinction the domain\ndraws — did this change anything worth broadcasting — is exactly what a client\nneeds to hear, and the enum's shape (a tuple variant, a bare id) is not a good\nJSON contract.",
+    ///  "description": "What recording an interaction did: whether anything changed worth broadcasting.",
     ///  "type": "object",
     ///  "required": [
     ///    "outcome"
@@ -6965,7 +7067,7 @@ JSON contract.*/
     ///      "format": "date-time"
     ///    },
     ///    "seq": {
-    ///      "description": "Server-assigned, monotonic within the notification, starting at 1. The\narbiter of last-write-wins.",
+    ///      "description": "Server-assigned, monotonic within the notification, starting at 1; the last-write-wins arbiter.",
     ///      "type": "integer",
     ///      "format": "int32",
     ///      "minimum": 0.0
@@ -6989,23 +7091,19 @@ JSON contract.*/
         pub priority: Priority,
         ///When the server received it — the server's clock, not the publisher's.
         pub received_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        /**Server-assigned, monotonic within the notification, starting at 1. The
-arbiter of last-write-wins.*/
+        ///Server-assigned, monotonic within the notification, starting at 1; the last-write-wins arbiter.
         pub seq: i32,
         pub state: State,
         pub status: Status,
     }
-    /**A revision as a publisher submits it: everything optional except the content.
-
-An absent field means "leave it as it is" on an update, and takes the channel
-default on a creation. That is what lets a CI job push `state=closed,
-status=success` without restating the title, the tags and the buttons.*/
+    /**A revision as a publisher submits it; absent fields keep the head's value on
+update and take channel defaults on creation.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A revision as a publisher submits it: everything optional except the content.\n\nAn absent field means \"leave it as it is\" on an update, and takes the channel\ndefault on a creation. That is what lets a CI job push `state=closed,\nstatus=success` without restating the title, the tags and the buttons.",
+    ///  "description": "A revision as a publisher submits it; absent fields keep the head's value on\nupdate and take channel defaults on creation.",
     ///  "allOf": [
     ///    {
     ///      "$ref": "#/components/schemas/ContentDraft"
@@ -7057,11 +7155,7 @@ status=success` without restating the title, the tags and the buttons.*/
         ///See [`Content::tags`].
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
-        /**See [`Content::title`].
-
-Optional on the wire, and absent means "leave it alone" on a revision — see
-[`ContentDraft::inheriting`]. On a creation there is nothing to inherit, so
-an absent title is the same refusal an empty one gets.*/
+        ///See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -7085,16 +7179,13 @@ an absent title is the same refusal an empty one gets.*/
             }
         }
     }
-    /**A revision, flattened into the shape the stream publishes (design §8.1).
-
-Denormalised on purpose: a client that just reconnected must be able to render
-a timeline row from one event, without a follow-up request per notification.*/
+    ///A revision, denormalised so a reconnecting client can render it from one event (§8.1).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A revision, flattened into the shape the stream publishes (design §8.1).\n\nDenormalised on purpose: a client that just reconnected must be able to render\na timeline row from one event, without a follow-up request per notification.",
+    ///  "description": "A revision, denormalised so a reconnecting client can render it from one event (§8.1).",
     ///  "type": "object",
     ///  "required": [
     ///    "author",
@@ -7134,7 +7225,7 @@ a timeline row from one event, without a follow-up request per notification.*/
     ///      "format": "date-time"
     ///    },
     ///    "seq": {
-    ///      "description": "Server-assigned sequence within the notification — the arbiter of\nlast-write-wins (design §2.2).",
+    ///      "description": "Server-assigned sequence within the notification, the last-write-wins arbiter (§2.2).",
     ///      "type": "integer",
     ///      "format": "int32",
     ///      "minimum": 0.0
@@ -7161,8 +7252,7 @@ a timeline row from one event, without a follow-up request per notification.*/
         pub priority: Priority,
         ///When this revision landed.
         pub revised_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        /**Server-assigned sequence within the notification — the arbiter of
-last-write-wins (design §2.2).*/
+        ///Server-assigned sequence within the notification, the last-write-wins arbiter (§2.2).
         pub seq: i32,
         pub state: State,
         pub status: Status,
@@ -7300,17 +7390,13 @@ last-write-wins (design §2.2).*/
             value.parse()
         }
     }
-    /**A named machine identity (design §5.2bis).
-
-The recommended shape for anything durable: a team bot running on a person's
-key dies the day that person is offboarded, which is a bad way to find out how
-the deploy notifications worked.*/
+    ///A named machine identity (§5.2bis), the recommended owner for anything durable.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A named machine identity (design §5.2bis).\n\nThe recommended shape for anything durable: a team bot running on a person's\nkey dies the day that person is offboarded, which is a bad way to find out how\nthe deploy notifications worked.",
+    ///  "description": "A named machine identity (§5.2bis), the recommended owner for anything durable.",
     ///  "type": "object",
     ///  "required": [
     ///    "created_at",
@@ -7327,14 +7413,14 @@ the deploy notifications worked.*/
     ///      "$ref": "#/components/schemas/UserId"
     ///    },
     ///    "description": {
-    ///      "description": "What it is for. Read by whoever finds it in an audit log in six months.",
+    ///      "description": "What it is for.",
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
     ///    },
     ///    "disabled_at": {
-    ///      "description": "Set on deactivation. Deactivating revokes its keys and cuts its streams\nimmediately (design §8, scenario T25) — it is not a soft \"please stop\".",
+    ///      "description": "Set on deactivation, which revokes its keys and cuts its streams immediately (§8, T25).",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -7364,11 +7450,10 @@ the deploy notifications worked.*/
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub created_by: ::std::option::Option<UserId>,
-        ///What it is for. Read by whoever finds it in an audit log in six months.
+        ///What it is for.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub description: ::std::option::Option<::std::string::String>,
-        /**Set on deactivation. Deactivating revokes its keys and cuts its streams
-immediately (design §8, scenario T25) — it is not a soft "please stop".*/
+        ///Set on deactivation, which revokes its keys and cuts its streams immediately (§8, T25).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub disabled_at: ::std::option::Option<
             ::chrono::DateTime<::chrono::offset::Utc>,
@@ -7379,14 +7464,13 @@ immediately (design §8, scenario T25) — it is not a soft "please stop".*/
         pub id: ServiceAccountId,
         pub origin: Origin,
     }
-    /**A service account, named so a timeline can say "published by `bot-argocd`"
-rather than "published by a key" (design §5.2bis).*/
+    ///A service account, named so a timeline can say who published (§5.2bis).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A service account, named so a timeline can say \"published by `bot-argocd`\"\nrather than \"published by a key\" (design §5.2bis).",
+    ///  "description": "A service account, named so a timeline can say who published (§5.2bis).",
     ///  "type": "string"
     ///}
     /// ```
@@ -7431,18 +7515,13 @@ rather than "published by a key" (design §5.2bis).*/
             self.0.fmt(f)
         }
     }
-    /**One person, and when they first looked (design §7.3, §10.3).
-
-Serialize only, here and on [`Readership`]: a roll is computed and sent, never
-read back in. Deriving `Deserialize` would describe an input that does not
-exist, and leave the code that parses it untested for as long as that stays
-true.*/
+    ///One person and when they first saw the notification (§7.3, §10.3).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "One person, and when they first looked (design §7.3, §10.3).\n\nSerialize only, here and on [`Readership`]: a roll is computed and sent, never\nread back in. Deriving `Deserialize` would describe an input that does not\nexist, and leave the code that parses it untested for as long as that stays\ntrue.",
+    ///  "description": "One person and when they first saw the notification (§7.3, §10.3).",
     ///  "type": "object",
     ///  "required": [
     ///    "at",
@@ -7450,7 +7529,7 @@ true.*/
     ///  ],
     ///  "properties": {
     ///    "at": {
-    ///      "description": "When they *first* saw it. Somebody who opens a notification on their laptop\nand again on their phone read it once, at the first of the two.",
+    ///      "description": "When they first saw it, across all their devices.",
     ///      "type": "string",
     ///      "format": "date-time"
     ///    },
@@ -7463,8 +7542,7 @@ true.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Sighting {
-        /**When they *first* saw it. Somebody who opens a notification on their laptop
-and again on their phone read it once, at the first of the two.*/
+        ///When they first saw it, across all their devices.
         pub at: ::chrono::DateTime<::chrono::offset::Utc>,
         pub author: Author,
     }
@@ -7491,7 +7569,7 @@ and again on their phone read it once, at the first of the two.*/
     ///      "$ref": "#/components/schemas/SilenceTarget"
     ///    },
     ///    "until": {
-    ///      "description": "When it lifts. `None` only for a notification-scoped silence, which ends\nwhen the notification does.",
+    ///      "description": "When it lifts; `None` only for a notification-scoped silence, which ends with the notification.",
     ///      "type": [
     ///        "string",
     ///        "null"
@@ -7510,8 +7588,7 @@ and again on their phone read it once, at the first of the two.*/
         ///When it was set.
         pub since: ::chrono::DateTime<::chrono::offset::Utc>,
         pub target: SilenceTarget,
-        /**When it lifts. `None` only for a notification-scoped silence, which ends
-when the notification does.*/
+        ///When it lifts; `None` only for a notification-scoped silence, which ends with the notification.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub until: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         pub user: UserId,
@@ -7691,17 +7768,13 @@ when the notification does.*/
             key: ::std::string::String,
         },
     }
-    /**Which sink of which channel, written as `kind:destination`.
-
-Stable across restarts and reconfigurations, free of secrets, and legible in a
-dead-letter listing — see the module documentation for why it is derived rather
-than declared.*/
+    ///Which sink of which channel, written as `kind:destination` (never contains secrets).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Which sink of which channel, written as `kind:destination`.\n\nStable across restarts and reconfigurations, free of secrets, and legible in a\ndead-letter listing — see the module documentation for why it is derived rather\nthan declared.",
+    ///  "description": "Which sink of which channel, written as `kind:destination` (never contains secrets).",
     ///  "type": "string"
     ///}
     /// ```
@@ -7920,25 +7993,14 @@ than declared.*/
             value.parse()
         }
     }
-    /**The answer to a catch-up, which is more than a list of events.
-
-Two extras carry real product meaning:
-
-* `expired` is the "N notifications expired while you were away" counter
-  (design §7.2bis). A message that expired undelivered is deliberately *not* in
-  the backlog — but silently dropping it would leave a user wondering, so the
-  count is reported per channel instead.
-* `compacted` records how many revisions were folded away (design §7.2). Forty
-  revisions of one deploy become one entry; the number is what lets a client say
-  "38 updates" instead of pretending nothing happened.
-* `deferred_by_dnd` names the notifications whose lateness was *asked for*
-  (design §7.4), so a client does not badge them "arrived late".*/
+    /**A catch-up page: events plus the per-user expired counts (§7.2bis), the
+compaction count (§7.2) and DND-deferred ids (§7.4).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The answer to a catch-up, which is more than a list of events.\n\nTwo extras carry real product meaning:\n\n* `expired` is the \"N notifications expired while you were away\" counter\n  (design §7.2bis). A message that expired undelivered is deliberately *not* in\n  the backlog — but silently dropping it would leave a user wondering, so the\n  count is reported per channel instead.\n* `compacted` records how many revisions were folded away (design §7.2). Forty\n  revisions of one deploy become one entry; the number is what lets a client say\n  \"38 updates\" instead of pretending nothing happened.\n* `deferred_by_dnd` names the notifications whose lateness was *asked for*\n  (design §7.4), so a client does not badge them \"arrived late\".",
+    ///  "description": "A catch-up page: events plus the per-user expired counts (§7.2bis), the\ncompaction count (§7.2) and DND-deferred ids (§7.4).",
     ///  "type": "object",
     ///  "required": [
     ///    "compacted",
@@ -7952,7 +8014,7 @@ Two extras carry real product meaning:
     ///      "minimum": 0.0
     ///    },
     ///    "deferred_by_dnd": {
-    ///      "description": "The notifications on this page that arrived late **on purpose** — a quiet\nperiod was running when they were created (design §7.4).\n\nBeside the events rather than on them, and that is the decision: an [`Event`]\nis addressed to a *channel* and every member of it receives the same bytes,\nwhile this is one person's own preference. Putting it on the event would make\nthe same event differ per reader, which is exactly what §8.1 promises it does\nnot — the stream and the backlog carry identical events. It sits here with\n`expired` and `compacted`, the other two per-user facts a catch-up reports.",
+    ///      "description": "Notifications on this page delayed on purpose by a quiet period (§7.4); kept\noff the events because events are identical for every reader.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/NotificationId"
@@ -7983,15 +8045,8 @@ Two extras carry real product meaning:
     pub struct SyncPage {
         ///How many revisions the compaction folded away.
         pub compacted: i32,
-        /**The notifications on this page that arrived late **on purpose** — a quiet
-period was running when they were created (design §7.4).
-
-Beside the events rather than on them, and that is the decision: an [`Event`]
-is addressed to a *channel* and every member of it receives the same bytes,
-while this is one person's own preference. Putting it on the event would make
-the same event differ per reader, which is exactly what §8.1 promises it does
-not — the stream and the backlog carry identical events. It sits here with
-`expired` and `compacted`, the other two per-user facts a catch-up reports.*/
+        /**Notifications on this page delayed on purpose by a quiet period (§7.4); kept
+off the events because events are identical for every reader.*/
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub deferred_by_dnd: ::std::vec::Vec<NotificationId>,
         ///The events, oldest first.
@@ -8002,14 +8057,13 @@ not — the stream and the backlog carry identical events. It sits here with
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
-    /**Why a notification stopped existing, as broadcast in a `tombstone` event
-(design §8.1).*/
+    ///Why a notification stopped existing, as broadcast in a `tombstone` event (§8.1).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Why a notification stopped existing, as broadcast in a `tombstone` event\n(design §8.1).",
+    ///  "description": "Why a notification stopped existing, as broadcast in a `tombstone` event (§8.1).",
     ///  "type": "string",
     ///  "enum": [
     ///    "deleted",
@@ -8179,7 +8233,7 @@ not — the stream and the backlog carry identical events. It sits here with
     ///  ],
     ///  "properties": {
     ///    "channel_scoped": {
-    ///      "description": "Whether it came from a channel's own `publishers` block, which §11 makes win\nover a global one — the thing to look at first when a policy \"should\" match\nand does not.",
+    ///      "description": "Whether it came from a channel's own `publishers` block, which wins over a global one (§11).",
     ///      "type": "boolean"
     ///    },
     ///    "channels": {
@@ -8210,9 +8264,7 @@ not — the stream and the backlog carry identical events. It sits here with
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TrustPolicyCard {
-        /**Whether it came from a channel's own `publishers` block, which §11 makes win
-over a global one — the thing to look at first when a policy "should" match
-and does not.*/
+        ///Whether it came from a channel's own `publishers` block, which wins over a global one (§11).
         pub channel_scoped: bool,
         ///The channel patterns it grants.
         pub channels: ::std::vec::Vec<::std::string::String>,
@@ -8274,13 +8326,13 @@ and does not.*/
             self.0.fmt(f)
         }
     }
-    ///What a channel allows (design §7.2bis, configured per channel in §11).
+    ///What retention a channel allows (§7.2bis, configured per channel in §11).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "What a channel allows (design §7.2bis, configured per channel in §11).",
+    ///  "description": "What retention a channel allows (§7.2bis, configured per channel in §11).",
     ///  "type": "object",
     ///  "required": [
     ///    "allow_forever",
@@ -8288,7 +8340,7 @@ and does not.*/
     ///  ],
     ///  "properties": {
     ///    "allow_forever": {
-    ///      "description": "Whether `\"0\"` is accepted. Off by default: unbounded retention is a\ndeliberate operator decision, not something a publisher can opt into.",
+    ///      "description": "Whether `\"0\"` (keep forever) is accepted; off by default.",
     ///      "type": "boolean"
     ///    },
     ///    "default": {
@@ -8303,8 +8355,7 @@ and does not.*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TtlPolicy {
-        /**Whether `"0"` is accepted. Off by default: unbounded retention is a
-deliberate operator decision, not something a publisher can opt into.*/
+        ///Whether `"0"` (keep forever) is accepted; off by default.
         pub allow_forever: bool,
         pub default: Ttl,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -8355,7 +8406,7 @@ deliberate operator decision, not something a publisher can opt into.*/
     ///      "$ref": "#/components/schemas/ChannelId"
     ///    },
     ///    "unread": {
-    ///      "description": "How many of its notifications this principal has not read.\n\nNever zero — a channel with nothing unread is absent from the list rather\nthan present with a zero, so that \"no badge\" has one representation instead\nof two.",
+    ///      "description": "How many of its notifications this principal has not read; never zero (such\nchannels are omitted).",
     ///      "type": "integer",
     ///      "format": "int64",
     ///      "minimum": 0.0
@@ -8367,12 +8418,54 @@ deliberate operator decision, not something a publisher can opt into.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UnreadCount {
         pub channel: ChannelId,
-        /**How many of its notifications this principal has not read.
-
-Never zero — a channel with nothing unread is absent from the list rather
-than present with a zero, so that "no badge" has one representation instead
-of two.*/
+        /**How many of its notifications this principal has not read; never zero (such
+channels are omitted).*/
         pub unread: i64,
+    }
+    ///A person, as the member picker shows them.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A person, as the member picker shows them.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id"
+    ///  ],
+    ///  "properties": {
+    ///    "display_name": {
+    ///      "description": "Their display name, when known.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "email": {
+    ///      "description": "Their email, when the identity provider released one.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "id": {
+    ///      "description": "Their id, which `POST /channels/{channel}/members` takes.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct UserCard {
+        ///Their display name, when known.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        ///Their email, when the identity provider released one.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub email: ::std::option::Option<::std::string::String>,
+        ///Their id, which `POST /channels/{channel}/members` takes.
+        pub id: ::std::string::String,
     }
     ///A human, created on first OIDC login.
     ///
@@ -8425,19 +8518,13 @@ of two.*/
             self.0.fmt(f)
         }
     }
-    /**A time of day on a wall clock, to the minute.
-
-Minutes, not seconds: quiet hours are a human intention ("ten in the evening"),
-and a field nobody will ever set to a non-zero value is a field somebody will
-eventually set wrong. Stored as minutes since local midnight because that is the
-form every comparison here wants, and rendered `HH:MM` because that is the form
-§7.4 writes it in.*/
+    ///A time of day on a wall clock, to the minute, rendered `HH:MM`.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "A time of day on a wall clock, to the minute.\n\nMinutes, not seconds: quiet hours are a human intention (\"ten in the evening\"),\nand a field nobody will ever set to a non-zero value is a field somebody will\neventually set wrong. Stored as minutes since local midnight because that is the\nform every comparison here wants, and rendered `HH:MM` because that is the form\n§7.4 writes it in.",
+    ///  "description": "A time of day on a wall clock, to the minute, rendered `HH:MM`.",
     ///  "examples": [
     ///    "22:00"
     ///  ],
@@ -8498,7 +8585,7 @@ form every comparison here wants, and rendered `HH:MM` because that is the form
     ///  ],
     ///  "properties": {
     ///    "application_server_key": {
-    ///      "description": "The uncompressed P-256 public point, base64url — passed verbatim as\n`applicationServerKey` (RFC 8292).",
+    ///      "description": "The uncompressed P-256 public point, base64url: `applicationServerKey` (RFC 8292).",
     ///      "examples": [
     ///        "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkFbx4gpXYm…"
     ///      ],
@@ -8510,19 +8597,16 @@ form every comparison here wants, and rendered `HH:MM` because that is the form
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WebPushKey {
-        /**The uncompressed P-256 public point, base64url — passed verbatim as
-`applicationServerKey` (RFC 8292).*/
+        ///The uncompressed P-256 public point, base64url: `applicationServerKey` (RFC 8292).
         pub application_server_key: ::std::string::String,
     }
-    /**The caller's own id — everything a client needs to name itself as the
-`owner` of something it is about to create, e.g. a personal API key
-(design §5.2).*/
+    ///The caller's own id, to name itself as `owner` of e.g. a personal API key (§5.2).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The caller's own id — everything a client needs to name itself as the\n`owner` of something it is about to create, e.g. a personal API key\n(design §5.2).",
+    ///  "description": "The caller's own id, to name itself as `owner` of e.g. a personal API key (§5.2).",
     ///  "type": "object",
     ///  "required": [
     ///    "id"
@@ -9071,11 +9155,8 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /**Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24)
-
-Deliberately not open to the key's own owner — see
-[`notify_app::SetApiKeyLimit`]'s docs for why a self-service ceiling would not
-be one.
+    /**Set a platform-admin's ceiling on one key's own publish rate (design §8.2, D24);
+not open to the key's owner
 
 Sends a `PATCH` request to `/api/v1/apikeys/{id}/limit`
 
@@ -9334,12 +9415,8 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /**Fetch the small square derived from an attachment (design §2.3, §10.3, D30)
-
-Bytes and not a signed URL, unlike its sibling above — the reason is the same
-one the avatar route documents: a thumbnail renders next to every visible row
-of a possibly virtualised list, and a presign per render would mean a signing
-round trip per row.
+    /**Fetch the small square derived from an attachment (design §2.3, §10.3, D30); bytes
+rather than a signed URL, to avoid a signing round trip per rendered row
 
 Sends a `GET` request to `/api/v1/attachments/{id}/thumbnail`
 
@@ -9564,10 +9641,6 @@ Sends a `POST` request to `/api/v1/channels`
         }
     }
     /**One channel: its policy, its members, and where it came from
-
-Listed by §8 since M1 and served by no build until now — a client wanting one
-channel had to walk `GET /channels` until it found it, which works right up to
-the page where it does not.
 
 Sends a `GET` request to `/api/v1/channels/{channel}`
 
@@ -9838,17 +9911,14 @@ Sends a `GET` request to `/api/v1/channels/{channel}/notifications`
 
 Arguments:
 - `channel`: Channel id
-- `channels`: Comma-separated channel ids. Narrows what the caller may already read; it
-can never widen it.
+- `channels`: Comma-separated channel ids; narrows what the caller may read, never widens it.
 - `cursor`: Opaque page cursor, from the previous page's `next`.
 - `group_key`: Restrict to one client-side group.
-- `has_actions`: Keep only notifications carrying at least one action button (`true`) or
-none (`false`). Absent means "do not filter on this".
+- `has_actions`: Only notifications with (`true`) or without (`false`) action buttons; absent = no filter.
 - `limit`: Page size. Clamped server-side.
 - `min_priority`: Floor on priority: `min`, `low`, `default`, `high`, `urgent`.
 - `state`: Comma-separated lifecycle states: `open`, `working`, `closed`.
-- `status`: Comma-separated statuses: `success`, `failure`, `warning`, `info`,
-`cancelled`.
+- `status`: Comma-separated statuses: `success`, `failure`, `warning`, `info`, `cancelled`.
 - `tag`: Comma-separated tags. All of them must be present.
 */
     pub async fn channel_inbox<'a>(
@@ -9968,11 +10038,7 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /**Download the `notify` CLI binary this server was built with
-
-No scope beyond "logged in" (`Authenticated` alone, the same weakest
-requirement `GET /whoami` uses) — a person and a CI service account are
-equally allowed to fetch it, which is why the principal is never narrowed.
+    /**Download the `notify` CLI binary this server was built with; any authenticated caller
 
 Sends a `GET` request to `/api/v1/cli`
 
@@ -10002,6 +10068,312 @@ Sends a `GET` request to `/api/v1/cli`
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             501u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Receive an Alertmanager webhook: one notification per alert, upserted by fingerprint
+
+Sends a `POST` request to `/api/v1/compat/alertmanager/{channel}`
+
+Arguments:
+- `channel`: Channel id
+- `token`: The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+- `body`
+*/
+    pub async fn alertmanager<'a>(
+        &'a self,
+        channel: &'a str,
+        token: Option<&'a str>,
+        body: &'a types::AlertmanagerBody,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::Published>>,
+        Error<types::Problem>,
+    > {
+        let url = format!(
+            "{}/api/v1/compat/alertmanager/{}", self.baseurl, encode_path(& channel
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "alertmanager",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Publish a message the way a Gotify client does
+
+Sends a `POST` request to `/api/v1/compat/gotify/message`
+
+Arguments:
+- `channel`: Target channel, required when the key is scoped to more than one.
+- `token`: The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+- `body`
+*/
+    pub async fn gotify<'a>(
+        &'a self,
+        channel: Option<&'a str>,
+        token: Option<&'a str>,
+        body: &'a types::GotifyBody,
+    ) -> Result<ResponseValue<types::GotifyMessage>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/compat/gotify/message", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("channel", &channel))
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "gotify",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Publish an ntfy JSON message; the channel is its `topic`
+
+Sends a `POST` request to `/api/v1/compat/ntfy`
+
+Arguments:
+- `channel`: Target channel, required when the key is scoped to more than one.
+- `token`: The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+- `body`
+*/
+    pub async fn ntfy_json<'a>(
+        &'a self,
+        channel: Option<&'a str>,
+        token: Option<&'a str>,
+        body: &'a types::NtfyBody,
+    ) -> Result<ResponseValue<types::NtfyMessage>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/compat/ntfy", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("channel", &channel))
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "ntfy_json",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Same as `POST`: ntfy clients use either
+
+Sends a `PUT` request to `/api/v1/compat/ntfy/{channel}`
+
+Arguments:
+- `channel`: Channel id (the ntfy topic)
+- `token`: The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+- `body`
+*/
+    pub async fn ntfy_put<'a>(
+        &'a self,
+        channel: &'a str,
+        token: Option<&'a str>,
+        body: String,
+    ) -> Result<ResponseValue<types::NtfyMessage>, Error<()>> {
+        let url = format!(
+            "{}/api/v1/compat/ntfy/{}", self.baseurl, encode_path(& channel.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("text/plain"),
+            )
+            .body(body)
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "ntfy_put",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Publish to an ntfy topic: the body is the message, headers carry the rest
+
+Sends a `POST` request to `/api/v1/compat/ntfy/{channel}`
+
+Arguments:
+- `channel`: Channel id (the ntfy topic)
+- `token`: The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+- `click`: A link, published as a `view` action; also `X-Click`
+- `priority`: 1-5 or min/low/default/high/urgent (max); also `X-Priority`, `p`
+- `tags`: Comma-separated; also `X-Tags`, `ta`
+- `title`: Also `X-Title` or `t`
+- `body`
+*/
+    pub async fn ntfy<'a>(
+        &'a self,
+        channel: &'a str,
+        token: Option<&'a str>,
+        click: Option<&'a str>,
+        priority: Option<&'a str>,
+        tags: Option<&'a str>,
+        title: Option<&'a str>,
+        body: String,
+    ) -> Result<ResponseValue<types::NtfyMessage>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/compat/ntfy/{}", self.baseurl, encode_path(& channel.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(5usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        if let Some(value) = click {
+            header_map.append("Click", value.to_string().try_into()?);
+        }
+        if let Some(value) = priority {
+            header_map.append("Priority", value.to_string().try_into()?);
+        }
+        if let Some(value) = tags {
+            header_map.append("Tags", value.to_string().try_into()?);
+        }
+        if let Some(value) = title {
+            header_map.append("Title", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("text/plain"),
+            )
+            .body(body)
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "ntfy",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),
@@ -10140,12 +10512,7 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /**Who the caller is
-
-A user only: an API key or a channel key acts *for* someone or something
-else, and has no identity of its own to hand back (design §5.2bis) — the
-same restriction `GET /users/me/profile` already applies, for the same
-reason.
+    /**Who the caller is; users only, since keys act for someone else (design §5.2bis)
 
 Sends a `GET` request to `/api/v1/me`
 
@@ -10193,17 +10560,14 @@ Sends a `GET` request to `/api/v1/me`
 Sends a `GET` request to `/api/v1/notifications`
 
 Arguments:
-- `channels`: Comma-separated channel ids. Narrows what the caller may already read; it
-can never widen it.
+- `channels`: Comma-separated channel ids; narrows what the caller may read, never widens it.
 - `cursor`: Opaque page cursor, from the previous page's `next`.
 - `group_key`: Restrict to one client-side group.
-- `has_actions`: Keep only notifications carrying at least one action button (`true`) or
-none (`false`). Absent means "do not filter on this".
+- `has_actions`: Only notifications with (`true`) or without (`false`) action buttons; absent = no filter.
 - `limit`: Page size. Clamped server-side.
 - `min_priority`: Floor on priority: `min`, `low`, `default`, `high`, `urgent`.
 - `state`: Comma-separated lifecycle states: `open`, `working`, `closed`.
-- `status`: Comma-separated statuses: `success`, `failure`, `warning`, `info`,
-`cancelled`.
+- `status`: Comma-separated statuses: `success`, `failure`, `warning`, `info`, `cancelled`.
 - `tag`: Comma-separated tags. All of them must be present.
 */
     pub async fn inbox<'a>(
@@ -11063,8 +11427,7 @@ Sends a `GET` request to `/api/v1/stream`
 
 Arguments:
 - `channels`: Comma-separated channel ids; absent means every channel the caller may read.
-- `cursor`: Resume after this cursor. `Last-Event-ID` wins over it when both are sent,
-because that one is the browser reconnecting rather than the page asking.
+- `cursor`: Resume after this cursor; `Last-Event-ID` wins when both are sent.
 - `device`: Which device is connected, so its cursor advances as it reads.
 - `last_event_id`: The cursor of the last event received. Sent automatically by browsers on reconnect; replays exactly what was missed.
 */
@@ -11118,19 +11481,104 @@ because that one is the browser reconnecting rather than the page asking.
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /**Replay everything the caller missed
+    /**Every realtime connection the caller holds, oldest first
 
-The same cursor the live stream stamps on each event, so a client that was
-offline for a week and one whose connection blipped take this identical path
-(ADR-0001, ADR-0012).
+Sends a `GET` request to `/api/v1/streams`
+
+*/
+    pub async fn list_streams<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::Connection>>,
+        Error<types::Problem>,
+    > {
+        let url = format!("{}/api/v1/streams", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_streams",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Disconnect one of the caller's connections. Its credential is kept off realtime
+for up to 12 h; to remove access for good, revoke the key or the device
+
+Sends a `DELETE` request to `/api/v1/streams/{id}`
+
+Arguments:
+- `id`: The connection id
+*/
+    pub async fn disconnect_stream<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/streams/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "disconnect_stream",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Replay everything the caller missed, off the same cursor the live stream stamps
+(ADR-0001, ADR-0012)
 
 Sends a `GET` request to `/api/v1/sync`
 
 Arguments:
 - `channels`: Comma-separated channel ids; absent means every channel the caller may read.
 - `cursor`: Resume after this cursor. Absent replays everything still retained.
-- `device`: Which device is catching up, so its cursor is advanced. Absent for a one-off
-caller — `curl /sync` from a shell has no cursor to keep.
+- `device`: Which device is catching up, so its cursor advances; absent for a one-off caller.
 - `limit`: Page size, clamped server-side.
 */
     pub async fn sync<'a>(
@@ -11225,11 +11673,54 @@ Sends a `GET` request to `/api/v1/unread`
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /**Replace your own avatar
+    /**Find people to add to a channel (at most 10). Not available to API keys of bots
 
-The body is the image itself rather than a multipart form: there is exactly one
-field, and a multipart parser is a parser more on a path that already decodes
-user-supplied media (§15).
+Sends a `GET` request to `/api/v1/users`
+
+Arguments:
+- `q`: Part of a name or an email; at least two characters.
+*/
+    pub async fn search_users<'a>(
+        &'a self,
+        q: &'a str,
+    ) -> Result<ResponseValue<::std::vec::Vec<types::UserCard>>, Error<types::Problem>> {
+        let url = format!("{}/api/v1/users", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("q", &q))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "search_users",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Replace your own avatar; the body is the image itself, not a multipart form
 
 Sends a `PUT` request to `/api/v1/users/me/avatar`
 
@@ -11383,8 +11874,7 @@ Sends a `GET` request to `/api/v1/ws`
 
 Arguments:
 - `channels`: Comma-separated channel ids; absent means every channel the caller may read.
-- `cursor`: Resume after this cursor. `Last-Event-ID` wins over it when both are sent,
-because that one is the browser reconnecting rather than the page asking.
+- `cursor`: Resume after this cursor; `Last-Event-ID` wins when both are sent.
 - `device`: Which device is connected, so its cursor advances as it reads.
 */
     pub async fn websocket<'a>(

@@ -1,40 +1,6 @@
-//! One local store per profile (design §9.3bis).
-//!
-//! # What this exists to prevent
-//!
-//! The CLI, the TUI and the desktop app are three front ends over one account. If
-//! each kept its own cache and its own cursor, the same person would see three
-//! different inboxes, mark something read in one and find it unread in the next,
-//! and hold three SSE connections against a budget of twenty per user (§8.2). So
-//! there is **one store per profile**, at a standard path, and every front end
-//! pointing at that profile opens the same file.
-//!
-//! The scope is the *profile*, not the machine (§9.1 `--profile`, one per server):
-//! two profiles are two servers, two devices, two cursors, two locks. Sharing a
-//! store between them would mean one server's notifications appearing under
-//! another's cursor.
-//!
-//! # Why SQLite, and what it costs
-//!
-//! §9.3bis asks for SQLite in WAL mode, and the reason is the requirement above:
-//! several *processes* read while one writes. That is what WAL does and what the
-//! pure-Rust embedded stores do not — `redb` and friends take an exclusive lock on
-//! the file, which would turn "the TUI is open" into "the CLI cannot read".
-//!
-//! The cost is honest and worth stating: `rusqlite` with `bundled` compiles SQLite
-//! from C, so building a **client** needs a C compiler. That is not the trade this
-//! workspace refused for the *server* (jsonwebtoken's pure-Rust backend, so the
-//! container image builds from a plain `cargo build`) — a CLI is not a container
-//! image, and SQLite is the most portable C there is.
-//!
-//! # The lock is an election, not a mutex
-//!
-//! One front end holds the stream and feeds the store; the others read it (§9.3bis).
-//! Which one is decided by an **advisory file lock** next to the database, so a
-//! process that dies — crash, `kill -9`, laptop lid — releases it by ceasing to
-//! exist. A flag in a table would need a lease, a heartbeat and a recovery path for
-//! the case where the holder never came back, all to answer a question the
-//! operating system already answers.
+//! One local store per profile (§9.3bis), shared by every front end on that profile so they
+//! see one inbox and one cursor. SQLite in WAL mode because several processes read while one
+//! writes; which one writes is decided by [`crate::election`].
 
 use std::path::{Path, PathBuf};
 
@@ -45,23 +11,11 @@ use notify_client_api::types::{Action, Event, State, Status};
 
 use crate::error::ClientError;
 
-/// The schema this build expects.
-///
-/// A store written by a newer client is left alone rather than migrated backwards:
-/// an older front end refuses to open it and says so, which is a worse afternoon
-/// for one person than a corrupted cache is for all of them.
-///
-/// * **1** — the cache, the cursor and the device.
-/// * **2** — `created_at` and `delivered_at`, for the "arrived late" badge (§7.2).
-/// * **3** — `deferred_by_dnd`, so the badge is not shown for lateness that was
-///   asked for (§7.4).
+/// The schema this build expects; a newer store is refused, never migrated backwards.
+/// 1: cache, cursor, device. 2: `created_at`/`delivered_at` (§7.2). 3: `deferred_by_dnd` (§7.4).
 const SCHEMA_VERSION: i64 = 3;
 
-/// One row of the cache, in the shape a front end draws (design §7.2, §9.2).
-///
-/// Read back out of the stored event rather than re-fetched: a front end that does
-/// not hold the stream renders from here (§9.3bis), and the whole point is that it
-/// does so without a request.
+/// One row of the cache, read back out of the stored event (§7.2, §9.2).
 #[derive(Debug, Clone)]
 pub struct CachedNotification {
     /// The notification id, which is also the cache key.
@@ -80,29 +34,17 @@ pub struct CachedNotification {
     pub status: Status,
     /// When the server first created it.
     pub created_at: Option<DateTime<Utc>>,
-    /// When **this** profile first stored it — never rewritten by a later revision,
-    /// which is what makes the lateness below a property of the arrival rather than
-    /// of the last edit.
+    /// When this profile first stored it; never rewritten by a later revision.
     pub delivered_at: Option<DateTime<Utc>>,
     /// Whether the server said this one was held back on purpose (design §7.4).
     pub deferred_by_dnd: bool,
-    /// Buttons, as of the last revision seen (design §2.3).
-    ///
-    /// No column of its own: `payload` already stores the whole event verbatim
-    /// (see the comment on `notifications` in [`Store::migrate`]), and that event's
-    /// `Content` already carries `actions` — this is read back out of it, not
-    /// stored a second time.
+    /// Buttons as of the last revision seen (§2.3), read from the stored event.
     pub actions: Vec<Action>,
 }
 
 impl CachedNotification {
-    /// How long after its creation this profile first saw it (design §7.2).
-    ///
-    /// `None` when either end is missing — a row cached by a schema-1 build has no
-    /// arrival time, and inventing one would put a badge on every old row — and
-    /// `None` when the wait was **asked for** (§7.4). That last case is the point of
-    /// the flag: somebody who set quiet hours does not want to be told every morning
-    /// that their night was late.
+    /// How long after creation this profile first saw it (§7.2); `None` when either end is
+    /// missing or the delay was asked for (§7.4).
     #[must_use]
     pub fn late_by(&self) -> Option<TimeDelta> {
         if self.deferred_by_dnd {
@@ -118,10 +60,6 @@ impl CachedNotification {
 }
 
 /// A notification on its way into the cache.
-///
-/// A struct rather than six positional strings: `upsert(id, channel, a, b, c, d)`
-/// is a call nobody can read, and two timestamps of the same type next to each
-/// other is exactly where they get swapped.
 #[derive(Debug, Clone, Copy)]
 pub struct CacheEntry<'a> {
     /// The notification id.
@@ -135,9 +73,6 @@ pub struct CacheEntry<'a> {
     /// The event, verbatim as §8.1 put it on the wire.
     pub payload: &'a str,
     /// Whether the server reported this one as held back on purpose (§7.4).
-    ///
-    /// Passed in rather than stamped by the store, unlike `delivered_at`: this is a
-    /// fact about the *server's* view of a preference, not about this cache.
     pub deferred_by_dnd: bool,
 }
 
@@ -173,20 +108,15 @@ impl Store {
 
         let connection = Connection::open(path).map_err(|error| store_failure(&error))?;
 
-        // WAL is the whole reason SQLite is here: readers do not block the writer
-        // and the writer does not block readers, which is what lets the TUI hold
-        // the stream while `notify ls` reads the same file.
+        // WAL: readers and the writer don't block each other (TUI streams while `notify ls` reads).
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| store_failure(&error))?;
-        // NORMAL rather than FULL: a cache that loses the last few events to a
-        // power cut re-fetches them from the cursor, and paying an fsync per write
-        // for that is a poor trade.
+        // NORMAL, not FULL: a lost tail is re-fetched from the cursor.
         connection
             .pragma_update(None, "synchronous", "NORMAL")
             .map_err(|error| store_failure(&error))?;
-        // Without this, a second front end writing at the same moment gets an
-        // immediate "database is locked" instead of waiting the moment out.
+        // Wait out a concurrent writer instead of failing with "database is locked".
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|error| store_failure(&error))?;
@@ -240,10 +170,7 @@ impl Store {
             .map_err(|error| store_failure(&error))?;
 
         if found < 2 {
-            // Schema 2 (design §7.2): when the server made it, and when *this*
-            // profile first saw it. Existing rows get the empty string rather than a
-            // guess — a made-up arrival time would put an "arrived late" badge on
-            // every row a schema-1 build had already cached.
+            // Schema 2 (§7.2): existing rows get "" rather than a made-up arrival time.
             self.connection
                 .execute_batch(
                     "BEGIN;
@@ -257,9 +184,7 @@ impl Store {
         }
 
         if found < 3 {
-            // Schema 3 (design §7.4): lateness that was asked for. Defaults to
-            // false, which is the truth for every row cached before there was a
-            // do-not-disturb to defer anything.
+            // Schema 3 (§7.4): false for every row cached before do-not-disturb existed.
             self.connection
                 .execute_batch(
                     "ALTER TABLE notifications
@@ -288,11 +213,7 @@ impl Store {
         self.meta("cursor")
     }
 
-    /// Record the cursor.
-    ///
-    /// Written **after** the events it covers are stored, never before: the other
-    /// order means a crash in between loses events the cursor now claims were seen,
-    /// and nothing will ever fetch them again.
+    /// Record the cursor, only **after** the events it covers are stored (or a crash loses them).
     ///
     /// # Errors
     ///
@@ -301,10 +222,7 @@ impl Store {
         self.set_meta("cursor", cursor)
     }
 
-    /// The device this profile enrolled, if any.
-    ///
-    /// One device per profile rather than per front end (§9.3bis) — which is also
-    /// what makes "seen by 3/5" count this machine once instead of three times.
+    /// The device this profile enrolled, if any (one per profile, not per front end).
     ///
     /// # Errors
     ///
@@ -322,17 +240,8 @@ impl Store {
         self.set_meta("device", device)
     }
 
-    /// Store or replace a notification.
-    ///
-    /// `delivered_at` is stamped by the **store**, on the first insertion and never
-    /// again. Both halves matter:
-    ///
-    /// * the store stamps it because the arrival time is a fact about this machine's
-    ///   cache, not something a caller should be able to pass in wrong;
-    /// * it is never rewritten because a revision landing forty minutes later must
-    ///   not reset it, or the "arrived late" badge of §7.2 would measure the last
-    ///   edit instead of the wait. That is why the conflict clause names its columns
-    ///   one by one rather than replacing the row.
+    /// Store or replace a notification. `delivered_at` is stamped by the store on first insert
+    /// and never rewritten, so the "arrived late" badge (§7.2) measures the wait, not the last edit.
     ///
     /// # Errors
     ///
@@ -391,8 +300,7 @@ impl Store {
             .map_err(|error| store_failure(&error))?;
 
         let rows = statement
-            // Saturating rather than `as`: a limit that wrapped negative would turn
-            // "show me a page" into "show me everything".
+            // Saturating: a negative limit would mean "everything".
             .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
                 row.get::<_, String>(0)
             })
@@ -402,14 +310,8 @@ impl Store {
             .map_err(|error| store_failure(&error))
     }
 
-    /// The cached inbox, most recent first, in the shape a front end draws.
-    ///
-    /// This is what a front end that lost the stream election reads (§9.3bis): the
-    /// holder writes, everybody else renders from here, and nobody spends a second
-    /// stream slot to show the same list.
-    ///
-    /// A row whose stored event no longer parses is **skipped rather than fatal** —
-    /// one unreadable cache entry must not blank an inbox.
+    /// The cached inbox, most recent first, as an election loser draws it (§9.3bis).
+    /// Rows whose event no longer parses are skipped, not fatal.
     ///
     /// # Errors
     ///
@@ -443,9 +345,7 @@ impl Store {
             let (id, channel, created_at, delivered_at, payload, deferred_by_dnd) =
                 row.map_err(|error| store_failure(&error))?;
 
-            // Only a revision has anything to draw, and only a revision is ever
-            // stored under a notification's id — anything else here is a row written
-            // by a build whose events this one cannot read.
+            // Only revisions are stored by id; anything else was written by an unreadable build.
             let Ok(Event::Revision {
                 payload: content,
                 seq,
@@ -475,11 +375,7 @@ impl Store {
         Ok(cached)
     }
 
-    /// When this profile first received each of these notifications (design §7.2).
-    ///
-    /// Separate from [`Self::cached_inbox`] because a front end that renders the
-    /// *server's* list still wants the badge, and the arrival time is the one thing
-    /// only the local store knows.
+    /// When this profile first received a notification (§7.2), for front ends drawing the server's list.
     ///
     /// # Errors
     ///
@@ -544,25 +440,15 @@ impl Store {
     }
 }
 
-/// `$XDG_DATA_HOME/weebo-notify/<profile>/store.db`, or the usual fallback.
-///
-/// Data, not config: a cache belongs where a backup tool can skip it, and where a
-/// `rm -rf` costs a re-sync rather than a re-configuration.
+/// `<data dir>/weebo-notify/<profile>/store.db`: data, not config, so losing it costs a re-sync.
 #[must_use]
 pub fn store_path(profile: &str) -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    base.join("weebo-notify").join(profile).join("store.db")
+    crate::config::app_dir(|dirs| dirs.data_dir())
+        .join(profile)
+        .join("store.db")
 }
 
-/// Read a stored RFC 3339 timestamp, or nothing.
-///
-/// The empty string is the schema-1 row that never had one, and an unparseable value
-/// is treated the same way: a missing timestamp costs a badge, a guessed one is
-/// wrong information.
+/// Read a stored RFC 3339 timestamp; empty (schema 1) or unparseable means none, not a guess.
 fn timestamp(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
@@ -604,8 +490,7 @@ mod tests {
 
     #[test]
     fn the_cursor_and_the_device_survive_reopening() {
-        // The point of the file: a second `notify` invocation is a different
-        // process and has to pick up where the last one stopped.
+        // A second `notify` invocation is a new process and must pick up where the last stopped.
         let (store, path) = temp_store("persist");
         store.set_cursor("evt_00000000000042").unwrap();
         store.set_device("dev_01J").unwrap();
@@ -622,15 +507,8 @@ mod tests {
 
     #[test]
     fn critical_t28_deleting_the_store_asks_for_everything_again_rather_than_losing_it() {
-        // The other half of T28 (§3.4), and the sentence §9.3bis rests on: "le store
-        // n'est qu'un cache : le supprimer déclenche un re-sync complet, jamais une
-        // perte". What makes that true is here and nowhere else — the cursor lives
-        // in the file, so a deleted file means "start from the beginning", which is
-        // exactly what a client that has lost its place should ask for.
-        //
-        // The failure this rules out is the opposite one: a store that comes back
-        // *with* a cursor it cannot justify — from a stale copy, a default, a
-        // half-written row — and therefore skips everything published since.
+        // T28 (§3.4): the store is only a cache. A deleted file must come back with no cursor
+        // (full re-sync), never a cursor it can't justify.
         let (store, path) = temp_store("deleted");
         store.set_cursor("evt_00000000000042").unwrap();
         store.set_device("dev_01J").unwrap();
@@ -673,8 +551,6 @@ mod tests {
 
     #[test]
     fn a_notification_is_replaced_rather_than_duplicated() {
-        // Revisions arrive as new versions of the same id (§2.2), so upserting is
-        // the normal path and not an edge case.
         let (store, _) = temp_store("upsert");
 
         store
@@ -712,15 +588,13 @@ mod tests {
         store.remove("ntf_1").unwrap();
 
         assert!(store.is_empty().unwrap());
-        // Removing what is already gone is the desired state: a tombstone can be
-        // replayed by a reconnect.
+        // Idempotent: a reconnect can replay a tombstone.
         store.remove("ntf_1").unwrap();
     }
 
     #[test]
     fn two_front_ends_open_the_same_file_at_once() {
-        // The requirement WAL is here for (§9.3bis): the TUI holds the stream and
-        // writes, `notify ls` reads, and neither waits for the other.
+        // WAL (§9.3bis): the TUI writes while `notify ls` reads.
         let (writer, path) = temp_store("shared");
         let reader = Store::open_at(&path).unwrap();
 
@@ -745,11 +619,7 @@ mod tests {
         assert!(refused.is_err(), "a silent downgrade corrupts the cache");
     }
 
-    /// One revision as §8.1 puts it on the wire, created `created_at`.
-    ///
-    /// Whole rather than "the fields this test reads": since D1 the cache is read
-    /// back through the generated [`Event`], so a half-written fixture would be
-    /// testing the parser's tolerance instead of the store's behaviour.
+    /// One whole revision as §8.1 puts it on the wire (the cache is read through [`Event`]).
     fn revision(id: &str, created_at: &str, seq: u32, title: &str) -> String {
         serde_json::json!({
             "cursor": "evt_1",
@@ -772,8 +642,6 @@ mod tests {
 
     #[test]
     fn a_cached_row_comes_back_in_the_shape_a_front_end_draws() {
-        // What a front end that lost the stream election renders from (§9.3bis) —
-        // without a request, which is the entire point of the shared store.
         let (store, _) = temp_store("cached");
         store
             .upsert(CacheEntry {
@@ -797,8 +665,6 @@ mod tests {
 
     #[test]
     fn a_cached_rows_actions_come_back_from_the_stored_payload() {
-        // No column of their own (see the doc comment on `CachedNotification::actions`)
-        // — read back out of the same `payload` every other field already comes from.
         let (store, _) = temp_store("actions");
         let payload = serde_json::json!({
             "cursor": "evt_1",
@@ -884,8 +750,7 @@ mod tests {
 
     #[test]
     fn the_arrival_time_is_recorded_once_and_survives_a_revision() {
-        // The property the "arrived late" badge rests on (§7.2): a revision landing
-        // later must not reset the clock, or the badge would measure the last edit.
+        // A later revision must not reset the clock (§7.2).
         let (store, _) = temp_store("delivered");
         store
             .upsert(entry(
@@ -930,8 +795,7 @@ mod tests {
 
     #[test]
     fn a_row_without_both_timestamps_carries_no_badge() {
-        // A row cached by a schema-1 build. Inventing an arrival time would put a
-        // badge on every one of them.
+        // A schema-1 row: no invented arrival time.
         let cached = CachedNotification {
             id: "ntf_1".to_owned(),
             channel: "ci-infra".to_owned(),
@@ -951,8 +815,7 @@ mod tests {
 
     #[test]
     fn a_schema_one_store_gains_the_new_columns_and_keeps_its_rows() {
-        // The migration a person with a store from last week goes through: the cache
-        // is not thrown away, it just has no arrival times for what is already in it.
+        // Last week's store keeps its cache, minus arrival times.
         let (store, path) = temp_store("migrate");
         store
             .upsert(entry("ntf_1", "2026-08-01T10:00:00Z", "{}"))

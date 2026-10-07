@@ -13,28 +13,18 @@ publish.workspace = true
 workspace = true
 
 [features]
-# A deterministic ES256 test key, same reason and same construction as
-# `notify-push-webpush`'s `test-utils`: a PEM literal in a source file is exactly
-# what `task audit`/gitleaks exist to catch, so the key is derived rather than
-# pasted. Off by default; the composition root turns it on in its
-# `[dev-dependencies]` only.
+# A derived ES256 test key (no PEM literal for scanners to flag).
 test-utils = []
 
 [dependencies]
 notify-domain = { workspace = true }
 notify-ports = { workspace = true }
-# The sealed box (design §6.2): ephemeral X25519 ECDH, HKDF-SHA256, then
-# XChaCha20-Poly1305 — shared with `notify-push-unifiedpush` since M7.
 notify-sealed-box = { workspace = true }
 
 async-trait = { workspace = true }
-base64 = { workspace = true }
-# Signs the APNs provider token (ES256 JWT, `.p8` key) — the same crate
-# `notify-push-webpush` signs VAPID with and `notify-oidc` verifies with.
+# Signs the ES256 provider token.
 jsonwebtoken = { workspace = true }
-# The `.p8` key is a P-256 private key, same as VAPID's — pinned to 0.13 to match
-# `notify-push-webpush`, which needs that version for `web-push-native`. Both
-# already in the lockfile.
+# Pinned to 0.13 to match `notify-push-webpush` (`web-push-native`).
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -43,6 +33,7 @@ thiserror = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 x25519-dalek = { version = "3", features = ["static_secrets"] }

@@ -1,23 +1,5 @@
-//! Which sinks this instance routes to, and what talks to them (design §7.1bis,
-//! §11).
-//!
-//! Two things live here and nowhere else, for the same reason the push registry
-//! does: they are properties of *what was configured*, and nothing above the
-//! composition root is allowed to know that.
-//!
-//! * [`SinkRoutes`] — the channel-to-sink table, built from
-//!   `[[channels.managed.sinks]]` and holding the resolved secrets in memory. It is
-//!   the reason a queue row can name a sink without carrying its credential.
-//! * [`SinkFleet`] — a [`SinkDispatcher`] that picks the adapter by kind. Same shape
-//!   as `TransportRegistry`, same answer when a kind is not configured: name the
-//!   capability rather than fail vaguely.
-//!
-//! # A secret that cannot be read is a startup failure
-//!
-//! `secret_ref = "env:WNK_SINK_INCIDENTS_HMAC"` with nothing in the environment
-//! stops the process, exactly as an unreadable VAPID key does (M3.5). The
-//! alternative — start, and sign every delivery with an empty secret — produces a
-//! consumer rejecting every request for a reason neither side can see.
+//! Which sinks this instance routes to (design §7.1bis, §11): [`SinkRoutes`] (channel → sinks, secrets
+//! in memory) and [`SinkFleet`] (adapter by kind). An unresolvable `secret_ref` fails startup.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -32,15 +14,13 @@ use crate::config::{Config, resolve_secret};
 /// The configured routing table (design §11).
 #[derive(Clone, Default)]
 pub(crate) struct SinkRoutes {
-    /// Channel to its sinks, in configuration order — which is the order a
-    /// publish queues them in, so an operator reading the file reads the fan-out.
+    /// Channel to its sinks, in configuration (and queueing) order.
     routes: BTreeMap<ChannelId, Vec<(SinkId, SinkTarget)>>,
 }
 
 impl core::fmt::Debug for SinkRoutes {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Never derived: a target holds an HMAC secret, and a `{:?}` of the wiring
-        // is exactly the kind of line that ends up in a startup log.
+        // Not derived: targets hold HMAC secrets.
         f.debug_struct("SinkRoutes")
             .field("channels", &self.routes.len())
             .field("sinks", &self.len())
@@ -49,13 +29,7 @@ impl core::fmt::Debug for SinkRoutes {
 }
 
 impl SinkRoutes {
-    /// Build it from the configuration, resolving every secret.
-    ///
-    /// # Errors
-    ///
-    /// A sink whose kind, url or address the schema refused (that check lives in
-    /// [`crate::config`], next to the raw strings), or a `secret_ref` that cannot be
-    /// resolved.
+    /// A sink the schema refused (see [`crate::config`]), or an unresolvable `secret_ref`.
     pub(crate) fn build(config: &Config) -> anyhow::Result<Self> {
         let mut routes: BTreeMap<ChannelId, Vec<(SinkId, SinkTarget)>> = BTreeMap::new();
 
@@ -82,10 +56,7 @@ impl SinkRoutes {
                 let sink_id = target.id()?;
                 let entry = routes.entry(id.clone()).or_default();
 
-                // Two identical sinks on one channel would share an identity and
-                // therefore a queue row, so the second one would silently replace
-                // the first's delivery. Refused rather than deduplicated: it is a
-                // copy-paste in the configuration, and saying so is the fix.
+                // Identical sinks would share a queue row; refuse the copy-paste.
                 anyhow::ensure!(
                     !entry.iter().any(|(existing, _)| *existing == sink_id),
                     "channel `{}` declares `{sink_id}` twice",
@@ -103,8 +74,7 @@ impl SinkRoutes {
         self.routes.values().map(Vec::len).sum()
     }
 
-    /// The kinds in use, for the startup log — never the destinations, which is
-    /// where the secrets are keyed.
+    /// The kinds in use, for the startup log (never destinations).
     pub(crate) fn kinds(&self) -> Vec<&str> {
         let mut kinds: Vec<&str> = self
             .routes
@@ -171,9 +141,7 @@ impl SinkFleet {
 #[async_trait::async_trait]
 impl SinkDispatcher for SinkFleet {
     fn handles(&self) -> &'static [&'static str] {
-        // What the fleet as a whole handles is decided at runtime, so the static
-        // answer is the closed set of kinds the domain knows; the map decides which
-        // of them actually resolve.
+        // Statically every domain kind; the map decides which resolve.
         notify_domain::SINK_KINDS
     }
 
@@ -216,15 +184,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{:x}.toml", toml.len()));
         std::fs::write(&path, toml).unwrap();
-        Config::load(&path).unwrap()
+        crate::config::load_isolated(&path).unwrap()
     }
 
-    /// A secret file, and the `file:` reference that names it.
-    ///
-    /// `file:` rather than `env:` throughout these tests, and not by preference:
-    /// setting an environment variable is `unsafe` since the 2024 edition and this
-    /// workspace forbids `unsafe` outright. The two branches of the resolver are the
-    /// same three lines; the one that can be tested here is tested here.
+    /// A secret file and its `file:` reference (setting env vars needs `unsafe`, which is forbidden).
     fn secret_file(name: &str, contents: &str) -> String {
         let dir = std::env::temp_dir().join(format!("wnk-sinks-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -249,8 +212,7 @@ id = "ci-infra"
 
     #[test]
     fn a_configured_webhook_becomes_a_route_carrying_its_resolved_secret() {
-        // Written with a trailing newline on purpose: that is what `echo > secret`
-        // produces, and an HMAC over the newline is a signature nobody can reproduce.
+        // Trailing newline, as `echo > secret` writes; it must be trimmed.
         let reference = secret_file("hmac", "shh\n");
         let routes = SinkRoutes::build(&webhook_config(&reference)).unwrap();
         let channel = ChannelId::parse("ci-infra").unwrap();
@@ -286,9 +248,7 @@ id = "ci-infra"
 
     #[test]
     fn a_secret_reference_of_a_form_nobody_serves_is_refused() {
-        // Not "treated as the secret itself": accepting an inline value would make
-        // §11's whole reference scheme optional, and the first thing an operator
-        // would do with it is commit a secret.
+        // Inline values are refused, or operators would commit secrets (§11).
         let error = SinkRoutes::build(&webhook_config("shh"))
             .unwrap_err()
             .to_string();

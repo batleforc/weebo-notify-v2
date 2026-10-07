@@ -1,20 +1,5 @@
-//! Rasterising the desktop icons from their SVG sources (design §10bis.3ter, M5).
-//!
-//! # Why the sources are SVG and the outputs are committed
-//!
-//! Tauri hands the OS a PNG: a tray icon and a bundle icon are files, not markup.
-//! But a committed PNG is a blob nobody can review — a change to the mark would
-//! arrive as "binary files differ", which is exactly the diff a design decision must
-//! not hide. So the mark is authored once in SVG, next to a comment explaining every
-//! choice in it, and this turns it into the rasters the shell loads.
-//!
-//! # Why pure Rust
-//!
-//! `librsvg`, Inkscape and `ImageMagick` are system packages. This workspace has no
-//! root (§12.4) — the same constraint that stops the shell itself being built here —
-//! so a chore that needed one of them would be a chore nobody in a Che workspace
-//! could run. `resvg` is Rust and has no system dependency, which makes this the one
-//! part of M5 that works everywhere today.
+//! Rasterises the desktop icons from their SVG sources (§10bis.3ter), in pure Rust so it
+//! runs without system packages. Sources stay SVG so mark changes are reviewable.
 
 use std::path::Path;
 
@@ -28,13 +13,7 @@ struct Mark {
     sizes: &'static [u32],
 }
 
-/// What gets generated.
-///
-/// Tray marks are small by nature — a menu bar is 16 logical pixels, so 32 and 64
-/// cover the usual 2× and 4× scales and anything larger is bytes nobody samples.
-/// The app icon is one large square: `tauri icon` derives the platform set (`.ico`,
-/// `.icns`, the Android and iOS densities) from a single big PNG, and duplicating
-/// that here would be re-implementing a tool the CLI already ships.
+/// What gets generated: small tray sizes, and one large app icon `tauri icon` derives the rest from.
 const MARKS: &[Mark] = &[
     Mark {
         name: "tray-neutral",
@@ -67,8 +46,6 @@ pub(crate) fn generate(root: &Path) -> anyhow::Result<()> {
         let svg =
             std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?;
 
-        // Parsed once per mark rather than once per size: the tree is the expensive
-        // half, and the sizes differ only by the transform below.
         let tree = resvg::usvg::Tree::from_data(&svg, &resvg::usvg::Options::default())
             .with_context(|| format!("parsing {}", source.display()))?;
 
@@ -81,11 +58,7 @@ pub(crate) fn generate(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `tray-neutral.png` for the first size, `tray-neutral@64.png` for the rest.
-///
-/// The unsuffixed name is what `main.rs` asks for, so the smallest size is the one
-/// that keeps it: a shell that hard-coded `@32` would have to change every time a
-/// scale was added.
+/// `tray-neutral.png` for the first size (the name `main.rs` loads), `tray-neutral@64.png` for the rest.
 fn output(root: &Path, name: &str, size: u32) -> std::path::PathBuf {
     let mark = MARKS.iter().find(|mark| mark.name == name);
     let first = mark.and_then(|mark| mark.sizes.first().copied());
@@ -102,10 +75,7 @@ fn render(tree: &resvg::usvg::Tree, size: u32, to: &Path) -> anyhow::Result<std:
     let mut pixmap =
         resvg::tiny_skia::Pixmap::new(size, size).context("allocating the target bitmap")?;
 
-    // Uniform scale from the source's own viewBox, so a mark authored on a 512
-    // canvas and one authored on a 24 canvas both fill the output. Reading the
-    // tree's size rather than assuming 512 is what stops the next mark being
-    // silently cropped.
+    // Scale from the source's own viewBox so marks on any canvas fill the output.
     #[allow(
         clippy::cast_precision_loss,
         reason = "icon sizes are small integers; the nearest f32 is exact here"
@@ -135,9 +105,7 @@ mod tests {
 
     #[test]
     fn the_smallest_size_keeps_the_unsuffixed_name() {
-        // `main.rs` asks for `tray-neutral.png`. If a scale were added below 32 and
-        // this rule silently moved the plain name onto it, the shell would keep
-        // loading a file that had changed meaning.
+        // `main.rs` loads the unsuffixed name; it must stay on the smallest size.
         let root = Path::new("/icons");
         assert_eq!(
             output(root, "tray-neutral", 32),
@@ -151,10 +119,7 @@ mod tests {
 
     #[test]
     fn every_mark_the_shell_names_is_generated() {
-        // The list in `main.rs` and the list here are two lists, and this is the
-        // only thing holding them together. A tray variant added to §10bis.3ter's
-        // table and forgotten here would fail at runtime on one state, which is the
-        // hardest kind of missing file to notice.
+        // Must match the tray variants `main.rs` loads.
         for name in [
             "tray-neutral",
             "tray-unread",

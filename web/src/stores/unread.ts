@@ -1,15 +1,6 @@
 /**
- * The unread badge, per channel (§7.3, §9.2, §10.4).
- *
- * The count is the **server's**, fetched from `GET /unread`, and never derived from
- * the rows this tab happens to hold. That distinction is the whole of D27: a badge
- * folded over the loaded page would mean "unread among the fifty rows I have", a
- * different number that looks exactly like the right one and is wrong for anybody
- * whose channel is bigger than a page.
- *
- * Channels with nothing unread are absent from the answer rather than present with
- * a zero, so "no badge" has one representation here too — `countOf` turns the
- * absence into the zero a template wants without ever storing it.
+ * Unread badges per channel (§7.3, §10.4): the server's count from `GET /unread`,
+ * never derived from loaded rows (D27). Zero channels are absent from the answer.
  */
 
 import { defineStore } from "pinia";
@@ -18,14 +9,7 @@ import { computed, ref } from "vue";
 import { unread as fetchUnread } from "@/api/generated";
 import { failureOf } from "@/api/problem";
 
-/**
- * How long a burst of stream events waits before it becomes one request.
- *
- * A badge changes on every publish and every read, so a deploy fanning out forty
- * revisions (§10.4's "et 39 autres") would be forty round trips for a number that
- * is only ever rendered once per frame. The trailing edge is the right one: what
- * matters is the count *after* the burst, not during it.
- */
+/** Trailing-edge debounce: a burst of events becomes one request. */
 export const COALESCE_MS = 500;
 
 export const useUnread = defineStore("unread", () => {

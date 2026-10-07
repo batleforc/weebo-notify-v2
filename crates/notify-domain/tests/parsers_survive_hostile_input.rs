@@ -1,39 +1,6 @@
-//! Randomised input against every parser that reads untrusted strings
-//! (advisory SEC-P2-35).
-//!
-//! These five all take a value straight off the wire and turn it into a domain
-//! type, and every one is hand-written rather than derived:
-//!
-//! | Parser | Where the input comes from |
-//! | --- | --- |
-//! | [`Cursor`] | `?cursor=` and `Last-Event-ID` |
-//! | [`PresentedApiKey`] | the `Authorization` header |
-//! | [`Pattern`] | trust-policy subjects, matched against a forge's `sub` claim |
-//! | [`ChannelId`] | a path segment |
-//! | [`AttachmentId`] | a path segment |
-//!
-//! # Why this is not `cargo-fuzz`
-//!
-//! It is not as good as coverage-guided fuzzing and does not pretend to be: there
-//! is no coverage feedback and no corpus, so it explores far less. What it has
-//! instead is that **it runs**. `cargo-fuzz` needs a nightly toolchain this
-//! repository does not pin, which would make the targets another artefact that is
-//! committed and never executed — the state D7, D12 and D17 are already open for,
-//! and the one this review has objected to twice.
-//!
-//! So this is the floor, not the ceiling. It runs on every `cargo test`, on a fixed
-//! seed so a failure reproduces exactly, and it asserts the two properties that
-//! actually matter for a parser on a public endpoint:
-//!
-//! 1. **it returns** — no panic, no unwrap, no arithmetic overflow, no unbounded
-//!    allocation, whatever the bytes;
-//! 2. **it round-trips** — anything it accepts renders back to something it accepts
-//!    again, and to the same value. A parser that accepts what it will not emit is
-//!    where two components come to disagree about the same string.
-//!
-//! When the toolchain gains nightly, add `cargo-fuzz` targets over these same
-//! entry points and keep this file: a fast deterministic check that runs in CI is
-//! worth having next to a slow thorough one that runs nightly.
+//! Seeded random input against every hand-written parser of untrusted strings
+//! (SEC-P2-35): each must return without panicking and round-trip what it accepts.
+//! A stable-toolchain floor until `cargo-fuzz` targets exist.
 
 #![allow(
     clippy::expect_used,
@@ -44,9 +11,6 @@
 use notify_domain::{AttachmentId, ChannelId, Cursor, Pattern, PresentedApiKey};
 
 /// A tiny xorshift, so the suite is deterministic and needs no dependency.
-///
-/// A failure that cannot be reproduced is a failure nobody fixes; a fixed seed
-/// means the sequence is the same on every machine and in every CI run.
 struct Rng(u64);
 
 impl Rng {
@@ -73,9 +37,8 @@ impl Rng {
     }
 }
 
-/// Bytes chosen to sit on the edges these parsers actually have: their own
-/// separators, their own prefixes, whitespace, and things that break naive
-/// splitting or integer parsing.
+/// Fragments on the edges these parsers have: separators, prefixes, whitespace,
+/// and things that break naive splitting or integer parsing.
 const ALPHABET: &[&str] = &[
     "_",
     ".",
@@ -133,9 +96,7 @@ fn no_parser_panics_on_anything() {
     for round in 0..ROUNDS {
         let raw = hostile(&mut rng, 12);
 
-        // Each of these must *return*. A panic here is a `500` on a public
-        // endpoint at best, and on the credential path it is a denial of service
-        // anybody can trigger with a header.
+        // Each must return: a panic here is a 500 or a DoS on the credential path.
         let context = || format!("round {round}, input {raw:?}");
 
         let _ = std::panic::catch_unwind(|| raw.parse::<Cursor>())
@@ -153,9 +114,7 @@ fn no_parser_panics_on_anything() {
 
 #[test]
 fn a_pattern_that_parses_never_panics_on_any_candidate() {
-    // `Pattern::matches` is the trust-policy subject check: the pattern comes from
-    // an operator, the candidate from a forge's token. Both sides get hostile input
-    // here because only one of them is trusted.
+    // Both sides get hostile input: the pattern is operator config, the candidate a token claim.
     let mut rng = Rng::new(SEED ^ 0xA5A5);
 
     for _ in 0..ROUNDS {
@@ -169,10 +128,7 @@ fn a_pattern_that_parses_never_panics_on_any_candidate() {
 
 #[test]
 fn everything_accepted_renders_back_to_itself() {
-    // The property that catches a whole class of confusion bug: if a parser accepts
-    // a string it would not itself emit, two components can hold "the same" id and
-    // disagree. Anything accepted must render to something accepted again, equal to
-    // the first.
+    // Anything accepted must render to something accepted again, equal to the first.
     let mut rng = Rng::new(SEED ^ 0x1234);
     let mut accepted = 0_usize;
 
@@ -213,10 +169,7 @@ fn everything_accepted_renders_back_to_itself() {
 
 #[test]
 fn a_presented_key_never_yields_a_prefix_the_domain_would_refuse() {
-    // The split in `PresentedApiKey::parse` runs before authentication, on the
-    // `Authorization` header. Whatever it hands back has to be a value the rest of
-    // the system agrees is well formed, or the difference is an authentication path
-    // operating on something nothing else would accept.
+    // The API key split runs before authentication, so its output must be well formed.
     let mut rng = Rng::new(SEED ^ 0xBEEF);
 
     for _ in 0..ROUNDS {

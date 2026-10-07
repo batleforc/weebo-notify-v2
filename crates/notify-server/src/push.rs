@@ -1,23 +1,5 @@
-//! Which push transports this instance actually has (design §7.1, §11).
-//!
-//! The [`PushDispatcher`] port exists so nothing above it knows which transports
-//! were wired: no APNs key means no APNs, and that is a configuration answer rather
-//! than a code path. This is the registry that answers it.
-//!
-//! # An empty registry is a deployment's answer, not a stub
-//!
-//! Web Push is here since M3.5, UnifiedPush since M6, APNs lands in M7 — but a
-//! deployment with no `[push.webpush]` still gets an empty registry, and the
-//! delivery path is complete without one: a device enrolled with
-//! [`notify_domain::PushTransport::Stream`] is reachable only while its client holds
-//! a stream, and the event-bus poke already covered it before the dispatcher was
-//! consulted (`Fanout::push` skips it).
-//!
-//! So the registry is reached only by a device that enrolled with a transport this
-//! instance does not run. Answering [`PortError::NotConfigured`] names the missing
-//! capability, the fan-out logs it and carries on, and the publish never fails —
-//! a CI job must not go red because somebody's phone chose a transport this
-//! deployment did not configure.
+//! Which push transports this instance has (design §7.1, §11). A device on an unconfigured
+//! transport gets [`PortError::NotConfigured`]: logged by the fan-out, never failing the publish.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -31,12 +13,7 @@ use notify_ports::{
 #[derive(Clone, Default)]
 pub(crate) struct TransportRegistry {
     transports: BTreeMap<&'static str, Arc<dyn PushTransport>>,
-    /// Where `push_delivery_duration_seconds` and `push_failures_total` land
-    /// (design §13).
-    ///
-    /// Here rather than in the fan-out because this is the only place that knows
-    /// *which transport* answered — the fan-out holds a `dyn PushDispatcher` and is
-    /// deliberately unable to tell them apart.
+    /// Where push duration and failure metrics land (design §13); only the registry knows the transport.
     metrics: Option<Arc<dyn notify_ports::Metrics>>,
 }
 
@@ -72,10 +49,7 @@ impl TransportRegistry {
         self.transports.keys().copied().collect()
     }
 
-    /// The largest payload any configured transport will carry.
-    ///
-    /// The fan-out degrades to a poke past this. Zero when nothing is configured,
-    /// which is right: with no transport there is no payload that fits.
+    /// The largest payload any configured transport will carry (zero with none); past it, send a poke.
     pub(crate) fn max_payload_bytes(&self) -> usize {
         self.transports
             .values()
@@ -87,19 +61,13 @@ impl TransportRegistry {
 
 #[async_trait::async_trait]
 impl PushDispatcher for TransportRegistry {
-    /// The last span of §13's `publish → fanout → push transport`.
-    ///
-    /// Named by the transport and not by the device: which relay was slow is the
-    /// question a trace is opened to answer, and a device id in a span attribute
-    /// would put somebody's endpoint in a document an operator reads (§13 — the
-    /// same rule the metrics labels follow).
+    /// The last span of §13's `publish → fanout → push transport`, named by transport, never device.
     #[tracing::instrument(name = "push", skip_all, fields(transport = device.transport.name()))]
     async fn dispatch(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
         let wanted = device.transport.name();
 
         let Some(transport) = self.transports.get(wanted) else {
-            // Named rather than generic, so an operator reading the log is told
-            // which capability to configure instead of that "push failed".
+            // Named, so the operator knows which capability to configure.
             self.record(wanted, notify_ports::PushResult::Unusable, 0.0);
             return Err(PortError::NotConfigured {
                 what: capability(wanted),
@@ -130,17 +98,13 @@ impl TransportRegistry {
     }
 }
 
-/// The `push.<transport>` capability name, as `/readyz` and the metrics spell it.
-///
-/// A closed match rather than a leaked `format!`: these are metric labels and
-/// `PortError::NotConfigured` holds a `&'static str`, so the set has to be bounded.
+/// The `push.<transport>` capability name; a closed match since metric labels must be bounded.
 const fn capability(transport: &str) -> &'static str {
     match transport.as_bytes() {
         b"webpush" => "push.webpush",
         b"unifiedpush" => "push.unifiedpush",
         b"apns" => "push.apns",
-        // `stream` never reaches here — the fan-out skips it — and anything else is
-        // a transport this build does not know.
+        // `stream` never reaches here; anything else is unknown to this build.
         _ => "push",
     }
 }
@@ -216,8 +180,7 @@ mod tests {
 
     #[test]
     fn every_transport_a_device_can_enrol_with_maps_to_a_capability_name() {
-        // These are what `/readyz` and `push_failures_total{reason}` report, so an
-        // unnamed one would show up as a blank label.
+        // Shown by `/readyz` and as a metric label, so none may be blank.
         assert_eq!(capability("webpush"), "push.webpush");
         assert_eq!(capability("unifiedpush"), "push.unifiedpush");
         assert_eq!(capability("apns"), "push.apns");

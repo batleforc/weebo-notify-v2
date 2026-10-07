@@ -1,17 +1,5 @@
-//! The audit log: what was administered, by whom (design §13).
-//!
-//! Append-only, and a **separate stream from the technical logs** — this is the one
-//! replayed after an incident, and it is no use if it is interleaved with a
-//! million request lines. Mirrored to structured logs with `audit=true` so it
-//! survives the database it is stored in.
-//!
-//! What goes in: API key creation and revocation, device and service account
-//! lifecycle, membership changes — including a platform admin adding themselves to
-//! a channel, which is explicitly allowed and explicitly traced (design §5.4) —
-//! trust policy changes, and DLQ requeues.
-//!
-//! What does not: reads, publishes, receipts. Those are notifications doing their
-//! job; recording them would drown the entries that matter in the ones that do not.
+//! The append-only audit log of administrative actions (§13), separate from
+//! technical logs and mirrored to them with `audit=true`. Reads, publishes and receipts are not audited.
 
 use notify_domain::{ChannelId, Principal};
 use serde::{Deserialize, Serialize};
@@ -20,51 +8,24 @@ use time::OffsetDateTime;
 use crate::error::PortResult;
 use crate::pagination::{Page, PageRequest};
 
-/// Who performed an audited action.
-///
-/// # Why this is not just a [`Principal`]
-///
-/// §5 has four kinds of principal and every one of them authenticated: a person, a
-/// bot, a channel key, a CI job. The reconciler is none of them. It applies a file
-/// (§11), at boot or on `SIGHUP`, and nobody "did" that — which is exactly why §13's
-/// promise that trust policy changes are journalled had no emitter for so long
-/// (D28): there was no honest value to put in this field.
-///
-/// Widening it here rather than adding a fifth `Principal` is deliberate. A
-/// `Principal` is what publishes, holds a membership and reads a channel; a fifth
-/// variant would be representable in all of those, and every match over the four
-/// would gain an arm that means "cannot happen". The configuration is an actor of
-/// the **audit log** and of nothing else, so it is named here and nowhere else.
-///
-/// The wire form stays flat — `{"kind":"user","id":…}` beside `{"kind":
-/// "configuration"}` — so a reader that already switches on `kind` gains a case
-/// rather than a nesting level.
+/// Who performed an audited action: an authenticated principal, or the GitOps configuration.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AuditActor {
-    /// The configuration file, applied by the reconciler.
-    ///
-    /// **First on purpose.** `untagged` tries the variants in order, and the two are
-    /// disjoint by their `kind`: `Principal` refuses `"configuration"` as an unknown
-    /// variant and [`Configured`] refuses everything else. Order still matters to a
-    /// reader, so it is written down rather than discovered.
+    /// The configuration file, applied by the reconciler. First so `untagged` tries it first.
     Configuration(Configured),
 
     /// Somebody or something that authenticated (design §5).
     Principal(Principal),
 }
 
-/// The single-valued tag behind [`AuditActor::Configuration`].
-///
-/// A one-variant enum rather than a unit struct so that serde and utoipa both emit
-/// the `{"kind":"configuration"}` object the flat wire form needs.
+/// The single-valued tag behind [`AuditActor::Configuration`] (an enum so it serialises as `{"kind":"configuration"}`).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Configured {
-    /// Applied from `[[trust_policy]]`, `[[channels.managed]]` or
-    /// `[[service_accounts]]` — GitOps, not a request (design §11).
+    /// Applied from GitOps configuration, not a request (§11).
     Configuration,
 }
 
@@ -75,10 +36,8 @@ impl AuditActor {
         Self::Configuration(Configured::Configuration)
     }
 
-    /// The stable string the log is indexed and filtered on.
-    ///
-    /// `configuration` cannot collide with a principal's reference: a `UserId` and
-    /// the rest are prefixed ULIDs, and a CI subject always contains a colon.
+    /// The stable string the log is indexed and filtered on; cannot collide with a
+    /// principal reference.
     #[must_use]
     pub fn reference(&self) -> String {
         match self {
@@ -94,23 +53,8 @@ impl From<Principal> for AuditActor {
     }
 }
 
-/// One administrative action, from a closed vocabulary (design §13).
-///
-/// # Why this is a type and not a `&'static str`
-///
-/// It *was* a string, with the literals written at each call site and the closed
-/// list an adapter checks them against living separately, inside that adapter. The
-/// two drifted in **both** directions and nothing failed until a row came back:
-/// an action nothing emitted sat in the list, while two actions the build did emit
-/// were missing from it. Because the check runs on **read**, a single
-/// `PATCH /channels/{id}` made `GET /admin/audit` fail for the whole page rather
-/// than for the one row — the log design §13 calls "celui qu'on rejoue après un
-/// incident" broke on an ordinary edit.
-///
-/// The field being a string is what made that reachable, so it is not a string any
-/// more. The only ways to obtain one are the constants in [`actions`] and
-/// [`AuditAction::parse`], which accepts exactly what the constants define. An
-/// emitter cannot invent a value, and a value that exists can always be read back.
+/// One administrative action from the closed vocabulary in [`actions`] (§13).
+/// A type, not a string, so every emitted value can be read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AuditAction(&'static str);
 
@@ -121,11 +65,8 @@ impl AuditAction {
         self.0
     }
 
-    /// Read one back, refusing anything outside the vocabulary.
-    ///
-    /// The single place that decision is made. An adapter hydrating a stored row
-    /// calls this rather than keeping its own list, which is the duplication that
-    /// caused the failure above.
+    /// Read one back, refusing anything outside the vocabulary. Adapters must use this,
+    /// never a list of their own.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         AUDIT_ACTIONS.iter().copied().find(|known| known.0 == value)
@@ -169,7 +110,7 @@ pub mod actions {
     pub const APIKEY_CREATED: AuditAction = AuditAction("apikey.created");
     /// An API key was revoked, which takes effect immediately.
     pub const APIKEY_REVOKED: AuditAction = AuditAction("apikey.revoked");
-    /// A platform-admin set (or cleared) a key's own publish ceiling (§8.2, D24).
+    /// A platform-admin set (or cleared) a key's own publish ceiling (§8.2).
     pub const APIKEY_LIMIT_SET: AuditAction = AuditAction("apikey.limit_set");
     /// A channel was created through the API.
     pub const CHANNEL_CREATED: AuditAction = AuditAction("channel.created");
@@ -177,8 +118,7 @@ pub mod actions {
     pub const CHANNEL_DELETED: AuditAction = AuditAction("channel.deleted");
     /// Somebody was added to a channel, or their scopes changed.
     pub const CHANNEL_MEMBER_ADDED: AuditAction = AuditAction("channel.member_added");
-    /// Somebody took *themselves* out of a channel — no `manage` required, which
-    /// is why it is a different action from being removed.
+    /// Somebody left a channel themselves (no `manage` required).
     pub const CHANNEL_MEMBER_LEFT: AuditAction = AuditAction("channel.member_left");
     /// Somebody was taken out of a channel by a manager.
     pub const CHANNEL_MEMBER_REMOVED: AuditAction = AuditAction("channel.member_removed");
@@ -190,20 +130,14 @@ pub mod actions {
     pub const DEVICE_REVOKED: AuditAction = AuditAction("device.revoked");
     /// A dead letter was put back on the queue (design §7.1bis).
     pub const DLQ_REQUEUED: AuditAction = AuditAction("dlq.requeued");
-    /// The platform role added itself to a channel (design §5.4, scenario T30).
-    /// Membership stays the one door to content; this is the record it was used.
+    /// The platform role added itself to a channel (§5.4, T30).
     pub const PLATFORM_CHANNEL_SELF_JOIN: AuditAction = AuditAction("platform.channel.self_join");
     /// A service account was created through the API.
     pub const SERVICE_ACCOUNT_CREATED: AuditAction = AuditAction("service_account.created");
     /// A service account was disabled, taking every key it owns with it.
     pub const SERVICE_ACCOUNT_DISABLED: AuditAction = AuditAction("service_account.disabled");
 
-    // --- What GitOps changed (design §11, §13, D28) -------------------------
-    //
-    // One action per *change*, never one per pass. A row saying "a reconciliation
-    // ran" tells an operator that something was applied, which leaves them back at
-    // `git log` — the exact gap §13 promises this log closes. Absent changes emit
-    // nothing, so a steady instance reconciling every SIGHUP stays silent.
+    // --- What GitOps changed (§11, §13): one action per change, nothing when steady.
 
     /// A `[[trust_policy]]` appeared — a forge may now publish here (§5.3).
     pub const TRUST_POLICY_ADDED: AuditAction = AuditAction("trust_policy.added");
@@ -223,16 +157,11 @@ pub mod actions {
     pub const MANAGED_ACCOUNT_ADDED: AuditAction = AuditAction("managed.service_account.added");
     /// A managed service account's declaration changed.
     pub const MANAGED_ACCOUNT_CHANGED: AuditAction = AuditAction("managed.service_account.changed");
-    /// A managed service account left the configuration and was disabled, its
-    /// keys revoked with it — never deleted, so the audit trail naming it stays
-    /// readable.
+    /// A managed service account left the configuration and was disabled with its keys.
     pub const MANAGED_ACCOUNT_REMOVED: AuditAction = AuditAction("managed.service_account.removed");
 }
 
 /// The closed vocabulary: every value [`AuditAction::parse`] accepts.
-///
-/// A constant missing from here is one that can be emitted and never read back,
-/// which is exactly the failure that made this a type. The test below walks it.
 pub const AUDIT_ACTIONS: &[AuditAction] = &[
     actions::APIKEY_CREATED,
     actions::APIKEY_REVOKED,
@@ -268,10 +197,7 @@ mod action_tests {
 
     #[test]
     fn every_action_parses_back_to_itself() {
-        // The round trip that the old arrangement could not make: a value that
-        // exists must be one the reader accepts. `parse` and the constants read the
-        // same list, so this holds by construction — the test is here to fail loudly
-        // if somebody ever gives `parse` a list of its own again.
+        // Every emitted value must be one the reader accepts.
         for action in AUDIT_ACTIONS {
             assert_eq!(
                 AuditAction::parse(action.as_str()),
@@ -297,8 +223,7 @@ mod action_tests {
 
     #[test]
     fn an_action_serialises_as_its_wire_string_and_reads_back() {
-        // Stored rows and the `GET /admin/audit` body are both this, so a change of
-        // shape here is a change of contract.
+        // Stored rows and `GET /admin/audit` share this shape.
         let json = serde_json::to_string(&actions::DLQ_REQUEUED).unwrap();
         assert_eq!(json, "\"dlq.requeued\"");
         assert_eq!(
@@ -313,22 +238,18 @@ mod action_tests {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {
-    /// Who did it — or [`AuditActor::configuration`] where a file did (§11, D28).
+    /// Who did it — or [`AuditActor::configuration`] where a file did (§11).
     pub actor: AuditActor,
     /// What they did — one of the constants in [`actions`].
     #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub action: AuditAction,
-    /// What it was done to, e.g. an id. Absent when the action has no single
-    /// target.
+    /// What it was done to, e.g. an id. Absent when the action has no single target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Which channel it concerned, when it concerned one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<ChannelId>,
-    /// Extra context: the scopes granted, the previous value.
-    ///
-    /// Never secrets, never payloads. An audit log that quotes an API key is worse
-    /// than no audit log, because it is a credential store nobody thinks of as one.
+    /// Extra context such as the scopes granted or the previous value; never secrets or payloads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<serde_json::Value>,
     /// When.
@@ -339,8 +260,7 @@ pub struct AuditEntry {
 /// Which entries to show (design §8, `GET /admin/audit`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuditQuery {
-    /// Restrict to one actor. Takes the configuration too, which is how an operator
-    /// asks "what did GitOps change" without reading every other row.
+    /// Restrict to one actor, the configuration included.
     pub actor: Option<AuditActor>,
     /// Restrict to one action.
     pub action: Option<String>,
@@ -357,11 +277,7 @@ pub struct AuditQuery {
 /// The audit log.
 #[async_trait::async_trait]
 pub trait AuditLog: Send + Sync {
-    /// Record an act.
-    ///
-    /// Called inside the same transaction as the change it describes wherever the
-    /// adapter can manage it. An audit log that can disagree with what happened is
-    /// not an audit log.
+    /// Record an act, in the same transaction as the change where the adapter can.
     async fn record(&self, entry: &AuditEntry) -> PortResult<()>;
 
     /// Browse the log — platform role only, enforced by the use case (design §5.4).

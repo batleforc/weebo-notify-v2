@@ -29,7 +29,9 @@
     "src/**/*.ts",
     "src/**/*.vue",
     "vite.config.ts",
-    "openapi-ts.config.ts"
+    "openapi-ts.config.ts",
+    "playwright.config.ts",
+    "e2e/**/*.ts"
   ],
   "exclude": ["node_modules", "dist", "coverage"]
 }

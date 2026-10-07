@@ -1,5 +1,4 @@
-//! Doubles for the infrastructure ports — the ones with no notification state to
-//! share.
+//! Doubles for the stateless infrastructure ports.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -16,7 +15,7 @@ use crate::clock::Clock;
 use crate::error::{PortError, PortResult};
 use crate::identities::{KeyGenerator, SecretHasher};
 use crate::leader::{LeaderElection, LeaderGuard};
-use crate::quota::{Allowance, Quota, RateLimiter};
+use crate::quota::{Acquired, Allowance, Lease, LeaseRequest, Quota, RateLimiter, StreamLeases};
 use crate::sinks::{SinkDelivery, SinkDispatcher, SinkOutcome};
 use crate::tokens::{
     FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,
@@ -24,20 +23,13 @@ use crate::tokens::{
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // A poisoned lock in a test means an earlier assertion already failed. Reading
-    // through it gives that failure a chance to be the one reported, instead of
-    // burying it under a panic from every other port in the fixture.
+    // A poisoned lock means an earlier assertion failed; read through so that one is reported.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 // --- Secret hashing --------------------------------------------------------
 
-/// A hasher that is not one.
-///
-/// Argon2id is deliberately expensive; a suite that authenticates a few hundred
-/// times would spend its whole runtime in a KDF. The usual "fix" — turning the
-/// production cost parameters down until the tests are bearable — weakens the real
-/// thing to speed up the fake one, which is why this port exists at all.
+/// A hasher that is not one: keeps Argon2id cost out of test suites.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StubSecretHasher;
 
@@ -54,15 +46,11 @@ impl SecretHasher for StubSecretHasher {
 
 // --- Token verification ----------------------------------------------------
 
-/// A verifier with a fixed table of tokens.
-///
-/// Anything not in the table is [`TokenRejection::BadSignature`], so a test that
-/// forgets to register a token fails as an unauthenticated request rather than
-/// silently authenticating as somebody.
+/// A verifier with a fixed table of tokens; unknown tokens are
+/// [`TokenRejection::BadSignature`].
 #[derive(Debug, Clone)]
 pub struct StaticTokenVerifier {
     tokens: Arc<Mutex<Vec<(String, VerifiedClaims)>>>,
-    healthy: Arc<Mutex<bool>>,
     clock: Arc<dyn Clock>,
 }
 
@@ -72,14 +60,10 @@ impl StaticTokenVerifier {
         Self::with_clock(Arc::new(crate::clock::SystemClock))
     }
 
-    /// An empty verifier reading the clock a test controls.
-    ///
-    /// Expiry is checked against it, so "this token is stale" is a statement the
-    /// test can make rather than one that depends on what year it is run in.
+    /// An empty verifier reading the clock a test controls, for expiry checks.
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
             tokens: Arc::new(Mutex::new(Vec::new())),
-            healthy: Arc::new(Mutex::new(true)),
             clock,
         }
     }
@@ -88,11 +72,6 @@ impl StaticTokenVerifier {
     pub fn register(&self, token: &str, claims: VerifiedClaims) -> &Self {
         lock(&self.tokens).push((token.to_owned(), claims));
         self
-    }
-
-    /// Make the JWKS cache look cold, so `/readyz` behaviour can be tested.
-    pub fn set_healthy(&self, healthy: bool) {
-        *lock(&self.healthy) = healthy;
     }
 }
 
@@ -111,8 +90,6 @@ impl TokenVerifier for StaticTokenVerifier {
             .map(|(_, claims)| claims.clone());
 
         Ok(match found {
-            // Expiry is checked against the claims rather than assumed valid: an
-            // expired token in the table must still be refused.
             Some(claims) if claims.expires_at <= self.clock.now() => Err(TokenRejection::Expired),
             Some(claims) => Ok(claims),
             None => Err(TokenRejection::BadSignature),
@@ -120,37 +97,14 @@ impl TokenVerifier for StaticTokenVerifier {
     }
 
     async fn health(&self) -> PortResult<()> {
-        if *lock(&self.healthy) {
-            Ok(())
-        } else {
-            Err(PortError::NotConfigured { what: "jwks" })
-        }
-    }
-}
-
-/// Build a minted CI token without a signer, for tests that only care about what a
-/// policy resolved to (design §5.3).
-pub fn minted_token(
-    channels: Vec<ChannelId>,
-    scopes: Vec<Scope>,
-    now: OffsetDateTime,
-) -> MintedToken {
-    MintedToken {
-        token: "test-ci-token".to_owned(),
-        expires_at: now + Duration::minutes(15),
-        channels,
-        scopes,
+        Ok(())
     }
 }
 
 // --- Federation ------------------------------------------------------------
 
-/// A federation verifier a test hands tokens to.
-///
-/// Reports claims and nothing else — same contract as the real one (design §5.3):
-/// the `aud` and the policy match are the domain's decision, so a test that wants
-/// to exercise "token minted for somebody else" registers claims whose audiences
-/// say so, rather than asking this double to refuse.
+/// A federation verifier a test hands tokens to. Like the real one it only reports
+/// claims (§5.3); register claims with the wrong audience to test refusal.
 #[derive(Clone)]
 pub struct StaticFederationVerifier {
     tokens: Arc<Mutex<Vec<(String, FederatedClaims)>>>,
@@ -173,13 +127,7 @@ impl StaticFederationVerifier {
         Self::with_clock(Arc::new(crate::clock::SystemClock))
     }
 
-    /// An empty one reading the clock a test controls.
-    ///
-    /// Minting stamps `expires_at` against it, for the same reason
-    /// [`StaticTokenVerifier::with_clock`] exists: a token minted at the epoch is
-    /// expired in every test that reads a real clock, so a double that ignored time
-    /// would make "this token works" untestable and "this one expired" trivially
-    /// true.
+    /// An empty one reading the clock a test controls; minting stamps `expires_at` against it.
     #[must_use]
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -196,8 +144,7 @@ impl StaticFederationVerifier {
         self
     }
 
-    /// How many tokens it has minted, for tests asserting an exchange did not
-    /// happen twice.
+    /// How many tokens it has minted.
     #[must_use]
     pub fn minted(&self) -> u32 {
         *lock(&self.minted)
@@ -233,8 +180,7 @@ impl FederationVerifier for StaticFederationVerifier {
         let token = format!("test-ci-token-{minted}");
         let expires_at = self.clock.now() + Duration::minutes(15);
 
-        // Remembered so `verify_minted` can answer, which is what lets a test walk
-        // the whole path — exchange, then use the token it got back.
+        // Remembered so `verify_minted` can answer.
         lock(&self.issued).push((
             token.clone(),
             MintedClaims {
@@ -258,11 +204,7 @@ impl FederationVerifier for StaticFederationVerifier {
     }
 }
 
-/// Replay memory in a `Vec`.
-///
-/// Keeps expired entries rather than dropping them on read: pruning is a separate,
-/// leader-only job in production (design §11), and a double that forgot on its own
-/// would let a test pass that the real store would fail.
+/// Replay memory in a `Vec`; keeps expired entries until `prune`, like the real store.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryReplayGuard {
     seen: Arc<Mutex<Vec<(String, OffsetDateTime)>>>,
@@ -311,17 +253,15 @@ impl TestLeaderElection {
         }
     }
 
-    /// This replica wins none — the case worth testing, because "nothing happened"
-    /// is a much easier bug to miss than "it happened twice".
+    /// This replica wins none.
     pub fn follower() -> Self {
         Self {
             leader: Arc::new(Mutex::new(false)),
         }
     }
 
-    /// Take leadership away mid-run, which is what a network partition does.
-    /// A job already holding a guard must notice through
-    /// [`LeaderGuard::is_held`] and stop between batches (scenario T22).
+    /// Take leadership away mid-run (a partition); holders must notice via
+    /// [`LeaderGuard::is_held`] (T22).
     pub fn depose(&self) {
         *lock(&self.leader) = false;
     }
@@ -339,12 +279,8 @@ impl LeaderGuard for TestGuard {
     }
 
     async fn release(&self) {
-        // Deliberately not `leader = false`: releasing the lock at the end of a pass
-        // is not losing the election. `PgLeaderElection` drops its advisory lock and
-        // the same replica takes it again on the next tick, so a double that demoted
-        // here would make every job leader-for-one-pass — and a test that runs two
-        // passes would see the second one do nothing, for a reason that has nothing
-        // to do with what it is testing. Losing leadership is `depose`.
+        // Releasing the lock is not losing the election: the real one re-takes it next
+        // tick. Losing leadership is `depose`.
     }
 }
 
@@ -363,17 +299,13 @@ impl LeaderElection for TestLeaderElection {
 
 // --- Attachments -----------------------------------------------------------
 
-/// An object store that signs URLs nobody can upload to, and remembers what it was
-/// asked for.
+/// An object store that signs URLs nobody can upload to, and remembers what it was asked for.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryAttachments {
     uploaded: Arc<Mutex<Vec<AttachmentId>>>,
     /// Bytes the server wrote itself — the avatar path (design §2.4).
     objects: Arc<Mutex<std::collections::HashMap<AttachmentId, StoredObject>>>,
-    /// Thumbnails the server derived itself (design §2.3, D30) — a separate map
-    /// and not a second entry in `objects`, because deleting an attachment must
-    /// drop both without a derived thumbnail being mistaken for the object it
-    /// was derived from.
+    /// Thumbnails the server derived itself, kept apart from `objects`.
     thumbnails: Arc<Mutex<std::collections::HashMap<AttachmentId, StoredObject>>>,
 }
 
@@ -384,9 +316,6 @@ impl InMemoryAttachments {
     }
 
     /// Pretend an upload completed, so [`AttachmentStore::exists`] says yes.
-    ///
-    /// The gap between "presigned" and "uploaded" is a real state a payload can
-    /// reference, so it is one the double can reproduce.
     pub fn mark_uploaded(&self, id: AttachmentId) {
         lock(&self.uploaded).push(id);
     }
@@ -480,13 +409,11 @@ impl AttachmentStore for InMemoryAttachments {
 
 // --- Sinks -----------------------------------------------------------------
 
-/// A sink dispatcher that records what it was handed and answers however the test
-/// tells it to.
+/// A sink dispatcher that records what it was handed and answers as the test says.
 #[derive(Debug, Clone, Default)]
 pub struct RecordingSinkDispatcher {
     delivered: Arc<Mutex<Vec<SinkDelivery>>>,
-    /// The targets it was handed, so a test can assert that the secret came from the
-    /// registry at send time rather than from the queue row.
+    /// The targets it was handed, to assert secrets come from the registry at send time.
     targets: Arc<Mutex<Vec<crate::sinks::SinkTarget>>>,
     outcome: Arc<Mutex<Option<SinkOutcome>>>,
 }
@@ -497,8 +424,7 @@ impl RecordingSinkDispatcher {
         Self::default()
     }
 
-    /// Make every subsequent delivery come back with this outcome — how a retry,
-    /// a backoff and a dead letter get tested without a webserver (scenario T17).
+    /// Make every subsequent delivery come back with this outcome (T17).
     pub fn always(&self, outcome: SinkOutcome) -> &Self {
         *lock(&self.outcome) = Some(outcome);
         self
@@ -534,16 +460,14 @@ impl SinkDispatcher for RecordingSinkDispatcher {
     }
 }
 
-/// The routing table a test writes by hand, standing in for the one the composition
-/// root builds from `[[channels.managed.sinks]]` (design §11).
+/// A hand-written routing table standing in for `[[channels.managed.sinks]]` (§11).
 #[derive(Debug, Clone, Default)]
 pub struct StaticSinkRegistry {
     routes: Arc<Mutex<Vec<(notify_domain::ChannelId, crate::sinks::SinkTarget)>>>,
 }
 
 impl StaticSinkRegistry {
-    /// One with nothing routed anywhere — what an instance that declares no sink
-    /// looks like, and the case the fan-out has to stay silent about.
+    /// One with nothing routed anywhere.
     pub fn empty() -> Self {
         Self::default()
     }
@@ -559,8 +483,7 @@ impl StaticSinkRegistry {
         self
     }
 
-    /// Forget a target — how a test plays "the operator removed it from the config
-    /// while a delivery was queued".
+    /// Forget a target, as if removed from config while a delivery was queued.
     pub fn withdraw(&self, sink: &notify_domain::SinkId) {
         lock(&self.routes).retain(|(_, target)| target.id().as_ref() != Ok(sink));
     }
@@ -654,14 +577,10 @@ mod tests {
         let guard = leader.try_acquire("purge").await.unwrap().unwrap();
         assert!(guard.is_held().await);
 
-        // Releasing at the end of a pass leaves the election won: the real one drops
-        // its advisory lock and takes it again next tick, and a job that ran twice
-        // would otherwise do nothing the second time.
+        // Releasing at the end of a pass leaves the election won.
         guard.release().await;
         assert!(leader.try_acquire("purge").await.unwrap().is_some());
 
-        // A partition takes the lock away mid-run; a job checking between batches
-        // has to see it (scenario T22).
         leader.depose();
         assert!(!guard.is_held().await);
     }
@@ -693,11 +612,7 @@ mod tests {
 
 // --- Key generation --------------------------------------------------------
 
-/// A key generator that counts instead of rolling dice.
-///
-/// Randomness is exactly what a test cannot assert against, so this hands out
-/// `k0000000`, `k0000001`… and a matching secret. Every key it makes is worthless,
-/// which is the point.
+/// A key generator that counts instead of rolling dice: `k0000000`, `k0000001`…
 #[derive(Debug, Clone, Default)]
 pub struct CountingKeyGenerator {
     next: Arc<Mutex<u32>>,
@@ -716,8 +631,6 @@ impl KeyGenerator for CountingKeyGenerator {
         let index = *next;
         *next += 1;
 
-        // Wraps rather than overflowing the eight-character prefix; a test that
-        // mints ten million keys has other problems.
         let index = index % 10_000_000;
         let prefix = ApiKeyPrefix::parse(&format!("k{index:07}"))
             .expect("a counter under 10^7 always renders as eight alphanumerics");
@@ -725,17 +638,103 @@ impl KeyGenerator for CountingKeyGenerator {
     }
 }
 
+// --- Stream leases --------------------------------------------------------
+
+/// Cluster stream leases in memory: one shared instance stands for every replica.
+#[derive(Debug, Clone, Default)]
+pub struct TestStreamLeases {
+    held: Arc<Mutex<Vec<(LeaseRequest, Lease)>>>,
+    blocked: Arc<Mutex<Vec<String>>>,
+    next: Arc<Mutex<u64>>,
+}
+
+impl TestStreamLeases {
+    /// No lease held.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many leases are held, all principals together.
+    pub fn held(&self) -> usize {
+        lock(&self.held).len()
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamLeases for TestStreamLeases {
+    async fn acquire(&self, request: &LeaseRequest, max: usize) -> PortResult<Acquired> {
+        if lock(&self.blocked).contains(&request.fingerprint) {
+            return Ok(Acquired::Blocked);
+        }
+        let mut held = lock(&self.held);
+        if held
+            .iter()
+            .filter(|(r, _)| r.principal == request.principal)
+            .count()
+            >= max
+        {
+            return Ok(Acquired::Full);
+        }
+        let mut next = lock(&self.next);
+        *next += 1;
+        let lease = Lease {
+            id: next.to_string(),
+            transport: request.transport.clone(),
+            client: request.client.clone(),
+            credential: request.credential.clone(),
+            fingerprint: request.fingerprint.clone(),
+            opened_at: OffsetDateTime::now_utc(),
+        };
+        held.push((request.clone(), lease.clone()));
+        Ok(Acquired::Granted(lease.id))
+    }
+
+    async fn release(&self, lease: &str) -> PortResult<()> {
+        lock(&self.held).retain(|(_, l)| l.id != lease);
+        Ok(())
+    }
+
+    async fn renew(&self, replica: &str) -> PortResult<Vec<String>> {
+        Ok(lock(&self.held)
+            .iter()
+            .filter(|(r, _)| r.replica == replica)
+            .map(|(_, l)| l.id.clone())
+            .collect())
+    }
+
+    async fn list(&self, principal: &str) -> PortResult<Vec<Lease>> {
+        Ok(lock(&self.held)
+            .iter()
+            .filter(|(r, _)| r.principal == principal)
+            .map(|(_, l)| l.clone())
+            .collect())
+    }
+
+    async fn disconnect(
+        &self,
+        principal: &str,
+        lease: &str,
+        _until: OffsetDateTime,
+    ) -> PortResult<bool> {
+        let mut held = lock(&self.held);
+        let Some(at) = held
+            .iter()
+            .position(|(r, l)| r.principal == principal && l.id == lease)
+        else {
+            return Ok(false);
+        };
+        let (_, gone) = held.remove(at);
+        lock(&self.blocked).push(gone.fingerprint);
+        Ok(true)
+    }
+}
+
 // --- Rate limiting ---------------------------------------------------------
 
-/// A rate limiter a test sets the verdict of.
-///
-/// Fixed-window counting would make every quota test a question of what time it is;
-/// this one simply allows everything until told otherwise, and then refuses
-/// everything. Enough to assert that a `429` is produced and that the *other*
-/// publishers of a channel are untouched (scenario T14).
 /// One recorded call: the subject, and the configured ceiling it came with.
 pub type QuotaCheck = (Quota, Option<u32>);
 
+/// A rate limiter a test sets the verdict of: allows everything until told otherwise (T14).
 #[derive(Debug, Clone, Default)]
 pub struct TestRateLimiter {
     limited: Arc<Mutex<Vec<Quota>>>,
@@ -763,11 +762,6 @@ impl TestRateLimiter {
     }
 
     /// Every quota that was checked, with the configured ceiling it was given.
-    ///
-    /// The subject and the ceiling are recorded separately because that is how the
-    /// port takes them, and asserting on the pair is the only way to see that a
-    /// channel's configured `limits` (design §8.2, §11) actually reached the
-    /// limiter rather than being read and dropped on the way.
     pub fn seen_with_ceilings(&self) -> Vec<QuotaCheck> {
         lock(&self.seen).clone()
     }

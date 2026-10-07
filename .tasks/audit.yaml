@@ -2,7 +2,7 @@ version: "3"
 
 tasks:
   default:
-    desc: "Check every dependency and the container image for known CVEs"
+    desc: "Check every dependency and the container image for known CVEs."
     cmds:
       - task: cargo
       - task: suppressions
@@ -11,16 +11,8 @@ tasks:
       - task: helm
 
   cargo:
-    desc: "Rust dependencies: RustSec advisories (cargo-audit) + licence/ban policy (cargo-deny)"
-    # `web/src-tauri` declares its own empty `[workspace]` on purpose (it links GTK
-    # and WebKit, which no gate on this repository can install), so it has a second,
-    # separate `Cargo.lock` that the two commands below would never have looked at.
-    # It was outside every Rust gate until this was added: `trivy fs` reads that
-    # lockfile, but `audit:container` filters to HIGH,CRITICAL, so anything below
-    # that was invisible — which is exactly where its one finding sat.
-    #
-    # Auditing a lockfile needs no toolchain and no GTK, so this costs nothing the
-    # unbuildable-ness of that crate would otherwise excuse.
+    desc: "Check Rust dependencies against RustSec (cargo-audit) and the licence/ban policy (cargo-deny)."
+    # `web/src-tauri` is its own workspace with its own `Cargo.lock`; audit it too (no toolchain needed).
     cmds:
       - cargo audit
       - cargo deny check
@@ -28,30 +20,21 @@ tasks:
       - cargo deny --manifest-path web/src-tauri/Cargo.toml check licenses sources
 
   suppressions:
-    desc: "Check whether the advisories this repository ignores are still ignorable"
-    # An ignore is a claim with an expiry nobody sets a reminder for. Each entry in
-    # `.cargo/audit.toml` names a condition that would take it back out; this asks
-    # the machine the one question it can answer — is the fixed version reachable
-    # now? — so the answer arrives from the nightly audit run rather than from
-    # somebody remembering.
-    #
-    # Advisory, never a gate: a suppression that has become removable is good news
-    # and must not turn the build red.
+    desc: "Check whether the advisories this repository ignores are still ignorable."
+    # Asks whether each `.cargo/audit.toml` ignore has become removable. Advisory, never a gate.
     cmds:
       - cmd: |
           set -eu
           echo "==> suppressed advisories"
 
-          # RUSTSEC-2026-0194/0195: reachable only through rust-s3, which pins
-          # quick-xml ^0.38. The ignore goes when rust-s3 releases against >= 0.41.
+          # RUSTSEC-2026-0194/0195: via rust-s3's quick-xml ^0.38 pin; drop when rust-s3 allows >= 0.41.
           quick_xml="$(grep -A1 'name = "quick-xml"' Cargo.lock | grep version | head -1 | tr -d ' "' | cut -d= -f2)"
           case "$quick_xml" in
             0.3*) echo "    quick-xml $quick_xml — still <0.41; RUSTSEC-2026-0194/0195 ignores still needed" ;;
             *)    echo "    quick-xml $quick_xml — REVISIT: >=0.41 is in the tree, so the two quick-xml ignores can go" ;;
           esac
 
-          # RUSTSEC-2023-0071: no fixed release of `rsa` exists. If one appears,
-          # this stops being an argument about reachability.
+          # RUSTSEC-2023-0071: no fixed `rsa` release exists yet.
           rsa="$(grep -A1 'name = "rsa"' Cargo.lock | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
           if [ -n "${rsa:-}" ]; then
             echo "    rsa $rsa — check https://rustsec.org/advisories/RUSTSEC-2023-0071 for a patched release"
@@ -68,11 +51,8 @@ tasks:
           esac
 
   web:
-    desc: "JS/TS dependencies of web/ and docs/ (pnpm audit)"
-    # The `|| true` this used to carry existed so the task would not fail before
-    # web/ was bootstrapped — and it swallowed real findings the day it was. A
-    # missing project is skipped explicitly now; a project that IS there and has an
-    # advisory fails the task, which is the only reason to run it.
+    desc: "Audit the JS/TS dependencies of web/ and docs/ (pnpm audit)."
+    # A missing project is skipped explicitly; findings in an existing one fail the task.
     cmds:
       - cmd: |
           set -eu
@@ -86,31 +66,16 @@ tasks:
           done
 
   container:
-    desc: "Scan the repository and the Containerfiles for CVEs, misconfigurations and secrets (trivy)"
-    # This reads the Containerfiles rather than the images: trivy's dockerfile
-    # scanner recognises the `Containerfile` name, so both are covered here with no
-    # engine and no build. What it CANNOT see is the base images' package lists —
-    # that is `audit:image` below, and the two are separate because only one of them
-    # can run in an Eclipse Che workspace (§12.4).
-    #
-    # `charts/` is skipped here, not silently: trivy's own Helm rendering hits
-    # `web.env.apiBaseUrl`/`oidcIssuer` `required` guards with no values file to
-    # satisfy them, which fails the whole scan rather than just that chart —
-    # `audit:helm` below scans it instead, with the placeholders it needs.
+    desc: "Scan the repository and Containerfiles for CVEs, misconfigurations and secrets (trivy)."
+    # Reads the Containerfiles, not the images (that's `audit:image`, which Che can't run).
+    # `charts/` is skipped: its `required` values break trivy's render; `audit:helm` covers it.
     cmds:
       - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity MEDIUM,HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-dirs charts .
 
   helm:
-    desc: "Scan charts/weebo-notify for Kubernetes misconfigurations and secrets (trivy config)"
-    # The two `required` values below exist so a real `helm install` on an
-    # incomplete release fails at render time rather than as a confusing runtime
-    # 400 — trivy renders the same template, so it needs the same two, as
-    # placeholders rather than a real deployment's values.
-    #
-    # `--ignorefile` is explicit rather than relying on trivy's own discovery:
-    # that only finds a plain `.trivyignore` automatically (never the YAML form) when the
-    # scan runs *from* that directory, not when it is passed as a path from the
-    # repository root, which is how this task and CI both invoke it.
+    desc: "Scan charts/weebo-notify for Kubernetes misconfigurations and secrets (trivy config)."
+    # Placeholders satisfy the chart's `required` values. `--ignorefile` is explicit because trivy
+    # only auto-discovers it when run from that directory.
     cmds:
       - >-
         trivy config --exit-code 1 --severity MEDIUM,HIGH,CRITICAL
@@ -120,11 +85,8 @@ tasks:
         charts/weebo-notify
 
   image:
-    desc: "Scan the built server and web images for CVEs (trivy) — needs them built and a container engine"
-    # Not in `audit:default`, deliberately. It needs images that exist, so putting it
-    # there would make `task audit` fail on every machine that has not just run
-    # `task build:image` — and a gate that fails for the wrong reason is a gate
-    # people learn to ignore. The release workflow runs it where the images are.
+    desc: "Scan the built server and web images for CVEs with trivy (needs built images and an engine)."
+    # Not in `audit:default`: it needs built images; the release workflow runs it.
     vars:
       IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
       IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'

@@ -1,12 +1,5 @@
-//! Users, service accounts and API keys (design §5).
-//!
-//! Three ports rather than one, because they have three different owners: the OIDC
-//! login path writes users, the reconciler and the API write service accounts, and
-//! only the key endpoints write keys.
-//!
-//! The secret half of a key exists here and nowhere else. It comes back inside a
-//! [`StoredApiKey`], which never crosses into a response body — there is no
-//! endpoint that can show a secret twice (scenario T12).
+//! Users, service accounts and API keys (design §5): three ports with three different writers.
+//! A key's secret hash lives only in [`StoredApiKey`], which never reaches a response (T12).
 
 use notify_domain::{
     ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, AttachmentId, ChannelId, Origin, Principal,
@@ -36,9 +29,30 @@ impl UserRepository for PgStore {
     }
 
     async fn find_by_email(&self, email: &str) -> PortResult<Option<User>> {
-        // Case-insensitive, matching the index: an identity provider that changes
-        // the capitalisation of an address must not orphan an individual binding.
+        // Case-insensitive, so an IdP changing capitalisation does not orphan a binding.
         self.one_user("WHERE lower(email) = lower($1)", email).await
+    }
+
+    async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>> {
+        // `%`/`_` in the input are matched literally.
+        let pattern = format!(
+            "%{}%",
+            text.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let rows = sqlx::query(
+            "SELECT id, oidc_subject, email, display_name, timezone, locale, \
+             overridden_fields, avatar, created_at FROM users \
+             WHERE display_name ILIKE $1 OR email ILIKE $1 \
+             ORDER BY lower(coalesce(display_name, email, id)) LIMIT $2",
+        )
+        .bind(pattern)
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("user", error))?;
+        rows.iter().map(hydrate_user).collect()
     }
 
     async fn upsert(&self, user: &User) -> PortResult<()> {
@@ -80,8 +94,7 @@ impl UserRepository for PgStore {
 }
 
 impl PgStore {
-    /// The three user lookups differ only in their `WHERE`, and all three take one
-    /// text argument.
+    /// The three user lookups differ only in their one-text-argument `WHERE`.
     async fn one_user(&self, filter: &'static str, argument: &str) -> PortResult<Option<User>> {
         let sql = [
             "SELECT id, oidc_subject, email, display_name, timezone, locale, \
@@ -139,24 +152,8 @@ const fn field_name(field: ProfileField) -> &'static str {
     }
 }
 
-/// The reverse, tolerant of a name this build does not know.
-///
-/// Dropping an unknown entry rather than failing the read is deliberate, and it is
-/// the opposite of what [`crate::audit`] does with an unknown action: an audit log
-/// that silently renames an action loses evidence, while a profile field this build
-/// has never heard of is simply not one it can show.
-///
-/// **What that costs, stated rather than implied.** Dropping it on read means the
-/// next write from this replica drops it from the row too — an older replica that
-/// syncs someone's claims mid-rollout erases a field a newer one had claimed, and
-/// the field quietly goes back to following the identity provider. Nobody sees an
-/// error; a timezone just reverts.
-///
-/// The mitigation is operational, not code: a new profile field ships in one
-/// release that only *reads* it and a later one that writes it, so no replica ever
-/// meets a name it does not know. If that ever becomes too subtle to rely on, the
-/// fix is to carry unknown names through untouched — which costs the `Profile` a
-/// field the domain cannot interpret, and is not worth it before then.
+/// The reverse, dropping names this build does not know. Caveat: an older replica's next write then
+/// erases a newer field, so new profile fields ship read-only one release before being written.
 fn field_of(name: &str) -> Option<ProfileField> {
     match name {
         "display_name" => Some(ProfileField::DisplayName),
@@ -208,10 +205,7 @@ impl ServiceAccountRepository for PgStore {
                    description  = EXCLUDED.description,
                    origin       = EXCLUDED.origin,
                    disabled_at  = EXCLUDED.disabled_at",
-            // `created_by` is deliberately absent from the update: ownership is
-            // decided once, at creation. The reconciler rewrites managed accounts on
-            // every pass, and letting it write `NULL` here would quietly disown a
-            // dynamic account that later appeared in the configuration.
+            // `created_by` is set once at creation; the reconciler must not overwrite it.
         )
         .bind(account.id.as_str())
         .bind(account.display_name.as_deref())
@@ -288,9 +282,7 @@ const SELECT_KEY: &str = "
 #[async_trait::async_trait]
 impl ApiKeyRepository for PgStore {
     async fn find_by_prefix(&self, prefix: &ApiKeyPrefix) -> PortResult<Option<StoredApiKey>> {
-        // One indexed read. Without the prefix, authenticating would mean an Argon2
-        // comparison against every key on the instance — a denial of service with
-        // extra steps.
+        // One indexed read; without the prefix, every key would need an Argon2 comparison.
         let sql = [SELECT_STORED_KEY, "WHERE prefix = $1"].concat();
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(prefix.as_str())
@@ -372,9 +364,7 @@ impl ApiKeyRepository for PgStore {
         .bind(to_json("api_key.owner", &key.owner)?)
         .bind(&scopes)
         .bind(&channels)
-        // Never set at creation (design §8.2, D24) — bound anyway rather than
-        // relying on the column default, so a key row always names every field
-        // `hydrate_key` reads back.
+        // Never set at creation (§8.2), but bound so every field `hydrate_key` reads is named.
         .bind(key.publish_per_minute.map(i64::from))
         .bind(key.created_at)
         .bind(key.expires_at)
@@ -401,8 +391,7 @@ impl ApiKeyRepository for PgStore {
     }
 
     async fn touch(&self, id: ApiKeyId, at: OffsetDateTime) -> PortResult<()> {
-        // Best-effort by contract: this is on the hot path of every authenticated
-        // request, so it never widens to a transaction and never blocks a publish.
+        // Best-effort: on every authenticated request, so no transaction.
         sqlx::query("UPDATE api_keys SET last_used_at = $2 WHERE id = $1")
             .bind(id.to_string())
             .bind(at)
@@ -425,8 +414,7 @@ impl ApiKeyRepository for PgStore {
     }
 
     async fn revoke_all_for(&self, owner: &Principal, at: OffsetDateTime) -> PortResult<u64> {
-        // What deactivating a service account does: every key, in one statement, so
-        // a key created between two reads cannot survive the revocation (T25).
+        // Every key in one statement, so none created in between survives (T25).
         let revoked = sqlx::query(
             "UPDATE api_keys SET revoked_at = $2 WHERE owner_ref = $1 AND revoked_at IS NULL",
         )
@@ -440,13 +428,8 @@ impl ApiKeyRepository for PgStore {
     }
 }
 
-/// The `owner_ref` a key indexes under.
-///
-/// Routed through [`ApiKeyOwner::principal`] rather than matched by hand, so it is
-/// *by construction* the same string [`Principal::reference`] produces — which is
-/// what lets `list_for` and `revoke_all_for` be asked with a principal. A channel
-/// key's principal references the key itself, and that is the right answer: a
-/// channel key is attributable to nothing finer (design §5.2).
+/// The `owner_ref` a key indexes under, built via [`ApiKeyOwner::principal`] to match
+/// [`Principal::reference`]; a channel key references itself (§5.2).
 fn owner_reference(key: &ApiKey) -> String {
     key.owner.principal(key.id).reference()
 }
@@ -474,9 +457,7 @@ fn hydrate_key(row: &PgRow) -> PortResult<ApiKey> {
             .iter()
             .map(|channel| parse("api_key.channel", channel, ChannelId::parse))
             .collect::<PortResult<Vec<_>>>()?,
-        // Widened to `BIGINT` in storage precisely so this never has to refuse a
-        // value we wrote ourselves; `u32::MAX` is a wide-enough net for anything
-        // that came from `set_publish_limit`'s own `u32` parameter.
+        // Stored as `BIGINT`, so a value from `set_publish_limit`'s `u32` always fits.
         publish_per_minute: publish_per_minute.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
         created_at: row.try_get("created_at").map_err(|e| fail("api_key", e))?,
         expires_at: row.try_get("expires_at").map_err(|e| fail("api_key", e))?,

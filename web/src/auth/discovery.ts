@@ -1,12 +1,4 @@
-/**
- * OIDC discovery: ask the provider where its endpoints are instead of hard-coding
- * three more URLs per deployment.
- *
- * This is also what keeps the mock (ADR-0014), Authentik and Dex interchangeable
- * from the frontend's point of view — the whole point of the `oidc-compat` matrix
- * (§3.2) is that our own assumptions are the risk, and an assumption about a URL
- * shape is exactly the kind that hides until the day it does not.
- */
+/** OIDC discovery, so mock, Authentik and Dex stay interchangeable (ADR-0014, §3.2). */
 
 import { oidcIssuer } from "@/config";
 
@@ -20,12 +12,7 @@ export interface ProviderMetadata {
 
 let cached: Promise<ProviderMetadata> | null = null;
 
-/**
- * Fetch (once per page load) the provider's discovery document.
- *
- * Only a success is kept: a failure — offline at boot, the provider restarting —
- * is forgotten so the next call asks again instead of failing until a reload.
- */
+/** Cached once per page load; failures are not cached. */
 export function discover(): Promise<ProviderMetadata> {
   if (!cached) {
     const attempt = load();
@@ -51,10 +38,7 @@ async function load(): Promise<ProviderMetadata> {
   }
 
   const metadata = (await response.json()) as ProviderMetadata;
-  // OIDC Discovery §4.3: the document must name the issuer it was fetched from.
-  // Anything else is a document we did not ask for, and its endpoints — the
-  // logout one is opened by the desktop shell — are not ours to trust.
-  // `oidcIssuer` is stored without a trailing slash; Authentik's has one.
+  // OIDC Discovery §4.3: the document must name its issuer (ours has no trailing slash, Authentik's does).
   if (metadata.issuer?.replace(/\/+$/, "") !== oidcIssuer) {
     throw new Error(
       `The discovery document at ${url} names another issuer (${metadata.issuer}).`,
@@ -65,9 +49,7 @@ async function load(): Promise<ProviderMetadata> {
       `The discovery document at ${url} is missing an endpoint we need.`,
     );
   }
-  // Every endpoint on the issuer's own origin — which the CSP's `connect-src`
-  // already assumes for the token endpoint (`lib/csp.ts`), and which keeps the
-  // logout URL the desktop shell opens in the system browser a page we chose.
+  // All endpoints on the issuer's origin, as the CSP `connect-src` assumes.
   const origin = new URL(oidcIssuer).origin;
   for (const endpoint of [
     metadata.authorization_endpoint,

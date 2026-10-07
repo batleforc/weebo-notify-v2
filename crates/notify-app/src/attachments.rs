@@ -1,27 +1,6 @@
-//! `POST /api/v1/attachments/presign` — the way bytes reach the bucket
-//! (design §6.1, §8).
-//!
-//! # Why this exists as its own use case rather than as a handler
-//!
-//! Because the refusals are the feature. §6.1 makes a presigned URL "the only
-//! chemin d'accès" to a strictly private bucket, which means **the signature is
-//! the access control** — there is no second gate afterwards, because after the
-//! signature the client talks to the bucket and not to us. Everything that is
-//! going to be checked has to be checked here, before signing.
-//!
-//! # Who may upload
-//!
-//! Somebody who could publish the notification the attachment is for, which is why
-//! the request names a channel and this authorises `Scope::Publish` on it. The
-//! alternative — any authenticated principal — would make a subscribe-only member,
-//! or any user of the instance, able to write arbitrary bytes into our object
-//! store. That is a storage-filling primitive handed to the widest audience the
-//! API has, in exchange for saving one field on a request body.
-//!
-//! The channel is not otherwise used: an attachment is not scoped to it, and the
-//! id it yields can be referenced from anywhere the publisher may publish. Tying
-//! storage to a channel would mean deciding what happens to the object when the
-//! notification moves or the channel is archived, which §7.2bis does not ask for.
+//! Attachments (§6.1, §8): presign uploads, sign downloads, serve thumbnails. The
+//! signature is the access control (private bucket), so every check happens before
+//! signing; uploading requires `Scope::Publish` on the named channel.
 
 use std::sync::Arc;
 
@@ -32,26 +11,12 @@ use notify_ports::{
 
 use crate::authz::{Authorizer, Caller};
 
-/// What clients may upload (design §2.3 — attachments are images).
-///
-/// An allowlist rather than a block list, for the reason every allowlist here
-/// exists: a type we do not name cannot surprise us. Note what this is *not*
-/// about — the server never decodes these bytes (§6.1, "trust the bucket"), so
-/// unlike the avatar list (§2.4) this is about what clients can render, not about
-/// keeping a decoder away from something hostile.
+/// What clients may upload (§2.3: images). An allowlist about what clients can
+/// render; the server never decodes these bytes (§6.1).
 const ALLOWED: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
-/// Reduce a `Content-Type` header to the bare type this list is written against.
-///
-/// `image/png; charset=binary` is the same type wearing decoration, and a client
-/// that sends it should not be refused for punctuation. Lowercased because the
-/// header is case-insensitive.
-///
-/// Public because the filesystem backend's own upload route
-/// (`notify-http-actix::routes::attachments_fs`) has to answer the *same* question
-/// about the *same* header, and two copies of this rule is exactly how a
-/// presign-time check and an upload-time check come to disagree — which is the gap
-/// the content type was able to walk through before it was bound into the token.
+/// Reduce a `Content-Type` header to its lowercase bare type. Public so the
+/// filesystem upload route applies the same rule as presign.
 #[must_use]
 pub fn normalised_content_type(raw: &str) -> String {
     raw.split(';')
@@ -61,24 +26,14 @@ pub fn normalised_content_type(raw: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Whether a **normalised** content type is one clients may upload.
-///
-/// Takes the output of [`normalised_content_type`] rather than a raw header, so
-/// there is one place that decides what "the same type" means.
+/// Whether a normalised content type (see [`normalised_content_type`]) may be uploaded.
 #[must_use]
 pub fn is_allowed_attachment_type(declared: &str) -> bool {
     ALLOWED.contains(&declared)
 }
 
-/// The two halves of attachment storage, handed round together.
-///
-/// The bucket holds the bytes; the registry remembers which ids we signed for
-/// (design §7.2bis, D25). They are separate ports because they are separate
-/// machines — S3 and Postgres — and a grouping type rather than two parameters
-/// because **every** caller needs both: signing writes to one and records in the
-/// other, and collecting reads one to decide what to delete from the other. A
-/// caller holding only the store is a caller that can create objects nothing will
-/// ever collect, which is the bug this pair exists to prevent.
+/// The bucket (bytes) and the registry of signed ids (§7.2bis), handed round
+/// together so no caller can create objects the sweep will never collect.
 #[derive(Clone)]
 pub struct Attachments {
     /// The bucket.
@@ -108,7 +63,6 @@ impl core::fmt::Debug for PresignAttachment {
 }
 
 impl PresignAttachment {
-    /// Wire it.
     #[must_use]
     pub fn new(attachments: Attachments, authorizer: Authorizer, clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -126,8 +80,7 @@ impl PresignAttachment {
         content_type: &str,
         content_length: u64,
     ) -> Result<PresignedUpload, Failure> {
-        // First, because everything after it costs something: a refusal here is a
-        // channel lookup, and a refusal after signing is a URL already issued.
+        // First, because everything after it costs something.
         self.authorizer
             .authorize(caller, channel, Scope::Publish)
             .await?;
@@ -140,10 +93,7 @@ impl PresignAttachment {
             .into());
         }
         if content_length > MAX_ATTACHMENT_BYTES {
-            // The comparison is in `u64`; only the *reporting* narrows, and it
-            // saturates rather than truncating. A wrapped cast on a 32-bit target
-            // would tell a caller their 4 GiB upload was a few bytes — a refusal
-            // whose message contradicts itself is worse than no message.
+            // Only the reported size narrows, and it saturates rather than wraps.
             return Err(DomainError::TooLarge {
                 what: "attachment",
                 max: usize::try_from(MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX),
@@ -165,19 +115,14 @@ impl PresignAttachment {
             .attachments
             .store
             .presign_upload(&UploadRequest {
-                // The *normalised* type, so the signature pins exactly what was
-                // checked. Signing the raw header would let `image/png; x=<junk>`
-                // be validated as one thing and imposed as another.
+                // The normalised type, so the signature pins exactly what was checked.
                 content_type: declared,
                 content_length,
             })
             .await?;
 
-        // After the signature, never before: a row claiming an upload nobody was
-        // given a URL for would be a row the sweep deletes an object for that never
-        // existed. Recorded at all because this is the *only* trace of the id until
-        // somebody publishes with it — and if nobody ever does, it is the only thing
-        // that can find the bytes again (design §7.2bis, D25).
+        // After the signature: the only trace of the id until somebody publishes with it,
+        // which lets the sweep find never-referenced bytes (§7.2bis).
         self.attachments
             .registry
             .record(signed.id, channel, self.clock.now())
@@ -187,13 +132,8 @@ impl PresignAttachment {
     }
 }
 
-/// `GET /api/v1/attachments/{id}` — the way bytes come back out (design §6.1, §8).
-///
-/// A **signed URL and not the bytes**, unlike the avatar route next door. That is
-/// §6.1's rule rather than a preference: attachments never travel through the
-/// server, in either direction, which is what keeps a 25 MiB screenshot off this
-/// process's heap. The avatar is the single documented exception, and it is one
-/// because the server has to decode and resize it anyway (§2.4).
+/// `GET /api/v1/attachments/{id}` — a signed URL, never the bytes: attachments never
+/// travel through the server (§6.1).
 #[derive(Clone)]
 pub struct ReadAttachment {
     attachments: Attachments,
@@ -208,7 +148,6 @@ impl core::fmt::Debug for ReadAttachment {
 }
 
 impl ReadAttachment {
-    /// Wire it.
     #[must_use]
     pub fn new(
         attachments: Attachments,
@@ -222,14 +161,8 @@ impl ReadAttachment {
         }
     }
 
-    /// Sign a download, if the caller can read something that shows it.
-    ///
-    /// # Why the refusal is `NotificationGone` and not a scope error
-    ///
-    /// An attachment id is a bare ULID with no channel in it, so "you may not read
-    /// this" and "there is no such object" have to look identical from outside —
-    /// otherwise the endpoint answers, one request at a time, which ids exist on
-    /// this instance. It is the same reasoning as revoking somebody else's device.
+    /// Sign a download, if the caller can read something that shows it. Refusals look
+    /// like `NotificationGone` so ids cannot be enumerated.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -244,9 +177,7 @@ impl ReadAttachment {
             return Err(DomainError::NotificationGone.into());
         }
 
-        // Checked after the authorisation and before the signature: a signed URL
-        // for bytes that never arrived is a broken image a client cannot tell from
-        // a broken bucket, and a presign is a promise rather than an upload.
+        // A presign is a promise, not an upload: never sign for bytes that never arrived.
         if !self.attachments.store.exists(id).await? {
             return Err(DomainError::NotificationGone.into());
         }
@@ -255,13 +186,8 @@ impl ReadAttachment {
     }
 }
 
-/// `GET /api/v1/attachments/{id}/thumbnail` — the small square a row shows
-/// (design §2.3, §10.3, D30).
-///
-/// Served through the API and not by a presigned URL, for the reason next to
-/// [`ReadAttachment::execute`]'s doc for the avatar: a thumbnail renders next to
-/// every visible row of a possibly virtualised list, and a signature per render
-/// would mean a signing round trip per row.
+/// `GET /api/v1/attachments/{id}/thumbnail` — the small square a row shows (§2.3,
+/// §10.3). Served through the API: a signature per row would cost a round trip each.
 #[derive(Clone)]
 pub struct ReadAttachmentThumbnail {
     attachments: Attachments,
@@ -277,7 +203,6 @@ impl core::fmt::Debug for ReadAttachmentThumbnail {
 }
 
 impl ReadAttachmentThumbnail {
-    /// Wire it.
     #[must_use]
     pub fn new(
         attachments: Attachments,
@@ -291,17 +216,8 @@ impl ReadAttachmentThumbnail {
         }
     }
 
-    /// The bytes, if the caller may see them.
-    ///
-    /// # Why one refusal covers three different reasons
-    ///
-    /// The same rule [`ReadAttachment::execute`] documents, extended by one more
-    /// case: a caller who cannot read the notification, an id no notification
-    /// shows, and an attachment nothing was ever derived from (an unsupported
-    /// format, an upload that never arrived, or one this build has not gotten to
-    /// yet) all answer identically. Telling the third apart from the first two
-    /// would mean confirming an attachment's *existence* to somebody who cannot
-    /// read what shows it — exactly the enumeration `ReadAttachment` refuses.
+    /// The bytes, if the caller may see them. Unreadable, unreferenced and never-derived
+    /// all answer identically, so existence is never confirmed.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -399,9 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signed_upload_is_recorded_so_it_can_be_collected_later() {
-        // The only trace of this id until somebody publishes with it. Without the
-        // row, an upload nobody ever references is invisible to every query this
-        // schema can answer, and the bytes stay for ever (D25).
+        // The only trace of this id until somebody publishes with it.
         let fixture = fixture();
 
         let signed = fixture
@@ -431,9 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_request_records_nothing() {
-        // The row is written after the signature, so a refusal never leaves one
-        // behind — a sweep chasing an object that was never signed for would be
-        // harmless but permanently confusing in the counters.
+        // The row is written after the signature, so a refusal leaves none behind.
         let fixture = fixture();
 
         assert!(
@@ -499,9 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_can_sign_a_download_of_what_a_notification_shows() {
-        // The read side of §6.1, which had a port method, an S3 implementation and
-        // no caller: an attachment could be uploaded and referenced, and no client
-        // could ever fetch the bytes.
+        // The read side of §6.1.
         let fixture = fixture();
         let reference = notify_domain::AttachmentId::generate();
         shown_in(&fixture.store, &fixture.bucket, &fixture.alice, reference).await;
@@ -538,9 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_id_no_notification_shows_is_not_downloadable() {
-        // Presigning an upload does not entitle anybody to read it back: what
-        // authorises a download is a *notification* somebody may read, so an id that
-        // was signed for and never published stays private to whoever uploaded it.
+        // Presigning does not entitle anybody to read back: a readable notification does.
         let fixture = fixture();
         let orphan = notify_domain::AttachmentId::generate();
         fixture.bucket.mark_uploaded(orphan);
@@ -557,9 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_reference_whose_upload_never_arrived_is_not_signed_for() {
-        // A presign is a promise, not an upload (the port says so). Signing a URL
-        // for bytes that never landed gives a client a broken image it cannot tell
-        // from a broken bucket.
+        // A presign is a promise, not an upload.
         let fixture = fixture();
         let never_uploaded = notify_domain::AttachmentId::generate();
         let (notification, written) = notify_domain::Notification::create(
@@ -595,9 +501,7 @@ mod tests {
 
     #[tokio::test]
     async fn reading_a_channel_does_not_entitle_you_to_write_to_the_bucket() {
-        // Without this, every member of the instance could fill the object store,
-        // which is a storage-filling primitive handed to the widest audience there
-        // is (design §6.1).
+        // Otherwise every member of the instance could fill the object store (§6.1).
         let fixture = fixture();
 
         assert_eq!(
@@ -708,8 +612,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_visible_attachment_with_no_derived_thumbnail_is_not_downloadable() {
-        // Best-effort derivation (D30) means this is an ordinary state, not a bug:
-        // an unsupported format, or a publish/revise that has not run yet.
+        // Best-effort derivation makes a missing thumbnail an ordinary state.
         let fixture = fixture();
         let reference = notify_domain::AttachmentId::generate();
         shown_in(&fixture.store, &fixture.bucket, &fixture.alice, reference).await;

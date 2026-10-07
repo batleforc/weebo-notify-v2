@@ -1,19 +1,6 @@
-//! Every query in this adapter, run against a real Postgres.
-//!
-//! This suite is what makes the decision not to use `sqlx::query!` defensible (see
-//! the crate docs): the macros would check the SQL at compile time, these tests
-//! check it against a live server *and* check that the semantics match the
-//! in-memory double the domain and use cases were written against. A new method on
-//! this adapter comes with a case here, or the trade stops paying for itself.
-//!
-//! Everything lives under `mod e2e` so `task test` skips it and `task test:e2e`
-//! runs it. Without `WNK_TEST_DATABASE_URL` (or `DATABASE_URL`) each case reports
-//! that it was skipped rather than failing — a laptop with no database still gets a
-//! green `task test`, and the `e2e` job always has one.
-//!
-//! Tests do not truncate anything and share the database happily: every one of them
-//! works in a channel of its own, named after a fresh ULID, so they can run in
-//! parallel and leave evidence behind for whoever is debugging.
+//! Every query in this adapter against a real Postgres, matching the in-memory double's semantics
+//! (the reason `sqlx::query!` is not needed). Under `mod e2e`; skipped without a database.
+//! Tests share the database and isolate by fresh ULID-named channels.
 
 #![allow(
     clippy::unwrap_used,
@@ -44,11 +31,15 @@ mod e2e {
     };
     use time::{Duration, OffsetDateTime};
 
+    fn database_url() -> Option<String> {
+        std::env::var("WNK_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .ok()
+    }
+
     /// The database under test, or `None` when there is not one.
     async fn store() -> Option<PgStore> {
-        let url = std::env::var("WNK_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .ok()?;
+        let url = database_url()?;
 
         let store = PgStore::connect(&url, 8)
             .await
@@ -71,9 +62,7 @@ mod e2e {
         };
     }
 
-    // One `PgStore` implements eleven ports, so `store.list(…)` is genuinely
-    // ambiguous. These name the port instead of scattering `Trait::method(&store,
-    // …)` over every call, and they read like what the use cases actually hold.
+    // One `PgStore` implements eleven ports, so these name the port to disambiguate.
     fn notifications(store: &PgStore) -> &dyn NotificationRepository {
         store
     }
@@ -117,19 +106,12 @@ mod e2e {
         ChannelId::parse(&format!("t-{}", ulid_slug())).unwrap()
     }
 
-    /// A group name nothing else in the suite will use.
-    ///
-    /// Group bindings are keyed by name and this suite leaves its rows behind, so a
-    /// shared `infra-admins` would make every run see the previous one's channels.
+    /// A group name unique to this run, since rows are left behind.
     fn fresh_group() -> String {
         format!("g-{}", ulid_slug())
     }
 
-    /// Eight characters no other key in the suite will take.
-    ///
-    /// The *tail* of a ULID: the leading characters are its millisecond timestamp,
-    /// so three keys minted in the same test would all share them and collide on
-    /// the unique index — which is a fixture bug that reads exactly like a real one.
+    /// Eight unique characters: the tail of a ULID, since the head is the shared timestamp.
     fn fresh_prefix() -> String {
         let slug = ulid_slug();
         slug[slug.len() - 8..].to_owned()
@@ -294,8 +276,7 @@ mod e2e {
     async fn head_waits_out_a_writer_that_holds_an_uncommitted_sequence_value() {
         let store = store!();
 
-        // What an event-appending transaction holds from its first statement to its
-        // commit (`mapping::lock_event_log`).
+        // Held by every event-appending transaction (`mapping::lock_event_log`).
         let mut writer = store.pool().begin().await.unwrap();
         sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
             .bind(0x0057_4e4b_i32)
@@ -378,8 +359,7 @@ mod e2e {
         )
         .await;
 
-        // The second insert loses the unique index, and losing it has to be
-        // recoverable: the use case re-reads and revises instead (scenario T16).
+        // Losing the unique index must be recoverable (T16).
         let (loser, written) = Notification::create(
             NotificationId::generate(),
             channel.clone(),
@@ -728,10 +708,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_attachments_of_doomed_rows_are_named_and_the_others_are_not() {
-        // The JSON path this walks — `content->'image'->>'ref'` — is the kind of
-        // thing that type-checks in Rust and matches nothing in Postgres, so it is
-        // asserted against a real database rather than against the in-memory double
-        // that shares none of its semantics.
+        // `content->'image'->>'ref'` type-checks in Rust and can still match nothing in Postgres.
         let store = store!();
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
@@ -804,9 +781,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_signed_upload_nobody_referenced_becomes_collectable_once_it_is_old() {
-        // D25, against a real schema: the registry is the only record of an id until
-        // a revision names it, and the `NOT EXISTS` join is what decides whether one
-        // ever did.
+        // The registry records an id until a revision names it; `NOT EXISTS` decides.
         let store = store!();
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
@@ -863,7 +838,6 @@ mod e2e {
             .unwrap();
         assert!(!stale.contains(&referenced));
 
-        // Forgetting is what keeps the table from growing with every upload ever.
         assert_eq!(registry(&store).forget(&[orphan]).await.unwrap(), 1);
         let stale = registry(&store)
             .unreferenced(now() - Duration::days(1), 100)
@@ -874,9 +848,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_attachment_is_visible_exactly_where_a_notification_shows_it() {
-        // The authorisation behind `GET /attachments/{id}`, against a real schema:
-        // an attachment has no access control of its own, so what entitles somebody
-        // to the bytes is being able to read something that shows them.
+        // The authorisation behind `GET /attachments/{id}`: readable iff something showing it is.
         let store = store!();
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
@@ -927,8 +899,7 @@ mod e2e {
             "an id nothing references is not visible anywhere"
         );
 
-        // And it stops being visible the moment the last notification showing it is
-        // gone — the same instant the sweep may collect the object.
+        // Invisible once the last notification showing it is gone.
         notifications(&store)
             .mark_deleted(shown.id, now())
             .await
@@ -950,9 +921,7 @@ mod e2e {
 
     #[tokio::test]
     async fn nothing_expiring_means_nothing_to_collect() {
-        // Guards the `NOT IN` trap the query deliberately avoids: over a set that
-        // contains a NULL, `NOT IN` is never true, and this call would return an
-        // empty list forever while looking exactly like a clean bucket.
+        // Guards the `NOT IN`-over-NULL trap.
         let store = store!();
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
@@ -1015,8 +984,7 @@ mod e2e {
 
     // --- Stale closure (§7.2bis) -------------------------------------------
 
-    /// The whole sweep against real SQL: an abandoned lifecycle notification is
-    /// closed, its retention clock starts, and the purge can finally see it.
+    /// The whole stale-closure sweep: closed, retention starts, the purge sees it.
     #[tokio::test]
     async fn close_stale_closes_what_nobody_has_touched() {
         let store = store!();
@@ -1060,9 +1028,7 @@ mod e2e {
             "the read model has to agree with the sweep, or the inbox filters it \
              as closed while the detail view calls it open"
         );
-        // Compared to the microsecond: `timestamptz` keeps six decimal places and
-        // `OffsetDateTime::now_utc()` carries nine, so an exact match here would be
-        // asserting about Postgres's storage format rather than about the sweep.
+        // Compared to the microsecond: `timestamptz` keeps six decimals.
         let closed_at = reloaded.closed_at.unwrap();
         assert!(
             (closed_at - at).abs() < Duration::milliseconds(1),
@@ -1098,8 +1064,7 @@ mod e2e {
         );
     }
 
-    /// The false positive that would matter most: activity has to count, and both
-    /// kinds of it.
+    /// Both kinds of activity (revision and interaction) keep a notification open.
     #[tokio::test]
     async fn close_stale_leaves_anything_with_recent_activity_alone() {
         let store = store!();
@@ -1130,8 +1095,7 @@ mod e2e {
             .await
             .unwrap();
 
-        // Published long ago, acknowledged an hour ago: somebody is on it, even
-        // though the publisher has said nothing since.
+        // Acknowledged an hour ago: somebody is on it.
         let actions = notify_domain::Actions::new(vec![
             notify_domain::ActionDraft::Ack {
                 key: "ack-incident".to_owned(),
@@ -1184,8 +1148,7 @@ mod e2e {
         );
     }
 
-    /// The opt-out, and the isolation between channels: a channel absent from the
-    /// deadlines is never looked at, whatever its neighbour asked for.
+    /// A channel absent from the deadlines is never looked at.
     #[tokio::test]
     async fn close_stale_only_touches_the_channels_it_was_given() {
         let store = store!();
@@ -1235,8 +1198,7 @@ mod e2e {
         assert!(store.close_stale(&[], at, 100).await.unwrap().is_empty());
     }
 
-    /// Running twice must be a no-op the second time: a closed notification is not
-    /// a candidate, or every pass would push its retention deadline back.
+    /// Idempotent: a closed notification is not a candidate again.
     #[tokio::test]
     async fn close_stale_is_idempotent() {
         let store = store!();
@@ -1268,8 +1230,7 @@ mod e2e {
         );
     }
 
-    /// A simple notification is born closed, so it must never be a candidate —
-    /// sweeping one would restart a retention clock that was already running.
+    /// A simple notification is born closed, so never a candidate.
     #[tokio::test]
     async fn close_stale_ignores_simple_notifications() {
         let store = store!();
@@ -1307,8 +1268,7 @@ mod e2e {
         );
     }
 
-    /// `all_policies` is what turns `close_after` into those deadlines, so it has
-    /// to survive the round trip through the JSON the policy is stored as.
+    /// `all_policies` must round-trip `close_after` through JSON.
     #[tokio::test]
     async fn all_policies_round_trips_close_after() {
         let store = store!();
@@ -1518,8 +1478,7 @@ mod e2e {
             "a binding grants its scopes and no others"
         );
 
-        // And the backlog follows the same door, or a group-based caller would
-        // reconnect to an empty stream.
+        // The backlog follows the group door too.
         publish(&store, &id, &alice, "for the group").await;
         let page = events(&store)
             .sync(
@@ -1630,8 +1589,7 @@ mod e2e {
             now(),
         )
         .unwrap();
-        // A claimed field and a timezone, so the round trip covers the columns the
-        // profile added rather than only the ones that were already there (§2.4).
+        // A claimed field and a timezone, covering the profile columns (§2.4).
         user.edit_profile(notify_domain::ProfileEdit {
             display_name: Some(notify_domain::FieldEdit::Set("alice".to_owned())),
             timezone: Some(notify_domain::FieldEdit::Set("Europe/Paris".to_owned())),
@@ -1643,9 +1601,7 @@ mod e2e {
 
         let stored = UserRepository::get(&store, user.id).await.unwrap().unwrap();
         assert_eq!(stored.id, user.id);
-        // The profile has to survive the round trip whole, override set included:
-        // losing that set is losing the feature, and it would look exactly like the
-        // identity provider quietly winning again (§2.4).
+        // The override set must survive whole (§2.4).
         assert_eq!(stored.profile, user.profile);
         assert_eq!(stored.profile.timezone.as_deref(), Some("Europe/Paris"));
         assert!(
@@ -1658,8 +1614,7 @@ mod e2e {
             store.find_by_subject(&subject).await.unwrap().unwrap().id,
             user.id
         );
-        // Case-insensitive, matching the index: a provider that changes the
-        // capitalisation of an address must not orphan an individual binding.
+        // Case-insensitive, so changed capitalisation does not orphan a binding.
         assert_eq!(
             store
                 .find_by_email(&email.to_uppercase())
@@ -1813,9 +1768,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_platform_admins_ceiling_on_a_key_round_trips_through_a_widened_column() {
-        // D24: the domain value is `u32`, the column is `BIGINT` precisely so this
-        // never has to refuse a value it wrote itself — proved here with a real
-        // value near the top of `u32`'s range, not just a small round number.
+        // The `BIGINT` column holds values near the top of `u32`.
         let store = store!();
         let (alice_id, _alice) = user();
         let key = ApiKey {
@@ -2012,8 +1965,7 @@ mod e2e {
             .advance_cursor(device.id, Cursor::from_sequence(20), now())
             .await
             .unwrap();
-        // Two tabs of the same client: the older acknowledgement must not win and
-        // re-deliver what was already seen.
+        // Two tabs: the older ack must not win.
         store
             .advance_cursor(device.id, Cursor::from_sequence(10), now())
             .await
@@ -2097,9 +2049,7 @@ mod e2e {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].label, "alice's");
 
-        // A later snapshot with no matching group reads as the group being gone —
-        // exactly the "loses access on their next token" promise (§11), applied to
-        // whatever the last remembered token said instead of a live one.
+        // A later snapshot without the group means access is gone (§11).
         devices(&store)
             .remember_groups(&alice, &[fresh_group()], now())
             .await
@@ -2131,17 +2081,8 @@ mod e2e {
     async fn a_declaration_set_is_replaced_and_not_merged() {
         let store = store!();
 
-        // Namespaced per run: this suite shares one database and deliberately
-        // leaves its rows behind.
-        //
-        // **This test is more invasive than the rest of the suite**, and it is worth
-        // knowing before running it against a database somebody is using: `apply`
-        // replaces a whole *kind* by design — that is what makes a withdrawn policy
-        // stop being stored — so it deletes whatever the running server last wrote.
-        // Nothing is lost, since the reconciler rebuilds the snapshot on its next
-        // pass, but that pass reports the difference: a handful of `added` and
-        // `removed` entries appear in the audit log with no configuration change
-        // behind them. Harmless in a test database, confusing in a shared one.
+        // Namespaced per run. Invasive: `apply` replaces a whole kind, so against a shared database
+        // the reconciler's next pass will audit spurious `added`/`removed` entries.
         let kind = DeclarationKind::TrustPolicy;
         let unique = notify_domain::ReceiptId::generate().to_string();
         let key = |suffix: &str| format!("{unique}-{suffix}");
@@ -2183,8 +2124,7 @@ mod e2e {
             .filter(|d| d.key.starts_with(&unique))
             .collect();
 
-        // The half an upsert would lose. A withdrawn trust policy has to stop being
-        // stored, or the next pass reports it as still present for ever.
+        // A withdrawn trust policy must stop being stored.
         assert_eq!(mine.len(), 1, "a withdrawn declaration must not survive");
         assert_eq!(mine[0].key, key("kept"));
         assert_eq!(
@@ -2211,9 +2151,7 @@ mod e2e {
             .await
             .unwrap();
 
-        // The round trip is the point: D28 had no emitter partly because there was
-        // no honest value for this field, and a value that can be written but not
-        // read back is what broke `GET /admin/audit` once already (M4duovicies).
+        // The value must read back, or `GET /admin/audit` breaks.
         let back = audit(&store)
             .query(&AuditQuery {
                 actor: Some(notify_ports::AuditActor::configuration()),
@@ -2272,10 +2210,7 @@ mod e2e {
                 .len(),
             1
         );
-        // The badge's question, asked the way D27 settled it: one aggregate over the
-        // channel, not a predicate per notification. Alice has read the only row, so
-        // her channel is *absent* rather than present with a zero — the port promises
-        // one representation of "no badge" instead of two.
+        // One aggregate per channel; a read channel is absent, not zero.
         assert!(
             notifications(&store)
                 .unread_counts(&alice, std::slice::from_ref(&channel))
@@ -2381,8 +2316,7 @@ mod e2e {
         let (alice_id, alice) = user();
         let (bob_id, bob) = user();
 
-        // Both in the same channel: sharing one must not make alice's silences bob's
-        // business.
+        // Sharing a channel must not expose alice's silences to bob.
         let channel = fresh_channel();
         let mut shared = Channel::dynamic(channel.clone(), None).unwrap();
         shared.upsert_member(Membership::new(alice.clone(), vec![Scope::Subscribe]).unwrap());
@@ -2440,8 +2374,7 @@ mod e2e {
         let active = store.active_silences(alice_id, now()).await.unwrap();
         assert_eq!(active.len(), 1);
 
-        // Re-silencing the same target extends it rather than stacking a second one
-        // nobody can see to lift.
+        // Re-silencing extends rather than stacks.
         store.silence(&silence).await.unwrap();
         assert_eq!(
             store.active_silences(alice_id, now()).await.unwrap().len(),
@@ -2462,8 +2395,7 @@ mod e2e {
         let store = store!();
         let (alice_id, _) = user();
 
-        // No row, and no error: "never opened Settings" and "a preference that
-        // mutes nothing" are the same answer, so there is no absence to handle.
+        // No row is not an error: same as a mute-nothing preference.
         let dnd = PreferenceRepository::dnd(&store, alice_id).await.unwrap();
 
         assert_eq!(dnd.user, alice_id);
@@ -2573,8 +2505,7 @@ mod e2e {
         let store = store!();
         let (alice_id, _) = user();
 
-        // No row: nothing could have muted them, so the statement matching nothing
-        // is the right outcome rather than something to report.
+        // No row: matching nothing is correct.
         PreferenceRepository::defer(&store, alice_id, Status::Failure)
             .await
             .unwrap();
@@ -2598,8 +2529,7 @@ mod e2e {
             .await
             .unwrap();
 
-        // A digest counting a quiet period somebody has just redefined would be
-        // reporting something that, under the new preference, did not happen.
+        // A redefined quiet period invalidates the pending digest.
         store
             .set_dnd(
                 &Dnd {
@@ -2621,8 +2551,7 @@ mod e2e {
         );
     }
 
-    /// The reason both writers go through one builder: a `silence` must not ship a
-    /// `preference` event that has forgotten the do-not-disturb it did not touch.
+    /// A `silence` must not ship a `preference` event missing the do-not-disturb half.
     #[tokio::test]
     async fn critical_t26_a_preference_event_carries_both_halves_whichever_one_changed() {
         let store = store!();
@@ -2966,12 +2895,7 @@ mod e2e {
 
     #[tokio::test]
     async fn every_action_this_build_emits_can_be_read_back() {
-        // The write path takes any string and the read path only accepts a closed
-        // list, so an action somebody emits without adding it to that list produces
-        // a row that `GET /admin/audit` cannot hydrate — and the failure is not on
-        // the row, it is on the *whole query*. One `PATCH /channels/{id}` would make
-        // the audit log unreadable, which is the one log that has to survive an
-        // incident (design §13).
+        // An action outside the closed vocabulary would make the whole audit query fail (§13).
         let store = store!();
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
@@ -3049,9 +2973,7 @@ mod e2e {
             "newest first: a review starts from what just happened"
         );
 
-        // Narrowed by actor as well: the action filter is instance-wide by design,
-        // and this suite deliberately leaves its rows behind, so a bare action
-        // query would also see the ones an earlier run wrote.
+        // Narrowed by actor, since earlier runs' rows remain.
         let by_action = audit(&store)
             .query(&AuditQuery {
                 actor: Some(bob.clone().into()),
@@ -3174,6 +3096,117 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn users_are_found_by_name_or_email_with_wildcards_matched_literally() {
+        let store = store!();
+        let (id, _) = user();
+        let tag = id.to_string().to_lowercase();
+        let person = User::from_claims(
+            id,
+            &format!("sub-{tag}"),
+            Some(&format!("{tag}@weebo.poc")),
+            Some("Zoë 100% Uptime"),
+            now(),
+        )
+        .unwrap();
+        UserRepository::upsert(&store, &person).await.unwrap();
+
+        let by_mail = UserRepository::lookup(&store, &tag.to_uppercase(), 10)
+            .await
+            .unwrap();
+        assert_eq!(by_mail.len(), 1);
+        let by_name = UserRepository::lookup(&store, "100%", 10).await.unwrap();
+        assert!(by_name.iter().any(|u| u.id == id));
+        let literal = UserRepository::lookup(&store, "1_0%", 10).await.unwrap();
+        assert!(!literal.iter().any(|u| u.id == id), "`_` is not a wildcard");
+    }
+
+    #[tokio::test]
+    async fn stream_leases_cap_a_principal_across_replicas_and_expire_unrenewed() {
+        use notify_ports::{Acquired, LeaseRequest, StreamLeases};
+        let store = store!();
+        let me = format!("user:{}", UserId::generate());
+        let you = format!("user:{}", UserId::generate());
+        let ask = |principal: &str, replica: &str, token: &str| LeaseRequest {
+            principal: principal.to_owned(),
+            replica: replica.to_owned(),
+            transport: "sse".to_owned(),
+            client: "Firefox".to_owned(),
+            credential: "session".to_owned(),
+            fingerprint: format!("{principal}-{token}"),
+        };
+        let granted = |acquired: Acquired| match acquired {
+            Acquired::Granted(id) => id,
+            other => panic!("expected a lease, got {other:?}"),
+        };
+
+        // Two replicas share one count.
+        let a = granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t1"), 2)
+                .await
+                .unwrap(),
+        );
+        granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-b", "t2"), 2)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t3"), 2)
+                .await
+                .unwrap(),
+            Acquired::Full
+        );
+        granted(
+            StreamLeases::acquire(&store, &ask(&you, "replica-a", "t1"), 2)
+                .await
+                .unwrap(),
+        );
+
+        // Its owner sees both, with what each said about itself.
+        let mine = StreamLeases::list(&store, &me).await.unwrap();
+        assert_eq!(mine.len(), 2);
+        assert_eq!(mine[0].client, "Firefox");
+
+        // Disconnecting frees the slot, keeps that credential out, and is owner-only.
+        assert!(
+            !StreamLeases::disconnect(&store, &you, &a, now() + Duration::hours(1))
+                .await
+                .unwrap()
+        );
+        assert!(
+            StreamLeases::disconnect(&store, &me, &a, now() + Duration::hours(1))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t1"), 2)
+                .await
+                .unwrap(),
+            Acquired::Blocked
+        );
+        granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t4"), 2)
+                .await
+                .unwrap(),
+        );
+        let live = StreamLeases::renew(&store, "replica-a").await.unwrap();
+        assert!(!live.contains(&a), "the replica learns its lease is gone");
+
+        // A replica that died stops renewing: its leases lapse and free the slots.
+        sqlx::query("UPDATE stream_leases SET expires_at = now() - interval '1 second' WHERE principal = $1")
+            .bind(&me)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        StreamLeases::renew(&store, "replica-z").await.unwrap();
+        granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t5"), 1)
+                .await
+                .unwrap(),
+        );
+    }
+
+    #[tokio::test]
     async fn critical_t22_only_one_replica_leads_a_job_at_a_time() {
         let store = store!();
         let first = PgLeaderElection::new(store.pool().clone());
@@ -3216,8 +3249,7 @@ mod e2e {
         store.ping().await.expect("the database is reachable");
     }
 
-    /// The whole point of `Arc<dyn Trait>`: the composition root wires one
-    /// `PgStore` behind every port it implements.
+    /// The composition root wires one `PgStore` behind every port.
     #[tokio::test]
     async fn one_store_satisfies_every_port_the_use_cases_ask_for() {
         let store = store!();
@@ -3293,8 +3325,7 @@ mod e2e {
         store
     }
 
-    /// One delivery of a real event, so the row round-trips what a consumer would
-    /// actually receive rather than a fixture that only this file believes in.
+    /// One delivery of a real event, so the row round-trips real consumer data.
     async fn delivery(store: &PgStore) -> notify_ports::SinkDelivery {
         let (id, alice) = user();
         let stored =
@@ -3362,8 +3393,7 @@ mod e2e {
             "two replicas both briefly leading must not POST the same webhook twice"
         );
 
-        // The property the lease exists for: a drain killed mid-attempt leaves the
-        // delivery owed rather than losing it.
+        // A killed drain leaves the delivery owed, not lost.
         let later = now + Duration::seconds(61);
         assert!(
             queue(&store)
@@ -3407,9 +3437,7 @@ mod e2e {
 
         assert_eq!(mine.len(), 1, "one failure must not owe two deliveries");
         assert_eq!(mine[0].attempts, 1);
-        // To the second: `timestamptz` keeps microseconds and `OffsetDateTime` keeps
-        // nanoseconds, so an exact comparison here would be testing the precision of
-        // the column rather than that the give-up clock survived the round trip.
+        // To the second: column precision differs from `OffsetDateTime`.
         assert_eq!(
             mine[0].first_failed_at.map(OffsetDateTime::unix_timestamp),
             Some(now.unix_timestamp())
@@ -3439,8 +3467,7 @@ mod e2e {
             .await
             .unwrap();
 
-        // Buried means gone from the queue: owed and abandoned at once would have
-        // the next drain sending what the console lists as given up on.
+        // Buried means gone from the queue.
         assert!(
             queue(&store)
                 .claim_due(now, 100, now + Duration::seconds(60))
@@ -3520,13 +3547,8 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t24_a_first_boot_builds_the_schema_and_a_second_replays_nothing() {
-        // T24 word for word: "boot sur base vide → schéma complet ; re-boot →
-        // idempotent, zéro migration rejouée". Both halves need a database nobody
-        // has migrated yet, so this one creates its own and drops it after — the
-        // shared test database is, by construction, already migrated.
-        let Ok(url) =
-            std::env::var("WNK_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
-        else {
+        // T24: empty database → full schema; reboot → zero migrations replayed. Needs its own database.
+        let Some(url) = database_url() else {
             eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
             return;
         };
@@ -3544,8 +3566,7 @@ mod e2e {
             .unwrap();
         let outcome = migrate_twice(&fresh).await;
 
-        // Dropped whatever happened above, so a failing assertion does not leave a
-        // database behind on somebody's machine.
+        // Dropped even if an assertion failed.
         let store_closed = sqlx::query(sqlx::AssertSqlSafe(format!(
             "DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"
         )))
@@ -3588,8 +3609,7 @@ mod e2e {
             }
         }
 
-        //  is the field that betrays a replay: a migration applied a
-        // second time would carry a new timestamp, even with the same version.
+        // `installed_on` betrays a replay: a re-applied migration gets a new timestamp.
         let first: Vec<(i64, OffsetDateTime)> =
             sqlx::query_as("select version, installed_on from _sqlx_migrations order by version")
                 .fetch_all(store.pool())

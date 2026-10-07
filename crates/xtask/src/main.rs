@@ -1,15 +1,5 @@
-//! Repository chores that need real code rather than a shell one-liner.
-//!
-//! This crate exists for one structural reason: the generated client lives *inside*
-//! `notify-client-api`, so the generator cannot live there too — it would have to
-//! compile before the file it generates exists. `xtask` is built and run
-//! independently, which breaks that cycle.
-//!
-//! The generators here are invoked by `task recu` and their output is committed, so
-//! the `contract` CI job can prove the clients never drift from the server (design
-//! §3.2). Not everything is: [`vapid`] mints a key for a *developer's* machine and
-//! its output is gitignored — it lives here for the same reason as the rest, that a
-//! chore needing real code should not be a shell one-liner with assumptions in it.
+//! Repository chores that need real code (codegen, coverage gate, dev keys).
+//! Separate from `notify-client-api` because the generator can't live in the crate it generates.
 
 use std::path::{Path, PathBuf};
 
@@ -48,8 +38,7 @@ enum Command {
         /// LCOV report produced by `task cover`.
         #[arg(long, default_value = "target/coverage/rust.lcov")]
         lcov: PathBuf,
-        /// Base ref to diff against for the changed-lines gate. Omit on a push to
-        /// the default branch, where "lines this change touched" is meaningless.
+        /// Base ref for the changed-lines gate; omit on a push to the default branch.
         #[arg(long)]
         base: Option<String>,
     },
@@ -59,8 +48,7 @@ enum Command {
         /// Where to write it. Gitignored, and `config/dev.toml` points here.
         #[arg(long, default_value = "dev/secrets/vapid.pem")]
         output: PathBuf,
-        /// Replace an existing key. Every subscription taken out under the old one
-        /// stops being deliverable, which is why it is not the default.
+        /// Replace an existing key (invalidates every existing subscription).
         #[arg(long)]
         force: bool,
     },
@@ -70,38 +58,31 @@ enum Command {
         /// Where to write it. Gitignored, and `config/dev.toml` points here.
         #[arg(long, default_value = "dev/secrets/federation.pem")]
         output: PathBuf,
-        /// Replace an existing key. Every CI token in flight stops verifying,
-        /// which is why it is not the default.
+        /// Replace an existing key (invalidates every CI token in flight).
         #[arg(long)]
         force: bool,
     },
 
-    /// Rasterise the desktop icons from their SVG sources (§10bis.3ter, M5).
+    /// Rasterise the desktop icons from their SVG sources (§10bis.3ter).
     Icons {
         /// The icon directory: sources in `src/`, rasters written beside them.
         #[arg(long, default_value = "web/src-tauri/icons")]
         root: PathBuf,
     },
 
-    /// Answer `org.freedesktop.Notifications`, so `--notify-send` can be seen (D19).
-    ///
-    /// Needs a session bus: `task desktop:notifyd` starts one in the browser sidecar and
-    /// points `DBUS_SESSION_BUS_ADDRESS` at it.
+    /// Answer `org.freedesktop.Notifications` so `--notify-send` can be seen (needs a session bus).
     Notifyd {
-        /// Exit once this many notifications have arrived. Omit to run for ever,
-        /// which is what a developer watching the TUI wants.
+        /// Exit once this many notifications have arrived; omit to run forever.
         #[arg(long)]
         expect: Option<u32>,
         /// Give up after this many seconds without having seen `--expect` of them.
-        /// A scripted check that hangs is a scripted check nobody runs twice.
         #[arg(long)]
         timeout: Option<u64>,
     },
 
     /// Bcrypt the password on stdin, for the Dex leg of the identity matrix (§3.2).
     BcryptHash {
-        /// Bcrypt cost. Ten is what `htpasswd -C 10` uses in the branch next door,
-        /// and matching it keeps the three branches comparable.
+        /// Bcrypt cost (matches `htpasswd -C 10`).
         #[arg(long, default_value_t = 10)]
         cost: u32,
     },
@@ -125,9 +106,7 @@ fn generate_rust_client(spec_path: &Path, output: &Path) -> anyhow::Result<()> {
     let raw = std::fs::read_to_string(spec_path)
         .with_context(|| format!("reading {}", spec_path.display()))?;
 
-    // utoipa emits 3.1; progenitor reads 3.0. Lower the handful of constructs that
-    // differ before parsing (ADR-0009). The committed spec stays 3.1 — the TS client
-    // and any third-party consumer get the modern document.
+    // utoipa emits 3.1, progenitor reads 3.0: lower the differing constructs (ADR-0009).
     let mut document: serde_json::Value = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {} as JSON", spec_path.display()))?;
     let lowered = downgrade::to_openapi_30(&mut document);

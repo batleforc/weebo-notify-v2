@@ -1,22 +1,5 @@
-//! The caller's own do-not-disturb (design §7.4, §8).
-//!
-//! `/preferences/dnd` with no subject in the path, for the same reason
-//! `/users/me/profile` has none (§2.4): there is no route here that could be asked
-//! about somebody else, so "a preference is private" is a property of the URL space
-//! rather than a check in a handler.
-//!
-//! The `PUT` replaces the preference whole. Quiet hours are a list, and a partial
-//! update of a list has no unambiguous meaning — a body that omitted a window would
-//! be indistinguishable from one asking to drop it.
-//!
-//! # The body is a draft, and the response is the entity
-//!
-//! [`Dnd`] carries the `user` it belongs to, because the `preference` event of §8.1
-//! has to say whose it is. [`DndDraft`] does not, and that is the whole difference:
-//! the subject is the caller. Reusing `Dnd` as the request body was tried and it is
-//! worse than merely misleading — `user` is *required*, so a client that legitimately
-//! does not know its own id could not build a body at all, and one that guessed got
-//! a deserialisation error about a field the server was going to overwrite anyway.
+//! The caller's own do-not-disturb (design §7.4, §8). No subject in the path, so it
+//! cannot be asked about anyone else; `PUT` replaces it whole with a `DndDraft`.
 
 use actix_web::{get, put, web};
 use notify_domain::{Dnd, DndDraft};

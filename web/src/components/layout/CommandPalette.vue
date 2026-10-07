@@ -1,28 +1,7 @@
 <script setup lang="ts">
 /**
- * The command palette (design §10.4) — one surface to search and to switch.
- *
- * Built on Reka UI's dialog and listbox behaviour (ADR-0004) rather than on a
- * keyboard handler written here: focus trapping, restoring focus to whatever was
- * focused before, and `Esc` are the parts a hand-rolled modal gets wrong, and §10.4
- * asks for all three ("`Esc` ferme et rend le focus à l'élément d'origine — l'app
- * doit être pilotable sans souris").
- *
- * What it offers and in what order is decided by `lib/palette.ts`, and what it asks
- * the server is decided by `stores/palette.ts`. Both were tested from the day this
- * was written; how it *looked* was not, because there was no browser in the
- * workspace (§14.4, D21). There is one now (§12.4), and opening this on a real
- * list of fifteen channels showed three things a jsdom suite cannot ask about:
- *
- *   * the keyboard cursor and the mouse hover rendered the *same* grey, so two
- *     rows looked equally chosen and `Enter` was a guess. The active row now
- *     carries a left bar and a weight as well as a background — the same "never
- *     colour alone" rule §10.3 applies to statuses, for the same reason;
- *   * wrapping from the first row to the last selected something **off-screen**,
- *     because nothing scrolled the list. A palette that cannot be driven to its
- *     own last row is not the mouse-free surface §10.4 asks for;
- *   * a screen reader was told nothing at all: a `<div>` of `<button>`s has no
- *     selection to announce. It is a listbox now, and says which row is current.
+ * The command palette (§10.4) on Reka UI's dialog (ADR-0004) for focus trap/restore
+ * and `Esc`. Content and ranking live in `lib/palette.ts` and `stores/palette.ts`.
  */
 import {
   DialogContent,
@@ -61,9 +40,7 @@ const groups = computed(() => {
     "actions",
   ];
 
-  // Each row carries the index it has in the flat walk below. Computed here
-  // rather than searched for at render time, so that the position the arrows move
-  // through and the position a row reports are the same number by construction.
+  // Precomputed flat index, so arrow position and row id always agree.
   let index = 0;
   return order
     .map((group) => ({
@@ -84,8 +61,7 @@ const walk = computed(() =>
 watch(
   () => palette.items,
   () => {
-    // A selection that survives a change of list points at whatever moved into
-    // that position, which is how somebody opens the wrong thing.
+    // Reset, or the selection points at whatever moved into its slot.
     active.value = 0;
   },
 );
@@ -111,23 +87,11 @@ function move(delta: number): void {
   if (count === 0) {
     return;
   }
-  // Wrapping, because a list that stops at both ends makes people reach for the
-  // mouse to get back to the top.
   active.value = (active.value + delta + count) % count;
   void reveal();
 }
 
-/**
- * Bring the active row into view.
- *
- * The list scrolls (`max-h-[50vh]`) and the selection is ours rather than the
- * browser's — no element is focused, so nothing scrolls on its own. Wrapping from
- * the first row to the last is where that bites hardest: the selection lands at
- * the bottom of a list still showing its top.
- *
- * `block: "nearest"` so a row already visible does not make the list jump.
- * Guarded, because jsdom has no layout and therefore no `scrollIntoView`.
- */
+/** The selection isn't focus, so nothing scrolls by itself. jsdom lacks `scrollIntoView`. */
 async function reveal(): Promise<void> {
   await nextTick();
   const row = document.getElementById(rowId(active.value));
@@ -146,8 +110,7 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
     return;
   }
 
-  // The verbs are the TUI's (§9.2). Only the ones with a meaning outside a
-  // selection are wired here; the rest arrive with the selection they act on.
+  // TUI verbs (§9.2); only selection-free ones are wired here.
   if (item.action.verb === "dnd:1h") {
     await preferences.quietFor(60);
   }
@@ -157,9 +120,9 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
 <template>
   <DialogRoot :open="palette.open" @update:open="(value) => !value && palette.hide()">
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-50 bg-black/50" />
+      <DialogOverlay class="fixed inset-0 z-50 bg-ground/80" />
       <DialogContent
-        class="fixed left-1/2 top-[15vh] z-50 w-[min(40rem,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
+        class="fixed left-1/2 top-[calc(env(safe-area-inset-top)+0.75rem)] z-50 w-[min(40rem,calc(100vw-1.5rem))] -translate-x-1/2 overflow-hidden border border-rule-strong bg-popover text-popover-foreground sm:top-[15vh]"
         :aria-label="t('commandPalette.ariaLabel')"
         @keydown.down.prevent="move(1)"
         @keydown.up.prevent="move(-1)"
@@ -169,7 +132,7 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
           ref="input"
           :value="palette.query"
           type="text"
-          class="w-full border-b border-border bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
+          class="w-full border-b border-rule-strong bg-ground-sunk px-4 py-3.5 text-[0.9375rem] outline-none placeholder:text-ink-dim"
           :placeholder="t('commandPalette.searchPlaceholder')"
           role="combobox"
           aria-controls="palette-results"
@@ -187,14 +150,14 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
         >
           <p
             v-if="palette.error"
-            class="px-3 py-2 text-sm text-destructive"
+            class="px-3 py-2 text-sm text-signal"
             role="alert"
           >
             {{ palette.error }}
           </p>
 
           <div v-for="entry in groups" :key="entry.group" class="py-1">
-            <p class="px-3 py-1 text-xs uppercase tracking-wide text-muted-foreground">
+            <p class="meta px-3 py-1">
               {{ entry.title }}
             </p>
             <button
@@ -204,18 +167,18 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
               type="button"
               role="option"
               :aria-selected="row.index === active"
-              class="flex w-full items-center gap-2 rounded-md border-l-2 px-3 py-2 text-left text-sm"
+              class="flex min-h-10 w-full items-center gap-2 border-l px-3 py-2 text-left text-sm"
               :class="
                 row.index === active
-                  ? 'border-primary bg-accent font-medium text-accent-foreground'
-                  : 'border-transparent hover:bg-accent/50'
+                  ? 'border-signal bg-ground-raised font-bold text-ink'
+                  : 'border-transparent text-ink-dim hover:bg-ground-raised hover:text-ink'
               "
               @click="choose(row.item)"
             >
               <span class="truncate">{{ row.item.label }}</span>
               <span
                 v-if="row.item.hint && row.item.hint !== row.item.label"
-                class="ml-auto truncate text-xs text-muted-foreground"
+                class="ml-auto truncate text-xs text-ink-dim"
               >
                 {{ row.item.hint }}
               </span>
@@ -224,13 +187,13 @@ async function choose(item: PaletteItem | undefined): Promise<void> {
 
           <p
             v-if="walk.length === 0 && !palette.searching"
-            class="px-3 py-6 text-center text-sm text-muted-foreground"
+            class="px-3 py-6 text-center text-sm text-ink-dim"
           >
             {{ t("commandPalette.empty") }}
           </p>
           <p
             v-else-if="palette.searching"
-            class="px-3 py-2 text-xs text-muted-foreground"
+            class="px-3 py-2 text-xs text-ink-dim"
           >
             {{ t("commandPalette.searching") }}
           </p>

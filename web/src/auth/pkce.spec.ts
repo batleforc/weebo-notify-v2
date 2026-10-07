@@ -17,13 +17,7 @@ describe("base64url", () => {
 });
 
 describe("challengeOf", () => {
-  /**
-   * The vector from RFC 7636 appendix B.
-   *
-   * Worth pinning: a challenge that is *almost* right fails at the token endpoint
-   * with an opaque `invalid_grant`, which is a bad afternoon to debug against a
-   * provider that will not say more.
-   */
+  /** RFC 7636 appendix B: near-misses fail as an opaque `invalid_grant`. */
   it("matches the RFC 7636 test vector", async () => {
     const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     await expect(challengeOf(verifier)).resolves.toBe(

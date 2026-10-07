@@ -1,48 +1,63 @@
 version: "3"
 
 vars:
-  # Honest coverage scope (design §3.2): generated code is excluded from the
-  # measurement — it is not ours to test, and counting it would inflate the number
-  # in exactly the direction that hides gaps in the code we do write.
+  # Generated code is excluded from coverage (§3.2): it isn't ours to test.
   COVERAGE_EXCLUDE: 'crates/notify-client-api/src/generated\.rs'
 
 tasks:
   default:
-    desc: "Run the fast test suite: domain/app unit tests (no containers) + web unit tests"
+    desc: "Run the fast suite: domain/app unit tests and web unit tests, no containers."
     cmds:
       - task: unit
       - task: web
 
   unit:
-    desc: "Rust unit tests — pure domain and use cases, no I/O, sub-second (scenarios T1-T6)"
+    desc: "Run the pure domain and use-case Rust unit tests (T1-T6), no I/O."
     cmds:
       - cargo nextest run --workspace -E 'not test(/^e2e::/)'
 
   critical:
-    desc: "The `critical` suite (design §3.4) — blocking on PR and in the release gate, never skipped"
+    desc: "Run the `critical` suite (§3.4) that blocks PRs and releases."
     cmds:
       - cargo nextest run --workspace -P critical
 
   e2e:
-    desc: "End-to-end and adapter tests: needs WNK_TEST_DATABASE_URL (or DATABASE_URL) for Postgres"
-    # The adapter suites skip cleanly with no database rather than failing, so this
-    # is green on a laptop that has not started the stack — and the `e2e` CI job
-    # always sets the variable, so nothing is silently skipped where it matters.
+    desc: "Run end-to-end and adapter tests against Postgres (WNK_TEST_DATABASE_URL or DATABASE_URL)."
+    # Adapter suites skip without a database; the `e2e` CI job always sets it.
     cmds:
       - cargo nextest run --workspace -E 'test(/^e2e::/)' --no-fail-fast
 
+  browser:
+    desc: "Run the browser E2E suite against a running stack; WNK_E2E_* point it at a deployed release."
+    cmds:
+      - pnpm -C web exec playwright test
+
+  browser:ci:
+    desc: "Boot the self-contained E2E stack (config/e2e.toml: server, oidc-mock, built web) and run the browser suite."
+    cmds:
+      - cmd: |
+          set -euo pipefail
+          trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+          cargo build -p notify-server -p notify-oidc-mock
+          pnpm -C web install --frozen-lockfile
+          pnpm -C web build
+          [ -n "${WNK_E2E_CHROMIUM:-}" ] || pnpm -C web exec playwright install --with-deps chromium
+          ./target/debug/oidc-mock --identities dev/oidc-mock/identities.toml &
+          ./target/debug/notify-server --config config/e2e.toml &
+          pnpm -C web exec vite preview --port 5173 --strictPort &
+          for url in http://localhost:9110/.well-known/openid-configuration http://localhost:8080/readyz http://localhost:5173/; do
+            timeout 120 sh -c "until curl -fsS -o /dev/null $url; do sleep 1; done"
+          done
+          pnpm -C web exec playwright test
+
   oidc-compat:
-    desc: "The identity-provider compatibility suite (§3.2, T29) — set WNK_TEST_OIDC_PROVIDER to pick one"
-    # The one independent reading of OIDC this project gets (§15). Defaults to the
-    # in-process mock, which is what makes it runnable on a laptop; naming an
-    # external provider without an issuer FAILS rather than skips, on purpose — a
-    # green tick meaning "no provider was reachable" is the failure mode this suite
-    # exists to prevent.
+    desc: "Run the identity-provider compatibility suite (§3.2, T29); WNK_TEST_OIDC_PROVIDER picks one."
+    # Defaults to the in-process mock; an external provider without an issuer fails rather than skips.
     cmds:
       - cargo nextest run -p notify-oidc --test oidc_compat --no-fail-fast
 
   web:
-    desc: "Web unit tests (vitest) — skipped while web/ does not exist yet"
+    desc: "Run the web unit tests (vitest)."
     cmds:
       - cmd: |
           if [ ! -f web/package.json ]; then
@@ -65,21 +80,13 @@ tasks:
       - cargo llvm-cov report --ignore-filename-regex '{{.COVERAGE_EXCLUDE}}' --html --output-dir target/coverage/html
 
   cover:gate:
-    desc: "Enforce the coverage gates on an existing LCOV report — usage: task test:cover:gate -- origin/main"
+    desc: "Enforce the coverage gates on an existing LCOV report (task test:cover:gate -- origin/main)."
     cmds:
       - cargo run --quiet -p xtask -- coverage-gate --lcov target/coverage/rust.lcov {{if .CLI_ARGS}}--base {{.CLI_ARGS}}{{end}}
 
   cover:domain:
-    desc: "The domain+app figure the CI gate enforces (>=90%) — same measurement, same arithmetic"
-    # It used to be `cargo llvm-cov nextest -p notify-domain -p notify-app
-    # --summary-only`, and that answered a different question in two ways at once:
-    # the first column of that table is *region* coverage while the gate counts
-    # **lines**, and `-p` runs only those two crates' tests while the gate measures
-    # a workspace run — the adapter suites exercise plenty of `notify-app`. The two
-    # errors compound downwards: it printed 90.3 % against a 90 % floor the day the
-    # gate said 96.2 %, and a milestone was closed believing coverage was sliding.
-    # A local check that disagrees with the gate it names is worse than no local
-    # check, so this now runs the gate.
+    desc: "Print the domain+app coverage figure exactly as the CI gate (>=90%) measures it."
+    # Runs the real gate: line coverage over a workspace run, not `-p` region coverage.
     cmds:
       - mkdir -p target/coverage
       - cargo llvm-cov nextest --workspace --ignore-filename-regex '{{.COVERAGE_EXCLUDE}}' --lcov --output-path target/coverage/rust.lcov

@@ -28,11 +28,7 @@ struct VerifyingKey {
 #[derive(Default)]
 struct Cache {
     keys: HashMap<String, VerifyingKey>,
-    /// The last time a fetch was *attempted*, successful or not.
-    ///
-    /// Throttling on the attempt rather than on the success is the whole point: an
-    /// IdP that is down must not be asked again by every request that arrives while
-    /// it is down.
+    /// The last time a fetch was attempted: throttling on attempts keeps a down IdP from being hammered.
     last_attempt: Option<OffsetDateTime>,
 }
 
@@ -42,8 +38,7 @@ pub struct OidcVerifier {
     source: Arc<dyn JwksSource>,
     clock: Arc<dyn Clock>,
     cache: RwLock<Cache>,
-    /// Held across a fetch so a burst of requests arriving on a cold cache produces
-    /// one request to the IdP rather than one per caller.
+    /// Held across a fetch so a cold-cache burst makes one IdP request.
     refreshing: Mutex<()>,
 }
 
@@ -103,13 +98,6 @@ impl OidcVerifier {
         Ok(())
     }
 
-    /// The key this token names, refreshing once if the `kid` is unknown.
-    ///
-    /// Shared by the two verifications this type performs — a human's access token
-    /// and a CI job's ID token (design §5.3). They differ in what they do with the
-    /// payload and not at all in how a key is found, and every rule that matters is
-    /// here: no algorithm from the header, one refresh per interval, and an unknown
-    /// `kid` after that refresh is a refusal rather than a retry.
     /// Whether `nbf` is still ahead of the injected clock, past the leeway.
     fn not_yet_valid(&self, nbf: Option<i64>) -> bool {
         nbf.is_some_and(|nbf| {
@@ -118,13 +106,13 @@ impl OidcVerifier {
         })
     }
 
+    /// The key this token names (access and federated tokens alike), refreshing once if
+    /// the `kid` is unknown; no algorithm from the header.
     async fn key_for(&self, token: &str) -> PortResult<Result<VerifyingKey, TokenRejection>> {
         let Ok(header) = decode_header(token) else {
             return Ok(Err(TokenRejection::Malformed));
         };
-        // A JWKS-backed issuer always stamps a `kid`; without one there is nothing
-        // to look up, and trying every key in turn is how a slow-signature oracle
-        // gets built by accident.
+        // No `kid`, no lookup: trying every key would build a slow-signature oracle.
         let Some(kid) = header.kid else {
             return Ok(Err(TokenRejection::Malformed));
         };
@@ -133,27 +121,13 @@ impl OidcVerifier {
             return Ok(Ok(known));
         }
 
-        // An unknown kid is the normal shape of a key rotation, and also the normal
-        // shape of a forged token. One refresh per interval serves the first without
-        // letting the second reach the issuer.
+        // Unknown `kid`: rotation or forgery; one refresh per interval serves the first only.
         self.refresh_if_due(self.clock.now()).await?;
         Ok(self.key(&kid).await.ok_or(TokenRejection::BadSignature))
     }
 
-    /// Verify a CI job's ID token (design §5.3).
-    ///
-    /// Same keys and same hardening as [`TokenVerifier::verify`]; three differences,
-    /// all of them because a federated token is *reported* rather than *accepted*:
-    ///
-    /// * **the audience is not validated here.** It is carried out to
-    ///   [`notify_domain::TrustPolicies::decide`], which refuses a token minted for
-    ///   somebody else. One place decides, and it is the place with the tests
-    ///   (M4.1);
-    /// * **`jti` is extracted**, because the replay guard needs it and dropping it
-    ///   would make the anti-replay rule unimplementable (scenario T11);
-    /// * **no groups.** A forge has no notion of this instance's identity provider,
-    ///   and a claim called `groups` in a CI token would be somebody else's word for
-    ///   somebody else's directory.
+    /// Verify a CI job's ID token (design §5.3): same keys and hardening as [`TokenVerifier::verify`],
+    /// but `aud` is left to [`notify_domain::TrustPolicies::decide`], `jti` is kept (T11), and no groups.
     pub async fn verify_federated(
         &self,
         token: &str,
@@ -207,18 +181,12 @@ impl TokenVerifier for OidcVerifier {
         validation.algorithms.clone_from(&key.algorithms);
         validation.set_issuer(&accepted_issuers(&self.config.issuer));
         validation.set_audience(&self.config.audiences);
-        // Expiry is checked below against the injected clock rather than here
-        // against the wall clock. Every other deadline in this codebase is the
-        // clock port's to decide, and a token's should not be the one exception
-        // nobody can write a test for. `exp` stays required, so a token without one
-        // is still refused.
+        // `exp` stays required but is checked against the injected clock below.
         validation.validate_exp = false;
         validation.required_spec_claims =
             HashSet::from(["exp".to_owned(), "iss".to_owned(), "aud".to_owned()]);
 
-        // Another kind of JWT the same issuer signs — a logout token, a DPoP proof —
-        // is not an access token, whatever its `aud` says. `JWT` and no `typ` at
-        // all stay accepted: that is what most issuers stamp on access tokens.
+        // Refuse other JWT kinds (logout tokens, DPoP); `JWT` or no `typ` is accepted.
         let typ = decode_header(token).ok().and_then(|header| header.typ);
         if let Some(typ) = typ
             && !["jwt", "at+jwt", "application/at+jwt"].contains(&typ.to_ascii_lowercase().as_str())
@@ -252,21 +220,14 @@ impl TokenVerifier for OidcVerifier {
         self.refresh_if_due(self.clock.now()).await?;
 
         if self.cache.read().await.keys.is_empty() {
-            // Either the throttle held us back or the issuer published a key set we
-            // cannot use. Both mean this replica cannot authenticate anybody.
+            // Throttled or unusable key set: this replica cannot authenticate anybody.
             return Err(PortError::unavailable(DEPENDENCY, DiscoveryError::Cold));
         }
         Ok(())
     }
 }
 
-/// Keep the keys that can verify a signature, and drop the rest.
-///
-/// Two exclusions carry weight. **Symmetric keys** never appear in a legitimate
-/// JWKS, and accepting one invites the confusion attack where an RSA public key is
-/// replayed as an HMAC secret. **Encryption keys** (`use: "enc"`) are published for
-/// a different purpose entirely; verifying with one is a category error the JWK
-/// itself warned us about.
+/// Keep only signature keys: symmetric keys (algorithm confusion) and `use: "enc"` keys are dropped.
 fn usable_keys(set: &JwkSet) -> HashMap<String, VerifyingKey> {
     let mut keys = HashMap::new();
 
@@ -297,11 +258,7 @@ fn usable_keys(set: &JwkSet) -> HashMap<String, VerifyingKey> {
     keys
 }
 
-/// What this key may sign with, according to the key set.
-///
-/// The `alg` on the JWK wins when it is there. When it is not — which is common,
-/// the field is optional — the key *type* still bounds it: an EC P-256 key cannot
-/// produce an RS256 signature whatever a header claims.
+/// What this key may sign with: the JWK `alg` if present, otherwise bounded by the key type.
 fn signature_algorithms(jwk: &Jwk) -> Option<Vec<Algorithm>> {
     if let Some(declared) = jwk.common.key_algorithm {
         return signature_algorithm(declared).map(|alg| vec![alg]);
@@ -322,9 +279,7 @@ fn signature_algorithms(jwk: &Jwk) -> Option<Vec<Algorithm>> {
             _ => None,
         },
         AlgorithmParameters::OctetKeyPair(_) => Some(vec![Algorithm::EdDSA]),
-        // `OctetKey` is symmetric and never legitimate in a published key set; the
-        // wildcard is a key type this version of the library knows and we do not.
-        // Both mean "we cannot say what this may sign with", which is a refusal.
+        // Symmetric, or a type we do not know: refuse.
         _ => None,
     }
 }
@@ -346,21 +301,8 @@ const fn signature_algorithm(declared: KeyAlgorithm) -> Option<Algorithm> {
     }
 }
 
-/// The spellings of the configured issuer a token's `iss` is allowed to carry.
-///
-/// `iss` is compared as a string — no scheme-and-host normalisation, by design —
-/// and providers disagree about the last character of it. Dex announces
-/// `http://host/dex`, Authentik `https://host/application/o/weebo-notify/`, and
-/// [`Url`] preserves whichever one the operator wrote in the configuration. Every
-/// other issuer comparison in this crate already trims **both** sides
-/// ([`crate::jwks`] on the discovery document, [`crate::federation`] on a forge's
-/// `iss`); this one trimmed only ours, so a provider whose issuer genuinely ends in
-/// a slash had every token it minted refused as [`TokenRejection::WrongIssuer`] —
-/// after discovery had just accepted the same URL. That is how the Authentik leg of
-/// the compatibility matrix failed on its first real run.
-///
-/// Offering both spellings is a normalisation and not a widening: the two differ by
-/// a trailing separator, which cannot make the identifier name a different issuer.
+/// The accepted spellings of the configured issuer: with and without a trailing slash.
+/// Providers disagree (Dex vs Authentik); a trailing separator cannot name a different issuer.
 fn accepted_issuers(issuer: &url::Url) -> [String; 2] {
     let trimmed = issuer.as_str().trim_end_matches('/');
     [trimmed.to_owned(), format!("{trimmed}/")]
@@ -657,11 +599,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_trailing_slash_is_not_a_different_issuer() {
-        // Authentik's issuer really is `.../application/o/weebo-notify/`, and its
-        // tokens really do carry that slash in `iss`. Discovery accepts the URL
-        // either way; verification used to accept only the trimmed spelling, so the
-        // whole Authentik leg failed as WrongIssuer on tokens from the very issuer
-        // it had just discovered.
+        // Authentik's issuer and `iss` really end in a slash.
         for (configured, in_the_token) in [
             (
                 "https://idp.example/application/o/weebo/",
@@ -696,9 +634,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_neighbouring_path_under_the_same_host_is_still_another_issuer() {
-        // The guard on the normalisation above: a trailing separator is all it may
-        // forgive. Two Authentik applications on one host differ by their path, and
-        // a token minted for the other one must not verify here.
+        // Only a trailing separator is forgiven, not a different path.
         let fixture = Fixture::for_issuer("https://idp.example/application/o/weebo/");
         let mut claims = fixture.valid_claims();
         claims["iss"] = json!("https://idp.example/application/o/weebo-staging/");
@@ -753,8 +689,7 @@ mod tests {
 
     #[test]
     fn a_symmetric_key_in_a_key_set_is_dropped() {
-        // The confusion attack in one line: were this key kept, an attacker who
-        // knows the public key could sign HS256 tokens with it.
+        // Kept, this key would let anyone sign HS256 tokens with the public key.
         let set: JwkSet = serde_json::from_value(json!({
             "keys": [{ "kty": "oct", "kid": "shared", "k": "c2VjcmV0" }]
         }))

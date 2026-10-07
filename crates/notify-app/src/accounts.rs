@@ -1,35 +1,13 @@
-//! Service accounts (design §5.2bis, §8).
-//!
-//! # Why a bot gets an account of its own
-//!
-//! The rule §5.2 states and this module exists to make possible: *a team bot never
-//! runs on a person's key*. Offboarding somebody must not take the deploy
-//! notifications with them, and an audit log that says "published by a key of
-//! alice" when ArgoCD published is a log that misleads whoever reads it in six
-//! months.
-//!
-//! # Who administers one
-//!
-//! Two answers, and which one applies is decided by [`Origin`]:
-//!
-//! * **managed** — the configuration is the source of truth, so the API refuses to
-//!   mutate it at all (§11). The same refusal `DELETE /channels/{id}` already gives:
-//!   letting an API call win would only mean the next reconciliation undoing it.
-//! * **dynamic** — created through the API by a platform admin (§5.4), who then owns
-//!   it and may deactivate it — an object nobody can administer needs somebody
-//!   with database access to fix.
-//!
-//! The gap that leaves is the one §5.2bis names out loud: a bot whose creator has
-//! left keeps *running* — its keys are its own — but has nobody left to turn it
-//! off. GitOps is the answer for anything durable, and the platform role (§5.4)
-//! closes it for the ones already created. Neither is M2.3, and pretending
-//! otherwise by handing deactivation to everybody would be worse than the gap.
+//! Service accounts (§5.2bis, §8): a team bot never runs on a person's key. Managed
+//! accounts belong to the configuration (§11, read-only here); dynamic ones are
+//! created by a platform admin (§5.4), who may deactivate them.
 
 use std::sync::Arc;
 
-use notify_domain::{DomainError, Origin, Principal, ServiceAccount, ServiceAccountId};
+use notify_domain::{DomainError, Origin, Principal, ServiceAccount, ServiceAccountId, User};
 use notify_ports::{
-    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, ServiceAccountRepository, actions,
+    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, ServiceAccountRepository,
+    UserRepository, actions,
 };
 
 use crate::authz::Caller;
@@ -48,21 +26,49 @@ impl core::fmt::Debug for ListServiceAccounts {
 }
 
 impl ListServiceAccounts {
-    /// Wire it.
     #[must_use]
     pub fn new(accounts: Arc<dyn ServiceAccountRepository>) -> Self {
         Self { accounts }
     }
 
-    /// Every service account, deactivated ones included.
-    ///
-    /// Not filtered by who is asking, and that is not an oversight. A service
-    /// account is a *public identity* on this instance: its name appears as the
-    /// `author` of revisions and in audit entries (§2.4, §5.2bis), so the list adds
-    /// nothing somebody could not already read from a timeline. What it carries is
-    /// a profile and dates — never a key, never a secret.
+    /// Every service account, deactivated ones included. Unfiltered: a service account
+    /// is a public identity (its name authors revisions), and carries no secret.
     pub async fn execute(&self, _caller: &Caller) -> Result<Vec<ServiceAccount>, Failure> {
         Ok(self.accounts.list().await?)
+    }
+}
+
+/// `GET /api/v1/users?q=` — the member picker. People only: a bot has no use for a directory.
+#[derive(Clone)]
+pub struct SearchUsers {
+    users: Arc<dyn UserRepository>,
+}
+
+impl core::fmt::Debug for SearchUsers {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SearchUsers").finish_non_exhaustive()
+    }
+}
+
+impl SearchUsers {
+    /// At most this many matches: a picker, not an export.
+    pub const LIMIT: u32 = 10;
+
+    #[must_use]
+    pub fn new(users: Arc<dyn UserRepository>) -> Self {
+        Self { users }
+    }
+
+    /// Users whose name or email contains `text`; fewer than two characters matches nobody.
+    pub async fn execute(&self, caller: &Caller, text: &str) -> Result<Vec<User>, Failure> {
+        if !matches!(caller.principal, Principal::User { .. }) {
+            return Err(Failure::Domain(DomainError::NotAPerson));
+        }
+        let text = text.trim();
+        if text.chars().count() < 2 {
+            return Ok(Vec::new());
+        }
+        Ok(self.users.lookup(text, Self::LIMIT).await?)
     }
 }
 
@@ -82,7 +88,6 @@ impl core::fmt::Debug for CreateServiceAccount {
 }
 
 impl CreateServiceAccount {
-    /// Wire it.
     #[must_use]
     pub fn new(
         accounts: Arc<dyn ServiceAccountRepository>,
@@ -104,22 +109,16 @@ impl CreateServiceAccount {
         display_name: Option<&str>,
         description: Option<&str>,
     ) -> Result<ServiceAccount, Failure> {
-        // A person, not a bot. A service account minting service accounts would be
-        // a privilege-escalation path with no audit trail worth the name: the chain
-        // of "who asked for this" ends at somebody who can be asked.
+        // A person, not a bot: the "who asked for this" chain must end at somebody.
         let Principal::User { id: owner } = caller.principal else {
             return Err(Failure::Domain(DomainError::NotAPerson));
         };
-        // A bot is an identity the whole instance sees as an author: minting one is
-        // the platform role's call (§5.4). The other door is the configuration,
-        // which the reconciler applies without passing through here.
+        // Minting an instance-wide author is the platform role's call (§5.4).
         caller.ensure_platform_admin()?;
 
         let id = ServiceAccountId::parse(id)?;
         if self.accounts.get(&id).await?.is_some() {
-            // Names are the identity here (§5.2bis) and they appear in the audit
-            // log, so silently returning the existing one would let somebody adopt
-            // a bot they did not create.
+            // Names are the identity (§5.2bis): returning the existing one would let somebody adopt it.
             return Err(Failure::Domain(DomainError::Malformed {
                 field: "service_account.id",
                 reason: "already taken",
@@ -152,12 +151,8 @@ impl CreateServiceAccount {
     }
 }
 
-/// `DELETE /api/v1/serviceaccounts/{id}` (design §8, §5.2bis, scenario T25).
-///
-/// Deactivation, not deletion: the account keeps existing so the revisions and
-/// audit entries naming it stay readable. What it loses is the ability to act, and
-/// it loses it *immediately* — its keys are revoked in the same call rather than
-/// left to expire.
+/// `DELETE /api/v1/serviceaccounts/{id}` (§8, §5.2bis, T25): deactivation, not
+/// deletion, with its keys revoked in the same call.
 #[derive(Clone)]
 pub struct DeactivateServiceAccount {
     accounts: Arc<dyn ServiceAccountRepository>,
@@ -174,7 +169,6 @@ impl core::fmt::Debug for DeactivateServiceAccount {
 }
 
 impl DeactivateServiceAccount {
-    /// Wire it.
     #[must_use]
     pub fn new(
         accounts: Arc<dyn ServiceAccountRepository>,
@@ -197,9 +191,7 @@ impl DeactivateServiceAccount {
         };
 
         let Some(mut account) = self.accounts.get(id).await? else {
-            // Deactivating something that is not there is the desired state, and
-            // saying "no such account" would let anybody enumerate which names
-            // exist on this instance.
+            // Already the desired state; "no such account" would enumerate names.
             return Ok(());
         };
 
@@ -209,9 +201,7 @@ impl DeactivateServiceAccount {
         account.disable(now);
         self.accounts.upsert(&account).await?;
 
-        // Keys first-class: the account row alone would stop *new* authentications
-        // only because `Authenticate` checks it (T25), and a key left usable is a
-        // credential still in somebody's CI configuration.
+        // Revoke the keys too, so no credential stays usable.
         let revoked = self.keys.revoke_all_for(&account.principal(), now).await?;
 
         self.audit
@@ -220,8 +210,7 @@ impl DeactivateServiceAccount {
                 action: actions::SERVICE_ACCOUNT_DISABLED,
                 target: Some(account.id.as_str().to_owned()),
                 channel: None,
-                // How many credentials stopped working, which is the number an
-                // incident review actually wants from this line.
+                // How many credentials stopped working.
                 detail: serde_json::json!({ "keys_revoked": revoked }).into(),
                 at: now,
             })
@@ -431,8 +420,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_managed_account_refuses_the_api_whoever_asks() {
-        // §11: the configuration is its source of truth, so an API deactivation
-        // would only survive until the next reconciliation.
+        // §11: the configuration is its source of truth.
         let fixture = fixture();
         let id = ServiceAccountId::parse("bot-managed").unwrap();
         let managed = ServiceAccount::new(
@@ -480,11 +468,43 @@ mod tests {
             .await
             .unwrap();
 
-        // Bob sees it: a service account is a public identity on this instance, its
-        // name already appears as the `author` of everything it published.
+        // A service account is a public identity on this instance.
         let listed = fixture.list.execute(&caller(fixture.bob)).await.unwrap();
 
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].display_name.as_deref(), Some("ArgoCD"));
+    }
+
+    #[tokio::test]
+    async fn people_find_people_and_bots_are_refused() {
+        let f = fixture();
+        let now = time::OffsetDateTime::now_utc();
+        let alice = User::from_claims(
+            f.alice,
+            "alice",
+            Some("alice@weebo.poc"),
+            Some("Alice Martin"),
+            now,
+        )
+        .unwrap();
+        UserRepository::upsert(&f.store, &alice).await.unwrap();
+        let search = SearchUsers::new(Arc::new(f.store.clone()));
+
+        let found = search.execute(&caller(f.bob), "martin").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, f.alice);
+        assert!(
+            search
+                .execute(&caller(f.bob), "m")
+                .await
+                .unwrap()
+                .is_empty(),
+            "two characters minimum"
+        );
+
+        let bot = Caller::member(Principal::ServiceAccount {
+            id: ServiceAccountId::parse("bot-argocd").unwrap(),
+        });
+        assert!(search.execute(&bot, "martin").await.is_err());
     }
 }

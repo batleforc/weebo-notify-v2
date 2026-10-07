@@ -1,11 +1,4 @@
-/**
- * Enrolling a browser as a device (§6.2, M3.6).
- *
- * Two things are worth pinning: the base64url decoding, where a mistake surfaces
- * as an `InvalidCharacterError` several frames from its cause, and the order of
- * the steps in `enable` — permission is asked *after* the deployment says it does
- * Web Push, so nobody is prompted for something that could not be honoured.
- */
+/** Device enrolment (§6.2): base64url decoding, and permission asked only after availability. */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

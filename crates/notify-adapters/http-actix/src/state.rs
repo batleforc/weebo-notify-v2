@@ -1,9 +1,5 @@
-//! Everything a handler is allowed to reach.
-//!
-//! One struct holding one use case per operation, built by the composition root.
-//! Deliberately not "the ports": a handler that could reach a repository directly
-//! is a handler that can skip an authorisation check, and the whole point of
-//! [`notify_app`] is that it cannot.
+//! Everything a handler may reach: use cases, not ports, so no handler can skip an
+//! authorisation check.
 
 use std::sync::Arc;
 
@@ -15,7 +11,7 @@ use notify_app::{
     ManageMembers, PostReceipt, PresignAttachment, PublishNotification, ReadAttachment,
     ReadAttachmentThumbnail, ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts,
     ReadReconciliation, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd,
+    RevokeDevice, SearchNotifications, SearchUsers, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd,
     SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_fs::FsAttachments;
@@ -24,25 +20,15 @@ use notify_ports::{EventBus, Metrics};
 /// The application, as the HTTP layer sees it.
 #[derive(Clone)]
 pub struct ApiState {
-    /// The one port this layer holds directly: a live connection has to learn that
-    /// something landed, and "subscribe to pokes" is a transport concern rather
-    /// than a use case. What it does *with* a poke still goes through
-    /// [`ApiState::sync`], so nothing here decides who may see what.
+    /// The one port held directly: pokes wake live connections, which then read via
+    /// [`ApiState::sync`].
     pub bus: Arc<dyn EventBus>,
 
-    /// What this replica is measured on (design §13). Held here rather than passed
-    /// to the use cases: every number below is a fact about the process — how many
-    /// connections it holds, how far behind a client was — and a use case that
-    /// recorded its own would be one that knows it is being watched.
+    /// Process-level metrics (design §13).
     pub metrics: Arc<dyn Metrics>,
 
-    /// The live connections this replica holds, so `GET /stream` and `GET /ws` can
-    /// enforce the ceiling of design §8.2.
-    ///
-    /// Here for the same reason `metrics` is: it is a fact about *this process*, not
-    /// a decision about who may see what. `Arc` and not a plain field because
-    /// [`ApiState`] is cloned into every worker and one shared count is the point —
-    /// twenty per worker would be twenty times the ceiling.
+    /// Live connections for the §8.2 ceiling; one `Arc` shared by every worker so the
+    /// ceiling is per replica, not per worker.
     pub streams: Arc<crate::slots::StreamSlots>,
 
     /// Credential to caller, for the extractor.
@@ -77,8 +63,7 @@ pub struct ApiState {
     /// `GET /notifications/{id}/receipts`.
     pub readership: ReadReceipts,
 
-    /// `POST /auth/token/exchange` — absent on a deployment with no `[federation]`
-    /// block, which the route reports as `501` rather than as a bad token.
+    /// `POST /auth/token/exchange`; `None` without `[federation]` (answers `501`).
     pub exchange: Option<ExchangeToken>,
 
     /// `GET /admin/audit`.
@@ -103,14 +88,8 @@ pub struct ApiState {
     /// `GET /attachments/{id}/thumbnail`.
     pub attachment_thumbnail: ReadAttachmentThumbnail,
 
-    /// The filesystem attachment store, when `[attachments] kind = "filesystem"`
-    /// (ADR-0022) — `None` on every other deployment, including one with no
-    /// `[attachments]` at all or one running S3.
-    ///
-    /// A concrete type and not a second `Arc<dyn AttachmentStore>`: the two routes
-    /// this backs (`routes::attachments_fs`) need `FsAttachments::verify`, which is
-    /// deliberately not on the trait — a filesystem is the only backend that has to
-    /// serve its own bytes over HTTP, so only it needs a token to check.
+    /// The filesystem store when configured (ADR-0022); concrete because its routes
+    /// need `FsAttachments::verify`, which is not on the trait.
     pub attachments_fs: Option<Arc<FsAttachments>>,
 
     /// `GET /sync`.
@@ -161,46 +140,27 @@ pub struct ApiState {
     /// `PUT /preferences/dnd`.
     pub set_dnd: SetDnd,
 
-    /// `GET /push/webpush` — the VAPID public key, base64url, or `None` on a
-    /// deployment that runs no Web Push (design §6.2, §11 `[push.webpush]`).
-    ///
-    /// The one field here that is not a use case, and it is not one because there is
-    /// nothing to decide: it is a constant of the deployment, public by definition —
-    /// every subscriber holds a copy — and it reaches no port. A use case wrapping a
-    /// `String` would have been ceremony around a `clone`, and the rule this bends
-    /// exists to stop a handler reaching a *repository*, which this cannot.
+    /// `GET /push/webpush`: the public VAPID key (base64url), `None` without Web Push (§6.2).
     pub application_server_key: Option<String>,
 
     /// `GET /serviceaccounts`.
     pub accounts: ListServiceAccounts,
+    /// `GET /users`.
+    pub users: SearchUsers,
     /// `POST /serviceaccounts`.
     pub create_account: CreateServiceAccount,
     /// `DELETE /serviceaccounts/{id}`.
     pub deactivate_account: DeactivateServiceAccount,
 
-    /// `GET /cli` — the `notify` binary this replica was built with, when
-    /// `[cli]` configures one. `None` is what makes the route answer `501`.
-    ///
-    /// `Bytes` and not a use case, on the same terms as `application_server_key`
-    /// above: read once at boot, a constant of the deployment, and there is
-    /// nothing to decide — cloning it into a response is a refcount bump, not a
-    /// copy of a multi-megabyte binary per download.
+    /// `GET /cli`: the `notify` binary from `[cli]`, read once at boot; `None` answers `501`.
     pub cli_binary: Option<actix_web::web::Bytes>,
-    /// The SHA-256 of [`Self::cli_binary`], lowercase hex.
-    ///
-    /// Served as `X-Content-Digest` and as a strong `ETag` so a recipient can
-    /// check what they got against a value published out of band with the release
-    /// (advisory SEC-P2-26/27). It is **not a signature**: it proves the bytes are
-    /// the ones this server holds, not that this server is trustworthy. The
-    /// detached minisign signature that would close that gap belongs with the
-    /// desktop updater's key custody in M5.
+    /// SHA-256 of [`Self::cli_binary`] (hex), served as `X-Content-Digest`/`ETag`.
+    /// An integrity check, **not a signature**.
     pub cli_digest: Option<String>,
 }
 
 impl core::fmt::Debug for ApiState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // A trait object has no useful debug shape, and printing two dozen
-        // `finish_non_exhaustive` use cases helps nobody.
         f.debug_struct("ApiState").finish_non_exhaustive()
     }
 }

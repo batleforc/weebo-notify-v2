@@ -35,10 +35,7 @@ describe("resolving a notification image", () => {
   });
 
   it("signs an attachment, which is the half nothing rendered until now", async () => {
-    // D26: `image: {kind: "attachment", ref: …}` is what the CLI produces above
-    // 48 KiB, and the detail panel's `kind === 'data_uri'` guard matched none of
-    // them. The bucket is strictly private (§6.1), so a signature is the only way
-    // to the bytes.
+    // D26: attachments need a signature; the bucket is private (§6.1).
     presignDownload.mockResolvedValue(signedFor(15));
 
     const src = await imageSrc({ kind: "attachment", ref: "att_01J" });
@@ -62,10 +59,7 @@ describe("resolving a notification image", () => {
   });
 
   it("re-signs rather than reusing a signature about to expire", async () => {
-    // The difference from `lib/avatar.ts`, which caches for ever: an avatar id is
-    // immutable, a signature is not. An inbox left open past the expiry would
-    // otherwise re-render a URL the bucket has begun refusing, which looks exactly
-    // like a broken image.
+    // Unlike avatars, signatures expire.
     presignDownload.mockResolvedValueOnce(
       signedFor(0.5, "https://s3.test/first"),
     );

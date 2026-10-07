@@ -1,16 +1,6 @@
 /**
- * Where the refresh token rests, per platform — the one thing this store now does
- * differently in the shell than in a browser.
- *
- * Worth its own file because the split is easy to undo by accident and expensive
- * both ways. Collapse it towards the browser and the shell stops surviving a
- * restart, which is the whole reason `./credential` exists (§10bis.2, §10bis.3).
- * Collapse it the other way and a *browser* build starts calling Tauri commands
- * that are not there — and because the calls are fire-and-forget, it would fail in
- * a console message rather than anywhere a person looks.
- *
- * So each test asserts both halves: that the right store was written, and that the
- * other one was left alone.
+ * Where the refresh token rests per platform (§10bis.2). Each test checks the
+ * right store was written and the other left alone.
  */
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,13 +49,7 @@ function rotated(): Response {
   );
 }
 
-/**
- * A fresh store on the given platform.
- *
- * `resetModules` before each import because `redirectUri` is decided once, at module
- * load, from `isDesktop()` — a store imported under the other platform would carry
- * the wrong one.
- */
+/** A fresh store per platform: `redirectUri` is fixed at module load. */
 async function session(onDesktop: boolean) {
   desktop.value = onDesktop;
   vi.resetModules();
@@ -142,20 +126,12 @@ describe("session — where the refresh token rests", () => {
 
       await store.restore();
 
-      // Not the refresh token: this is what a `Bearer` header carries, and it is
-      // what the tray runs on. Without it the tray sits on `auth.invalid_credential`
-      // for the whole run however healthy the window is.
-      // The name rides with it, for the tray's header line. `null` here because
-      // this refresh response carries no `id_token`, so there are no claims to
-      // read a display name from — which is the shape the Rust side treats as
-      // "no name" rather than an empty one.
+      // The access token (what the tray runs on); no name without an `id_token`.
       expect(credential.share).toHaveBeenCalledWith("access-2", null);
     });
 
     it("sends the display name the claims carry, for the tray header", async () => {
-      // A provider that also returns an `id_token`, which is where the name comes
-      // from. Unsigned on purpose: `readClaims` reads the payload and this suite
-      // is not testing JWT verification.
+      // Unsigned: this suite doesn't test JWT verification.
       const payload = btoa(
         JSON.stringify({ sub: "alice", name: "Alice Martin" }),
       )

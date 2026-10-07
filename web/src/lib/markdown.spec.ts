@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { renderMarkdown } from "./markdown";
 
-/**
- * The rule these tests hold: a notification body is content from a publisher who
- * may be less trusted than the person reading it (§2.3, §10.3). None of it becomes
- * markup that runs.
- */
+/** A publisher may be less trusted than the reader (§2.3, §10.3): nothing becomes running markup. */
 describe("renderMarkdown", () => {
   it("renders ordinary markdown", () => {
     const html = renderMarkdown("**gras** et `code`");

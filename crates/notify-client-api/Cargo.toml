@@ -18,9 +18,6 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-# Both are progenitor's choices, not ours: it renders `date-time` as `chrono` and
-# compiles `pattern` constraints with `regress`. The rest of the workspace is on
-# `time`, and this crate is the boundary where that difference stops — everything
-# above it consumes `notify-client-core`, which converts.
+# progenitor's choices (`date-time` → chrono, `pattern` → regress); the rest of the workspace uses `time`.
 chrono.workspace = true
 regress.workspace = true

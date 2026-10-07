@@ -1,10 +1,5 @@
-//! One in-memory store behind every repository port.
-//!
-//! Everything shares a single mutex-guarded state, which is what makes the cursor
-//! sequence coherent across repositories: a revision, a receipt and an interaction
-//! recorded in that order come back from the event log in that order, exactly as
-//! the real schema guarantees (ADR-0012). Repositories that each kept their own
-//! counter would let a use-case test pass while the production ordering was wrong.
+//! One in-memory store behind every repository port; a single shared state keeps
+//! the cursor sequence coherent across repositories (ADR-0012).
 
 use core::cmp::Reverse;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -92,13 +87,9 @@ struct State {
     audit: Vec<Row<AuditEntry>>,
     /// What GitOps last applied, per kind (design §11, §13, D28).
     declarations: Vec<(DeclarationKind, Declaration)>,
-    /// Channels whose notification expired without ever being delivered — the
-    /// "N expired while you were away" counter (design §7.2bis).
+    /// Channels whose notification expired undelivered (§7.2bis).
     expired_counters: Vec<(Cursor, ChannelId)>,
-    /// Upload ids a presign handed out: `(id, channel, requested_at)` — design
-    /// §7.2bis, D25. Here rather than on the bucket double for the same reason
-    /// `PgStore` owns it: answering "does any live revision reference this" needs
-    /// the revisions.
+    /// Upload ids a presign handed out: `(id, channel, requested_at)` (§7.2bis).
     presigns: Vec<(AttachmentId, ChannelId, OffsetDateTime)>,
     pokes: Vec<Poke>,
     subscribers: Vec<UnboundedSender<Poke>>,
@@ -108,8 +99,7 @@ struct State {
     dead_letters: Vec<DeadLetter>,
     /// The bodies behind the dead letters, so a requeue puts back something sendable.
     buried: Vec<SinkDelivery>,
-    /// The groups a principal's token last carried — `(principal_ref, groups)`, one
-    /// row per principal. See [`DeviceRepository::remember_groups`].
+    /// The groups a principal's token last carried, one row per principal.
     group_snapshots: Vec<(String, Vec<String>, OffsetDateTime)>,
 }
 
@@ -127,20 +117,14 @@ impl State {
             cursor,
             audience,
             recorded_at: at,
-            // Stored events carry no delivery facts: the flag is set per reader on
-            // the way out (§7.4, D22).
+            // Delivery facts are set per reader on the way out (§7.4).
             muted_by_dnd: false,
             payload,
         });
         cursor
     }
 
-    /// Append the `preference` event of §8.1, carrying both halves of what this
-    /// user has asked not to be bothered by.
-    ///
-    /// One helper rather than two call sites building it: the event is whole by
-    /// contract, and the way it stops being whole is somebody adding a third half
-    /// and updating only the writer they were looking at.
+    /// Append the whole `preference` event of §8.1 (DND and silences together).
     fn announce_preference(&mut self, user: UserId, at: OffsetDateTime) -> Cursor {
         let dnd = self
             .dnd
@@ -175,26 +159,12 @@ impl State {
     }
 }
 
-/// Every repository port, over one shared state.
-///
-/// Cloning shares the state, so a test wires the same store into every port it
-/// needs and they all agree with each other.
+/// Every repository port over one shared state; clones share it.
 #[derive(Debug, Clone, Default)]
 pub struct InMemory {
     state: Arc<Mutex<State>>,
-    /// The time this store hides expired rows against.
-    ///
-    /// A store that answered "is this gone?" from the wall clock while the use case
-    /// asking read [`TestClock`] is not a double, it is a second, disagreeing
-    /// system — and the disagreement is invisible until the calendar catches up.
-    /// It did: `TestClock::EPOCH` plus the seven-day default retention fell due on
-    /// 2026-08-09, and from that morning every notification a test had *closed*
-    /// read as expired to `list`, `search`, `unread_counts` and
-    /// `attachment_is_visible`, however recently the test had closed it.
-    ///
-    /// Parked at [`TestClock::EPOCH`] by default, which is where every harness's
-    /// own clock starts. A test that drives time has to hand the same clock over
-    /// with [`Self::with_clock`], or the two will part company again.
+    /// The time this store hides expired rows against. Must be the same clock the
+    /// use cases read (see [`Self::with_clock`]), or expiry silently diverges.
     clock: TestClock,
 }
 
@@ -204,8 +174,7 @@ impl InMemory {
         Self::default()
     }
 
-    /// An empty store that reads the caller's clock — the one the use cases under
-    /// test are reading, so that advancing it moves both.
+    /// An empty store that reads the caller's clock, so advancing it moves both.
     #[must_use]
     pub fn with_clock(clock: TestClock) -> Self {
         Self {
@@ -219,11 +188,8 @@ impl InMemory {
         self.clock.now()
     }
 
-    /// The rows a purge with this window would delete.
-    ///
-    /// Shared by `purge` and `orphaned_attachments` rather than written twice, so
-    /// the two cannot disagree about which rows are on their way out — which is
-    /// what makes "an attachment only the doomed reference" mean anything.
+    /// The rows a purge with this window would delete, shared by `purge` and
+    /// `orphaned_attachments` so they agree.
     fn doomed(
         state: &State,
         deleted_before: OffsetDateTime,
@@ -243,8 +209,7 @@ impl InMemory {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        // A poisoned lock means an earlier assertion already failed; reading through
-        // it lets that failure be the one reported.
+        // A poisoned lock means an earlier assertion failed; read through so that one is reported.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -340,9 +305,7 @@ impl NotificationRepository for InMemory {
     ) -> PortResult<Option<Notification>> {
         let state = self.state();
         let now = self.now();
-        // A tombstoned or expired row is deliberately invisible here: re-running a
-        // job whose previous notification aged out creates a new one rather than
-        // reviving it.
+        // Tombstoned or expired rows are never revived.
         Ok(state
             .notifications
             .iter()
@@ -359,9 +322,7 @@ impl NotificationRepository for InMemory {
         let mut state = self.state();
         let now = self.now();
 
-        // An expired row the sweep has not reached yet gives its external id up to
-        // the new notification, the way the Postgres adapter retires it in the same
-        // transaction.
+        // An expired, unswept row gives its external id up, as Postgres does.
         for row in &mut state.notifications {
             if row.value.channel == notification.channel
                 && row.value.external_id.is_some()
@@ -381,8 +342,7 @@ impl NotificationRepository for InMemory {
             })
         });
         if taken {
-            // The caller re-reads and revises instead — which is what makes the
-            // upsert idempotent under CI retries (scenario T16).
+            // The caller re-reads and revises (T16).
             return Err(PortError::Conflict {
                 what: "notification.external_id",
             });
@@ -515,8 +475,7 @@ impl NotificationRepository for InMemory {
             std::collections::BTreeMap::new();
         for row in &state.notifications {
             let notification = &row.value;
-            // `State::is_live` and not a hand-written pair of conditions: it is what
-            // `list` above applies, and the port promises the two answers agree.
+            // Same liveness rule as `list`.
             if State::is_live(notification, now)
                 && channels.contains(&notification.channel)
                 && !seen.contains(&notification.id)
@@ -559,8 +518,7 @@ impl NotificationRepository for InMemory {
             .iter()
             .filter(|row| {
                 let notification = &row.value;
-                // Scope first, match second — the ordering that makes scenario T27
-                // hard to break by accident.
+                // Scope first, match second (T27).
                 if !query.channels.contains(&notification.channel)
                     || !State::is_live(notification, now)
                 {
@@ -655,8 +613,7 @@ impl NotificationRepository for InMemory {
                     now,
                 )
             } else {
-                // Nobody ever saw it. It stays out of the backlog and becomes a
-                // number instead (design §7.2bis, scenario T9).
+                // Nobody ever saw it: a counter, not backlog (§7.2bis, T9).
                 let cursor = state.next_cursor();
                 state.expired_counters.push((cursor, channel.clone()));
                 cursor
@@ -756,9 +713,7 @@ impl NotificationRepository for InMemory {
         let state = self.state();
         let doomed = Self::doomed(&state, deleted_before, limit);
 
-        // Referenced by a revision of something that is staying: the same "only"
-        // the port's documentation insists on, and the reason this is a set
-        // difference rather than a filter.
+        // Referenced by a surviving revision: keep it.
         let surviving: Vec<AttachmentId> = state
             .revisions
             .iter()
@@ -842,11 +797,7 @@ impl crate::AttachmentRegistry for InMemory {
     }
 }
 
-/// The attachment a revision points at, if it points at one.
-///
-/// A `data:` image is inline in the payload and owns no object, so it is not an
-/// attachment to collect — the same distinction design §2.3 draws at the 48 KiB
-/// line.
+/// The attachment a revision points at; inline `data:` images own no object (§2.3).
 fn attachment_of(revision: &Revision) -> Option<AttachmentId> {
     match revision.content.image.as_ref()? {
         notify_domain::Image::Attachment { reference } => Some(*reference),
@@ -854,20 +805,8 @@ fn attachment_of(revision: &Revision) -> Option<AttachmentId> {
     }
 }
 
-/// When something last happened to a notification (design §7.2bis).
-///
-/// Revisions **and** interactions, because both are somebody attending to it: a
-/// publisher pushing an update and a human acknowledging one are the two ways a
-/// notification is not abandoned, and counting only the first would close incidents
-/// out from under the person working on them.
-///
-/// Receipts are deliberately not counted. A `delivered` receipt is a client having
-/// the notification on screen, which happens without anybody deciding anything —
-/// counting it would mean an inbox left open in a browser tab keeps every
-/// notification in it alive forever.
-///
-/// `created_at` is the floor, so a notification whose revisions were pruned still
-/// answers with a real instant rather than reading as infinitely old.
+/// When something last happened to a notification (§7.2bis): revisions and
+/// interactions, not receipts, floored at `created_at`.
 fn last_activity(state: &State, notification: &Notification) -> OffsetDateTime {
     let revised = state
         .revisions
@@ -1045,8 +984,7 @@ impl ChannelRepository for InMemory {
             .iter()
             .map(|row| row.value.id.clone())
             .collect();
-        // Ordered, like the SQL adapter: a minted token lists its channels, and a
-        // list whose order depends on insertion is a diff that moves for no reason.
+        // Ordered, like the SQL adapter.
         ids.sort();
         Ok(ids)
     }
@@ -1118,8 +1056,7 @@ impl DeviceRepository for InMemory {
     ) -> PortResult<()> {
         let mut state = self.state();
         if let Some(device) = state.devices.iter_mut().find(|device| device.id == id) {
-            // Monotonic here as well as in the domain: two tabs acknowledging
-            // different positions must not let the older one win.
+            // Monotonic here as well as in the domain.
             device.advance(cursor, at);
         }
         Ok(())
@@ -1139,8 +1076,7 @@ impl DeviceRepository for InMemory {
             .map(|member| &member.principal)
             .collect();
 
-        // The second door, mirroring the SQL adapter: a device whose owner's last
-        // remembered groups grant `subscribe` through the channel's group access.
+        // Group access via the owner's last remembered groups, mirroring the SQL adapter.
         let reached_by_group = |owner: &Principal| {
             state
                 .group_snapshots
@@ -1230,14 +1166,9 @@ impl ReceiptRepository for InMemory {
             ));
         };
 
-        // The same split the real store makes, and it has to be here too: a use-case
-        // test that asserts "nobody else was told" would pass against a double that
-        // always broadcast, which is the failure mode this whole increment is about.
         let audience = match visibility {
             Visibility::Channel => Some(Audience::Channel { id: channel }),
-            // Only a user has private connections to poke. A service account, a
-            // channel key and a CI job have no inbox and no badge (§5.2bis), so the
-            // row is written and nothing is appended.
+            // Only users have private connections; other principals get the row, no event (§5.2bis).
             Visibility::Reader => match &receipt.principal {
                 Principal::User { id } => Some(Audience::User { id: *id }),
                 _ => None,
@@ -1311,8 +1242,7 @@ impl InteractionRepository for InMemory {
     async fn silence(&self, silence: &Silence) -> PortResult<Cursor> {
         let mut state = self.state();
 
-        // Re-silencing the same target extends it rather than stacking a second
-        // one nobody can see to lift.
+        // Re-silencing the same target replaces it.
         state
             .silences
             .retain(|existing| existing.user != silence.user || existing.target != silence.target);
@@ -1351,8 +1281,7 @@ impl PreferenceRepository for InMemory {
         let mut state = self.state();
         state.dnd.retain(|existing| existing.user != dnd.user);
         state.dnd.push(dnd.clone());
-        // A digest for a quiet period that has just been redefined would be counting
-        // something that no longer happened.
+        // Redefining the quiet period clears the held-back tally.
         state.deferred.retain(|(user, ..)| *user != dnd.user);
 
         Ok(state.announce_preference(dnd.user, now))
@@ -1451,6 +1380,23 @@ impl UserRepository for InMemory {
             .iter()
             .find(|user| user.email.as_deref() == Some(email))
             .cloned())
+    }
+
+    async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>> {
+        let needle = text.to_lowercase();
+        let hit = |field: &Option<String>| {
+            field
+                .as_deref()
+                .is_some_and(|value| value.to_lowercase().contains(&needle))
+        };
+        Ok(self
+            .state()
+            .users
+            .iter()
+            .filter(|user| hit(&user.display_name) || hit(&user.email))
+            .take(limit as usize)
+            .cloned()
+            .collect())
     }
 
     async fn upsert(&self, user: &User) -> PortResult<()> {
@@ -1609,8 +1555,7 @@ impl IdempotencyStore for InMemory {
     ) -> PortResult<Claim> {
         let mut state = self.state();
 
-        // An expired reservation is as good as absent, so a key becomes reusable
-        // once its window has passed rather than being burnt forever.
+        // An expired reservation is as good as absent.
         state
             .reservations
             .retain(|reservation| reservation.expires_at.is_none_or(|at| at > now));
@@ -1624,8 +1569,6 @@ impl IdempotencyStore for InMemory {
             .map(|reservation| reservation.response.clone());
 
         if let Some(response) = existing {
-            // Claimed already: either the work finished and we replay it, or it is
-            // still running and the caller is told to come back.
             return Ok(response.map_or(Claim::InFlight, |response| Claim::Replayed { response }));
         }
 
@@ -1696,8 +1639,7 @@ impl EventStore for InMemory {
 
         let subscribed =
             InMemory::channel_ids_for(&state, &principal, &query.groups, Scope::Subscribe);
-        // An explicit `?channels=` narrows what the caller may already see; it can
-        // never widen it.
+        // An explicit `?channels=` narrows, never widens.
         let visible: Vec<ChannelId> = if query.channels.is_empty() {
             subscribed
         } else {
@@ -1748,9 +1690,7 @@ impl EventStore for InMemory {
             next,
             expired,
             compacted,
-            // Filled by the use case, which is where the preference is read: the
-            // event store answers "what did this user miss", not "what did they ask
-            // not to be bothered by" (design §7.4).
+            // Filled by the use case, which reads the preference (§7.4).
             deferred_by_dnd: Vec::new(),
         })
     }
@@ -1775,12 +1715,8 @@ impl EventStore for InMemory {
     }
 }
 
-/// Fold a notification's revision events down to its last one (design §7.2).
-///
-/// Forty revisions of one deploy become one entry, so a client coming back from a
-/// week offline gets a timeline rather than a flood. Everything that is not a
-/// revision passes through untouched: receipts, interactions and tombstones each
-/// mean something on their own.
+/// Fold each notification's revision events down to its last one (§7.2); other
+/// events pass through.
 fn compact(events: Vec<Event>) -> Vec<Event> {
     let mut latest: Vec<(NotificationId, Cursor)> = Vec::new();
     for event in &events {
@@ -1813,8 +1749,7 @@ impl EventBus for InMemory {
     async fn publish(&self, poke: &Poke) -> PortResult<()> {
         let mut state = self.state();
         state.pokes.push(poke.clone());
-        // Best-effort by contract: a subscriber that has gone away costs a dropped
-        // poke, never a failed publish (ADR-0008).
+        // Best-effort: a gone subscriber costs a dropped poke (ADR-0008).
         state
             .subscribers
             .retain(|sender| sender.unbounded_send(poke.clone()).is_ok());
@@ -1847,8 +1782,7 @@ impl SinkQueue for InMemory {
         next_attempt_at: OffsetDateTime,
     ) -> PortResult<()> {
         let mut state = self.state();
-        // Keyed on the delivery id, so a retry reschedules rather than duplicates —
-        // the property the real queue gets from its primary key.
+        // Keyed on the delivery id, so a retry reschedules rather than duplicates.
         state
             .sink_queue
             .retain(|queued| queued.delivery.delivery_id != delivery.delivery_id);
@@ -1877,8 +1811,7 @@ impl SinkQueue for InMemory {
             if queued.due_at > now || queued.leased_until.is_some_and(|until| until > now) {
                 continue;
             }
-            // Leased, not removed: a drain that died mid-attempt must leave the
-            // delivery owed rather than lose it (see `SinkQueue`).
+            // Leased, not removed (see `SinkQueue`).
             queued.leased_until = Some(lease_until);
             claimed.push(queued.delivery.clone());
         }
@@ -1937,18 +1870,14 @@ impl SinkQueue for InMemory {
         };
         state.dead_letters.remove(position);
 
-        // The body is kept when it was buried, so a requeue here puts back something
-        // a drain can actually send — the same thing the real queue does, and what
-        // scenario T17 checks end to end.
+        // The buried body is kept so a requeue is sendable (T17).
         if let Some(position) = state
             .buried
             .iter()
             .position(|delivery| delivery.delivery_id == *id)
         {
             let mut delivery = state.buried.remove(position);
-            // A requeue is a fresh chance, not a resumption of the day it spent
-            // failing: leaving `first_failed_at` in place would bury it again on the
-            // very next failure.
+            // A requeue is a fresh chance: reset the give-up window.
             delivery.first_failed_at = None;
             state.sink_queue.push(QueuedDelivery {
                 delivery,
@@ -1975,7 +1904,7 @@ impl SinkQueue for InMemory {
     }
 }
 
-// --- What GitOps last applied (design §11, §13, D28) -----------------------
+// --- What GitOps last applied (§11, §13) -----------------------------------
 
 #[async_trait::async_trait]
 impl DeclarationStore for InMemory {
@@ -1987,8 +1916,7 @@ impl DeclarationStore for InMemory {
             .filter(|(stored, _)| *stored == kind)
             .map(|(_, declaration)| declaration.clone())
             .collect();
-        // Ordered like the real store, so a test cannot pass here on an order
-        // Postgres would not have produced.
+        // Ordered like the real store.
         found.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(found)
     }
@@ -2000,8 +1928,7 @@ impl DeclarationStore for InMemory {
         _at: OffsetDateTime,
     ) -> PortResult<()> {
         let mut state = self.state();
-        // Replace, not merge — the property the port states, and the one a
-        // withdrawn trust policy depends on.
+        // Replace, not merge.
         state.declarations.retain(|(stored, _)| *stored != kind);
         state
             .declarations
@@ -2179,8 +2106,7 @@ mod tests {
 
     #[tokio::test]
     async fn critical_t7_replaying_the_same_cursor_twice_yields_the_same_thing() {
-        // `?cursor=` and `Last-Event-ID` carry the same token, so a client that
-        // reconnects mid-sync must not see a different backlog.
+        // `?cursor=` and `Last-Event-ID` carry the same token.
         let store = InMemory::new();
         let alice = user();
         let Principal::User { id: alice_id } = alice else {
@@ -2451,8 +2377,7 @@ mod tests {
     #[tokio::test]
     async fn critical_t16_idempotency_keys_are_scoped_per_principal() {
         let store = InMemory::new();
-        // `deploy-1` is not an imaginative choice of key; two publishers must not
-        // read each other's responses.
+        // Two publishers must not read each other's responses.
         assert_eq!(
             IdempotencyStore::claim(&store, "usr_1", "deploy-1", now())
                 .await
@@ -3271,8 +3196,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_expired_lease_makes_a_delivery_owed_again() {
-        // The property the whole lease exists for: a drain killed mid-attempt must
-        // leave the delivery owed rather than lose it.
+        // A drain killed mid-attempt must leave the delivery owed.
         let store = InMemory::new();
         let delivery = delivery(&store).await;
 

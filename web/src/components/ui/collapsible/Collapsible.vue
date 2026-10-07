@@ -1,13 +1,5 @@
 <script setup lang="ts">
-/**
- * A collapsible section, in one component instead of shadcn's three.
- *
- * Same reduction as `Tooltip`/`HoverCard` next door (ADR-0004): every call site is
- * "click this heading, show or hide that". Reka UI carries the behaviour — the
- * open state, the measured height the CSS animation drives via
- * `--reka-collapsible-content-height`, and ARIA (`aria-expanded`,
- * `aria-controls`) on the trigger for free.
- */
+/** A collapsible section in one component instead of shadcn's three; Reka UI does the behaviour (ADR-0004). */
 import {
   CollapsibleContent,
   CollapsibleRoot,

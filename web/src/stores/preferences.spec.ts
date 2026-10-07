@@ -1,12 +1,4 @@
-/**
- * The local half of "stop notifying me" (§7.4).
- *
- * `muted` is a second implementation of `Dnd::is_muted`, written because deciding
- * whether to draw a toast cannot be a round trip. A second implementation is only
- * safe while somebody checks it against the first, so these are the scenarios the
- * Rust tests use — the on-call exception, the window that crosses midnight, the
- * timezone that belongs to the preference rather than to the device.
- */
+/** Local DND/silence logic (§7.4), checked against the Rust `Dnd::is_muted` scenarios. */
 
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -77,9 +69,7 @@ describe("a recurring window", () => {
   });
 
   it("is not quiet when the timezone is one this browser cannot resolve", () => {
-    // Refused at the API door, so reaching here means a preference older than
-    // this browser's IANA data. "Not quiet" loses a toast at worst; throwing
-    // would take the panel down.
+    // An unknown zone means "not quiet", never a throw.
     expect(
       covers({ ...night, timezone: "Europe/Pris" }, at("2026-01-15T01:00:00Z")),
     ).toBe(false);
@@ -113,9 +103,7 @@ describe("the store", () => {
   it("folds a preference event whole rather than merging it", () => {
     const preferences = usePreferences();
 
-    // Spelled in full rather than cast: the point of ADR-0013 is that the wire
-    // shape is a type, and a fixture that opts out of it proves nothing about the
-    // event the server actually sends.
+    // Spelled in full, not cast: the wire shape is a type (ADR-0013).
     preferences.ingest({
       event: "preference",
       audience: "user",
@@ -153,9 +141,7 @@ describe("the store", () => {
   });
 
   it("takes the server's word for the do-not-disturb half", () => {
-    // D22: the rule has four clauses and used to exist three times. The server
-    // holds the preference, applies it per reader, and says so on the event; this
-    // client reads the answer instead of deriving it again.
+    // D22: the server decides DND and says so on the event.
     const preferences = usePreferences();
 
     expect(
@@ -167,9 +153,7 @@ describe("the store", () => {
   });
 
   it("treats a missing answer as nobody having said anything", () => {
-    // A push handed over by the service worker carries no event envelope, so it
-    // carries no flag. Silent-when-unsure would drop a notification somebody asked
-    // for; noisy-when-unsure costs a popup.
+    // A forwarded push has no flag; unsure means noisy, not silent.
     const preferences = usePreferences();
 
     expect(preferences.stayQuiet({ notification: "ntf_01J" })).toBe(false);

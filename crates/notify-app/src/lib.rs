@@ -1,39 +1,6 @@
-//! Use cases: the application layer wiring the domain to its ports (design §4).
-//!
-//! One struct per use case, one `execute()`. Everything a use case needs arrives as
-//! an `Arc<dyn Port>` in its constructor, so the composition root decides what is
-//! real and a test decides what is in memory — and the code in between cannot tell.
-//!
-//! # What lives here and nowhere else
-//!
-//! **Authorisation.** Ports answer "who could", never "who may" (design §4), so
-//! every membership and scope check funnels through [`authz`]. That is what makes
-//! "membership is the only door to content" a property rather than a habit.
-//!
-//! **Orchestration across ports.** Publishing writes a notification, appends an
-//! event, pokes the bus and pushes to devices. The domain knows none of that and
-//! the adapters each know one piece; the use case is where the order is decided —
-//! including which steps may fail without failing the request ([`fanout`]).
-//!
-//! **Quotas.** Consumed on the way *in*, before any work, so a caller over its
-//! limit costs a counter increment rather than a transaction (design §8.2).
-//!
-//! # What deliberately does not
-//!
-//! No HTTP, no SQL, no framework types. A use case takes domain values and returns
-//! domain values; an Actix extractor stops at the adapter's edge.
-//!
-//! # The M1 surface
-//!
-//! | Area | Use cases |
-//! | --- | --- |
-//! | Authentication | [`Authenticate`] |
-//! | Publishing | [`PublishNotification`], [`UpsertNotification`], [`DeleteNotification`] |
-//! | Reading | [`ListInbox`], [`GetNotification`], [`ListRevisions`], [`SearchNotifications`] |
-//! | Interaction | [`RecordInteraction`], [`ListInteractions`], [`SilenceNotification`], [`PostReceipt`], [`ReadReceipts`] |
-//! | Real time | [`SyncBacklog`], [`ResolveStreamStart`] |
-//! | Administration | [`ListChannels`], [`ReadChannel`], [`CreateChannel`], [`ManageMembers`], [`DeleteChannel`], [`CreateApiKey`], [`ListApiKeys`], [`RevokeApiKey`], [`SetApiKeyLimit`], [`EnrolDevice`], [`ListDevices`], [`RevokeDevice`] |
-//! | Background | [`PurgeExpired`], [`CloseStale`] |
+//! Use cases: the application layer wiring the domain to its ports (§4). One struct
+//! per use case, ports injected as `Arc<dyn Port>`; authorisation lives in [`authz`],
+//! cross-port orchestration here, and no HTTP, SQL or framework types.
 
 pub mod accounts;
 pub mod attachments;
@@ -57,7 +24,9 @@ pub mod read;
 pub mod sinks;
 pub mod sync;
 
-pub use accounts::{CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts};
+pub use accounts::{
+    CreateServiceAccount, DeactivateServiceAccount, ListServiceAccounts, SearchUsers,
+};
 pub use attachments::{
     Attachments, PresignAttachment, ReadAttachment, ReadAttachmentThumbnail,
     is_allowed_attachment_type, normalised_content_type,

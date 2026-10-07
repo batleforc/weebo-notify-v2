@@ -1,15 +1,6 @@
 /**
- * The service worker, tested as the file that actually ships.
- *
- * `public/sw.js` is served verbatim — not bundled, not type-checked — so a test
- * against a copy of its logic would prove something about the copy. This one reads
- * the file off disk and evaluates it inside a stubbed worker global, which means a
- * typo in the shipped artefact fails here.
- *
- * What is worth pinning down is what a person sees on a locked screen: which
- * envelope becomes which notification, that an unknown one still shows something
- * (the `userVisibleOnly` contract), and that a visible tab gets the push handed to
- * it instead of an OS notification on top of the toast it is about to raise.
+ * Tests the shipped `public/sw.js` itself, evaluated in a stubbed worker global:
+ * envelope → notification, unknown envelopes still show, visible tabs get a hand-off.
  */
 
 import { readFileSync } from "node:fs";
@@ -169,9 +160,7 @@ describe("the service worker", () => {
   });
 
   it("still shows something for an envelope it cannot read", async () => {
-    // A newer server. Staying silent is not an option: `userVisibleOnly` was
-    // promised at subscription time, and a browser that catches a push going
-    // unseen revokes the subscription.
+    // `userVisibleOnly`: an unseen push gets the subscription revoked.
     const { event, settled } = pushEvent({ kind: "something-from-2027" });
 
     harness.listeners.get("push")?.(event);

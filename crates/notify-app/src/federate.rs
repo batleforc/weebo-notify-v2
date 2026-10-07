@@ -1,24 +1,6 @@
-//! `POST /api/v1/auth/token/exchange` — a CI job trades its forge's ID token for
-//! one of ours (design §5.3).
-//!
-//! # Why an exchange rather than accepting the forge's token directly
-//!
-//! Accepting it directly would work, and would be worse in three ways that only
-//! show up later. The forge's token is minted for whatever audience the forge
-//! chose, lives as long as the forge decided, and says nothing about *this*
-//! instance's channels — so every request would re-run the policy match against
-//! configuration that may have been reloaded since (§11, `reload`), and two
-//! requests of one pipeline could legitimately disagree. Minting resolves the
-//! question once, writes the answer down, and bounds it to fifteen minutes.
-//!
-//! # The order of the checks is the security
-//!
-//! Quota, then signature, then policy, then replay — each one placed where it is
-//! for a reason stated at the call site. The one worth naming here: the replay
-//! guard is claimed **after** the policy matches and **before** anything is minted.
-//! Claiming earlier would let anyone with a valid-looking token burn other jobs'
-//! ids; claiming later would leave a window where two concurrent requests both
-//! mint.
+//! `POST /api/v1/auth/token/exchange` — a CI job trades its forge's ID token for one
+//! of ours (§5.3): the policy match is resolved once and bounded to fifteen minutes.
+//! Check order is the security: quota, signature, policy, then the replay claim.
 
 use std::sync::Arc;
 
@@ -28,21 +10,8 @@ use notify_ports::{
     RateLimiter, ReplayGuard,
 };
 
-/// The trust policies in force, swappable while the process runs (§5.3, §11, D31).
-///
-/// # Why this is not just a `TrustPolicies`
-///
-/// `[[trust_policy]]` decides which forge may publish here, and §11 says the
-/// configuration is re-read on `SIGHUP`. Held by value, it could not be: the set
-/// was cloned into this use case at boot, so a reload changed a file and nothing
-/// else. M4duodetricies made that safe by *not* pretending — a reload kept the
-/// running set and warned — and left the real fix here (D31).
-///
-/// # Why a lock and not an `ArcSwap`
-///
-/// Reads happen once per token exchange, which is a CI job logging in, not a hot
-/// path: a `RwLock` costs nothing measurable here and costs no dependency either.
-/// The same reasoning, and the same poisoning policy, as `ReconciliationLog`.
+/// The trust policies in force, swappable on `SIGHUP` (§5.3, §11). A `RwLock` is
+/// enough: it is read once per token exchange.
 #[derive(Debug, Clone, Default)]
 pub struct LivePolicies {
     current: Arc<std::sync::RwLock<TrustPolicies>>,
@@ -57,16 +26,9 @@ impl LivePolicies {
         }
     }
 
-    /// Replace the set in force — what a `SIGHUP` does (§11).
-    ///
-    /// Whole-set replacement, never a merge: a policy withdrawn from the file has to
-    /// stop granting anything, and that is the half a merge would lose. It is also
-    /// the half that matters, since it is the one that *removes* a right.
+    /// Replace the whole set in force (§11); never merge, so a withdrawn policy stops granting.
     pub fn adopt(&self, policies: TrustPolicies) {
-        // A poisoned lock means a previous writer panicked mid-write. Writing through
-        // it is the safe choice here and it is worth saying why: the alternative is
-        // refusing the swap, which would leave a **withdrawn** policy in force for
-        // the life of the process.
+        // Write through a poisoned lock: refusing would keep a withdrawn policy in force.
         match self.current.write() {
             Ok(mut slot) => *slot = policies,
             Err(poisoned) => *poisoned.into_inner() = policies,
@@ -102,7 +64,6 @@ impl core::fmt::Debug for ExchangeToken {
 }
 
 impl ExchangeToken {
-    /// Wire it.
     #[must_use]
     pub fn new(
         federation: Arc<dyn FederationVerifier>,
@@ -124,16 +85,9 @@ impl ExchangeToken {
         }
     }
 
-    /// Exchange.
     pub async fn execute(&self, presented: &str) -> Result<MintedToken, Failure> {
-        // The signature comes first among the *checks*, but the quota comes first
-        // among everything: verifying a JWT is cheap and looking a JWKS up is not,
-        // and this endpoint is unauthenticated by construction — anything reachable
-        // without a credential is reachable by anyone.
-        //
-        // It is keyed on the unverified claims below rather than here, though,
-        // because "(issuer, subject)" is what §8.2 says to limit and neither is
-        // known yet. What guards this line is the global limit in front of it.
+        // The endpoint is unauthenticated, so the global limit in front of it guards the
+        // signature check; the per-(issuer, subject) quota (§8.2) follows once claims are known.
         let claims = match self.federation.verify_ci_token(presented).await? {
             Ok(claims) => claims,
             Err(rejection) => {
@@ -147,8 +101,7 @@ impl ExchangeToken {
         };
         if let Allowance::Limited {
             retry_after_seconds,
-            // No override: the exchange happens before any channel is known — that is
-            // the point of checking it first (§5.3).
+            // No channel override: no channel is known yet (§5.3).
         } = self.limiter.check(&quota, None, self.clock.now()).await?
         {
             return Err(Failure::RateLimited {
@@ -156,20 +109,14 @@ impl ExchangeToken {
             });
         }
 
-        // Audience, anchored subject glob, channel-scoped precedence — all of it,
-        // in one pure call with its own tests (design §5.3, scenario T11).
-        // Read once per exchange rather than held: this is what makes a `SIGHUP`
-        // reach the path that decides who may publish (D31).
+        // Audience, subject glob, channel-scoped precedence, in one pure call (§5.3, T11).
+        // Read per exchange so a `SIGHUP` takes effect.
         let grant = self.policies.current().decide(&claims, &self.audience)?;
 
-        // Resolve the patterns *now*, against the channels that exist now. A token
-        // carrying `ci-*` would push this work onto every later request, against a
-        // configuration that may have been reloaded in between (§11).
+        // Resolve the patterns now, against the channels that exist now (§11).
         let grants = self.resolve(&grant).await?;
         if grants.is_empty() {
-            // A policy that matches but grants nothing reachable is a configuration
-            // mistake, and saying so beats minting a token that can do nothing and
-            // letting the job discover it one 403 at a time.
+            // A policy granting nothing reachable is a configuration mistake: say so.
             return Err(DomainError::Malformed {
                 field: "trust_policy.channels",
                 reason: "no channel on this instance matches what the policy grants",
@@ -177,8 +124,7 @@ impl ExchangeToken {
             .into());
         }
 
-        // Now, and not before: an id burned by a token that turned out not to match
-        // any policy would be a way to lock a real job out of its own exchange.
+        // Only after the policy matched, so a non-matching token cannot burn a real job's id.
         let jti = claims.jti.as_deref().unwrap_or_default();
         if !self.replay.remember(jti, claims.expires_at).await? {
             tracing::info!(subject = %claims.subject, "ci token replayed");
@@ -188,12 +134,8 @@ impl ExchangeToken {
         Ok(self.federation.mint(&grant, &grants).await?)
     }
 
-    /// Every existing channel the grant's patterns cover, each with the scopes the
-    /// allowances covering *it* grant — never another allowance's.
-    ///
-    /// Reads the channel list rather than trusting the patterns: a policy naming
-    /// `ci-*` on an instance with no such channel must produce a token that says so,
-    /// not one that looks broad and does nothing.
+    /// Every existing channel the grant's patterns cover, each with only the scopes the
+    /// allowances covering it grant.
     async fn resolve(
         &self,
         grant: &FederatedGrant,
@@ -232,7 +174,7 @@ mod tests {
         exchange: ExchangeToken,
         federation: StaticFederationVerifier,
         limiter: TestRateLimiter,
-        /// The same handle the exchange reads, so a test can swap under it (D31).
+        /// The same handle the exchange reads, so a test can swap under it.
         policies: LivePolicies,
     }
 
@@ -284,7 +226,7 @@ mod tests {
         }
     }
 
-    // --- Trust policies swapped while the process runs (§11, D31) -----------
+    // --- Trust policies swapped while the process runs (§11) ----------------
 
     #[tokio::test]
     async fn a_withdrawn_policy_stops_granting_without_a_restart() {
@@ -294,9 +236,7 @@ mod tests {
 
         assert!(fixture.exchange.execute("first").await.is_ok());
 
-        // What D31 was: `[[trust_policy]]` was cloned into this use case at boot, so
-        // withdrawing it from the file changed a file and nothing else — the forge
-        // went on publishing until somebody restarted the process.
+        // Withdrawing a policy must take effect without a restart.
         fixture.policies.adopt(TrustPolicies::new(Vec::new()));
 
         assert!(
@@ -390,9 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_token_does_not_burn_the_id_of_a_real_one() {
-        // The policy refuses this subject; the `jti` must stay available, or a
-        // stranger could lock a real job out of its own exchange by presenting a
-        // token carrying its id.
+        // The policy refuses this subject; the `jti` must stay available.
         let fixture = fixture(vec![policy("repo:weebo/infra*", &["ci-*"])], &["ci-infra"]);
         fixture.federation.register(
             "stranger",

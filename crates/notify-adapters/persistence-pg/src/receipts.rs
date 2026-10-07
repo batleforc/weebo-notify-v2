@@ -21,8 +21,7 @@ impl ReceiptRepository for PgStore {
             .await
             .map_err(|error| fail("receipt", error))?;
 
-        // The channel comes from the notification, and it also settles whether the
-        // notification is still there at all.
+        // Also settles whether the notification still exists.
         let channel: Option<String> =
             sqlx::query_scalar("SELECT channel_id FROM notifications WHERE id = $1")
                 .bind(receipt.notification_id.to_string())
@@ -35,9 +34,7 @@ impl ReceiptRepository for PgStore {
         };
         let channel = parse("receipt.channel", &channel, notify_domain::ChannelId::parse)?;
 
-        // ON CONFLICT DO NOTHING, and the row count is the answer: a client that
-        // retries a delivery acknowledgement, or a notification mirrored across
-        // three devices, must not inflate "seen by 3/5".
+        // The row count is the answer: retries and multi-device acks must not inflate counts.
         let inserted = sqlx::query(
             "INSERT INTO receipts
                  (id, notification_id, principal_ref, principal, is_human, device_id, kind, at)
@@ -62,10 +59,7 @@ impl ReceiptRepository for PgStore {
             return Ok(None);
         }
 
-        // A private read by a service account reaches nobody: `Audience::User` needs
-        // a user, and §5.2bis keeps bots out of readership anyway. The row is still
-        // written — it is what the badge counts — so this is a poke nobody needed,
-        // not a receipt nobody recorded.
+        // A bot's private read pokes nobody (§5.2bis), but the row still counts for the badge.
         let audience = match visibility {
             Visibility::Channel => Some(Audience::Channel { id: channel }),
             Visibility::Reader => match &receipt.principal {

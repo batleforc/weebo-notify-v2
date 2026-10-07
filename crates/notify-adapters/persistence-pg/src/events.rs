@@ -1,17 +1,5 @@
-//! Reading the event log (ADR-0012).
-//!
-//! Appends live with the repositories that cause them — see [`crate::mapping`] —
-//! because an event and the state change it describes commit together or not at
-//! all. This file only ever reads.
-//!
-//! # Compaction is over the window, not the page
-//!
-//! Forty revisions of one deploy become one entry, and `compacted` reports the
-//! thirty-nine that were folded (design §7.2). That count has to be computed over
-//! the whole set the client missed, not over the fifty rows it happens to be
-//! reading — so the candidate scan is unbounded even though the result is paged.
-//! A client that has been away for a month therefore pays for a month of rows once.
-//! Event retention (ADR-0012) is what keeps that bounded in practice.
+//! Reading the event log (ADR-0012); appends live with the writers (see [`crate::mapping`]).
+//! Compaction counts over the whole missed window, not the page (§7.2), so the scan is unbounded.
 
 use notify_domain::{ChannelId, Cursor, UserId};
 use notify_ports::{
@@ -25,11 +13,7 @@ use time::OffsetDateTime;
 use crate::PgStore;
 use crate::mapping::{EVENT_LOG_LOCK, EXPIRED_UNSEEN, cursor, fail, from_json, parse, sequence};
 
-/// The set of events a client may see, narrowed by `?channels=` and by the cursor.
-///
-/// A `user` event is deliberately not filtered by `?channels=`: a preference event
-/// belongs to its user and to nobody else, however many channels they share, and
-/// narrowing a stream to one channel does not stop it from being theirs (T26).
+/// The events a client may see, by cursor and `?channels=`; `user` events ignore `?channels=` (T26).
 macro_rules! candidates {
     ($($tail:literal),* $(,)?) => {
         concat!(
@@ -59,8 +43,7 @@ impl EventStore for PgStore {
         let limit = query.page.effective_limit();
         let user_ref = user.to_string();
 
-        // `fold = 1` keeps the newest revision per notification and every
-        // non-revision event; what it drops is what `compacted` counts.
+        // `fold = 1` keeps the newest revision per notification and every non-revision event.
         let rows = sqlx::query(candidates!(
             ", ranked AS (
                  SELECT c.*,
@@ -82,8 +65,6 @@ impl EventStore for PgStore {
         .await
         .map_err(|error| fail("event", error))?;
 
-        // Everything in the window, minus one revision kept per notification, minus
-        // every event that is not a revision.
         let compacted: i64 = sqlx::query_scalar(candidates!(
             "SELECT count(*)
                     - count(DISTINCT CASE WHEN kind = 'revision' THEN notification_id END)
@@ -105,21 +86,14 @@ impl EventStore for PgStore {
             next: page.next,
             expired,
             compacted: u32::try_from(compacted).unwrap_or(0),
-            // Filled by the use case, which is where the preference is read: this
-            // store answers "what did this user miss", not "what did they ask not to
-            // be bothered by" (design §7.4).
+            // Filled by the use case, which reads the preference (§7.4).
             deferred_by_dnd: Vec::new(),
         })
     }
 
     async fn head(&self) -> PortResult<Cursor> {
-        // The sequence rather than `max(seq)`: pruning the log must not move the
-        // head backwards, or a client told to "start from now" would be handed a
-        // cursor that replays what it already has.
-        //
-        // Under the event-log lock, in shared mode: a writer that has drawn a value
-        // but not committed it yet is waited out, so "now" is never a cursor past a
-        // row this client has not seen and will then skip (see `lock_event_log`).
+        // The sequence, not `max(seq)`, so pruning cannot move the head backwards; read under the
+        // shared event-log lock so "now" never passes an uncommitted row (see `lock_event_log`).
         let mut transaction = self
             .pool()
             .begin()
@@ -162,18 +136,14 @@ impl EventStore for PgStore {
 }
 
 impl PgStore {
-    /// What this user may read, narrowed by an explicit `?channels=`.
-    ///
-    /// The narrowing can only ever subtract: a channel the caller is not a member of
-    /// cannot be added back by asking for it.
+    /// What this user may read, narrowed by `?channels=`; narrowing can only subtract.
     async fn visible_channels(
         &self,
         user: UserId,
         groups: &[String],
         requested: &[ChannelId],
     ) -> PortResult<Vec<String>> {
-        // Both doors, same predicate the channel repository uses: a caller whose
-        // access is group-based must see their backlog, not an empty one.
+        // Both doors (member and group), as the channel repository uses.
         let subscribed: Vec<String> = sqlx::query_scalar(
             "SELECT c.id FROM channels c
              WHERE EXISTS (
@@ -278,8 +248,7 @@ fn hydrate(row: &PgRow) -> PortResult<Event> {
     };
 
     let Some(payload) = payload else {
-        // Only `expired_unseen` rows have no payload, and every query above filters
-        // them out. Reaching here means a row this build does not understand.
+        // Only `expired_unseen` rows lack a payload, and they are filtered out above.
         return Err(PortError::corrupt(
             "event.payload",
             "an event row with no payload reached the replay path",
@@ -290,8 +259,7 @@ fn hydrate(row: &PgRow) -> PortResult<Event> {
         cursor: cursor(seq),
         audience,
         recorded_at: row.try_get("recorded_at").map_err(|e| fail("event", e))?,
-        // Never stored, so never read back: the reader it is true for is decided
-        // on the way out (§7.4, D22).
+        // Decided per reader on the way out (§7.4).
         muted_by_dnd: false,
         payload: from_json::<EventPayload>("event.payload", payload)?,
     })

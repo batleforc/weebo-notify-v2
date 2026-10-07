@@ -1,11 +1,4 @@
-/**
- * The badge's behaviour against the server (D27, §7.3, §10.4).
- *
- * Three things can go wrong here and none of them are visible on screen: a channel
- * that drops out of the answer keeping its badge lit, a burst of stream events
- * becoming a request each, and a torn-down layout firing one more call after it is
- * gone. Everything below is one of those.
- */
+/** Unread badges against the server (D27, §7.3): dropped channels, burst coalescing, teardown. */
 
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,9 +73,7 @@ describe("the unread store", () => {
     unreadMock.mockResolvedValue(answers({ "ci-infra": 40 }));
     const store = useUnread();
 
-    // A deploy fanning out forty revisions is forty stream events. The badge is
-    // rendered once per frame; asking forty times would spend §8.2's budget on a
-    // number nobody saw change.
+    // Forty stream events must not become forty requests (§8.2).
     for (let index = 0; index < 40; index += 1) {
       store.refresh();
     }

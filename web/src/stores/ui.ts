@@ -1,10 +1,6 @@
 /**
- * Theme and density (design §10.2).
- *
- * Both are a class on `<html>`, and both are applied before the first paint by the
- * inline script in `index.html` — this store owns the choice, not the initial
- * render. Persisted in `localStorage`; §10.2 says a per-device sync comes later,
- * and later means once devices are a first-class object (M2).
+ * Theme, density, layout and locale (§10.2), persisted in `localStorage`. The
+ * inline script in `index.html` applies theme/density before first paint.
  */
 
 import { defineStore } from "pinia";
@@ -15,10 +11,7 @@ import { detectLocale, LOCALE_KEY, type Locale } from "@/lib/locale";
 export type Theme = "dark" | "light" | "system";
 export type Density = "compact" | "comfortable";
 export type { Locale };
-/** Where the detail panel sits relative to the inbox list (§10.4), above `xl` —
- * below it the panel is always a full-screen layer, so the preference has
- * nothing to say. `right` is the default: reading left to right, the list comes
- * first and the detail is what opening a row reveals next. */
+/** Detail panel position above `xl` (§10.4); below it the panel is a full-screen layer. */
 export type DetailPosition = "right" | "left" | "under";
 
 const THEME_KEY = "weebo-notify:theme";
@@ -41,10 +34,7 @@ export const useUi = defineStore("ui", () => {
     (localStorage.getItem(DETAIL_POSITION_KEY) as DetailPosition | null) ??
       "right",
   );
-  // Collapsed on first visit: a fresh `localStorage` reads back `null`, and
-  // `null !== "false"` is `true` — the sidebar's filters section starts closed
-  // until somebody opens it once, which is the only choice that persists from
-  // then on.
+  // Collapsed on first visit: `null !== "false"`.
   const filtersCollapsed = ref<boolean>(
     localStorage.getItem(FILTERS_COLLAPSED_KEY) !== "false",
   );
@@ -76,9 +66,7 @@ export const useUi = defineStore("ui", () => {
     applyDensity();
   });
 
-  // No DOM class to toggle here, unlike theme/density: `AppLayout.vue` reads
-  // this ref directly to compute its grid classes, so persisting it is all this
-  // store owns.
+  // AppLayout reads this directly; no DOM class.
   watch(detailPosition, (value) => {
     localStorage.setItem(DETAIL_POSITION_KEY, value);
   });
@@ -87,11 +75,7 @@ export const useUi = defineStore("ui", () => {
     localStorage.setItem(FILTERS_COLLAPSED_KEY, String(value));
   });
 
-  // `immediate: true`, unlike theme/density above: those rely on the explicit
-  // `applyTheme()`/`applyDensity()` calls below to set the initial DOM state,
-  // but there is no such call for locale — this watch is the only place
-  // `<html lang>`/the i18n composer's locale ever get set, so it has to run
-  // once for the initial value too, not just on change.
+  // `immediate`: unlike theme/density, nothing else sets the initial locale.
   watch(
     locale,
     (value) => {
@@ -112,13 +96,7 @@ export const useUi = defineStore("ui", () => {
       }
     });
 
-  /**
-   * `dark` → `light` → `system` → `dark`. `system` last, not first: someone
-   * reaching for this toggle is making an explicit choice, and cycling past the
-   * one option that is not a fixed choice — it re-delegates to the OS — before
-   * looping back reads as "give up and follow the system" rather than "here is
-   * a third color".
-   */
+  /** `dark` → `light` → `system`: an explicit toggle offers fixed choices first. */
   function cycleTheme(): void {
     theme.value =
       theme.value === "dark"
@@ -128,10 +106,7 @@ export const useUi = defineStore("ui", () => {
           : "dark";
   }
 
-  /**
-   * `right` → `left` → `under` → `right`. `right` first, because that is the
-   * default a reset leaves nobody surprised by (§10.4's own three-zone shell).
-   */
+  /** `right` → `left` → `under`. */
   function cycleDetailPosition(): void {
     detailPosition.value =
       detailPosition.value === "right"

@@ -1,9 +1,5 @@
-//! Catching up: the offline backlog and the live stream, off one cursor.
-//!
-//! `GET /sync?cursor=` and `Last-Event-ID` are the same token (ADR-0001,
-//! ADR-0012), so a client that was offline for a week and a client whose websocket
-//! blipped take the same code path. That is the whole reason there is one event log
-//! rather than a backlog table and a stream.
+//! Catching up: the offline backlog and the live stream, off one cursor
+//! (`GET /sync?cursor=` and `Last-Event-ID` are the same token, ADR-0001, ADR-0012).
 
 use std::sync::Arc;
 
@@ -36,8 +32,7 @@ pub struct SyncRequest {
     pub channels: Vec<ChannelId>,
     /// How much.
     pub page: PageRequest,
-    /// Which device is catching up, so its cursor can be advanced. Absent for a
-    /// one-off caller — `curl /sync` from a shell has no cursor to keep.
+    /// Which device is catching up, so its cursor can be advanced; absent for a one-off caller.
     pub device: Option<DeviceId>,
 }
 
@@ -48,7 +43,6 @@ impl core::fmt::Debug for SyncBacklog {
 }
 
 impl SyncBacklog {
-    /// Wire it.
     #[must_use]
     pub fn new(
         events: Arc<dyn EventStore>,
@@ -66,12 +60,8 @@ impl SyncBacklog {
         }
     }
 
-    /// Replay.
-    ///
-    /// Only users sync: the backlog includes `preference` events, which are private
-    /// to one user, and a cursor belongs to a device that belongs to somebody. A
-    /// service account holding a logical subscription reads its channels through the
-    /// inbox instead.
+    /// Replay. Users only: the backlog carries private `preference` events, and a cursor
+    /// belongs to a person's device.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -81,30 +71,20 @@ impl SyncBacklog {
             return Err(DomainError::ScopeMissing { scope: "subscribe" }.into());
         };
 
-        // Refreshed on every sync/stream session — a stream connection resumes its
-        // backlog through this same call (`http-actix::routes::stream::Connection::
-        // drain`) — not only at enrolment: it bounds how stale a group-derived push
-        // target can get to "since this principal was last active" rather than
-        // "since they last enrolled a device" (§11).
-        //
-        // Only for a session that carries groups at all: an API key's are empty by
-        // construction (`auth.rs`), and writing that down would erase the snapshot
-        // the owner's last real login left behind.
+        // Refresh the group snapshot on every session, bounding how stale a group-derived
+        // push target gets (§11). Membership only: a key's empty groups would erase it.
         if caller.grant == Grant::Membership {
             self.devices
                 .remember_groups(&caller.principal, &caller.groups, self.clock.now())
                 .await?;
         }
 
-        // Only a device the caller owns has its cursor read or moved. A stranger's
-        // device id is treated as no device at all — same answer as `RevokeDevice`.
+        // A stranger's device id is treated as no device at all.
         let device = match request.device {
             Some(id) => owned_device(self.devices.as_ref(), caller, id).await?,
             None => None,
         };
-        // The cursor is device-wide, so only a sync that saw every channel the owner
-        // can read may move it: a narrowed one (a filter, or a key's own channel list)
-        // would skip whatever it did not ask for.
+        // The cursor is device-wide: only an unfiltered membership sync may move it.
         let complete = request.channels.is_empty() && caller.grant == Grant::Membership;
 
         let readable = self.authorizer.readable_channels(caller).await?;
@@ -134,9 +114,7 @@ impl SyncBacklog {
 
         page.deferred_by_dnd = self.deferred(user, &page).await?;
 
-        // Advance the device to the furthest event it actually received. Doing it
-        // from the events rather than from `page.next` is what keeps a short page
-        // from skipping anything: the device only ever claims what it was handed.
+        // Advance to the furthest event actually received, so a short page skips nothing.
         if let (true, Some(device), Some(furthest)) = (
             complete,
             device,
@@ -151,39 +129,20 @@ impl SyncBacklog {
     }
 
     /// Which notifications on this page arrived late because their owner asked for
-    /// quiet (design §7.4).
-    ///
-    /// # It is derived, not recorded
-    ///
-    /// The alternative is a row per suppressed push, written on the fan-out path and
-    /// pruned forever after — a table that grows with every deferred notification,
-    /// to answer a question about a badge. This asks the preference instead: *was a
-    /// quiet period running for this channel when the notification was created?*
-    ///
-    /// The cost is honest and worth stating: the preference read is the **current**
-    /// one, so somebody who rewrites their quiet hours changes the answer for
-    /// notifications already in their backlog. That is a badge appearing or
-    /// disappearing on a row nobody is looking at any more, and it buys the absence
-    /// of a growing table on the hottest path in the product.
-    ///
-    /// Priority is taken from the revision the event carries rather than assumed: a
-    /// user who lets `urgent` through was never deferred by one, so flagging it would
-    /// hide a badge that is telling the truth.
+    /// quiet (§7.4). Derived from the current preference rather than recorded per push.
     async fn deferred(
         &self,
         user: UserId,
         page: &SyncPage,
     ) -> Result<Vec<NotificationId>, Failure> {
-        // Notifications, not events: forty revisions of one deploy are one row to a
-        // client, and one badge.
+        // Notifications, not events: forty revisions are one row and one badge.
         let mut deferred = Vec::new();
         if page.events.is_empty() {
             return Ok(deferred);
         }
 
         let dnd = self.preferences.dnd(user).await?;
-        // Nothing set means nothing was ever deferred, and no reason to walk the
-        // page — the common case by a wide margin.
+        // No DND set: nothing was ever deferred.
         if dnd.quiet_hours.is_empty() && dnd.until.is_none() {
             return Ok(deferred);
         }
@@ -206,11 +165,8 @@ impl SyncBacklog {
     }
 }
 
-/// Where a live stream should start.
-///
-/// A client that has never synced starts at the *head*, not at the beginning of
-/// retention: opening the web app for the first time should not replay a month of
-/// somebody else's incidents into a toast queue.
+/// Where a live stream should start. A client that never synced starts at the head,
+/// not at the beginning of retention.
 #[derive(Clone)]
 pub struct ResolveStreamStart {
     events: Arc<dyn EventStore>,
@@ -224,7 +180,6 @@ impl core::fmt::Debug for ResolveStreamStart {
 }
 
 impl ResolveStreamStart {
-    /// Wire it.
     #[must_use]
     pub fn new(events: Arc<dyn EventStore>, devices: Arc<dyn DeviceRepository>) -> Self {
         Self { events, devices }
@@ -399,11 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn critical_t10_the_page_and_its_events_agree_about_a_quiet_period() {
-        // D22: the answer to "should this make a noise" is computed here, once, per
-        // reader — and the transports carry it on each event so no client has to
-        // re-derive the rule. The two halves must never disagree: a page that lists
-        // a notification as deferred while its own event says otherwise would be
-        // worse than either alone.
+        // The page's deferred list and each event's flag must agree (§7.4).
         let fixture = fixture();
         set_dnd(
             &fixture,
@@ -418,8 +369,7 @@ mod tests {
         let page = caught_up(&fixture).await;
 
         assert_eq!(page.deferred_by_dnd, vec![published.id]);
-        // The flag itself is set by the transports, which is where the reader is
-        // known; what this pins is the list they read it from, on the same page.
+        // The transports set the flag; this pins the list they read it from.
         let revision = page
             .events
             .iter()
@@ -437,8 +387,7 @@ mod tests {
     #[tokio::test]
     async fn critical_t10_a_notification_outside_any_quiet_period_is_not_flagged() {
         let fixture = fixture();
-        // A preference that exists but is not running: having one is not the same
-        // as being in one.
+        // Having a preference is not the same as being in one.
         set_dnd(
             &fixture,
             Dnd {

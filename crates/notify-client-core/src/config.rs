@@ -7,23 +7,17 @@ use figment::providers::{Env, Format as _, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-/// The environment prefix, shared with the server (design §11) so one habit
-/// covers both sides.
+/// The environment prefix, shared with the server (§11).
 const ENV_PREFIX: &str = "WNK_";
 
 /// One server, as a profile names it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
-    /// Where the API lives, without the `/api/v1` suffix — the generated client
-    /// appends it.
+    /// Where the API lives, without the `/api/v1` suffix the generated client appends.
     pub url: Url,
 
-    /// The credential to present: an OIDC access token or an API key.
-    ///
-    /// Optional here because the usual place for it is the environment or a
-    /// mode-0600 file, not a config file people paste into issues. An ephemeral
-    /// caller — a debug pod, a CI step with the key in its env — works with no
-    /// persistence at all (design §9.3bis).
+    /// The credential to present (OIDC access token or API key); usually from the environment
+    /// or a mode-0600 file rather than a config file.
     #[serde(default)]
     pub token: Option<String>,
 }
@@ -31,8 +25,7 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
-            // The dev server, so `notify publish` works out of the box against
-            // `task dev:run` with no configuration.
+            // The dev server, so `notify publish` works against `task dev:run` out of the box.
             #[allow(
                 clippy::expect_used,
                 reason = "a literal that fails to parse is a compile-time mistake, \
@@ -57,10 +50,8 @@ pub enum ConfigError {
         source: Box<figment::Error>,
     },
 
-    /// A profile was asked for by name and the file does not describe it.
-    ///
-    /// Refused rather than silently falling back to the default: publishing to the
-    /// wrong server because of a typo in `--profile` is the failure this prevents.
+    /// A profile was asked for by name and the file does not describe it (a `--profile` typo
+    /// must not publish to the default server).
     #[error("no profile named `{name}` in {path}")]
     UnknownProfile {
         /// The name asked for.
@@ -81,11 +72,7 @@ pub enum ConfigError {
 }
 
 impl Profile {
-    /// Resolve a profile: defaults, then the config file, then `WNK_*`.
-    ///
-    /// Same layering as the server (design §11), same order, and every key
-    /// overridable from the environment — which is what makes the CLI usable from
-    /// a CI step that has no home directory to write into.
+    /// Resolve a profile: defaults, then the config file, then `WNK_*` (same layering as the server, §11).
     pub fn load(name: &str) -> Result<Self, ConfigError> {
         let path = config_path();
         Self::load_from(name, &path)
@@ -105,10 +92,7 @@ impl Profile {
 
             match file.profiles.get(name) {
                 Some(section) => figment = figment.merge(Serialized::defaults(section)),
-                // A named profile the file does not mention is a typo, and a typo
-                // that silently publishes somewhere else is worse than an error.
-                // `default` is exempt: not having written a config file yet is not
-                // a mistake.
+                // An unknown named profile is a typo; only `default` may be absent.
                 None if name != DEFAULT_PROFILE => {
                     return Err(ConfigError::UnknownProfile {
                         name: name.to_owned(),
@@ -119,8 +103,7 @@ impl Profile {
             }
         }
 
-        // `WNK_URL` and `WNK_TOKEN`: flat, because a caller exporting one variable
-        // in a pipeline should not have to know about profiles.
+        // Flat `WNK_URL`/`WNK_TOKEN`, so a pipeline needn't know about profiles.
         figment
             .merge(Env::prefixed(ENV_PREFIX).only(&["url", "token"]))
             .extract()
@@ -130,13 +113,8 @@ impl Profile {
             })
     }
 
-    /// Persist a credential for a profile — `notify login`'s save half (design
-    /// §9.1).
-    ///
-    /// Read-modify-write, not a blind overwrite: two profiles share this one
-    /// file, and a login to `work` must not erase whatever `personal` already
-    /// has. Only the named profile's `token` is touched; its `url`, and every
-    /// other profile, are carried over exactly as they were.
+    /// Persist a credential for a profile (`notify login`, §9.1), touching only that profile's
+    /// `token` and carrying every other key and profile over.
     ///
     /// # Errors
     ///
@@ -182,13 +160,7 @@ impl Profile {
             source: error,
         };
 
-        // A credential, not a config file to leave world-readable — the same
-        // "mode-0600 file" this struct's own `token` doc comment already assumes.
-        // Created 0600 and narrowed to it *before* the token is written, so there
-        // is no moment where the token sits in a readable file. Unix only: there
-        // is no equivalent bit to set on the platforms this crate also ships to,
-        // and leaving the platform default there is the honest thing rather than
-        // a false sense of parity.
+        // A credential: created 0600 before the token is written (Unix only).
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -196,8 +168,7 @@ impl Profile {
         let mut handle = options.open(path).map_err(unwritable)?;
         #[cfg(unix)]
         {
-            // `mode` only applies to a file this call creates; an older one keeps
-            // whatever it had until told otherwise.
+            // `mode` only applies on creation; narrow an existing file too.
             use std::os::unix::fs::PermissionsExt as _;
             handle
                 .set_permissions(std::fs::Permissions::from_mode(0o600))
@@ -219,8 +190,7 @@ struct File {
     profiles: std::collections::BTreeMap<String, Section>,
 }
 
-/// A profile as the file spells it: every key optional, so a section can override
-/// the URL without restating the token or the other way round.
+/// A profile as the file spells it; every key optional.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Section {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -229,14 +199,16 @@ struct Section {
     token: Option<String>,
 }
 
-/// `$XDG_CONFIG_HOME/weebo-notify/config.toml`, or the usual fallback.
+/// `<config dir>/weebo-notify/config.toml`.
 fn config_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
+    app_dir(|dirs| dirs.config_dir()).join("config.toml")
+}
 
-    base.join("weebo-notify").join("config.toml")
+/// `weebo-notify` under the platform's config or data directory (XDG on Linux), or `.` without a home.
+pub(crate) fn app_dir(pick: impl FnOnce(&dyn etcetera::BaseStrategy) -> PathBuf) -> PathBuf {
+    etcetera::base_strategy::choose_native_strategy()
+        .map_or_else(|_| PathBuf::from("."), |dirs| pick(&dirs))
+        .join("weebo-notify")
 }
 
 #[cfg(test)]
@@ -249,10 +221,7 @@ mod tests {
 
     use super::*;
 
-    /// Write a config file somewhere only this test will look.
-    ///
-    /// Named per test rather than per process: the suite runs in parallel, and two
-    /// tests sharing one path race on it.
+    /// Write a config file at a per-test path (tests run in parallel).
     fn with_config(test: &str, contents: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wnk-cfg-{}-{test}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -302,8 +271,7 @@ mod tests {
         );
     }
 
-    /// A path in a directory only this test will touch, with nothing written to
-    /// it yet — for the "first `notify login` on this machine" case.
+    /// A fresh path in a per-test directory, for the first-login case.
     fn fresh_path(test: &str) -> PathBuf {
         std::env::temp_dir()
             .join(format!("wnk-cfg-save-{}-{test}", std::process::id()))

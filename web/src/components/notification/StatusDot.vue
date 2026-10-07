@@ -1,10 +1,5 @@
 <script setup lang="ts">
-/**
- * Status as a coloured pip **and** an icon (§10.3) — never colour alone.
- *
- * The lifecycle shows here too: `open` and `working` pulse discreetly so a live
- * incident reads as live, and `closed` is still. No blinking, even for `urgent`.
- */
+/** The lifecycle as a pixel matrix: coarse 2×2 while running, a 3×3 status pattern once closed. Never colour alone (§10.3). */
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -15,20 +10,42 @@ const props = defineProps<{ status: Status; state: State; class?: string }>();
 
 const { t } = useI18n();
 const look = computed(() => lookOf(props.status));
-const live = computed(() => props.state !== "closed");
+
+// Lit cells of the closed 3×3, row-major.
+const PATTERN: Record<Status, number[]> = {
+  success: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+  failure: [0, 2, 4, 6, 8],
+  warning: [1, 3, 4, 5, 7],
+  info: [1, 4, 7],
+  cancelled: [2, 4, 6],
+};
+
+const fine = computed(() => props.state === "closed");
+const cells = computed(() => {
+  if (fine.value) {
+    const lit = PATTERN[props.status] ?? PATTERN.info;
+    return Array.from({ length: 9 }, (_, i) => lit.includes(i));
+  }
+  return props.state === "working"
+    ? [true, true, false, true]
+    : [true, false, false, false];
+});
 </script>
 
 <template>
   <span
-    :class="['relative inline-flex items-center justify-center', look.color, props.class]"
+    :class="['inline-grid shrink-0 gap-px', fine ? 'grid-cols-3' : 'grid-cols-2', look.color, props.class]"
     :aria-label="t('status.ariaLabel', { status: look.label, state: stateLabel(state) })"
     role="img"
   >
-    <component :is="look.icon" class="size-4" />
     <span
-      v-if="live"
-      class="absolute -right-0.5 -top-0.5 size-1.5 animate-pulse rounded-full bg-current"
-      aria-hidden="true"
+      v-for="(lit, i) in cells"
+      :key="`${fine}-${i}`"
+      :class="[fine ? 'size-[4px]' : 'size-[6.5px]', 'bg-current']"
+      :style="{
+        opacity: lit ? 1 : 0.18,
+        animation: !fine && state === 'working' && lit ? `chase 1.6s ${i * 0.2}s steps(2, jump-none) infinite` : undefined,
+      }"
     />
   </span>
 </template>

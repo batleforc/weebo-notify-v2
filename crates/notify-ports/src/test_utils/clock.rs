@@ -7,19 +7,13 @@ use time::{Duration, OffsetDateTime};
 use crate::clock::Clock;
 
 /// A clock that only moves when a test moves it.
-///
-/// Which is what makes "the notification expires in 30 days" a microsecond of test
-/// rather than a scenario nobody writes.
 #[derive(Debug, Clone)]
 pub struct TestClock {
     now: Arc<Mutex<OffsetDateTime>>,
 }
 
 impl TestClock {
-    /// A fixed, arbitrary, readable instant: 2026-08-02T00:00:00Z.
-    ///
-    /// A constant rather than "now" so a failing test is reproducible a month later,
-    /// and so nothing accidentally depends on the day of the week it was run.
+    /// A fixed, reproducible instant: 2026-08-02T00:00:00Z.
     pub const EPOCH: i64 = 1_785_974_400;
 
     /// A clock parked at [`Self::EPOCH`].
@@ -40,8 +34,7 @@ impl TestClock {
         *now += by;
     }
 
-    /// Jump to a specific instant, forward or back — the only way to test what a
-    /// replica does when the wall clock is adjusted underneath it.
+    /// Jump to a specific instant, forward or back (wall-clock adjustments).
     pub fn set(&self, to: OffsetDateTime) {
         let mut now = self.now.lock().unwrap_or_else(PoisonError::into_inner);
         *now = to;

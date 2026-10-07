@@ -1,12 +1,4 @@
-/**
- * The detail panel's half of "vu par 3/5" (§7.3, §10.3).
- *
- * What is worth locking down here is not the arithmetic — the server does that and
- * `notify-domain` tests it — but the two ways the panel could quietly get it wrong:
- * building the count from the stream (so anybody who read it before the tab opened
- * disappears), and rendering "no policy" as "nobody" (§7.3 makes those different
- * sentences).
- */
+/** Readership (§7.3): fetched, not stream-built, and "no policy" is not "nobody". */
 
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";

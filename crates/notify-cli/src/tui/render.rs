@@ -1,11 +1,5 @@
-//! Drawing, and nothing else (design §9.2).
-//!
-//! No I/O, no state changes, no `await`: this file is a pure function of [`App`],
-//! which is what makes a redraw safe to call from anywhere in the loop.
-//!
-//! The visual vocabulary is the web's (§10.3), deliberately: a status is a symbol
-//! **and** a word, never colour alone, and the same three zones sit in the same
-//! order so muscle memory carries between the two clients.
+//! Drawing only (§9.2): a pure function of [`App`]. Statuses are a symbol and a word, never
+//! colour alone, in the web's three-zone layout (§10.3).
 
 use chrono::TimeDelta;
 use notify_client_core::types::{Action, State, Status};
@@ -22,9 +16,7 @@ use super::{ActionItem, App, Pane, completion, sanitise};
 pub(crate) fn draw(frame: &mut Frame, app: &App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        // Two rows, not one: the hint row alone routinely carries 6-8 items once
-        // per-mode bindings are added on top of the always-on ones, more than a
-        // single 80-column row holds next to a status message or the `:` line.
+        // Two rows: the hint row alone often outgrows 80 columns.
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(frame.area());
 
@@ -54,8 +46,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     if let Some(form) = &app.compose {
         compose(frame, app, form, frame.area());
     }
-    // Not while `:` is standing in for a reply's text box (§9.2,
-    // `App::reply_for`): free text has no command grammar to suggest against.
+    // Not while `:` stands in for a reply's text box: free text has nothing to suggest.
     if let Some(command) = &app.command
         && app.reply_for.is_none()
     {
@@ -64,9 +55,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn channels(frame: &mut Frame, app: &App, area: Rect) {
-    // Index 0 is a synthetic "Tous" row, not one of `app.channels` — the one
-    // and only way "no filter" is represented (§9.2, `App::applied_channel`),
-    // so there is always something to point at even when nothing is filtered.
+    // Index 0 is the synthetic "Tous" row: "no filter" (`App::applied_channel`).
     let total_unread: u64 = app.unread.values().sum();
     let all_label = if total_unread > 0 {
         format!("Tous ({total_unread})")
@@ -77,9 +66,7 @@ fn channels(frame: &mut Frame, app: &App, area: Rect) {
     let mut items = vec![channel_row(0, app, &all_label)];
     items.extend(app.channels.iter().enumerate().map(|(position, channel)| {
         let index = position + 1;
-        // Digits and not a coloured dot: a terminal sidebar has no room for a
-        // legend, and "3" says what "•" only hints at (§9.2). Absent from the
-        // map means nothing unread, which is why there is no zero branch.
+        // Digits, not a dot (§9.2); absent from the map means nothing unread.
         let label = match app.unread.get(channel.id.as_str()) {
             Some(unread) => format!("{} ({unread})", sanitise(channel.id.as_str())),
             None => sanitise(channel.id.as_str()),
@@ -93,11 +80,8 @@ fn channels(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// One Channels-pane row. Cursor and applied filter are two independent
-/// facts about it — the cursor is today's reversed-style [`selection`], the
-/// applied filter a persistent `▸` marker that stays put once the cursor
-/// moves on without confirming, so which channel (if any) is active never
-/// depends on where the cursor happens to be sitting.
+/// One Channels-pane row: the cursor is the reversed [`selection`] style, the applied filter
+/// a persistent `▸` marker, independent of each other.
 fn channel_row(index: usize, app: &App, label: &str) -> ListItem<'static> {
     let marker = if index == app.applied_channel {
         "▸ "
@@ -113,8 +97,7 @@ fn inbox(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(index, row)| {
-            // Symbol *and* word: colour alone excludes a portion of the people
-            // reading an incident feed (§10.3).
+            // Symbol and word: colour alone excludes some readers (§10.3).
             let mark = Span::styled(
                 format!("{} {:<8}", symbol(row.status), word(row.status)),
                 Style::default().fg(colour(row.status)),
@@ -124,17 +107,14 @@ fn inbox(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(format!("{} ", live(row.state))),
                 Span::raw(row.title.clone()),
             ];
-            // §7.2: a notification that reached this machine long after it was
-            // published is not the same as a fresh one, and saying so is the
-            // difference between "nothing happened" and "you were offline".
+            // §7.2: badge a notification that arrived long after it was published.
             if let Some(late) = row.late_by.filter(|late| *late >= LATE) {
                 spans.push(Span::styled(
                     format!(" reçue en retard (+{})", elapsed(late)),
                     Style::default().fg(Color::Yellow),
                 ));
             }
-            // Visible before Détail is even focused: the actions list further
-            // down was easy to miss entirely, buried below the body (§9.2).
+            // Visible before Détail is focused (§9.2).
             if !row.actions.is_empty() {
                 spans.push(Span::styled(
                     format!(" · {} actions", row.actions.len()),
@@ -145,9 +125,6 @@ fn inbox(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    // The filter shown here too, redundantly with the Channels pane's own `▸`
-    // marker: a second, always-visible place it is legible without looking at
-    // a pane that may not even be focused right now.
     let title = format!("Inbox ({}) · {}", app.inbox.len(), app.filter_label());
     frame.render_widget(
         List::new(items).block(bordered(&title, app.focus == Pane::Inbox)),
@@ -178,8 +155,7 @@ fn detail(frame: &mut Frame, app: &App, area: Rect) {
             row.channel
         )),
         Line::from(format!("révision {} sur {}", row.seq, row.last_seq)),
-        // The id, because it is what every other command takes: `notify update -i`,
-        // a `/n/<id>` permalink in the web client (§10.4), an interaction call.
+        // The id every other command takes (`notify update -i`, `/n/<id>`, interactions).
         Line::from(Span::styled(
             row.id.clone(),
             Style::default().fg(Color::DarkGray),
@@ -194,33 +170,24 @@ fn detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let items = app.action_items();
-    // Above the fold, unconditionally: the selectable list further down is
-    // easy to scroll past without ever noticing it exists (§9.2) — this line
-    // is the one place a reader cannot miss that actions are available at all.
+    // Above the fold, so nobody misses that actions exist (§9.2).
     if let Some(summary) = action_summary(&items) {
         lines.push(summary);
     }
     lines.push(Line::from(""));
 
     if let Some(body) = &row.body {
-        // Markdown rendered as plain text: a terminal has no formatter, and §9.2
-        // asks for a degraded paragraph rather than a half-parsed one.
+        // Markdown as plain text: a terminal has no formatter (§9.2).
         lines.extend(body.lines().map(|line| Line::from(line.to_owned())));
     }
 
-    // Where the first action item's `Line` lands, once the loop below has run
-    // — every item from there is exactly one `Line`, in the same order
-    // `app.action_items()` lists them, which is what lets the highlighted one
-    // be scrolled into view further down.
+    // Where the first action `Line` lands; one `Line` per item, in `app.action_items()` order.
     let mut action_start = lines.len();
     if !items.is_empty() {
         lines.push(Line::from(""));
         action_start = lines.len();
         for (index, item) in items.iter().enumerate() {
-            // Highlighted only once `a` opened the list (`selected_action`
-            // `Some`) — a plain, unselected list otherwise, so the buttons are
-            // visible before anybody has pressed anything, same as the web
-            // client's `ActionBar` (§10.3).
+            // Highlighted only once `a` opened the list; visible regardless, like the web's `ActionBar`.
             let highlighted = app.selected_action == Some(index);
             let marker = if highlighted { "▸ " } else { "  " };
             lines.push(Line::from(Span::styled(
@@ -248,19 +215,8 @@ fn detail(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// How far to scroll the Détail pane's body, in wrapped rows.
-///
-/// Two rules, in order: never scroll past the actual end of a heavily-wrapped
-/// body (§9.2 — comparing a *logical* line count against the pane height used
-/// to clamp scrolling to near zero long before the real end was visible), and
-/// while the action list is open, keep the highlighted item on screen even if
-/// that means overriding the pane's own manually-set scroll — `a` opening the
-/// list at the top of a long notification, or `j`/`k` walking it past the
-/// bottom of the visible window, must not highlight something nobody can see.
-///
-/// Pure and independently testable — `detail` itself only has to build the
-/// `Paragraph` twice (once per probed slice) and pass in the two widths this
-/// needs, which is why it takes them rather than an `App`/`Rect`.
+/// How far to scroll the Détail pane, in wrapped rows: never past the real (wrapped) end,
+/// and while the action list is open, keep the highlighted item on screen.
 fn detail_scroll(
     lines: &[Line<'static>],
     action_start: usize,
@@ -298,11 +254,7 @@ fn detail_scroll(
     scroll
 }
 
-/// Two rows: a hint row that always shows what the current mode's keys do
-/// (lazygit-style, §9.2), and below it either the status line or — while the
-/// `:` line is open — the command line itself, which is why the split lives
-/// here rather than in `draw`: this is the one place that decides which of
-/// the two the bottom row is showing.
+/// Two rows: a contextual key-hint row (§9.2), and below it the status line or the `:` line.
 fn footer(frame: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -322,15 +274,11 @@ fn hint_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mode = if app.holds_stream {
         "flux"
     } else {
-        // §9.3bis: another front end holds the stream and feeds the store. Said
-        // out loud, because "why is that window live and this one not" is the first
-        // question two open windows raise.
+        // §9.3bis: another front end holds the stream; say so.
         "lecture"
     };
 
-    // Contextual, not a static list (§9.2): `App::footer_hints` mirrors
-    // `App::key`'s own priority tiers, so what is shown here is always what
-    // pressing that key actually does right now.
+    // `App::footer_hints` mirrors `App::key`'s priority tiers, so hints match what keys do now.
     let bindings = app
         .footer_hints()
         .iter()
@@ -355,11 +303,7 @@ fn status_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn command_line(frame: &mut Frame, area: Rect, command: &str, replying: bool) {
-    // The same line does two different jobs (`App::reply_for`), and looking
-    // identical for both would mean typing a reply that reads back as a shell
-    // command, or the other way round — a `:` prompt is not what a `reply` action
-    // asked for. The active bindings for either mode are the hint row's job now
-    // (`App::footer_hints`), not repeated here.
+    // Different glyph for a reply vs. a command, since the same line does both.
     let glyph = if replying { "↩ " } else { ":" };
 
     frame.render_widget(
@@ -373,9 +317,7 @@ fn command_line(frame: &mut Frame, area: Rect, command: &str, replying: bool) {
 }
 
 fn help(frame: &mut Frame, area: Rect) {
-    // Grouped by where each binding applies, the same "several small groups"
-    // shape as a lazygit cheat-sheet — and the exact wording `App::footer_hints`
-    // uses, so the popup and the live footer can never disagree.
+    // Same wording as `App::footer_hints`, so the popup and footer agree.
     let text = App::help_sections()
         .into_iter()
         .map(|(section, hints)| {
@@ -400,11 +342,8 @@ fn help(frame: &mut Frame, area: Rect) {
 /// How many candidates the `:` line's live suggestion box shows at once.
 const MAX_SUGGESTIONS: usize = 8;
 
-/// What could come next on the `:` line, shown live as it is typed — the
-/// same [`completion::suggestions`] `tab` itself completes from, just made
-/// visible without pressing anything (§9.2). Anchored flush above the
-/// footer, left-aligned with the `:` prompt below it, so it reads as a
-/// dropdown hanging off the line being typed rather than a floating popup.
+/// Live `:` suggestions from [`completion::suggestions`] (§9.2), anchored above the footer
+/// under the prompt like a dropdown.
 fn command_suggestions(frame: &mut Frame, command: &str, area: Rect) {
     let candidates = completion::suggestions(command);
     if candidates.is_empty() {
@@ -416,7 +355,7 @@ fn command_suggestions(frame: &mut Frame, command: &str, area: Rect) {
     let height = u16::try_from(shown).unwrap_or(u16::MAX).saturating_add(2);
     let region = Rect {
         x: area.x,
-        // Two rows of footer below this: the hint bar and the `:` line itself.
+        // Two footer rows below: the hint bar and the `:` line.
         y: area.height.saturating_sub(2 + height),
         width,
         height,
@@ -437,9 +376,7 @@ fn command_suggestions(frame: &mut Frame, command: &str, area: Rect) {
     frame.render_widget(List::new(items).block(bordered(&title, false)), region);
 }
 
-/// The guided channel/dnd/device menu (§9.2) — a discoverability layer over
-/// commands nobody stumbles onto by trying keys, drawn with the same
-/// `bordered`/`ListItem`/`selection` vocabulary as the Channels pane.
+/// The guided channel/dnd/device menu (§9.2).
 fn menu(frame: &mut Frame, menu: &Menu, area: Rect) {
     let width = area.width.saturating_sub(20).clamp(24, 60);
     let height = u16::try_from(menu.items().len())
@@ -472,9 +409,7 @@ fn menu(frame: &mut Frame, menu: &Menu, area: Rect) {
     frame.render_widget(List::new(items).block(bordered("Menu", true)), region);
 }
 
-/// The guided compose/publish form (§9.2) — one row per field, cyclable ones
-/// shown as `‹ value ›` so `h`/`l` is self-evident without reading the footer,
-/// the focused text field carrying a cursor block while it is being edited.
+/// The guided compose form (§9.2): cyclable fields shown as `‹ value ›`, the edited field with a cursor.
 fn compose(frame: &mut Frame, app: &App, form: &ComposeForm, area: Rect) {
     let rows = form.rows(&app.channels);
     let width = area.width.saturating_sub(10).clamp(40, 76);
@@ -558,11 +493,7 @@ const fn selection(selected: bool) -> Style {
     }
 }
 
-/// A one-line, always-visible summary of what a notification's actions are,
-/// shown above the body rather than only in the scrollable, `a`-triggered
-/// list further down (§9.2 — actions were easy to miss entirely before this).
-/// `None` for a notification with none, same "closed and empty read the same
-/// way" rule `selected_action: Option<usize>` already follows.
+/// A one-line summary of a notification's actions, shown above the body (§9.2); `None` without any.
 fn action_summary(items: &[ActionItem]) -> Option<Line<'static>> {
     if items.is_empty() {
         return None;
@@ -577,8 +508,7 @@ fn action_summary(items: &[ActionItem]) -> Option<Line<'static>> {
     Some(Line::from(format!("Actions : {summary}")))
 }
 
-/// A glyph per action kind, so the list reads at a glance without the label
-/// alone having to carry it (§10.3, the same "symbol and word" rule as status).
+/// A glyph per action kind, paired with the label (§10.3).
 const fn glyph(item: &ActionItem) -> &'static str {
     match item {
         ActionItem::Whole(Action::View { .. }) => "↗",
@@ -638,19 +568,16 @@ const fn state_word(state: State) -> &'static str {
     }
 }
 
-/// Below this, "late" is clock skew and network latency rather than a wait worth
-/// a badge (design §7.2 — the example there is `+2h13`).
+/// Below this, "late" is clock skew rather than a wait worth a badge (§7.2).
 const LATE: TimeDelta = TimeDelta::minutes(5);
 
-/// A delay, in the shortest form that is still exact enough to act on: `2h13`,
-/// `3j`, `7min`. Never "a while ago" — the number is the point.
+/// A delay in the shortest exact form: `2h13`, `3j`, `7min`.
 fn elapsed(late: TimeDelta) -> String {
     let minutes = late.num_minutes();
 
     match minutes {
         ..60 => format!("{minutes}min"),
-        // Hours *and* minutes, because §7.2's own example is `+2h13`: the minutes
-        // are what make it read as a measurement rather than a rounding.
+        // Hours and minutes, as §7.2's `+2h13`.
         60..1_440 => format!("{}h{:02}", minutes / 60, minutes % 60),
         _ => format!("{}j", minutes / 1_440),
     }
@@ -669,9 +596,7 @@ mod tests {
 
     #[test]
     fn detail_scroll_uses_wrapped_rows_not_a_logical_line_count_for_its_bound() {
-        // The bug this pins: comparing a *logical* line count against the
-        // pane height clamped scrolling to (near) zero long before the real
-        // end of a heavily-wrapped body was ever visible.
+        // Must scroll to the wrapped end, not stop at the logical line count.
         let lines: Vec<Line<'static>> = vec![Line::from("mot ".repeat(300))];
 
         let scroll = detail_scroll(&lines, lines.len(), None, u16::MAX, 18, 8);
@@ -691,8 +616,7 @@ mod tests {
         lines.push(Line::from("[ ] first"));
         lines.push(Line::from("[ ] second"));
 
-        // Manually scrolled to the very top; opening the list highlights the
-        // second action (row 21 of 22), well below an 8-row viewport.
+        // Scrolled to the top; the second action (row 21 of 22) is below an 8-row viewport.
         let scroll = detail_scroll(&lines, action_start, Some(1), 0, 40, 8);
 
         assert_eq!(
@@ -703,8 +627,7 @@ mod tests {
 
     #[test]
     fn detail_scroll_scrolls_back_up_to_reveal_an_earlier_selected_action() {
-        // Five one-row actions and a 3-row viewport: scrolled to the very
-        // bottom shows only the last three (2, 3, 4) — action 0 is above it.
+        // Five one-row actions, 3-row viewport, scrolled to the bottom: action 0 is above it.
         let lines: Vec<Line<'static>> = (0..5)
             .map(|i| Line::from(format!("[ ] action {i}")))
             .collect();
@@ -762,8 +685,7 @@ mod tests {
 
     #[test]
     fn the_suggestion_box_narrows_as_a_subcommand_is_typed() {
-        // Contextual, same as `tab` itself: past `channel `, the candidates
-        // are its own subcommands, not the root command list.
+        // Past `channel `, the candidates are its own subcommands.
         let area = Rect::new(0, 0, 40, 12);
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("a test backend");
 
@@ -781,17 +703,8 @@ mod tests {
 
     #[test]
     fn a_heavily_wrapped_body_can_still_be_scrolled_to_its_end() {
-        // The bug this pins: the old bound compared the *logical* line count
-        // against the pane height, not the *wrapped* row count. A body written
-        // as a handful of long lines wraps into many more on-screen rows than
-        // that at a narrow pane width, so `detail_scroll.min(max_scroll)`
-        // clamped to (near) zero and scrolling down did nothing, well before
-        // the actual end of the body was ever visible.
-        // One logical line — `body.lines()` sees exactly one — that wraps
-        // into far more than the ~8 rows an 8-tall pane shows at once. The
-        // marker sits at the very end, past what the *logical* line count
-        // (title + meta + revision + id + blank + this one line = 6) would
-        // ever have let the old bound scroll to.
+        // One logical line wrapping far past an 8-tall pane, with a marker at the very end that a
+        // logical-line-count bound would never scroll to.
         let long_body = format!("{}FIN_MARQUEUR", "mot ".repeat(300));
         let mut app = App::new("default".to_owned(), true);
         app.focus = Pane::Detail;
@@ -808,8 +721,7 @@ mod tests {
             muted_by_dnd: false,
             actions: Vec::new(),
         }];
-        // Ask for as much scroll as there is; a correct bound clamps this
-        // down to exactly "the end", not to whatever the logical count allows.
+        // Ask for maximal scroll; a correct bound clamps to exactly the end.
         app.detail_scroll = u16::MAX;
 
         let area = Rect::new(0, 0, 20, 10);
@@ -842,9 +754,7 @@ mod tests {
 
     #[test]
     fn action_summary_lists_every_action_with_its_label() {
-        // The bug this fixes: actions rendered only below the body, in a
-        // scrollable pane, were easy to miss entirely (§9.2). This line has to
-        // be visible above the fold and to name every action, not just count them.
+        // Must be above the fold and name every action, not just count them.
         let items = vec![
             ActionItem::Whole(Action::Ack {
                 key: ActionKey::from("ack".to_owned()),

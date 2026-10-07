@@ -1,29 +1,6 @@
-//! The registry behind `GET /metrics` (design §13).
-//!
-//! Six families, named by §13 and not by this file — they end up in dashboards and
-//! alert rules that live outside this repository, so renaming one breaks somebody
-//! else's pager.
-//!
-//! # What carries a label, and what does not
-//!
-//! A label multiplies series, and a label whose values are unbounded multiplies
-//! them without end — the classic way a metrics endpoint becomes the heaviest thing
-//! in a process. Two decisions follow:
-//!
-//! * **`channel` is a label** (`notifications_published_total`, `sink_dlq_depth`)
-//!   because channels are declared, few, and the dimension an operator actually
-//!   asks about;
-//! * **notification ids, user ids and endpoints are not**, anywhere. They are
-//!   unbounded, and the second one would put somebody's identity in a document
-//!   this endpoint serves to whoever can reach it.
-//!
-//! # The dead-letter depth is a leader's answer
-//!
-//! [`Metrics::dlq_depth`] replaces the whole family rather than adding to it, and
-//! the drain loop is the only caller — so on a replica that is not leading, the
-//! family stays **empty** rather than reporting zero. An absent series and a series
-//! reading zero are different claims: the first says "this replica does not know",
-//! the second says "nothing is stuck", and only one of them is true on a follower.
+//! The registry behind `GET /metrics` (design §13). Family names are an external contract (alert rules).
+//! Only bounded labels (`channel`, `transport`, `reason`); never ids or endpoints.
+//! `dlq_depth` is set by the leader only, so followers report it absent rather than zero.
 
 use std::sync::Mutex;
 
@@ -58,8 +35,7 @@ struct FailureLabel {
 /// Everything this process is measured on.
 #[derive(Debug)]
 pub struct PrometheusMetrics {
-    /// Guarded because `dlq_depth` clears a family, which the lock-free families
-    /// alone cannot express — and because rendering has to see a consistent set.
+    /// Locked because `dlq_depth` clears a family and rendering needs a consistent set.
     registry: Mutex<Registry>,
     published: Family<ChannelLabel, Counter>,
     push_duration: Family<TransportLabel, Histogram>,
@@ -88,9 +64,7 @@ impl PrometheusMetrics {
             published.clone(),
         );
 
-        // Buckets from a relay answering quickly to one that has stopped answering:
-        // the default Prometheus set tops out at ten seconds, and the transports
-        // here time out well before that.
+        // Up to a stalled relay; the default buckets stop at 10s, past the transport timeouts.
         let push_duration = Family::<TransportLabel, Histogram>::new_with_constructor(|| {
             Histogram::new([0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0])
         });
@@ -108,9 +82,7 @@ impl PrometheusMetrics {
             push_failures.clone(),
         );
 
-        // Powers of four rather than of two: what matters is the order of magnitude
-        // of a catch-up — a client behind by four events and one behind by five are
-        // the same operational fact.
+        // Powers of four: only the order of magnitude of a catch-up matters.
         let sync_backlog = Histogram::new([1.0, 4.0, 16.0, 64.0, 256.0, 1_024.0]);
         registry.register(
             "sync_backlog_size",
@@ -154,9 +126,7 @@ impl Metrics for PrometheusMetrics {
     }
 
     fn push_finished(&self, transport: &'static str, result: PushResult, seconds: f64) {
-        // Observed whatever the outcome: a transport that only ever appears in the
-        // duration histogram when it succeeds makes a latency graph that improves
-        // during an outage.
+        // Observed for every outcome, or latency graphs would improve during an outage.
         self.push_duration
             .get_or_create(&TransportLabel {
                 transport: transport.to_owned(),
@@ -199,8 +169,7 @@ impl Metrics for PrometheusMetrics {
     }
 
     fn dlq_depth(&self, depths: &[(ChannelId, u64)]) {
-        // Cleared first: a channel whose dead letters were requeued must stop being
-        // reported, not keep its last value until a restart.
+        // Cleared first so a requeued channel stops being reported.
         self.dlq.clear();
 
         for (channel, depth) in depths {
@@ -208,8 +177,7 @@ impl Metrics for PrometheusMetrics {
                 .get_or_create(&ChannelLabel {
                     channel: channel.to_string(),
                 })
-                // Saturating rather than wrapping: a depth past `i64::MAX` is a bug
-                // somewhere else, and reporting a negative queue would hide it.
+                // Saturating: a negative queue would hide the bug.
                 .set(i64::try_from(*depth).unwrap_or(i64::MAX));
         }
     }
@@ -217,16 +185,13 @@ impl Metrics for PrometheusMetrics {
     fn render(&self) -> String {
         let mut out = String::new();
 
-        // A poisoned lock means a previous render panicked, which nothing here can
-        // do. Reading through it keeps the endpoint answering rather than turning a
-        // metrics scrape into a second outage.
+        // Read through a poisoned lock rather than turn a scrape into a second outage.
         let registry = self
             .registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // The only failure `encode` reports is a formatting one into a `String`,
-        // which cannot happen; an empty body is still a valid scrape.
+        // `encode` into a `String` cannot fail.
         let _ = encode(&mut out, &registry);
         out
     }
@@ -310,15 +275,8 @@ mod tests {
 
     #[test]
     fn a_labelled_family_appears_with_its_first_series_and_not_before() {
-        // Worth a test because it is the first surprise an operator meets: a scrape
-        // of a freshly started replica shows `sync_backlog_size` — which has no
-        // labels and therefore one series from the start — and *nothing else*. A
-        // labelled family has no series until something is recorded, so a dashboard
-        // panel reads "no data" on an idle instance rather than zero.
-        //
-        // That is `prometheus-client`'s model and not a choice made here; the way to
-        // make an alert survive it is `absent()` or a `for:` window, which is worth
-        // knowing before writing the alert rather than after.
+        // A fresh replica shows only the unlabelled `sync_backlog_size`; labelled families have no
+        // series until recorded, so alerts need `absent()` or a `for:` window.
         let metrics = PrometheusMetrics::new();
         let fresh = metrics.render();
 
@@ -337,8 +295,7 @@ mod tests {
 
     #[test]
     fn every_name_design_13_publishes_is_the_name_this_registry_uses() {
-        // The six strings alert rules are written against. A rename is a breaking
-        // change for somebody outside this repository, so it fails here first.
+        // Alert rules are written against these names: renaming is a breaking change.
         let metrics = PrometheusMetrics::new();
         metrics.published(&channel("ci-infra"));
         metrics.push_finished("webpush", PushResult::Failed, 0.1);

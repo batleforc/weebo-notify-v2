@@ -1,7 +1,4 @@
-//! Turning rows into domain values and back, and the one place a cursor is minted.
-//!
-//! Everything here is shared by more than one repository. Anything used by exactly
-//! one lives with it.
+//! Row/domain conversions shared by several repositories, and the one place a cursor is minted.
 
 use notify_domain::{Cursor, Priority};
 use notify_ports::{Audience, EventPayload, PortError, PortResult};
@@ -10,11 +7,7 @@ use serde::de::DeserializeOwned;
 use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 
-/// Postgres said no.
-///
-/// A unique-index collision becomes [`PortError::Conflict`] rather than a generic
-/// failure, because the use cases genuinely recover from it: an upsert that loses
-/// the race on `external_id` re-reads and revises instead (scenario T16).
+/// Postgres said no; a unique-index collision becomes [`PortError::Conflict`] so use cases can recover (T16).
 pub(crate) fn fail(what: &'static str, error: sqlx::Error) -> PortError {
     if let sqlx::Error::Database(database) = &error
         && database.is_unique_violation()
@@ -25,10 +18,7 @@ pub(crate) fn fail(what: &'static str, error: sqlx::Error) -> PortError {
     PortError::unavailable("postgres", error)
 }
 
-/// Read a `jsonb` column back into the domain.
-///
-/// A failure here is [`PortError::Corrupt`], never a client error: the row was
-/// written by us, so if the domain refuses it back the fault is ours.
+/// Read a `jsonb` column back into the domain; failure is [`PortError::Corrupt`], since we wrote it.
 pub(crate) fn from_json<T: DeserializeOwned>(
     what: &'static str,
     value: serde_json::Value,
@@ -44,10 +34,7 @@ pub(crate) fn to_json<T: Serialize>(
     serde_json::to_value(value).map_err(|error| PortError::corrupt(what, error))
 }
 
-/// Render a plain serde enum as the text a column holds.
-///
-/// Goes through serde rather than a hand-written match so the stored spelling can
-/// never drift from the wire spelling — they are the same `rename_all` attribute.
+/// Render a plain serde enum as column text, via serde so it matches the wire spelling.
 pub(crate) fn enum_to_text<T: Serialize>(what: &'static str, value: &T) -> PortResult<String> {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(text)) => Ok(text),
@@ -65,11 +52,7 @@ pub(crate) fn enum_from_text<T: DeserializeOwned>(what: &'static str, text: &str
         .map_err(|error| PortError::corrupt(what, format!("`{text}`: {error}")))
 }
 
-/// The sortable rank behind `?min_priority=`.
-///
-/// The textual form does not sort (`urgent` < `low` alphabetically), so the filter
-/// needs a number. Derived from the domain's own ordering rather than hard-coded,
-/// which is what stops a new priority from silently landing in the wrong place.
+/// The sortable rank behind `?min_priority=`, derived from the domain's ordering.
 pub(crate) fn priority_rank(priority: Priority) -> i16 {
     const ORDER: [Priority; 5] = [
         Priority::Min,
@@ -97,9 +80,7 @@ pub(crate) fn parse<T, E: core::fmt::Display>(
 
 /// A cursor read out of a `bigint` column.
 pub(crate) fn cursor(sequence: i64) -> Cursor {
-    // A negative sequence is not reachable: the column is a `bigserial` that starts
-    // at 1. Saturating rather than panicking keeps the promise this crate makes
-    // about never taking a replica down over a surprising row.
+    // Unreachable (`bigserial` from 1); saturate rather than panic.
     Cursor::from_sequence(u64::try_from(sequence).unwrap_or(0))
 }
 
@@ -110,29 +91,11 @@ pub(crate) fn sequence(cursor: Cursor) -> i64 {
 
 /// Take the event-log write lock for the rest of `transaction`.
 ///
-/// `events.seq` is a sequence, and a sequence hands out numbers in *insert* order,
-/// not commit order: without this, a slow transaction holding seq 10 commits after a
-/// fast one holding 11, a reader has already moved its cursor to 11, and 10 is never
-/// delivered. Holding one transaction-scoped lock from before the insert until the
-/// commit makes the two orders the same, so `seq > cursor` never skips a row.
-///
-/// [`append_event`] takes it, so no append can skip it. A transaction that locks
-/// `notifications` rows takes it **first** as well, through [`begin_with_events`]:
-/// otherwise it could hold a row, wait here, and deadlock with one that holds this
-/// and waits for that row. The receipt, interaction and preference writers take it
-/// late, at the append, on purpose — they only lock rows of their own tables, which
-/// no holder of this lock waits on, and a receipt that changes nothing (most of
-/// them) should not queue behind every publish in the deployment. Their foreign
-/// key does take a `KEY SHARE` lock on the notification, which is why the early
-/// takers lock notifications `FOR NO KEY UPDATE` and never `FOR UPDATE`: the
-/// weaker lock does not wait on a key share, so that cycle cannot close either.
-///
-/// The two-integer form lives in a keyspace of its own, so it can never collide with
-/// the bigint keys leader election hashes job names into.
-///
-/// ponytail: one global writer lock — every event-producing write is serialised
-/// across all replicas. Fine at hundreds of writes per second; past that, drop the
-/// lock and have readers stop at the `pg_snapshot_xmin` watermark instead.
+/// Sequences allocate in insert order, not commit order; holding this lock until commit keeps
+/// `seq > cursor` from skipping rows. Deadlock rule: transactions locking `notifications` rows take
+/// it first ([`begin_with_events`]) and lock `FOR NO KEY UPDATE`; others take it at the append.
+/// Its two-integer keyspace never collides with leader election. One global writer lock: fine at
+/// hundreds of writes/s; beyond that, read up to the `pg_snapshot_xmin` watermark instead.
 pub(crate) async fn lock_event_log(transaction: &mut Transaction<'_, Postgres>) -> PortResult<()> {
     sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
         .bind(EVENT_LOG_LOCK.0)
@@ -153,16 +116,11 @@ pub(crate) async fn begin_with_events(
     Ok(transaction)
 }
 
-/// The key [`lock_event_log`] takes. Shared with the head read, which takes it
-/// in shared mode to wait out a writer that already holds a sequence value.
+/// The key [`lock_event_log`] takes; the head read takes it shared to wait out in-flight writers.
 pub(crate) const EVENT_LOG_LOCK: (i32, i32) = (0x0057_4e4b, 1);
 
-/// Append one row to the event log and return the cursor it took.
-///
-/// **The only place in this crate that allocates a cursor.** It takes a transaction
-/// rather than the pool on purpose: the caller is in the middle of writing the state
-/// change this event describes, and the two commit together or not at all
-/// (ADR-0012).
+/// Append one event row in the caller's transaction and return its cursor (ADR-0012).
+/// The only place in this crate that allocates a cursor.
 pub(crate) async fn append_event(
     transaction: &mut Transaction<'_, Postgres>,
     audience: &Audience,
@@ -196,12 +154,8 @@ pub(crate) async fn append_event(
     Ok(cursor(sequence))
 }
 
-/// Append the row that records "this expired and nobody ever saw it".
-///
-/// It consumes a sequence value like any other event, so the cursor stays a single
-/// unbroken order, but it is never replayed: an expired notification nobody saw
-/// becomes a per-channel count rather than a backlog entry there is nothing to do
-/// about (design §7.2bis, scenario T9).
+/// Append an "expired unseen" row: it keeps the cursor order unbroken but is never replayed,
+/// only counted (design §7.2bis, T9).
 pub(crate) const EXPIRED_UNSEEN: &str = "expired_unseen";
 
 #[cfg(test)]

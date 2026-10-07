@@ -11,11 +11,7 @@ use crate::config::OidcConfig;
 /// The dependency name this adapter reports on `/readyz` and in metrics.
 pub(crate) const DEPENDENCY: &str = "jwks";
 
-/// Where signing keys come from.
-///
-/// A seam rather than a hardcoded HTTP call, so the verification path — the part
-/// with the security properties — is exercised by unit tests holding a real
-/// keypair instead of only by an integration suite that needs an IdP running.
+/// Where signing keys come from; a seam so unit tests hold a real keypair without an IdP.
 #[async_trait::async_trait]
 pub trait JwksSource: Send + Sync + core::fmt::Debug {
     /// Fetch the current key set.
@@ -69,10 +65,7 @@ struct Discovery {
 pub struct HttpJwksSource {
     http: Client,
     issuer: Url,
-    /// Remembered so the common path is one request rather than two. Cleared
-    /// whenever the key set behind it fails to load, because a moved `jwks_uri` and
-    /// an unreachable one look identical from here and only one of them is fixed by
-    /// asking again.
+    /// Cached `jwks_uri`; cleared when the key set fails to load, in case it moved.
     jwks_uri: RwLock<Option<Url>>,
 }
 
@@ -95,11 +88,7 @@ impl HttpJwksSource {
         })
     }
 
-    /// `{issuer}/.well-known/openid-configuration`, built the way the spec says.
-    ///
-    /// By concatenation rather than by [`Url::join`]: an issuer with a path —
-    /// Authentik's `/application/o/weebo-notify/` — must keep it, and `join` would
-    /// throw it away.
+    /// `{issuer}/.well-known/openid-configuration`, by concatenation since `Url::join` drops an issuer path.
     fn discovery_url(&self) -> PortResult<Url> {
         let base = self.issuer.as_str().trim_end_matches('/');
         Url::parse(&format!("{base}/.well-known/openid-configuration"))
@@ -132,8 +121,7 @@ impl HttpJwksSource {
             .await
             .map_err(|error| PortError::unavailable(DEPENDENCY, error))?;
 
-        // The document has to name the issuer we configured. One that names another
-        // is not a key source, it is somewhere we did not mean to go.
+        // The document must name the configured issuer.
         if document.issuer.trim_end_matches('/') != self.issuer.as_str().trim_end_matches('/') {
             return Err(PortError::unavailable(
                 DEPENDENCY,

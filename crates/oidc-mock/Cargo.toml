@@ -1,8 +1,7 @@
 [package]
 name = "notify-oidc-mock"
 description = "Dev-only OIDC provider: the everyday identity provider for the local stack, Che and CI."
-# Never published: this is development infrastructure, and an identity provider
-# that accepts a committed password has no business on a registry.
+# Never published: development infrastructure with committed passwords.
 publish = false
 version.workspace = true
 edition.workspace = true

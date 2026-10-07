@@ -1,17 +1,5 @@
-//! `PUT /attachments/fs/{id}/upload` and `GET /attachments/fs/{id}/download` — the
-//! filesystem attachment store's own bytes-carrying routes (ADR-0022).
-//!
-//! Every other attachment route in this crate hands out a credential and stays off
-//! the data path (`attachments.rs`'s module doc: client → bucket, never through
-//! here). This is the one adapter that cannot do that — a directory on disk has no
-//! bucket-style endpoint of its own — so `FsAttachments::presign_upload` and
-//! `presign_download` point back at these two routes instead, with a short-lived
-//! HMAC token in the query string standing in for a bucket signature.
-//!
-//! Unauthenticated on purpose, the same way a presigned S3 URL is: the token *is*
-//! the credential, checked by [`notify_attachments_fs::FsAttachments::verify`]
-//! rather than by the `Authenticated` extractor every other handler here takes —
-//! there is nothing to authenticate a bearer of a valid, unexpired token against.
+//! The filesystem store's own upload/download routes (ADR-0022). Unauthenticated like a
+//! presigned S3 URL: the short-lived HMAC token in the query *is* the credential.
 
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, ResponseError, get, put, web};
@@ -30,12 +18,7 @@ pub(crate) struct TokenQuery {
     token: String,
 }
 
-/// The upload's body, described by hand rather than derived — the same rule
-/// `notify-ports::schema` states for D1 and D3: what utoipa composes for a plain
-/// `String` body is valid OpenAPI (`type: string`, no format) that progenitor
-/// refuses to treat as binary, so `gen:client:rust` fails on a document nothing
-/// else in this codebase would call malformed. `format: binary` is the one detail
-/// a bare Rust type cannot carry, and it is the whole difference.
+/// The upload body, hand-described as `format: binary` so progenitor treats it as bytes.
 struct RawBytes;
 
 impl PartialSchema for RawBytes {
@@ -51,12 +34,8 @@ impl PartialSchema for RawBytes {
 
 impl ToSchema for RawBytes {}
 
-/// Why one of these two routes refused a request.
-///
-/// Its own type rather than [`crate::problem::ApiError`]: an invalid or expired
-/// token is a client fault with no [`notify_ports::Failure`] to carry it — there is
-/// no domain rule it broke and no port that failed — and folding it into
-/// `PortError` would mislabel a `403` as "the world was wrong".
+/// Why one of these two routes refused; not an `ApiError`, since a bad token breaks no
+/// domain rule and no port failed.
 #[derive(Debug)]
 pub(crate) enum FsError {
     /// This deployment is not running the filesystem backend.
@@ -65,12 +44,7 @@ pub(crate) enum FsError {
     NotFound,
     /// The token does not check out for this id and purpose.
     Invalid(TokenError),
-    /// The declared content type is not one attachments may be.
-    ///
-    /// Distinct from [`Self::Invalid`] on purpose: the token may be perfectly good
-    /// and the type still refused, and `415` says which of the two happened. It is
-    /// also checked *before* the token, so a caller learns their type is unsupported
-    /// without the answer depending on whether they hold a valid credential.
+    /// The declared content type is not allowlisted (`415`); checked before the token.
     UnsupportedType,
     /// The object is not there.
     NoSuchObject,
@@ -130,8 +104,7 @@ impl ResponseError for FsError {
 
     fn error_response(&self) -> HttpResponse {
         if let Self::Store(error) = self {
-            // The one branch worth an operator's attention: the other three are a
-            // client holding a bad or expired credential, which is unremarkable.
+            // The only branch worth an operator's attention.
             tracing::error!(%error, "the filesystem store refused a bytes-carrying request");
         }
         HttpResponse::build(self.status_code()).body(self.to_string())
@@ -164,9 +137,7 @@ pub(crate) async fn fs_upload(
     id: web::Path<String>,
     query: web::Query<TokenQuery>,
     request: HttpRequest,
-    // A stream rather than `web::Bytes`: this route is unauthenticated, so nothing
-    // is buffered until the token has checked out — an extractor would read the
-    // whole body before the first line below ran.
+    // A stream, not `web::Bytes`: nothing is buffered until the token checks out.
     payload: web::Payload,
 ) -> Result<HttpResponse, FsError> {
     let store = state
@@ -175,10 +146,7 @@ pub(crate) async fn fs_upload(
         .ok_or(FsError::NotConfigured)?;
     let id: AttachmentId = id.into_inner().parse().map_err(|_| FsError::NotFound)?;
 
-    // Normalised the same way the presign use case normalised it, by the same
-    // function — comparing a raw header against a normalised signature would refuse
-    // `image/png; charset=binary`, which is the honest client, while the dishonest
-    // one is caught either way.
+    // Normalised exactly as the presign did, so `image/png; charset=binary` matches.
     let declared = notify_app::normalised_content_type(
         request
             .headers()
@@ -187,18 +155,12 @@ pub(crate) async fn fs_upload(
             .unwrap_or_default(),
     );
 
-    // The allowlist, applied again at the route that carries the bytes. The presign
-    // already checked it — against a *different request*, which is precisely why the
-    // payload ceiling is re-applied here too. A check that ran on the request before
-    // this one is not a check on this one.
+    // Re-check the allowlist and ceiling: the presign checked a different request.
     if !notify_app::is_allowed_attachment_type(&declared) {
         return Err(FsError::UnsupportedType);
     }
 
-    // The content type goes through the token's MAC, so this single call is also the
-    // comparison against what the presign approved: a PUT declaring `text/html`
-    // against a token signed for `image/png` fails here, exactly as it would against
-    // an S3 signature.
+    // The content type is in the token's MAC, so this also compares it to the presign.
     store
         .verify(
             Purpose::Upload {
@@ -209,9 +171,7 @@ pub(crate) async fn fs_upload(
         )
         .map_err(FsError::Invalid)?;
 
-    // One upload per token: without this, its bearer could swap the bytes after
-    // the notification was published and its thumbnail derived from the first ones.
-    // The claim is atomic, so two concurrent PUTs cannot both pass it.
+    // One upload per token (atomic claim), so bytes cannot be swapped after publishing.
     if !store.claim_upload(id).await? {
         return Err(FsError::AlreadyUploaded);
     }
@@ -230,8 +190,7 @@ pub(crate) async fn fs_upload(
         }
     };
 
-    // The normalised form is stored, never the raw header: what was signed is what
-    // is served back.
+    // Store the normalised (signed) type, never the raw header.
     store.put(id, &declared, body.to_vec()).await?;
 
     Ok(HttpResponse::NoContent().finish())

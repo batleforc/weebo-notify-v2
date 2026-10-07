@@ -1,26 +1,11 @@
 /**
- * The inbox: one page of notifications, kept current by the stream.
- *
- * # The rule this store exists to enforce
- *
- * There is exactly one way a notification changes here: an event. The initial page
- * comes from `GET /notifications`, everything after it from `GET /stream` — and
- * both carry the same shapes off the same cursor (§8.1), so "what I missed" and
- * "what is arriving" cannot disagree. Nothing in the UI mutates a row directly;
- * acting on a notification posts an interaction and waits for the event, which is
- * what keeps two open tabs showing the same thing.
- *
- * # Arrivals do not move the ground under the cursor
- *
- * §10.5 is explicit: a new row must not shove the list down while somebody is
- * reading it. So an event about a notification already on screen updates it in
- * place — a status transition is the whole point of the revision model — while an
- * event about a notification we have never seen goes to `pending` and is announced
- * by the "N nouvelles" separator, the pattern every inbox uses.
+ * The inbox: one page of notifications, kept current by the stream (§8.1).
+ * Rows only change through events; unseen arrivals wait in `pending` so the list
+ * never jumps under the reader (§10.5).
  */
 
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { inbox as fetchInbox } from "@/api/generated";
 import type {
   Notification,
@@ -37,24 +22,13 @@ import type {
 import { failureOf } from "@/api/problem";
 import { openStream, type Stream, type StreamStatus } from "@/api/stream";
 
-/**
- * A row of the inbox.
- *
- * Not quite a `Notification`, and the difference is deliberate. A row built from a
- * page of `GET /notifications` has everything; a row built from a stream arrival
- * has everything §8.1 promises and nothing more — no revision id, no notification
- * kind, no resolved TTL, because a `RevisionEvent` does not carry them. Those
- * three are therefore optional here rather than filled with plausible-looking
- * values: a fabricated id is a bug that surfaces three screens away, and the
- * detail panel fetches the real notification the moment a row is opened anyway.
- */
+/** A stream arrival lacks revision id, kind and TTL, so those stay optional rather than faked. */
 export type Row = Omit<Notification, "head" | "kind" | "ttl"> & {
   head: Omit<Revision, "id"> & { id?: RevisionId };
   kind?: NotificationKind;
   ttl?: Ttl;
 };
 
-/** What the sidebar narrows the inbox to (§10.4). */
 export interface Filters {
   channels: string[];
   state: State[];
@@ -62,8 +36,7 @@ export interface Filters {
   /** AND semantics: a match must carry all of these (§8, `tag` query param). */
   tags: string[];
   minPriority: Priority | null;
-  /** `true` keeps only notifications with action buttons, `false` only those
-   * without, `null` does not filter on it (§2.3). */
+  /** `null` = don't filter on action buttons (§2.3). */
   hasActions: boolean | null;
 }
 
@@ -94,13 +67,7 @@ export const useInbox = defineStore("inbox", () => {
   const hasMore = computed(() => cursor.value !== null);
   const pendingCount = computed(() => pending.value.length);
 
-  /**
-   * Rows collapsed by `group_key` (§10.4).
-   *
-   * A group is represented by its most recent member and carries the others, so
-   * forty revisions of one deploy read as one line that says "et 39 autres"
-   * instead of forty lines that say almost the same thing.
-   */
+  /** Rows collapsed by `group_key`, headed by the most recent member (§10.4). */
   const groups = computed(() => {
     const seen = new Map<string, { head: Row; members: Row[] }>();
     const ordered: { head: Row; members: Row[] }[] = [];
@@ -124,19 +91,7 @@ export const useInbox = defineStore("inbox", () => {
     return ordered;
   });
 
-  /**
-   * Append a row and index the value the list actually holds.
-   *
-   * The re-read is the point. `rows` is a `ref`, so reading an element back gives
-   * the **reactive proxy** wrapping it, while the object handed in is the raw one.
-   * Indexing the raw object would mean later mutations — a revision landing on this
-   * row — going straight to the target and never tripping the proxy, so nothing
-   * subscribed would be told. Today the UI still refreshes because `applyRevision`
-   * sorts immediately afterwards and *that* mutation wakes everyone; the day
-   * somebody skips a sort that changes no order, rows loaded past the first page
-   * would silently stop updating. Correct by construction beats correct by
-   * side effect.
-   */
+  /** Index the reactive proxy read back from `rows`, not the raw object, so later mutations trigger. */
   function remember(row: Row): void {
     if (index.has(row.id)) {
       return;
@@ -177,8 +132,7 @@ export const useInbox = defineStore("inbox", () => {
       channels: channels.length ? channels.join(",") : undefined,
       state: state.length ? state.join(",") : undefined,
       status: statuses.length ? statuses.join(",") : undefined,
-      // Stored tags are always lowercase (`content::validate_tags`) — a filter
-      // sent as typed would never match.
+      // Stored tags are lowercase (`content::validate_tags`).
       tag: tags.length ? tags.map((t) => t.toLowerCase()).join(",") : undefined,
       min_priority: minPriority ?? undefined,
       has_actions: hasActions ?? undefined,
@@ -187,26 +141,12 @@ export const useInbox = defineStore("inbox", () => {
     };
   }
 
-  /**
-   * Bumped by every `load`, so only the latest one lands.
-   *
-   * Filter clicks in quick succession start several loads, and the network does
-   * not answer them in order: without this, the slowest — an *older* filter —
-   * would replace the rows last. Same pattern as `stores/palette.ts`.
-   */
+  /** Only the latest `load` lands; filter clicks race. */
   let generation = 0;
 
-  /**
-   * Stream events that arrived while a page was loading, folded once it lands.
-   *
-   * Folding them straight away would be undone by the page replacing the rows —
-   * a revision that happened after the server read the page, overwritten by the
-   * page's older copy, or a new row dropped with `pending`. `seq` makes the replay
-   * safe: whatever the page already has is skipped (`applyRevision`).
-   */
+  /** Events that arrived mid-load, replayed after the page lands (`seq` dedupes). */
   let held: StreamEvent[] = [];
 
-  /** Load the first page, replacing whatever was there. */
   async function load(): Promise<void> {
     const mine = ++generation;
     loading.value = true;
@@ -258,20 +198,30 @@ export const useInbox = defineStore("inbox", () => {
     }
   }
 
-  /** Replace the filters and reload. */
-  async function apply(next: Filters): Promise<void> {
-    filters.value = next;
-    await load();
-    restart();
+  /** Resolves once the stream is subscribed (or after `ms`), so a page fetched
+   * next cannot miss what is published in between. */
+  function live(ms = 3000): Promise<void> {
+    if (status.value === "live" || !stream) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(done, ms);
+      const unwatch = watch(status, (value) => value === "live" && done());
+      function done() {
+        clearTimeout(timer);
+        unwatch();
+        resolve();
+      }
+    });
   }
 
-  /**
-   * Does an event belong in the inbox as currently filtered?
-   *
-   * The server filters the page; the stream is not filtered by anything but the
-   * channel list, so the same predicate has to exist here or a filtered inbox
-   * would quietly fill up with rows that do not match it.
-   */
+  /** Stream first, then page: the reverse order loses what lands in between. */
+  async function apply(next: Filters): Promise<void> {
+    filters.value = next;
+    restart();
+    await live();
+    await load();
+  }
+
+  /** The stream is only channel-filtered, so the page filters are re-applied here. */
   function matches(revision: RevisionEvent, channel: string): boolean {
     const {
       channels,
@@ -311,26 +261,15 @@ export const useInbox = defineStore("inbox", () => {
     return true;
   }
 
-  /** Fold one revision event into the row it concerns. */
   function applyRevision(event: RevisionEvent, channel: string): void {
     const existing = index.get(event.notification_id);
 
     if (existing) {
-      // Last-write-wins is settled by `seq`, never by arrival order (§2.2): a
-      // reconnect can replay an older revision after a newer one has landed.
+      // `seq` decides, not arrival order: reconnects replay (§2.2).
       if (event.seq < existing.head.seq) {
         return;
       }
-      existing.head = {
-        ...existing.head,
-        seq: event.seq,
-        state: event.state,
-        status: event.status,
-        priority: event.priority,
-        author: event.author,
-        content: event.payload,
-        received_at: event.revised_at,
-      };
+      existing.head = { ...existing.head, ...headFrom(event) };
       existing.last_seq = event.seq;
       existing.revision_count = Math.max(existing.revision_count, event.seq);
       sort();
@@ -342,8 +281,7 @@ export const useInbox = defineStore("inbox", () => {
     }
 
     const row = rowFrom(event, channel);
-    // Straight into `pending`: the separator is what puts it on screen, so the
-    // list never jumps under a cursor (§10.5).
+    // Revealed by the separator, so the list never jumps (§10.5).
     pending.value.unshift(row);
   }
 
@@ -356,7 +294,6 @@ export const useInbox = defineStore("inbox", () => {
     sort();
   }
 
-  /** Fold one event of any kind. */
   function ingest(event: StreamEvent): void {
     switch (event.event) {
       case "revision": {
@@ -374,9 +311,7 @@ export const useInbox = defineStore("inbox", () => {
         return;
       }
       default:
-        // `receipt`, `interaction` and `preference` change a notification's
-        // detail rather than its place in the list; the detail store subscribes
-        // to them on its own.
+        // receipt/interaction/preference only concern the detail store.
         return;
     }
   }
@@ -389,14 +324,7 @@ export const useInbox = defineStore("inbox", () => {
     return () => listeners.delete(listener);
   }
 
-  /**
-   * Open the stream, narrowed to whatever the filters ask for.
-   *
-   * Call it *before* the first `load`, not after: a stream opened without a
-   * cursor starts at "now", so anything published while the page was loading
-   * would otherwise fall between the two. Opened first, those events are held
-   * (`held`) and folded once the page is in.
-   */
+  /** Call before the first `load`: events during the load are held, not lost. */
   function start(cursor?: string): void {
     stream?.close();
     stream = openStream({
@@ -418,11 +346,7 @@ export const useInbox = defineStore("inbox", () => {
     });
   }
 
-  /**
-   * Reopen for new filters, resuming from where the old stream was rather than
-   * from "now" — the gap between the old stream closing and the new one opening
-   * is exactly where an event used to be lost.
-   */
+  /** Reopen for new filters, resuming from the old stream's cursor. */
   function restart(): void {
     if (stream) {
       start(stream.lastEventId());
@@ -441,6 +365,7 @@ export const useInbox = defineStore("inbox", () => {
     pending,
     pendingCount,
     cursor,
+    live,
     hasMore,
     loading,
     loadingMore,
@@ -461,28 +386,27 @@ export const useInbox = defineStore("inbox", () => {
 /** Priority as an ordered scale, so `min_priority` means the same thing here. */
 const PRIORITIES: Priority[] = ["min", "low", "default", "high", "urgent"];
 
-/**
- * Build a row from a revision event alone.
- *
- * This is what §8.1 means by "denormalised on purpose": everything a row needs to
- * render is in the event, so an arrival costs zero requests. What the event does
- * not carry is left absent — see [`Row`].
- */
+/** The revision a stream event describes, minus the id it doesn't carry. */
+export function headFrom(event: RevisionEvent): Omit<Revision, "id"> {
+  return {
+    notification_id: event.notification_id,
+    seq: event.seq,
+    author: event.author,
+    received_at: event.revised_at,
+    state: event.state,
+    status: event.status,
+    priority: event.priority,
+    content: event.payload,
+  };
+}
+
+/** A row from the event alone (§8.1, denormalised): arrivals cost no request. */
 function rowFrom(event: RevisionEvent, channel: string): Row {
   return {
     id: event.notification_id,
     channel,
     external_id: event.external_id ?? null,
-    head: {
-      notification_id: event.notification_id,
-      seq: event.seq,
-      author: event.author,
-      received_at: event.revised_at,
-      state: event.state,
-      status: event.status,
-      priority: event.priority,
-      content: event.payload,
-    },
+    head: headFrom(event),
     last_seq: event.seq,
     revision_count: event.seq,
     created_at: event.created_at,

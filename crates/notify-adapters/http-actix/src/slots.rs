@@ -1,112 +1,161 @@
-//! The ceiling on live connections one principal may hold (design §8.2).
-//!
-//! §8.2 publishes "connexions SSE/WS par user: 20 — multi-onglets + devices", and
-//! until this module existed the number was published and nothing read it: both
-//! transports opened as many connections as anybody asked for. That is the same
-//! shape as the `MAX_PAYLOAD_BYTES` finding of M4duodecies — a documented limit is
-//! a limit somebody relies on, whether or not anything enforces it.
-//!
-//! # Why this is not the `RateLimiter` port
-//!
-//! [`notify_ports::RateLimiter`] counts *requests over a window* and every other
-//! number in §8.2 is one of those. This one is not: it bounds how many connections
-//! are **held at the same time**, and consuming a token per connect would cap
-//! connection *attempts per minute* instead — a client that reconnects all day
-//! within its budget would still accumulate sockets forever, which is precisely
-//! the failure this prevents. Different question, different mechanism.
-//!
-//! # Why the count is per replica
-//!
-//! It is a `HashMap` in this process, so with several replicas behind a load
-//! balancer one principal can hold `20 × replicas` in total (D23). That is a real
-//! gap against a strict reading of §8.2 and it is written down rather than
-//! rounded off — but it is a much smaller one than it looks, because of what the
-//! cap is *for*: a held connection costs the memory, the task and the file
-//! descriptor of **the process holding it**. A per-replica ceiling bounds exactly
-//! that, on every replica, which is the resource being defended. The instance-wide
-//! reading would need shared state on the connect path, and paying a round trip
-//! per connection to make a number tidier is not a trade worth taking blind.
-//!
-//! Contrast [`notify_ports::RateLimiter`], whose port documentation makes the
-//! opposite call for publishing: a publish rate protects a **shared** downstream —
-//! the fan-out, the database — so an in-process counter there really would enforce
-//! `n × 60/min` against a resource that only has `60/min` of room. The two limits
-//! read alike in a table and defend different things.
+//! The ceiling on live connections one principal may hold (design §8.2): counted
+//! locally (this process's memory and sockets) and, when clustered, across every
+//! replica through [`StreamLeases`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use notify_domain::{Principal, limits::MAX_STREAMS_PER_PRINCIPAL};
+use notify_ports::{Acquired, Lease, LeaseRequest, PortResult, StreamLeases};
+use tokio::sync::Notify;
 
-/// How long a refused client is told to wait, in seconds.
-///
-/// Advisory, and unlike a rate-limit window it is not computed: a slot frees when
-/// somebody closes a tab, and nothing here knows when that will be. A `429`
-/// without `Retry-After` turns a polite client into a busy loop, so it gets a
-/// number; the number is a suggestion.
+/// Advisory `Retry-After` for a refused client: a slot frees whenever somebody closes a tab.
 pub(crate) const RETRY_AFTER_SECONDS: u32 = 30;
 
-/// How many live connections this **replica** will hold in total, across every
-/// principal (advisory SEC-P2-31).
-///
-/// The per-principal cap bounds what one caller costs. It does not bound what the
-/// replica costs: with the cap at 20, four hundred principals is eight thousand
-/// held sockets, tasks and buffers on one process — every one of them legitimate,
-/// none of them refused, and the pod dies of its memory limit rather than of
-/// anything anybody did wrong.
-///
-/// The number is generous on purpose. It is not a quality-of-service knob, it is
-/// the point past which this replica stops being able to serve anybody: refusing
-/// the ten-thousand-and-first connection with a `429` and a `Retry-After` costs
-/// that client a reconnect to a different replica, which is exactly what the HPA
-/// and the load balancer are for. Being OOM-killed costs every connection on the
-/// replica instead.
+/// Total live connections per replica (SEC-P2-31): past this, shed with a `429` so the
+/// client reconnects elsewhere rather than the pod being OOM-killed.
 pub(crate) const MAX_STREAMS_PER_REPLICA: usize = 10_000;
 
 /// The live connections this replica is holding, per principal.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct StreamSlots {
-    /// Absent means zero: a principal with no connection has no entry, so the map
-    /// stays the size of the connected population rather than of the user table.
+    /// Absent means zero, so the map stays the size of the connected population.
     held: Mutex<HashMap<Principal, usize>>,
-    /// The sum of the map above, maintained alongside it.
-    ///
-    /// Kept rather than summed on demand: `acquire` runs on every connection and
-    /// walking the map there would make the cost of connecting proportional to the
-    /// number of connected principals. Both are updated under the same lock, so
-    /// they cannot disagree.
+    /// Sum of `held`, kept so `acquire` is O(1); updated under the same lock.
     total: Mutex<usize>,
+    /// The instance-wide count, and this replica's name in it.
+    cluster: Option<(Arc<dyn StreamLeases>, String)>,
+    /// This replica's leases, each with the signal that closes its connection.
+    local: Mutex<HashMap<String, Arc<Notify>>>,
+}
+
+/// Why a connection was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// At the ceiling (§8.2): `429`, retry later.
+    Full,
+    /// Disconnected by its owner: `403`, don't retry.
+    Disconnected,
+}
+
+impl std::fmt::Debug for StreamSlots {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamSlots")
+            .field("total", &self.held_total())
+            .field("clustered", &self.cluster.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl StreamSlots {
-    /// A registry holding nothing.
+    /// A registry holding nothing, counting this replica only.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Take a slot for `principal`, or refuse.
-    ///
-    /// `None` is the refusal; the caller turns it into the `429` §8.2 asks for.
-    /// Counting happens **before** the connection is served rather than after, so
-    /// the twenty-first client is refused instead of being served and then found
-    /// to be one too many.
+    /// Also count across replicas: `replica` names this process in `leases`.
+    #[must_use]
+    pub fn clustered(leases: Arc<dyn StreamLeases>, replica: String) -> Self {
+        Self {
+            cluster: Some((leases, replica)),
+            ..Self::default()
+        }
+    }
+
+    /// Take the instance-wide lease for a local `slot`. A store outage fails open:
+    /// the local ceiling still protects this process.
+    pub async fn lease(&self, slot: &mut StreamSlot, request: LeaseRequest) -> Result<(), Refusal> {
+        let Some((leases, _)) = &self.cluster else {
+            return Ok(());
+        };
+        match leases.acquire(&request, MAX_STREAMS_PER_PRINCIPAL).await {
+            Ok(Acquired::Granted(id)) => {
+                let kicked = Arc::new(Notify::new());
+                self.local_leases().insert(id.clone(), Arc::clone(&kicked));
+                slot.kicked = Some(kicked);
+                slot.lease = Some((Arc::clone(leases), id));
+                Ok(())
+            }
+            Ok(Acquired::Full) => Err(Refusal::Full),
+            Ok(Acquired::Blocked) => Err(Refusal::Disconnected),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "stream lease store unavailable; admitting on the local ceiling"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// This replica's name in the lease table, when clustered.
+    #[must_use]
+    pub fn replica(&self) -> Option<&str> {
+        self.cluster.as_ref().map(|(_, replica)| replica.as_str())
+    }
+
+    /// Keep this replica's leases alive and close every connection whose lease was
+    /// disconnected from another replica.
+    pub async fn renew(&self) -> PortResult<()> {
+        let Some((leases, replica)) = &self.cluster else {
+            return Ok(());
+        };
+        let live = leases.renew(replica).await?;
+        for (id, kicked) in self.local_leases().iter() {
+            if !live.contains(id) {
+                kicked.notify_one();
+            }
+        }
+        Ok(())
+    }
+
+    /// `principal`'s live connections, across every replica.
+    pub async fn list(&self, principal: &Principal) -> PortResult<Vec<Lease>> {
+        match &self.cluster {
+            Some((leases, _)) => leases.list(&principal.reference()).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Close one of `principal`'s connections and keep its credential off realtime
+    /// until `until`; here at once, elsewhere at that replica's next renewal.
+    pub async fn disconnect(
+        &self,
+        principal: &Principal,
+        lease: &str,
+        until: time::OffsetDateTime,
+    ) -> PortResult<bool> {
+        let Some((leases, _)) = &self.cluster else {
+            return Ok(false);
+        };
+        let gone = leases
+            .disconnect(&principal.reference(), lease, until)
+            .await?;
+        if let Some(kicked) = self.local_leases().get(lease) {
+            kicked.notify_one();
+        }
+        Ok(gone)
+    }
+
+    fn local_leases(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Notify>>> {
+        self.local
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Take a slot for `principal` before serving; `None` means refuse with `429`.
     pub fn acquire(self: &Arc<Self>, principal: &Principal) -> Option<StreamSlot> {
         let mut held = self.lock();
         let mut total = self.lock_total();
         let count = held.get(principal).copied().unwrap_or(0);
 
         if count >= MAX_STREAMS_PER_PRINCIPAL {
-            // Read before insert, so a refusal writes nothing: this map is keyed by
-            // principal on a public endpoint, and a refusal that left a row behind
-            // would be an allocation anybody could make by being refused.
+            // Read before insert: a refusal must not allocate a map entry.
             return None;
         }
 
         if *total >= MAX_STREAMS_PER_REPLICA {
-            // The replica is full of connections that are each individually within
-            // their rights. Shedding here is what turns "this pod dies" into "this
-            // client reconnects somewhere else".
             tracing::warn!(
                 total = *total,
                 ceiling = MAX_STREAMS_PER_REPLICA,
@@ -123,6 +172,8 @@ impl StreamSlots {
         Some(StreamSlot {
             slots: Arc::clone(self),
             principal: principal.clone(),
+            lease: None,
+            kicked: None,
         })
     }
 
@@ -146,27 +197,20 @@ impl StreamSlots {
         if let Some(count) = held.get_mut(principal) {
             *count -= 1;
             if *count == 0 {
-                // Or the map grows once per principal that has ever connected and
-                // never shrinks — a slow leak on a long-lived replica.
+                // Otherwise the map leaks one entry per principal ever connected.
                 held.remove(principal);
             }
         }
     }
 
-    /// The map, with a poisoned lock recovered rather than propagated.
-    ///
-    /// A panic while holding this lock would otherwise refuse every subsequent
-    /// connection on the replica for the rest of its life. The data behind it is a
-    /// counter: the worst a poisoned one can be is off, and a count that is off is
-    /// better than a stream endpoint that is down.
+    /// The map, recovering a poisoned lock: a counter that is off beats a dead endpoint.
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Principal, usize>> {
         self.held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Always taken *after* [`Self::lock`], so the two can never deadlock against
-    /// each other.
+    /// Always taken *after* [`Self::lock`], so the two cannot deadlock.
     fn lock_total(&self) -> std::sync::MutexGuard<'_, usize> {
         self.total
             .lock()
@@ -174,23 +218,45 @@ impl StreamSlots {
     }
 }
 
-/// One held connection. Releases on drop, and that is the whole design.
-///
-/// A stream ends when the client goes away, when the task is aborted at shutdown,
-/// or when the event log becomes unreadable. Releasing on a handler's success path
-/// would leak a slot on every one of those, and a leaked slot is worse than no cap
-/// at all: it is a user locked out of their own inbox until the replica restarts.
-/// `Drop` is the only construct that covers every exit, which is the same reason
-/// the `Connected` metrics guard next door is shaped this way.
-#[derive(Debug)]
+/// One held connection; released on drop, the only construct covering every exit
+/// (disconnect, abort, error) so no slot leaks.
 pub struct StreamSlot {
     slots: Arc<StreamSlots>,
     principal: Principal,
+    lease: Option<(Arc<dyn StreamLeases>, String)>,
+    kicked: Option<Arc<Notify>>,
+}
+
+impl StreamSlot {
+    /// Resolves when its owner disconnects this connection; never, without a lease.
+    pub async fn kicked(&self) {
+        match &self.kicked {
+            Some(kicked) => kicked.notified().await,
+            None => std::future::pending().await,
+        }
+    }
+}
+
+impl std::fmt::Debug for StreamSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamSlot")
+            .field("principal", &self.principal)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for StreamSlot {
     fn drop(&mut self) {
         self.slots.release(&self.principal);
+        if let Some((leases, id)) = self.lease.take() {
+            self.slots.local_leases().remove(&id);
+            // Best effort: a missed release expires with the lease TTL.
+            tokio::spawn(async move {
+                if let Err(error) = leases.release(&id).await {
+                    tracing::warn!(?error, "could not release a stream lease");
+                }
+            });
+        }
     }
 }
 
@@ -231,8 +297,6 @@ mod tests {
 
     #[test]
     fn closing_a_connection_gives_the_slot_back() {
-        // The half that matters. A cap whose slots are never returned is not a cap,
-        // it is a user locked out of their inbox one tab at a time.
         let slots = Arc::new(StreamSlots::new());
         let alice = somebody();
 
@@ -249,9 +313,7 @@ mod tests {
 
     #[test]
     fn one_principal_filling_up_does_not_reach_another() {
-        // The property that makes this a cap and not an outage: §8.2's limits are
-        // per subject, "never global" (the `RateLimiter` port says why — one noisy
-        // client must degrade itself and nobody else).
+        // §8.2 limits are per subject, never global.
         let slots = Arc::new(StreamSlots::new());
         let alice = somebody();
         let bob = somebody();
@@ -269,9 +331,7 @@ mod tests {
 
     #[test]
     fn a_service_account_gets_its_own_ceiling() {
-        // §8.2 says "user"; §5.2bis lets a service account hold a connection and a
-        // sync cursor of its own. Keying by principal rather than by user is what
-        // stops a bot in a reconnect loop from being unbounded.
+        // Keyed by principal, so a service account is capped too (§5.2bis).
         let slots = Arc::new(StreamSlots::new());
         let alice = somebody();
         let bot = Principal::ServiceAccount {
@@ -282,8 +342,6 @@ mod tests {
             .filter_map(|_| slots.acquire(&alice))
             .collect();
 
-        // Bound, not asserted-and-dropped: a slot released on the same line would
-        // leave the bot holding nothing and the count below would be off by one.
         let first = slots.acquire(&bot);
         assert!(first.is_some(), "a full user does not fill the bot's share");
 
@@ -295,9 +353,7 @@ mod tests {
 
     #[test]
     fn a_principal_holding_nothing_leaves_nothing_behind() {
-        // Not cosmetic: this map is keyed by principal on a public endpoint, so an
-        // entry that outlives its connections is a per-caller allocation anybody
-        // can create by connecting and leaving.
+        // This map is keyed on a public endpoint; a stale entry is a free allocation.
         let slots = Arc::new(StreamSlots::new());
         let alice = somebody();
 
@@ -314,9 +370,7 @@ mod tests {
 
     #[test]
     fn a_refusal_counts_nothing() {
-        // A refusal that incremented would make the ceiling ratchet downwards: a
-        // client retrying against a full replica would lower its own limit, and the
-        // slots it does hold would never be enough to get back under it.
+        // A refusal that incremented would ratchet the ceiling down.
         let slots = Arc::new(StreamSlots::new());
         let alice = somebody();
 
@@ -368,9 +422,6 @@ mod ceiling_tests {
 
     #[test]
     fn a_replica_refuses_past_its_own_ceiling_however_many_principals_ask() {
-        // SEC-P2-31: the per-principal cap bounds what one caller costs and says
-        // nothing about what the replica costs. Enough distinct principals, each
-        // entirely within their rights, used to be able to exhaust the process.
         let slots = Arc::new(StreamSlots::new());
         let held = fill(&slots, MAX_STREAMS_PER_REPLICA);
 
@@ -384,9 +435,6 @@ mod ceiling_tests {
 
     #[test]
     fn the_total_unwinds_completely_when_connections_end() {
-        // SEC-P2-30, the part that is checkable without a network: a leaked total
-        // would refuse every connection on the replica until it restarted, and the
-        // leak would be invisible until it was total.
         let slots = Arc::new(StreamSlots::new());
 
         for _ in 0..3 {
@@ -400,8 +448,6 @@ mod ceiling_tests {
             );
         }
 
-        // And the per-principal map is empty too, or it grows once per principal
-        // that has ever connected.
         let after = somebody();
         assert_eq!(slots.held_by(&after), 0);
         assert!(slots.acquire(&after).is_some());
@@ -409,8 +455,7 @@ mod ceiling_tests {
 
     #[test]
     fn a_refusal_at_the_ceiling_allocates_nothing() {
-        // The refusal path runs on a public endpoint. If it left a counter or a map
-        // entry behind, being refused would itself be the attack.
+        // The refusal path is public: it must leave no counter or entry behind.
         let slots = Arc::new(StreamSlots::new());
         let held = fill(&slots, MAX_STREAMS_PER_REPLICA);
 
@@ -427,8 +472,7 @@ mod ceiling_tests {
 
     #[test]
     fn churn_does_not_drift_the_total() {
-        // Open and abandon repeatedly, interleaved, which is the shape of the attack
-        // in §10 A7: connections dropped at the socket level rather than closed.
+        // Open and abandon repeatedly, interleaved (§10 A7).
         let slots = Arc::new(StreamSlots::new());
         let long_lived = fill(&slots, 100);
 
@@ -441,5 +485,84 @@ mod ceiling_tests {
 
         drop(long_lived);
         assert_eq!(slots.held_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_ceiling_holds_across_replicas_and_a_drop_gives_the_lease_back() {
+        let leases = Arc::new(notify_ports::test_utils::TestStreamLeases::new());
+        let a = Arc::new(StreamSlots::clustered(leases.clone(), "a".to_owned()));
+        let b = Arc::new(StreamSlots::clustered(leases.clone(), "b".to_owned()));
+        let me = somebody();
+
+        let request = |replica: &str, n: usize| LeaseRequest {
+            principal: me.reference(),
+            replica: replica.to_owned(),
+            transport: "sse".to_owned(),
+            client: "test".to_owned(),
+            credential: "session".to_owned(),
+            fingerprint: format!("token-{n}"),
+        };
+
+        let mut held = Vec::new();
+        for i in 0..MAX_STREAMS_PER_PRINCIPAL {
+            let slots = if i % 2 == 0 { &a } else { &b };
+            let mut slot = slots.acquire(&me).unwrap();
+            slots.lease(&mut slot, request("x", i)).await.unwrap();
+            held.push(slot);
+        }
+
+        // Each replica is under the ceiling locally; the instance is not.
+        let mut extra = b.acquire(&me).unwrap();
+        assert_eq!(
+            b.lease(&mut extra, request("b", 99)).await,
+            Err(Refusal::Full)
+        );
+
+        held.pop();
+        tokio::task::yield_now().await;
+        assert_eq!(leases.held(), MAX_STREAMS_PER_PRINCIPAL - 1);
+        let mut again = a.acquire(&me).unwrap();
+        a.lease(&mut again, request("a", 100)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_disconnected_connection_closes_and_its_credential_stays_out() {
+        let leases = Arc::new(notify_ports::test_utils::TestStreamLeases::new());
+        let slots = Arc::new(StreamSlots::clustered(leases.clone(), "a".to_owned()));
+        let me = somebody();
+        let request = LeaseRequest {
+            principal: me.reference(),
+            replica: "a".to_owned(),
+            transport: "sse".to_owned(),
+            client: "phone".to_owned(),
+            credential: "session".to_owned(),
+            fingerprint: "stolen-phone".to_owned(),
+        };
+        let mut slot = slots.acquire(&me).unwrap();
+        slots.lease(&mut slot, request.clone()).await.unwrap();
+        let listed = slots.list(&me).await.unwrap();
+        assert_eq!(listed.len(), 1);
+
+        assert!(
+            slots
+                .disconnect(&me, &listed[0].id, time::OffsetDateTime::now_utc())
+                .await
+                .unwrap()
+        );
+        // Resolves at once: the signal was stored for the connection to pick up.
+        slot.kicked().await;
+        drop(slot);
+
+        let mut retry = slots.acquire(&me).unwrap();
+        assert_eq!(
+            slots.lease(&mut retry, request).await,
+            Err(Refusal::Disconnected)
+        );
+        assert!(
+            !slots
+                .disconnect(&somebody(), "1", time::OffsetDateTime::now_utc())
+                .await
+                .unwrap()
+        );
     }
 }

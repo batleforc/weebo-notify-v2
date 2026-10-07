@@ -1,13 +1,5 @@
-//! Cursor-based pagination, used by every list endpoint (design §8).
-//!
-//! Offsets are not an option here. An inbox is written to while it is being read,
-//! and `LIMIT/OFFSET` under concurrent inserts skips rows and repeats rows — in a
-//! notification product that means "I never saw the incident" and "why did this
-//! arrive twice", which are the two complaints worth engineering against.
-//!
-//! The page cursor is the same opaque token as the sync cursor
-//! (`notify_domain::Cursor`), so a client has one thing to store and one thing to
-//! send back.
+//! Cursor-based pagination for every list endpoint (§8): offsets skip and repeat
+//! rows under concurrent inserts. The page cursor is the sync [`notify_domain::Cursor`].
 
 use notify_domain::Cursor;
 use serde::{Deserialize, Serialize};
@@ -19,9 +11,7 @@ pub struct PageRequest {
     /// Where to resume. `None` starts at the beginning of the ordering.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<Cursor>,
-    /// How many rows at most. Clamped to [`PageRequest::MAX_LIMIT`] by the adapter,
-    /// because a client asking for a million rows is a client that has not thought
-    /// about it, not a client we should try to satisfy.
+    /// How many rows at most, clamped to [`PageRequest::MAX_LIMIT`].
     pub limit: u32,
 }
 
@@ -82,22 +72,14 @@ impl Default for PageRequest {
     }
 }
 
-/// What a caller gets.
-///
-/// Its schema is written rather than derived (`crate::schema`, design §14.4 D3):
-/// utoipa inlines a generic parameter, so `Page_Channel.items` described a whole
-/// channel instead of referencing the one the document already names — which makes
-/// progenitor mint a second, nominally distinct type for it.
+/// What a caller gets. Its schema is hand-written (`crate::schema`, §14.4) so
+/// `items` references the item type instead of inlining it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page<T> {
     /// The rows, in the ordering of the endpoint.
     pub items: Vec<T>,
-    /// Pass this back as [`PageRequest::after`] for the next page. `None` means
-    /// this was the last one.
-    ///
-    /// Note that `next` being `Some` does not promise the next page is non-empty:
-    /// rows can expire between two calls. Clients follow the cursor until it is
-    /// `None` rather than until a page comes back short.
+    /// Pass this back as [`PageRequest::after`] for the next page; `None` on the last
+    /// one. A `Some` does not promise a non-empty next page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<Cursor>,
 }

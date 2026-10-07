@@ -1,25 +1,5 @@
-//! The commands that are not publishing: channels, devices, the inbox (design §9.1).
-//!
-//! # Both output formats, everywhere
-//!
-//! Every command here answers to `--output json|table`, and that is a contract
-//! rather than a convenience (§9.1): the table is for a person, the JSON is what a
-//! CI step parses instead of grepping columns that get realigned in the next
-//! release.
-//!
-//! # Nothing here decides anything
-//!
-//! These are renderings of `notify-client-core` calls. Any rule that appeared in
-//! this file — who may join a channel, what a default TTL is — would have to be
-//! written again in the TUI and a third time in the Tauri shell (§9.3).
-//!
-//! # Every command *returns* its output rather than printing it
-//!
-//! That is §9.3 applied to presentation, and it is what makes the TUI's `:` mode
-//! able to run these commands rather than only parse them: the shell prints what
-//! comes back, the TUI puts the very same string in its popup. A `println!` here
-//! would be output the TUI cannot reach — and a second rendering of every command
-//! is exactly what §9 says not to write.
+//! Channels, devices, the inbox and DND (§9.1): renderings of `notify-client-core` calls that
+//! honour `--output json|table` and return their output, so the TUI's `:` mode can show it (§9.3).
 
 use notify_client_core::types::{
     ChannelPolicyBody, CloseAfter, Day, DndDraft, QuietHours, Ttl, WallClock,
@@ -59,25 +39,18 @@ pub(crate) enum ChannelCommand {
         #[arg(long)]
         default: Option<String>,
 
-        /// The forced ceiling, e.g. `48h`. `0` lifts it — §7.2bis's own spelling
-        /// for "unbounded", so there is one way to say it rather than two.
+        /// The forced ceiling, e.g. `48h`; `0` lifts it (§7.2bis).
         #[arg(long)]
         max: Option<String>,
     },
 
-    /// Change how long a lifecycle notification may go without activity before
-    /// the server closes it. Needs `manage` there.
-    ///
-    /// Its own command rather than a third flag on `set-ttl`, because it answers a
-    /// different question: `set-ttl` says how long a *closed* notification is kept,
-    /// this says when an abandoned one stops being open. Reaching for one when you
-    /// meant the other is the mistake worth making impossible to make silently.
+    /// Change how long a lifecycle notification may go without activity before the server
+    /// closes it. Needs `manage` there.
     SetCloseAfter {
         /// Which channel.
         id: String,
 
-        /// How long without a revision or an interaction, e.g. `7d`. `0` turns it
-        /// off, leaving this channel's publishers to close what they open.
+        /// How long without a revision or an interaction, e.g. `7d`; `0` turns it off.
         after: String,
     },
 }
@@ -88,11 +61,7 @@ pub(crate) enum DeviceCommand {
     /// List your devices, revoked ones included.
     List,
 
-    /// Enrol this machine, and remember it in the local store.
-    ///
-    /// `enroll` is accepted too. §9.1 writes the command with two `l`s, this crate
-    /// spells it with one, and the difference is invisible until somebody copies
-    /// the line out of the design document and gets "unrecognized subcommand".
+    /// Enrol this machine, and remember it in the local store (`enroll` works too).
     #[command(alias = "enroll")]
     Enrol {
         /// How it should appear in your device list. Defaults to the hostname.
@@ -144,9 +113,7 @@ pub(crate) async fn channel(
         }
 
         ChannelCommand::Join { id } => {
-            // Joining is adding yourself, and *the server* decides whether you may:
-            // sending your own principal is the only thing the client knows how to
-            // do here (§5.1 — authorisation is derived per request, never locally).
+            // The server decides whether you may join (§5.1); the client only names itself.
             let me = whoami(session).await?;
             session
                 .add_member(&id, me, vec![notify_client_core::types::Scope::Subscribe])
@@ -165,8 +132,7 @@ pub(crate) async fn channel(
                 ));
             }
 
-            // Only what was asked for goes on the wire: a `PATCH` that restated the
-            // untouched knob is how two admins on two screens overwrite each other.
+            // Only the changed knob goes on the wire, so concurrent edits don't overwrite each other.
             let channel = session
                 .update_channel_policy(
                     &id,
@@ -201,10 +167,6 @@ pub(crate) async fn channel(
 }
 
 /// `notify channel set-close-after <id> <after>`.
-///
-/// Its own function rather than a longer `match` arm: `channel` above is already at
-/// the line limit clippy enforces, and a dispatcher that grows a paragraph per
-/// subcommand stops reading as a dispatcher.
 async fn set_close_after(
     session: &Session,
     id: &str,
@@ -223,9 +185,7 @@ async fn set_close_after(
 
     match output {
         OutputFormat::Json => render_json(&channel),
-        // `0s` comes back from the server as the spelling for "never", and printing
-        // it verbatim would leave somebody wondering whether they had just asked for
-        // every notification to close instantly.
+        // The server spells "never" as `0s`; don't print it as "close instantly".
         OutputFormat::Table => {
             let close_after = &*channel.policy.close_after;
             Ok(format!(
@@ -270,10 +230,7 @@ pub(crate) async fn device(
             let label = label.unwrap_or_else(hostname);
             let device = session.enrol_device(&label).await?;
 
-            // Recorded in the shared store, not in this process: the enrolment is
-            // per *profile*, so the TUI and the desktop app inherit this device
-            // rather than each enrolling their own (§9.3bis). Three devices for one
-            // machine would also make "seen by 3/5" count it three times.
+            // Per profile, so the TUI and desktop app reuse this device (§9.3bis).
             Store::open(profile)?.set_device(&device.id.to_string())?;
 
             match output {
@@ -312,12 +269,7 @@ pub(crate) async fn list_inbox(
     }
 }
 
-/// Who the caller is, as a principal the API accepts.
-///
-/// There is no `GET /users/me` returning a principal, and adding one for this
-/// would be a route existing to serve a convenience. The device list is already
-/// scoped to the caller, so its owner *is* the answer — and it costs one request
-/// the join was going to make anyway.
+/// Who the caller is, as a principal: the owner of its (caller-scoped) device list.
 async fn whoami(session: &Session) -> Result<notify_client_core::types::Principal, CliError> {
     let devices = session.devices().await?;
 
@@ -377,18 +329,14 @@ pub(crate) async fn sync(
             }];
 
             if outcome.compacted > 0 {
-                // §7.2: forty revisions of one deploy arrive as one entry, and the
-                // number is what lets a client say "38 updates" rather than
-                // pretending nothing happened.
+                // §7.2: revisions folded by compaction.
                 lines.push(format!(
                     "{} revisions folded away by compaction",
                     outcome.compacted
                 ));
             }
             for (channel, count) in &outcome.expired {
-                // §7.2bis: a notification that expired undelivered is deliberately
-                // not in the backlog, so it is reported as a count instead of
-                // vanishing without trace.
+                // §7.2bis: expired undelivered, reported as a count rather than vanishing.
                 lines.push(format!(
                     "{count} notifications expired in {channel} while you were away"
                 ));
@@ -399,19 +347,13 @@ pub(crate) async fn sync(
     }
 }
 
-/// `notify dnd …` — the do-not-disturb of design §7.4.
-///
-/// §9.1 sketches this as `on|off|until 9h|for 2h|schedule|status`. `until` and `for`
-/// are flags of `on` here rather than verbs of their own, because they are two
-/// spellings of one action: as subcommands, clap would have to offer a bare
-/// `notify dnd until` with nothing to say what it applies to.
+/// `notify dnd …` — the do-not-disturb of §7.4 (`--for`/`--until` are flags of `on`).
 #[derive(Debug, clap::Subcommand)]
 pub(crate) enum DndCommand {
     /// Show what is set, and whether it is quiet right now.
     Status,
 
-    /// Start a quiet period. Say how long with `--for`, or when it ends with
-    /// `--until`.
+    /// Start a quiet period: how long with `--for`, or when it ends with `--until`.
     On {
         /// How long, e.g. `2h` or `45m`.
         #[arg(long = "for", value_name = "DURATION", conflicts_with = "until")]
@@ -421,8 +363,7 @@ pub(crate) enum DndCommand {
         #[arg(long, value_name = "INSTANT")]
         until: Option<String>,
 
-        /// Until the next 08:00 on your own clock — the same choice the tray menu
-        /// offers (§10bis.3ter), and the same calculation behind it.
+        /// Until the next 08:00 on your own clock, as the tray menu offers (§10bis.3ter).
         #[arg(long, conflicts_with_all = ["duration", "until"])]
         until_morning: bool,
     },
@@ -444,8 +385,7 @@ pub(crate) enum DndCommand {
         #[arg(long, required_unless_present = "clear")]
         to: Option<String>,
 
-        /// The IANA zone the two are read in, e.g. `Europe/Paris`. Yours, never the
-        /// machine's — §7.4 keeps somebody's nights theirs when they travel.
+        /// The IANA zone the two are read in, e.g. `Europe/Paris` (yours, not the machine's, §7.4).
         #[arg(long, required_unless_present = "clear")]
         timezone: Option<String>,
 
@@ -456,11 +396,6 @@ pub(crate) enum DndCommand {
 }
 
 /// Run one `notify dnd …`.
-///
-/// Every branch reads the current preference before writing: the endpoint replaces
-/// it whole (§7.4 carries it whole for the same reason), so a client that wants to
-/// change one thing has to send back the rest. Doing that read here rather than in
-/// each caller is what stops `dnd on` from quietly wiping somebody's schedule.
 pub(crate) async fn dnd(
     session: &Session,
     command: DndCommand,
@@ -468,8 +403,7 @@ pub(crate) async fn dnd(
 ) -> Result<String, CliError> {
     let current = session.dnd().await?;
 
-    // Read before write, because the endpoint replaces the preference whole (§7.4).
-    // Carrying the rest across is what stops `dnd on` from wiping a schedule.
+    // The endpoint replaces the preference whole (§7.4): read first so `dnd on` keeps the schedule.
     let current = DndDraft {
         quiet_hours: current.quiet_hours,
         until: current.until,
@@ -495,10 +429,7 @@ pub(crate) async fn dnd(
                     )
                 })?,
                 (None, None, true) => {
-                    // The preference's zone, not this machine's (§7.4): somebody
-                    // travelling keeps their own mornings. A preference with no
-                    // schedule has no zone to borrow, and UTC is the honest answer
-                    // rather than a guess from the laptop.
+                    // The preference's zone, not this machine's (§7.4); UTC when there is none.
                     let timezone = current
                         .quiet_hours
                         .first()
@@ -511,9 +442,7 @@ pub(crate) async fn dnd(
                         })?
                 }
                 (None, None, false) => {
-                    // Refused rather than guessed at: §7.4 makes the quick toggle a
-                    // deadline, and an unbounded one is what somebody sets at 3am
-                    // and rediscovers a quarter later.
+                    // §7.4 makes the toggle a deadline; an unbounded one is refused.
                     return Err(CliError::Usage(
                         "say how long: `--for 2h`, `--until <instant>`, or `--until-morning`"
                             .to_owned(),
@@ -544,8 +473,7 @@ pub(crate) async fn dnd(
                     ..current
                 }
             } else {
-                // The three are `required_unless_present = "clear"`, so clap has
-                // already refused the combination where any is missing.
+                // clap already requires all three unless `--clear`.
                 let (Some(from), Some(to), Some(timezone)) = (from, to, timezone) else {
                     return Err(CliError::Usage(
                         "a window needs `--from`, `--to` and `--timezone`".to_owned(),
@@ -568,13 +496,10 @@ pub(crate) async fn dnd(
         }
     };
 
-    // The server validates the window — the timezone against the real IANA
-    // database, the ends against each other — and says which field is wrong. Doing
-    // it a second time here would be a second set of rules to keep in step.
+    // The server validates the window and names the bad field.
     let stored = session.set_dnd(&wanted).await?;
 
-    // Rendered through the draft so there is one renderer rather than two that
-    // drift: the only field the entity adds is the subject, and it is the caller.
+    // One renderer: the entity only adds the subject, which is the caller.
     render_draft(
         &DndDraft {
             quiet_hours: stored.quiet_hours,
@@ -654,13 +579,6 @@ fn parse_day(raw: &str) -> Result<Day, CliError> {
 }
 
 /// `--for 2h`, resolved against this machine's clock.
-///
-/// The client's clock and not the server's, which is a real difference and a small
-/// one: the two disagree by seconds, and the alternative is an endpoint that takes a
-/// duration purely so the arithmetic happens on the other side. The clock read
-/// itself is `notify_client_core::now_utc` — the desktop shell needs exactly the
-/// same value, so it lives in the one crate both depend on rather than as a private
-/// copy here.
 fn now_plus(duration: &str) -> Result<chrono::DateTime<chrono::Utc>, CliError> {
     let (value, unit) = duration.split_at(
         duration

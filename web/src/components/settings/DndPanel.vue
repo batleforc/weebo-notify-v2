@@ -1,25 +1,7 @@
 <script setup lang="ts">
 /**
- * Ne pas déranger (§7.4, §10.4).
- *
- * Four things, and they are four because §7.4 makes them four: a quick toggle,
- * recurring windows, how wide it reaches with its exceptions, and whether
- * `urgent` may come through.
- *
- * # The panel edits a copy and PUTs the whole thing
- *
- * `PUT /preferences/dnd` replaces rather than merges — a body that omitted a
- * window could not be told apart from one asking to drop it — so the draft here is
- * the whole preference, and "Annuler" means re-reading it. That is also what keeps
- * a change made on a phone from being clobbered: the `preference` event refreshes
- * the store, and this panel re-drafts from it.
- *
- * # The timezone is the preference's, never the device's
- *
- * §7.4 is explicit and the reason is a person travelling: `22:00–08:00,
- * Europe/Paris` means *their* nights, not the nights of wherever their laptop is
- * this month. The field is pre-filled from the browser as a convenience and stays
- * editable, and the server refuses anything that is not an IANA name.
+ * Do not disturb (§7.4, §10.4). Edits a copy and PUTs it whole; cancel re-reads.
+ * The timezone is the preference's, not the device's (a traveller's nights).
  */
 import { Plus, Trash2 } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
@@ -52,9 +34,6 @@ const DAYS = computed(() =>
 );
 
 const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-/** Whether a quiet period is on *now* — the one thing a person checks first. */
-const quiet = computed(() => preferences.quiet);
 
 const scopeIsEverything = computed(
   () => (draft.value.scope?.kind ?? "everything") === "everything",
@@ -150,11 +129,11 @@ async function resume(): Promise<void> {
     <CardHeader>
       <CardTitle class="flex items-center gap-2">
         {{ t("settings.dnd.title") }}
-        <Badge v-if="quiet" variant="secondary">{{ t("settings.dnd.active") }}</Badge>
+        <Badge v-if="preferences.quiet" variant="secondary">{{ t("settings.dnd.active") }}</Badge>
       </CardTitle>
     </CardHeader>
     <CardContent class="space-y-5 text-sm">
-      <p class="text-muted-foreground">
+      <p class="text-ink-dim">
         {{ t("settings.dnd.description") }}
       </p>
 
@@ -184,7 +163,7 @@ async function resume(): Promise<void> {
           {{ t("settings.dnd.resume") }}
         </Button>
       </div>
-      <p v-if="draft.until" class="text-xs text-muted-foreground">
+      <p v-if="draft.until" class="text-xs text-ink-dim">
         {{ t("settings.dnd.silentUntil", { at: new Date(draft.until).toLocaleString() }) }}
       </p>
 
@@ -199,7 +178,7 @@ async function resume(): Promise<void> {
 
         <p
           v-if="!draft.quiet_hours?.length"
-          class="text-xs text-muted-foreground"
+          class="text-xs text-ink-dim"
         >
           {{ t("settings.dnd.noWindows") }}
         </p>
@@ -207,11 +186,11 @@ async function resume(): Promise<void> {
         <div
           v-for="(window, index) in draft.quiet_hours ?? []"
           :key="index"
-          class="space-y-2 rounded-md border border-border p-3"
+          class="space-y-2 border border-rule p-3"
         >
           <div class="flex flex-wrap items-center gap-2">
             <Input v-model="window.start" type="time" class="w-28" />
-            <span class="text-muted-foreground">→</span>
+            <span class="text-ink-dim">→</span>
             <Input v-model="window.end" type="time" class="w-28" />
             <Input
               v-model="window.timezone"
@@ -241,7 +220,7 @@ async function resume(): Promise<void> {
             </Button>
             <span
               v-if="!window.days?.length"
-              class="ml-2 text-xs text-muted-foreground"
+              class="ml-2 text-xs text-ink-dim"
             >
               {{ t("settings.dnd.everyDay") }}
             </span>
@@ -252,7 +231,7 @@ async function resume(): Promise<void> {
             keypath="settings.dnd.midnightHint"
             tag="p"
             scope="global"
-            class="text-xs text-muted-foreground"
+            class="text-xs text-ink-dim"
           >
             <template #emphasis>
               <strong>{{ t("settings.dnd.midnightHintEmphasis") }}</strong>
@@ -268,7 +247,7 @@ async function resume(): Promise<void> {
           keypath="settings.dnd.exceptionsHint"
           tag="p"
           scope="global"
-          class="text-xs text-muted-foreground"
+          class="text-xs text-ink-dim"
         >
           <template #emphasis>
             <em>{{ t("settings.dnd.exceptionsHintEmphasis") }}</em>
@@ -287,7 +266,7 @@ async function resume(): Promise<void> {
             {{ channels.nameOf(channel.id) }}
           </Button>
         </div>
-        <p v-if="!scopeIsEverything" class="text-xs text-muted-foreground">
+        <p v-if="!scopeIsEverything" class="text-xs text-ink-dim">
           {{ t("settings.dnd.scopeRestricted") }}
         </p>
       </div>
@@ -305,7 +284,7 @@ async function resume(): Promise<void> {
               <strong>{{ t("settings.dnd.urgentBypassEmphasis") }}</strong>
             </template>
           </i18n-t>
-          <span class="block text-xs text-muted-foreground">
+          <span class="block text-xs text-ink-dim">
             {{ t("settings.dnd.urgentBypassHint") }}
           </span>
         </span>
@@ -320,7 +299,7 @@ async function resume(): Promise<void> {
         </Button>
       </div>
 
-      <p v-if="error" class="text-xs text-destructive">{{ error }}</p>
+      <p v-if="error" class="text-xs text-signal">{{ error }}</p>
     </CardContent>
   </Card>
 </template>

@@ -1,32 +1,6 @@
-//! Do not disturb: the planned, broad half of "stop notifying me" (design §7.4).
-//!
-//! [`Silence`](crate::silence) is the other half — reactive and targeted, one
-//! notification or one `group_key`. This one is about *time* and *channels*: nights,
-//! weekends, an afternoon off, everything except the one channel that may always
-//! ring.
-//!
-//! # It lives on the server, and it is one question
-//!
-//! The preference is per user and stored server-side, so turning it on from a phone
-//! quiets a laptop too (§7.4) — and every client is told, over the `preference`
-//! event of §8.1, rather than each of them keeping its own idea. What all of them
-//! then ask is the same single question, [`Dnd::is_muted`]: *should this channel, at
-//! this priority, make a noise right now?* Nothing else in the product is allowed to
-//! reason about what "DND" means; a second implementation of that answer is how a
-//! phone ends up buzzing at 3am while the desktop stays quiet.
-//!
-//! What it suppresses is **push and local pop-ups**, never delivery: the stream
-//! keeps flowing and the inbox keeps filling (§7.4). An app somebody chose to leave
-//! open is not an interruption.
-//!
-//! # The timezone belongs to the preference
-//!
-//! `22:00–08:00, Europe/Paris` means *that person's* nights, not the nights of
-//! whatever zone their laptop is in this month. So the zone is stored alongside the
-//! window and resolved against the compiled-in IANA database, exactly as the profile
-//! timezone of §2.4 is — and for the same reason: a zone accepted today because it
-//! merely looked plausible is a notification that fails to arrive in six months,
-//! with nothing to connect the two.
+//! Do not disturb (§7.4): per-user, server-side quiet periods by time and channel.
+//! [`Dnd::is_muted`] is the single answer every client uses. It suppresses push and
+//! pop-ups, never delivery; windows are read in the preference's own IANA timezone.
 
 use core::fmt;
 use core::str::FromStr;
@@ -38,11 +12,7 @@ use crate::error::{DomainError, Result};
 use crate::ids::{ChannelId, UserId};
 use crate::notification::Priority;
 
-/// A day of the week, as the wire spells it.
-///
-/// Its own enum rather than `time::Weekday` because this one is API: `"mon"` is a
-/// contract, and the serde representation of somebody else's type is not ours to
-/// promise.
+/// A day of the week, as the wire spells it (`"mon"`…).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,16 +47,10 @@ impl From<Weekday> for Day {
     }
 }
 
-/// A time of day on a wall clock, to the minute.
-///
-/// Minutes, not seconds: quiet hours are a human intention ("ten in the evening"),
-/// and a field nobody will ever set to a non-zero value is a field somebody will
-/// eventually set wrong. Stored as minutes since local midnight because that is the
-/// form every comparison here wants, and rendered `HH:MM` because that is the form
-/// §7.4 writes it in.
+/// A time of day on a wall clock, to the minute, rendered `HH:MM`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-// Described as the `HH:MM` string it is on the wire, not as the integer it wraps.
+// Documented as the `HH:MM` string it is on the wire.
 #[cfg_attr(feature = "openapi", schema(value_type = String, example = "22:00"))]
 pub struct WallClock(u16);
 
@@ -124,8 +88,7 @@ impl FromStr for WallClock {
             reason: "not a time of day, expected `HH:MM` between 00:00 and 23:59",
         };
         let (hour, minute) = raw.split_once(':').ok_or_else(|| malformed.clone())?;
-        // Length-checked so `1:5` and `022:00` are refused rather than accepted into
-        // a preference whose rendering would not match what was sent.
+        // Exactly two digits each, so the rendering matches what was sent.
         if hour.len() != 2 || minute.len() != 2 {
             return Err(malformed);
         }
@@ -158,30 +121,20 @@ impl<'de> Deserialize<'de> for WallClock {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuietHours {
-    /// The days it applies to. **Empty means every day** — the common case, and the
-    /// one nobody should have to spell out seven times.
-    ///
-    /// For a window that crosses midnight the day is the one it **starts** on: a
-    /// Friday `22:00–08:00` is the night from Friday to Saturday, which is what a
-    /// person means by "Friday night".
+    /// The days it applies to (**empty means every day**). A window crossing midnight
+    /// belongs to the day it starts on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub days: Vec<Day>,
     /// When quiet begins, on the local clock.
     pub start: WallClock,
-    /// When it ends. May be earlier than `start`, which means the window crosses
-    /// midnight.
+    /// When it ends; earlier than `start` means the window crosses midnight.
     pub end: WallClock,
-    /// The IANA zone `start` and `end` are read in — the preference's own, never the
-    /// device's.
+    /// The IANA zone `start` and `end` are read in (the preference's, not the device's).
     pub timezone: String,
 }
 
 impl QuietHours {
-    /// Build one, validated.
-    ///
-    /// A window whose ends are equal is refused rather than interpreted: `00:00` to
-    /// `00:00` reads as "all day" to one person and "never" to another, and the one
-    /// who guesses wrong finds out by missing something.
+    /// Build one, validated; equal ends are refused as ambiguous.
     pub fn new(
         days: Vec<Day>,
         start: WallClock,
@@ -210,13 +163,7 @@ impl QuietHours {
         })
     }
 
-    /// Whether this window is open at `now`.
-    ///
-    /// Returns `false` when the zone cannot be resolved. That is the safe direction
-    /// and worth naming: a preference is only ever stored through [`Self::new`],
-    /// which validates the zone, so getting here means the row predates a tzdata
-    /// change — and the failure mode of guessing is a phone that stays silent for a
-    /// week without saying why.
+    /// Whether this window is open at `now`; `false` if the zone cannot be resolved.
     #[must_use]
     pub fn covers(&self, now: OffsetDateTime) -> bool {
         let Some(offset) = offset_at(&self.timezone, now) else {
@@ -230,8 +177,7 @@ impl QuietHours {
             return self.on(today) && (self.start.minutes()..self.end.minutes()).contains(&minutes);
         }
 
-        // Crosses midnight: the tail of the day it starts on, or the head of the
-        // next one — and the next one belongs to *yesterday's* entry in `days`.
+        // Crosses midnight: the head of today belongs to yesterday's entry in `days`.
         (minutes >= self.start.minutes() && self.on(today))
             || (minutes < self.end.minutes() && self.on(Day::from(local.weekday().previous())))
     }
@@ -242,12 +188,10 @@ impl QuietHours {
     }
 }
 
-/// How wide a do-not-disturb reaches (design §7.4).
+/// How wide a do-not-disturb reaches (§7.4).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-// Tagged `kind` rather than `scope`, because the field that holds it is already
-// called `scope`: tagging it with its own name renders `"scope":{"scope":…}`, which
-// reads like a mistake and is one to write against.
+// Tagged `kind` because the holding field is already called `scope`.
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DndScope {
     /// Every channel. What a preference means when it does not say.
@@ -271,10 +215,7 @@ impl DndScope {
     }
 }
 
-/// One user's delivery preferences (design §7.4).
-///
-/// Carried whole by the `preference` event of §8.1 rather than as a delta: a client
-/// that missed one update would otherwise apply the next to the wrong baseline.
+/// One user's delivery preferences (§7.4), carried whole by the `preference` event (§8.1).
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dnd {
@@ -289,34 +230,16 @@ pub struct Dnd {
     /// Which channels any of the above applies to.
     #[serde(default)]
     pub scope: DndScope,
-    /// Channels that ring anyway — the on-call case: mute everything *except* the
-    /// one that matters.
+    /// Channels that ring anyway (the on-call case).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exceptions: Vec<ChannelId>,
-    /// Whether `urgent` is allowed through.
-    ///
-    /// Off by default, and opt-in by the **recipient**: the publisher chooses how
-    /// insistent a notification is, the person receiving it chooses what may wake
-    /// them (§2.3, §7.4). Note that this never reaches an iOS critical alert — no
-    /// entitlement, by decision.
+    /// Whether `urgent` is allowed through; the recipient's opt-in (§2.3, §7.4).
     #[serde(default)]
     pub urgent_bypasses: bool,
 }
 
-/// A do-not-disturb as somebody *states* it: everything except whose it is.
-///
-/// The draft/entity split this codebase uses everywhere else ([`ContentDraft`],
-/// [`RevisionDraft`]), and here it carries a decision: **the subject is never an
-/// input.** A caller states quiet hours and exceptions; the use case decides who
-/// they belong to, because it is the only thing that knows.
-///
-/// Leaving `user` on the request body was tried and it is worse than misleading —
-/// it is *required*, so a client that legitimately does not know its own id cannot
-/// build a body at all, and one that guesses gets a deserialisation error about a
-/// field the server was going to overwrite.
-///
-/// [`ContentDraft`]: crate::content::ContentDraft
-/// [`RevisionDraft`]: crate::notification::RevisionDraft
+/// A do-not-disturb as a caller states it; the subject is decided by the use case,
+/// never taken from input.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DndDraft {
@@ -366,30 +289,16 @@ impl Dnd {
         }
     }
 
-    /// Whether a quiet period is running at `now`, ignoring which channel.
-    ///
-    /// The question the digest of §7.4 asks — "is this person still not to be
-    /// disturbed" — and the one an interface shows as a toggle.
+    /// Whether a quiet period is running at `now`, ignoring which channel (§7.4 digest).
     #[must_use]
     pub fn is_active(&self, now: OffsetDateTime) -> bool {
         self.until.is_some_and(|until| now < until)
             || self.quiet_hours.iter().any(|window| window.covers(now))
     }
 
-    /// **The** question: should this make a noise right now?
-    ///
-    /// The order of the answers is the design, not an optimisation:
-    ///
-    /// 1. **an exception rings, always** — including through a `until` somebody set
-    ///    by hand. §7.4 gives the on-call case ("mute everything *except*
-    ///    `cluster-ovh-1`") without saying who wins when the two disagree, and this
-    ///    is the only reading that leaves it usable: the other one would mean
-    ///    undoing the exception every time you silence the rest, which is precisely
-    ///    the moment nobody wants to think about it;
-    /// 2. **out of scope rings** — a per-channel DND is not a global one;
-    /// 3. **no quiet period, no muting** — a preference that exists is not a
-    ///    preference that is running;
-    /// 4. **`urgent` passes only if this user said it may.**
+    /// **The** question: should this make a noise right now? In order: an exception
+    /// always rings (even through `until`), out-of-scope rings, no quiet period
+    /// rings, and `urgent` passes only if allowed.
     #[must_use]
     pub fn is_muted(&self, channel: &ChannelId, priority: Priority, now: OffsetDateTime) -> bool {
         if self.exceptions.contains(channel) || !self.scope.reaches(channel) {
@@ -401,10 +310,7 @@ impl Dnd {
         !(priority == Priority::Urgent && self.urgent_bypasses)
     }
 
-    /// Validate a preference assembled from the wire.
-    ///
-    /// The windows validated themselves on the way in ([`QuietHours::new`]); what is
-    /// left is what only the whole is in a position to see.
+    /// Validate a preference assembled from the wire (windows validate themselves).
     pub fn validated(self) -> Result<Self> {
         for window in &self.quiet_hours {
             validate_timezone(&window.timezone)?;
@@ -416,18 +322,12 @@ impl Dnd {
             }
         }
 
-        // An exception outside the scope is not refused: it is harmless today and
-        // still true the day the scope widens. Refusing it would make narrowing a
-        // scope fail on a field the person did not touch.
+        // Exceptions outside the scope are harmless and allowed.
         Ok(self)
     }
 }
 
-/// Check a timezone against the compiled-in IANA database.
-///
-/// Same check as the profile timezone of §2.4, deliberately: the two are the same
-/// kind of value, and one of them being stricter than the other is how `Europe/Pris`
-/// gets in through the door nobody was watching.
+/// Check a timezone against the compiled-in IANA database (same as the profile's).
 fn validate_timezone(name: &str) -> Result<()> {
     chrono_tz::Tz::from_str(name)
         .map(|_| ())
@@ -437,13 +337,8 @@ fn validate_timezone(name: &str) -> Result<()> {
         })
 }
 
-/// What a zone's clocks read, relative to UTC, at a given instant.
-///
-/// The one place this crate borrows chrono: `chrono-tz` **is** the IANA database and
-/// its interface is chrono's. Everything either side of this function is
-/// `time::OffsetDateTime`, so the borrowing does not spread — and a lookup that
-/// crosses a DST boundary is exactly why the offset is asked for per instant rather
-/// than stored with the window.
+/// A zone's UTC offset at a given instant (via `chrono-tz`, kept local to this
+/// function), asked per instant because of DST.
 fn offset_at(timezone: &str, at: OffsetDateTime) -> Option<UtcOffset> {
     use chrono::Offset as _;
     use chrono::TimeZone as _;
@@ -544,8 +439,7 @@ mod tests {
 
     #[test]
     fn the_zone_is_the_preferences_and_not_the_instants() {
-        // The same moment, read in two zones: quiet in Paris, the middle of the
-        // afternoon in Los Angeles. A user who travels keeps their nights.
+        // The same moment in two zones: a traveller keeps their nights.
         let paris = nights();
         let california =
             QuietHours::new(Vec::new(), at(22, 0), at(8, 0), "America/Los_Angeles").unwrap();
@@ -659,15 +553,9 @@ mod tests {
         assert!(!preference.is_muted(&channel("cluster-ovh-1"), Priority::Default, night));
     }
 
-    // --- T19 · DND (design §3.4) --------------------------------------------
-    //
-    // Two of the scenario's four clauses are decisions, and they live here: an
-    // excepted channel rings, and `urgent` does not unless this user allowed it.
-    // The other two — no OS push while quiet with the inbox still filling, and one
-    // digest on the way out — are about delivery, and are covered where delivery
-    // happens (M3.3 and M3.4).
+    // --- T19 · DND: exceptions ring, `urgent` only if allowed. -------------
 
-    /// The decision §7.4 left open, and the on-call case it exists for.
+    /// An excepted channel rings even through a manual `until`.
     #[test]
     fn critical_t19_an_exception_rings_through_everything_including_a_manual_toggle() {
         let now = datetime!(2026-08-05 01:00 UTC);
@@ -724,8 +612,7 @@ mod tests {
 
     #[test]
     fn a_window_that_came_back_from_storage_is_validated_like_one_that_came_from_a_client() {
-        // Deserialisation does not run `QuietHours::new`, so `validated` is what a
-        // use case calls on anything it did not build itself.
+        // Deserialisation skips `QuietHours::new`, so `validated` must catch it.
         let raw = serde_json::json!({
             "user": UserId::generate(),
             "quiet_hours": [{ "start": "22:00", "end": "08:00", "timezone": "Europe/Pris" }]

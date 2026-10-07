@@ -8,15 +8,7 @@ import type {
 } from "@/api/generated/types.gen";
 import { useInbox } from "./inbox";
 
-/**
- * A revision landing on a row has to reach whatever is watching it.
- *
- * The subscriber here is a `computed` reading one row's status, which is what a
- * rendered inbox is. The trap it guards against is indexing the raw object rather
- * than the reactive one the list holds: mutations would then bypass the proxy and
- * notify nobody, and the list would only appear to work because something else
- * mutated the array in the same tick.
- */
+/** A revision must reach a `computed` watching the row: the index must hold the reactive proxy. */
 const { inboxMock } = vi.hoisted(() => ({ inboxMock: vi.fn() }));
 vi.mock("@/api/generated", () => ({ inbox: inboxMock }));
 vi.mock("@/api/stream", () => ({ openStream: () => ({ close: () => {} }) }));

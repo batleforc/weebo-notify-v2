@@ -1,15 +1,9 @@
-//! Rate limits, counted in the database (design §8.2, scenario T14).
-//!
-//! Shared state rather than a counter per process: with several replicas an
-//! in-process counter enforces `n × 60/min` rather than `60/min`, and the limit a
-//! publisher was told about would depend on which replica answered.
-//!
-//! A **fixed window**, not a sliding one. A sliding window costs a row per request
-//! and gives a smoother curve; the burst allowance in §8.2 already covers the edge
-//! this would smooth, and the failure it prevents — a CI job in a retry loop
-//! degrading its own publishing and nobody else's — does not need that precision.
+//! Rate limits counted in the database (design §8.2, T14), so the limit holds across replicas.
+//! A fixed window: the §8.2 burst allowance covers what a sliding window would smooth.
 
-use notify_ports::{Allowance, PortResult, Quota, RateLimiter};
+use notify_ports::{
+    Acquired, Allowance, Lease, LeaseRequest, PortResult, Quota, RateLimiter, StreamLeases,
+};
 use time::{Duration, OffsetDateTime};
 
 use crate::PgStore;
@@ -18,14 +12,10 @@ use crate::mapping::fail;
 /// Every window is a minute, which is the unit design §8.2 states its limits in.
 const WINDOW: Duration = Duration::minutes(1);
 
-/// The published default for each quota, straight from design §8.2.
-///
-/// A closed match rather than a lookup table: adding a [`Quota`] variant then fails
-/// to compile here until somebody decides what it is worth.
+/// The published default for each quota (design §8.2); a closed match so new variants must decide.
 const fn default_ceiling(quota: &Quota) -> i32 {
     match quota {
-        // 60/min with a burst of 120: the burst is the ceiling, and the steady rate
-        // is what a well-behaved publisher stays under.
+        // 60/min with a burst of 120: the burst is the ceiling.
         Quota::PublishPerKey { .. } => 120,
         // Protects the fan-out rather than the publisher.
         Quota::PublishPerChannel { .. } => 600,
@@ -35,13 +25,7 @@ const fn default_ceiling(quota: &Quota) -> i32 {
     }
 }
 
-/// What this request is actually measured against.
-///
-/// The configured override of design §8.2 wins when there is one, and the default
-/// applies when there is not. Nothing is clamped to the default in either
-/// direction: an operator who writes `publish_per_min = 5000` on a channel meant
-/// to carry a firehose has said so in GitOps (§11), and silently holding them to
-/// 600 would be a limit that lies about itself.
+/// What this request is measured against: the configured override (in either direction), else the default.
 fn ceiling(quota: &Quota, configured: Option<u32>) -> i32 {
     configured
         .and_then(|limit| i32::try_from(limit).ok())
@@ -68,10 +52,7 @@ impl RateLimiter for PgStore {
     ) -> PortResult<Allowance> {
         let window_start = floor_to_window(now);
 
-        // Consumed on the way in, in one statement: a caller that is over the limit
-        // is refused before doing the work rather than after. The conflict branch
-        // resets the counter when the stored window has rolled over, which is what
-        // makes this a fixed window without a sweeper job.
+        // Consumed up front in one statement; the conflict branch resets a rolled-over window.
         let (count, start): (i32, OffsetDateTime) = sqlx::query_as(
             "INSERT INTO rate_limits (quota_key, window_start, count)
              VALUES ($1, $2, 1)
@@ -92,8 +73,7 @@ impl RateLimiter for PgStore {
 
         let ceiling = ceiling(quota, configured);
         if count > ceiling {
-            // Seconds until the window rolls, so `Retry-After` is a fact rather than
-            // a guess a client has to back off around.
+            // Seconds until the window rolls, for an exact `Retry-After`.
             let retry_after = (start + WINDOW - now).whole_seconds().max(1);
 
             return Ok(Allowance::Limited {
@@ -108,11 +88,7 @@ impl RateLimiter for PgStore {
 }
 
 impl PgStore {
-    /// Drop counters whose window has long rolled over.
-    ///
-    /// Not required for correctness — a stale row is reset on its next use — but a
-    /// key that is used once and never again would otherwise stay forever, and this
-    /// table would grow with every API key that ever published.
+    /// Drop counters whose window has long rolled over; housekeeping only.
     ///
     /// # Errors
     ///
@@ -136,6 +112,144 @@ fn floor_to_window(now: OffsetDateTime) -> OffsetDateTime {
         .saturating_sub(Duration::seconds(seconds))
 }
 
+/// How often a replica should call [`StreamLeases::renew`]; leases live 90 s unrenewed.
+pub const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[async_trait::async_trait]
+impl StreamLeases for PgStore {
+    async fn acquire(&self, request: &LeaseRequest, max: usize) -> PortResult<Acquired> {
+        let fail = |e| fail("stream lease", e);
+        let mut tx = self.pool().begin().await.map_err(fail)?;
+        // Serialises one principal's concurrent connects; other principals don't wait.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&request.principal)
+            .execute(&mut *tx)
+            .await
+            .map_err(fail)?;
+        let blocked: Option<(i32,)> =
+            sqlx::query_as("SELECT 1 FROM stream_blocks WHERE fingerprint = $1 AND until > now()")
+                .bind(&request.fingerprint)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(fail)?;
+        if blocked.is_some() {
+            return Ok(Acquired::Blocked);
+        }
+        let (held,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM stream_leases WHERE principal = $1 AND expires_at > now()",
+        )
+        .bind(&request.principal)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(fail)?;
+        if usize::try_from(held).unwrap_or(usize::MAX) >= max {
+            return Ok(Acquired::Full);
+        }
+        let (id,): (String,) = sqlx::query_as(
+            "INSERT INTO stream_leases
+                 (principal, replica, transport, client, credential, fingerprint, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, now() + interval '90 seconds')
+             RETURNING id::text",
+        )
+        .bind(&request.principal)
+        .bind(&request.replica)
+        .bind(&request.transport)
+        .bind(&request.client)
+        .bind(&request.credential)
+        .bind(&request.fingerprint)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(fail)?;
+        tx.commit().await.map_err(fail)?;
+        Ok(Acquired::Granted(id))
+    }
+
+    async fn release(&self, lease: &str) -> PortResult<()> {
+        sqlx::query("DELETE FROM stream_leases WHERE id::text = $1")
+            .bind(lease)
+            .execute(self.pool())
+            .await
+            .map_err(|e| fail("stream lease", e))?;
+        Ok(())
+    }
+
+    async fn renew(&self, replica: &str) -> PortResult<Vec<String>> {
+        let fail = |e| fail("stream lease", e);
+        let live: Vec<(String,)> = sqlx::query_as(
+            "UPDATE stream_leases SET expires_at = now() + interval '90 seconds'
+             WHERE replica = $1 RETURNING id::text",
+        )
+        .bind(replica)
+        .fetch_all(self.pool())
+        .await
+        .map_err(fail)?;
+        sqlx::query("DELETE FROM stream_leases WHERE expires_at < now()")
+            .execute(self.pool())
+            .await
+            .map_err(fail)?;
+        sqlx::query("DELETE FROM stream_blocks WHERE until < now()")
+            .execute(self.pool())
+            .await
+            .map_err(fail)?;
+        Ok(live.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn list(&self, principal: &str) -> PortResult<Vec<Lease>> {
+        let rows: Vec<(String, String, String, String, String, OffsetDateTime)> = sqlx::query_as(
+            "SELECT id::text, transport, client, credential, fingerprint, opened_at
+             FROM stream_leases WHERE principal = $1 AND expires_at > now()
+             ORDER BY opened_at",
+        )
+        .bind(principal)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|e| fail("stream lease", e))?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, transport, client, credential, fingerprint, opened_at)| Lease {
+                    id,
+                    transport,
+                    client,
+                    credential,
+                    fingerprint,
+                    opened_at,
+                },
+            )
+            .collect())
+    }
+
+    async fn disconnect(
+        &self,
+        principal: &str,
+        lease: &str,
+        until: OffsetDateTime,
+    ) -> PortResult<bool> {
+        let fail = |e| fail("stream lease", e);
+        let gone: Option<(String,)> = sqlx::query_as(
+            "DELETE FROM stream_leases WHERE id::text = $1 AND principal = $2 RETURNING fingerprint",
+        )
+        .bind(lease)
+        .bind(principal)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(fail)?;
+        let Some((fingerprint,)) = gone else {
+            return Ok(false);
+        };
+        sqlx::query(
+            "INSERT INTO stream_blocks (fingerprint, until) VALUES ($1, $2)
+             ON CONFLICT (fingerprint) DO UPDATE SET until = GREATEST(stream_blocks.until, EXCLUDED.until)",
+        )
+        .bind(fingerprint)
+        .bind(until)
+        .execute(self.pool())
+        .await
+        .map_err(fail)?;
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
@@ -144,11 +258,7 @@ mod tests {
 
     #[test]
     fn every_quota_lands_in_its_own_row() {
-        // Limits are per subject and never global: a noisy publisher must degrade
-        // its own publishing and nobody else's (scenario T14).
-        //
-        // The reference is the key's *id*, never its secret — a quota row keyed on
-        // a credential would put one in a table nobody thinks of as a secret store.
+        // Per subject, never global (T14), and keyed by key id, never its secret.
         let one = key(&Quota::PublishPerKey {
             key: "key_01jqxr8m4n0000000000000001".to_owned(),
         });
@@ -211,10 +321,7 @@ mod tests {
 
     #[test]
     fn a_channel_that_configures_its_own_ceiling_gets_it() {
-        // §8.2: "défauts globaux, surchargeables par canal". The override wins in
-        // both directions — a channel can be given more room than the default as
-        // well as less, because an operator who writes the number has said what
-        // they want and a limit that silently ignores it is worse than no limit.
+        // §8.2: the per-channel override wins in both directions.
         let channel = Quota::PublishPerChannel {
             channel: "ci-infra".to_owned(),
         };
@@ -230,9 +337,7 @@ mod tests {
 
     #[test]
     fn a_configured_ceiling_too_large_for_the_counter_falls_back() {
-        // The counter is an `i32` because that is what the column is. A number past
-        // it is an operator typo, and the published default is a far better answer
-        // than a panic or a silently negative ceiling that refuses everything.
+        // An override past `i32` is a typo: fall back to the default.
         assert_eq!(
             ceiling(
                 &Quota::PublishPerChannel {

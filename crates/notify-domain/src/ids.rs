@@ -1,21 +1,5 @@
-//! Typed identifiers.
-//!
-//! Two families, chosen for two different jobs:
-//!
-//! * **Minted ids** are ULIDs rendered with a short prefix (`ntf_01J…`). ULIDs
-//!   sort lexicographically by their millisecond timestamp, so a primary-key index
-//!   is also a "most recent first" index — which is the only order an inbox is ever
-//!   read in. Ties inside a millisecond are broken randomly, which is fine: nothing
-//!   in the model needs to order two notifications published the same millisecond.
-//!   The prefix makes an id self-describing in a log line or a support ticket.
-//! * **Named ids** are slugs the operator or publisher chooses: `ci-infra`,
-//!   `bot-argocd`, `ack-incident`. They appear in URLs, in GitOps config (design
-//!   §11) and in action payloads, so they are normalised to a single canonical
-//!   form rather than compared case-insensitively at every use site.
-//!
-//! Both parse strictly. An id is the one field that shows up in a URL path, a SQL
-//! lookup and a log line at once, so it is worth refusing anything surprising at
-//! the boundary.
+//! Typed identifiers, parsed strictly: minted ids are prefixed ULIDs (`ntf_01J…`,
+//! time-ordered); named ids are canonical lowercase slugs chosen by operators.
 
 use core::fmt;
 use core::str::FromStr;
@@ -52,8 +36,7 @@ macro_rules! ulid_newtype {
                 Self(ulid)
             }
 
-            /// The underlying ULID, for adapters that persist 128 bits rather
-            /// than the prefixed text.
+            /// The underlying ULID, for adapters that persist 128 bits.
             #[must_use]
             pub const fn as_ulid(self) -> Ulid {
                 self.0
@@ -127,8 +110,7 @@ ulid_newtype!(
 );
 
 ulid_newtype!(
-    /// An uploaded attachment, referenced by a payload rather than embedded in it
-    /// (design §2.3).
+    /// An uploaded attachment, referenced by a payload rather than embedded (§2.3).
     AttachmentId,
     "att_",
     "attachment_id"
@@ -156,27 +138,15 @@ ulid_newtype!(
 );
 
 ulid_newtype!(
-    /// One outbound delivery chain, from first attempt to acceptance or dead letter
-    /// (design §7.1bis).
-    ///
-    /// Sent as `X-Weebo-Delivery` and reused across retries — it is the consumer's
-    /// idempotency key, which is the whole reason it exists. §7.1bis called it a
-    /// UUID before anything was written, at a point where the only properties that
-    /// mattered were "unique" and "stable across retries"; a ULID has both, sorts by
-    /// time in the index the drain reads in order, and is what every other minted id
-    /// in this product already is.
+    /// One outbound delivery chain (§7.1bis), sent as `X-Weebo-Delivery` and reused
+    /// across retries as the consumer's idempotency key.
     DeliveryId,
     "dlv_",
     "delivery_id"
 );
 
-/// A canonical, operator-chosen name: lowercase ASCII alphanumerics separated by
-/// `-`, `_` or `.`, starting and ending on an alphanumeric.
-///
-/// Case is normalised down rather than compared insensitively: `Ci-Infra` and
-/// `ci-infra` naming the same channel in a URL, in GitOps config and in a SQL
-/// unique index is a bug waiting for the day one of those three comparisons is
-/// done differently.
+/// A canonical name: lowercase ASCII alphanumerics separated by `-`, `_` or `.`,
+/// starting and ending on an alphanumeric.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
@@ -290,16 +260,14 @@ slug_newtype!(
 );
 
 slug_newtype!(
-    /// A service account, named so a timeline can say "published by `bot-argocd`"
-    /// rather than "published by a key" (design §5.2bis).
+    /// A service account, named so a timeline can say who published (§5.2bis).
     ServiceAccountId,
     "service_account_id"
 );
 
 slug_newtype!(
-    /// The key an `ack` or `choice` action is addressed by. Interactions are
-    /// deduplicated per user *and* per key (design §2.3), so it has to be stable
-    /// across revisions — which is why the publisher chooses it.
+    /// The publisher-chosen key an `ack` or `choice` action is addressed by, stable
+    /// across revisions (interactions dedup per user and key, §2.3).
     ActionKey,
     "action.key"
 );
@@ -310,14 +278,8 @@ slug_newtype!(
     "action.options.key"
 );
 
-/// A publisher-supplied identifier used for idempotent upserts: the CI run id,
-/// the job name, the incident reference (design §2.2).
-///
-/// Looser than a [`Slug`] on purpose — publishers paste values that already exist
-/// in their system (`run-4521`, `deploy/prod#88`) and rewriting those would break
-/// the idempotency they are reaching for. Only the hygiene rules apply, plus the
-/// requirement that nothing was rewritten: an id that changes under sanitisation
-/// would silently address a different notification than the caller believes.
+/// A publisher-supplied identifier for idempotent upserts (§2.2), looser than a
+/// [`Slug`]; refused if sanitisation would change it.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
@@ -394,17 +356,13 @@ mod tests {
     #[test]
     fn minted_ids_reject_a_foreign_prefix() {
         let device = DeviceId::generate().to_string();
-        // A device id where a notification id is expected must not parse, or the
-        // two id spaces would silently alias in a URL.
+        // Id spaces must not alias.
         assert!(device.parse::<NotificationId>().is_err());
     }
 
     #[test]
     fn minted_ids_sort_by_creation_time() {
-        // ULIDs order by their millisecond timestamp; within one millisecond the
-        // low bits are random, so the guarantee — and the test — is at millisecond
-        // granularity. That is what makes an index on the id also serve
-        // "most recent first".
+        // ULIDs order by millisecond, so the test works at millisecond granularity.
         let epoch = std::time::UNIX_EPOCH;
         let first = NotificationId::from_ulid(Ulid::from_datetime(epoch));
         let second = NotificationId::from_ulid(Ulid::from_datetime(
@@ -415,9 +373,7 @@ mod tests {
 
     #[test]
     fn every_id_type_round_trips_through_json() {
-        // The persistence and HTTP adapters both go through serde; an id that
-        // serialises one way and parses another would break in storage, not in a
-        // test, so each type is exercised here rather than only the one in use.
+        // Every id type must round-trip through serde.
         macro_rules! assert_round_trip {
             ($name:ident) => {{
                 let id = $name::generate();
@@ -477,8 +433,7 @@ mod tests {
 
     #[test]
     fn external_ids_refuse_anything_sanitising_would_rewrite() {
-        // Silently stripping the escape would address a *different* notification
-        // than the caller thinks they are addressing.
+        // Sanitising would address a different notification.
         let err = ExternalId::parse("run-\u{1b}[2J4521").unwrap_err();
         assert_eq!(err.code(), "field.malformed");
         assert!(ExternalId::parse(" run-4521 ").is_err());

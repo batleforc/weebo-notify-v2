@@ -1,34 +1,6 @@
-//! The email sink: one revision, one plain-text mail (design §7.1bis).
-//!
-//! The other v1 sink, and the one whose hard part is not the protocol. A webhook
-//! consumer parses; a person reads. So this adapter is mostly a decision about what
-//! belongs in a mail somebody gets at three in the morning, and the rule it follows
-//! is the one §2.3 already sets for every other surface: the title is what there is
-//! room for, everything else is optional.
-//!
-//! # Only revisions are mailed
-//!
-//! The stream carries five kinds of event (§8.1). Four of them — a receipt, an
-//! interaction, a tombstone, a preference — are a client's business and nobody's
-//! inbox: "alice has read your notification" is not a mail, it is a badge. A webhook
-//! gets all five because a program can ignore what it does not care about; a mailbox
-//! cannot. The other four are accepted and dropped, reported as delivered, because a
-//! sink that retried them for a day would fill a DLQ with events that were never
-//! going anywhere.
-//!
-//! # Plain text, and no HTML alternative
-//!
-//! The body is markdown by contract (§2.3), and markdown reads fine as text. An HTML
-//! part would mean rendering publisher-supplied markdown into a mail client — the
-//! single most forgiving HTML sanitiser surface there is, for a gain of some bold
-//! type. §2.3 spends its length on exactly this class of risk; this is the cheap way
-//! to stay out of it.
-//!
-//! # What is transient and what is not
-//!
-//! SMTP answers that question itself: a `4xx` reply is "try again", a `5xx` is "this
-//! address will not take it". `lettre` preserves the distinction, so the
-//! classification here is that distinction and nothing invented on top.
+//! The email sink (design §7.1bis): one revision, one plain-text mail.
+//! Only revisions are mailed; other events are acknowledged as delivered. No HTML part, to avoid
+//! rendering publisher markdown in mail clients (§2.3). SMTP `4xx` is transient, `5xx` permanent.
 
 use core::fmt::Write as _;
 
@@ -40,12 +12,10 @@ use notify_ports::{
     SinkOutcome, SinkTarget,
 };
 
-/// Everything the mail sink needs that is not per-delivery (design §11,
-/// `[sinks.smtp]`).
+/// Everything the mail sink needs that is not per-delivery (design §11, `[sinks.smtp]`).
 #[derive(Debug, Clone)]
 pub struct SmtpSettings {
-    /// Where the relay is: `smtp://host:port` for a plaintext hop inside the cluster
-    /// (or Mailpit in development), `smtps://…` for TLS.
+    /// Relay URL: `smtp://host:port` for plaintext inside the cluster, `smtps://…` for TLS.
     pub url: url::Url,
     /// The envelope sender, as `Name <address>` or bare address.
     pub from: String,
@@ -53,11 +23,7 @@ pub struct SmtpSettings {
     pub username: Option<String>,
     /// Resolved by the configuration layer, never read from here.
     pub password: Option<String>,
-    /// Where this instance is reachable, for the link at the bottom of the mail.
-    ///
-    /// Optional, and no link is written without it: §10.4 wants mails to point at
-    /// `/n/<id>`, and guessing a hostname would produce mails full of links to
-    /// somewhere nobody is serving.
+    /// Optional; without it mails carry no `/n/<id>` link (§10.4) rather than a guessed one.
     pub permalink_base: Option<url::Url>,
 }
 
@@ -77,14 +43,7 @@ impl core::fmt::Debug for EmailSink {
 }
 
 impl EmailSink {
-    /// Build one from the configured relay.
-    ///
-    /// # Errors
-    ///
-    /// A relay URL `lettre` cannot parse, or a `from` that is not a mailbox — both
-    /// refused here, at startup, rather than at the first delivery. An operator who
-    /// typed the address wrong finds out when the process starts, not when the first
-    /// incident fires.
+    /// Fails at startup on a relay URL `lettre` cannot parse or a `from` that is not a mailbox.
     pub fn new(settings: &SmtpSettings) -> PortResult<Self> {
         let from: Mailbox = settings
             .from
@@ -119,8 +78,7 @@ impl EmailSink {
             .parse()
             .map_err(|error| PortError::corrupt("sink.email.address", error))?;
 
-        // The channel in the subject, because somebody who gets mail from three
-        // channels filters on it, and a subject line is the only thing a filter has.
+        // Channel in the subject: it is all a mail filter has.
         let subject = format!("[{}] {}", delivery.channel, revision.payload.title);
 
         Message::builder()
@@ -128,8 +86,7 @@ impl EmailSink {
             .to(to)
             .subject(subject)
             .header(ContentType::TEXT_PLAIN)
-            // The delivery id travels here too: a mail that arrives twice — the
-            // at-least-once contract of §7.1bis — is recognisable as the same one.
+            // The delivery id identifies at-least-once duplicates (§7.1bis).
             .message_id(Some(format!("<{}@weebo-notify>", delivery.delivery_id)))
             .body(self.render(delivery, revision))
             .map_err(|error| PortError::corrupt("sink.email.message", error))
@@ -144,8 +101,7 @@ impl EmailSink {
             out.push_str("\n\n");
         }
 
-        // Spelled the way the API spells them, by asking serde rather than by
-        // writing a second vocabulary here that would drift the day one is renamed.
+        // Spelled via serde so it cannot drift from the API's vocabulary.
         let _ = write!(
             out,
             "state: {} · status: {}\nchannel: {}\n",
@@ -155,9 +111,7 @@ impl EmailSink {
         );
 
         if let Some(base) = &self.permalink_base {
-            // The web permalink of §10.4, which is also the desktop deep link's
-            // mirror (§10bis.3quater) — one address that opens the right thing
-            // wherever the reader happens to be.
+            // The §10.4 web permalink, which also mirrors the desktop deep link.
             if let Ok(link) = base.join(&format!("/n/{}", revision.notification_id)) {
                 let _ = write!(out, "\n{link}\n");
             }
@@ -185,9 +139,7 @@ impl SinkDispatcher for EmailSink {
         };
 
         let Some(revision) = revision_of(&delivery.event) else {
-            // Nothing to write to a person. Reported as delivered rather than
-            // rejected: it *is* finished with, and a dead letter would say something
-            // is stuck when nothing is.
+            // Nothing to mail: delivered, not a dead letter.
             tracing::debug!(
                 delivery = %delivery.delivery_id,
                 kind = delivery.event.kind().as_str(),
@@ -210,11 +162,7 @@ impl SinkDispatcher for EmailSink {
     }
 }
 
-/// One of the domain's plain enums as the wire spells it.
-///
-/// Empty rather than a placeholder if serde ever answers something other than a
-/// string: a missing word in a mail is a cosmetic loss, and there is nothing here
-/// worth failing a delivery over.
+/// One of the domain's plain enums as the wire spells it; empty if serde ever answers a non-string.
 fn word<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(text)) => text,
@@ -338,8 +286,7 @@ mod tests {
             reason: notify_domain::TombstoneReason::Expired,
         });
 
-        // No SMTP server is listening in a unit test, so a delivery that *tried* to
-        // send would fail — which is exactly what makes this assertion meaningful.
+        // No SMTP server here, so an attempted send would fail.
         let outcome = sink
             .deliver(
                 &delivery,

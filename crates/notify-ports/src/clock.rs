@@ -1,16 +1,8 @@
-//! Time as a port.
-//!
-//! The domain never reads a clock — it is told what time it is (see
-//! `notify-domain`). This is the seam where that promise is kept: production wires
-//! [`SystemClock`], tests wire a clock they control, and a scenario about a TTL
-//! expiring in thirty days runs in a microsecond instead of being skipped.
+//! Time as a port: the domain is told the time, tests wire a clock they control.
 
 use time::OffsetDateTime;
 
-/// The current time.
-///
-/// Not async and not fallible: reading the clock is neither. Making it a trait is
-/// about *control*, not about I/O.
+/// The current time. A trait for control, not I/O.
 pub trait Clock: Send + Sync + core::fmt::Debug {
     /// Now, in UTC.
     fn now(&self) -> OffsetDateTime;

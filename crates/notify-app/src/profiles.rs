@@ -1,16 +1,5 @@
-//! Reading and editing one's own profile (design §2.4, `GET`/`PUT
-//! /api/v1/users/me/profile`).
-//!
-//! # Only ever your own
-//!
-//! Both use cases take the profile from the [`Caller`] and never from a path
-//! parameter, because §2.4 says there is no endpoint that reads somebody else's:
-//! a profile travels **embedded** where it is legitimate — as the `author` of a
-//! revision, in a member list, next to a receipt — and that is what mechanically
-//! enforces "visible only through a shared channel".
-//!
-//! A principal that is not a user has no profile to read: an API key acts for
-//! whoever owns it, and a channel key owns nothing at all (§5.2).
+//! Reading and editing one's own profile (§2.4). Always the caller's: there is no
+//! endpoint reading somebody else's; profiles travel embedded where legitimate.
 
 use std::sync::Arc;
 
@@ -34,7 +23,6 @@ impl core::fmt::Debug for ReadProfile {
 }
 
 impl ReadProfile {
-    /// Wire it.
     #[must_use]
     pub fn new(users: Arc<dyn UserRepository>) -> Self {
         Self { users }
@@ -54,10 +42,7 @@ impl ReadProfile {
         self.users
             .get(id)
             .await?
-            // A token verified against JWKS names a user the login path created, so
-            // an absent row is a database that lost one — but the caller gets the
-            // same refusal either way rather than a 500 that says "your account is
-            // missing".
+            // An absent row gets the same refusal, not a 500.
             .ok_or(Failure::Domain(DomainError::NotAPerson))
     }
 }
@@ -76,11 +61,6 @@ impl core::fmt::Debug for UpdateProfile {
 }
 
 impl UpdateProfile {
-    /// Wire it.
-    ///
-    /// No clock: nothing here is stamped. M3 adds `edited_at` with the DND
-    /// preferences, and a constructor argument nobody reads until then is API noise
-    /// every caller has to satisfy.
     #[must_use]
     pub fn new(users: Arc<dyn UserRepository>) -> Self {
         Self {
@@ -89,11 +69,8 @@ impl UpdateProfile {
         }
     }
 
-    /// Apply an edit and return the profile as it now stands.
-    ///
-    /// The edit is partial by construction (see [`ProfileEdit`]): an absent field
-    /// is left alone, and an explicit `null` hands the field back to the identity
-    /// provider instead of blanking it.
+    /// Apply a partial edit (see [`ProfileEdit`]) and return the resulting profile; an
+    /// explicit `null` hands the field back to the identity provider.
     pub async fn execute(&self, caller: &Caller, edit: ProfileEdit) -> Result<Profile, Failure> {
         caller.ensure_person()?;
         let mut user = self.read.load(caller).await?;
@@ -103,12 +80,8 @@ impl UpdateProfile {
     }
 }
 
-/// `PUT /api/v1/users/me/avatar` (design §2.4, §8).
-///
-/// The only upload that goes through the server, and the order of what happens is
-/// the point: the bytes are **processed before they are stored**, so nothing a
-/// caller sent ever reaches the bucket. What lands there is a re-encoded 256×256
-/// PNG with no metadata — see [`AvatarProcessor`], which owns those rules.
+/// `PUT /api/v1/users/me/avatar` (§2.4, §8). Bytes are processed before they are
+/// stored: only a re-encoded 256×256 PNG reaches the bucket (see [`AvatarProcessor`]).
 #[derive(Clone)]
 pub struct SetAvatar {
     users: Arc<dyn UserRepository>,
@@ -124,7 +97,6 @@ impl core::fmt::Debug for SetAvatar {
 }
 
 impl SetAvatar {
-    /// Wire it.
     #[must_use]
     pub fn new(
         users: Arc<dyn UserRepository>,
@@ -154,10 +126,7 @@ impl SetAvatar {
         let previous = user.profile.avatar.replace(id);
         self.users.upsert(&user).await?;
 
-        // The old object goes only after the new one is stored and referenced. The
-        // other order leaves a window where the profile points at bytes that are
-        // gone, and a failure in between would make it permanent; this order leaves
-        // an orphan at worst, which the purge job can find.
+        // The old object goes only after the new one is stored and referenced: at worst an orphan.
         if let Some(previous) = previous
             && let Err(error) = self.attachments.delete(previous).await
         {
@@ -168,13 +137,8 @@ impl SetAvatar {
     }
 }
 
-/// `GET /api/v1/avatars/{id}` (design §2.4).
-///
-/// Served through the API rather than by a presigned URL, and by object id rather
-/// than by user id. Both follow from §2.4: an avatar is shown next to every
-/// revision its owner published, so a signature per render would be a signing round
-/// trip per row of an inbox — and a `/users/{id}/avatar` route would be the profile
-/// lookup that section refuses to add.
+/// `GET /api/v1/avatars/{id}` (§2.4). Served through the API, by object id: no
+/// signature per row, and no per-user profile lookup route.
 #[derive(Clone)]
 pub struct ReadAvatar {
     attachments: Arc<dyn AttachmentStore>,
@@ -187,19 +151,12 @@ impl core::fmt::Debug for ReadAvatar {
 }
 
 impl ReadAvatar {
-    /// Wire it.
     #[must_use]
     pub fn new(attachments: Arc<dyn AttachmentStore>) -> Self {
         Self { attachments }
     }
 
-    /// The bytes, for any authenticated caller.
-    ///
-    /// Any *authenticated* caller: the id is an unguessable ULID that only reaches
-    /// somebody through a profile or an `author` they were already allowed to see,
-    /// so the reference is the capability. Checking a shared channel here would mean
-    /// resolving which user an object belongs to on every image request, and would
-    /// still be defeated by the person simply being in the channel.
+    /// The bytes, for any authenticated caller: the unguessable id is the capability.
     pub async fn execute(
         &self,
         _caller: &Caller,
@@ -209,10 +166,7 @@ impl ReadAvatar {
     }
 }
 
-/// Turn a refused image into the domain's vocabulary.
-///
-/// Everything the processor refuses is the caller's file being wrong, so it is a
-/// `422` with a reason somebody can act on rather than an infrastructure failure.
+/// Turn a refused image into a 422 the caller can act on.
 fn rejected(rejection: ImageRejection) -> Failure {
     Failure::Domain(match rejection {
         ImageRejection::TooLarge => DomainError::TooLarge {
@@ -326,8 +280,7 @@ mod tests {
         assert_eq!(updated.display_name.as_deref(), Some("alice"));
         assert!(updated.is_overridden(ProfileField::Timezone));
 
-        // The shown name has to follow, or the timeline keeps saying "Alice Martin"
-        // next to everything she publishes (§2.4).
+        // The shown name has to follow (§2.4).
         let stored = UserRepository::get(store.as_ref(), id)
             .await
             .unwrap()

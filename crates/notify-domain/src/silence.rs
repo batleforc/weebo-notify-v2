@@ -1,12 +1,5 @@
-//! Silencing: the reactive, targeted half of "stop notifying me" (design §2.3).
-//!
-//! Do-not-disturb is the other half — planned, broad, and arriving with M3
-//! (design §7.4). Both are per user and both live on the server, so muting on one
-//! client mutes everywhere rather than only where it was clicked.
-//!
-//! A silence suppresses **push and badges** for one user. It does not touch the
-//! inbox, the stream, or anybody else's delivery: the notification still arrives,
-//! it just stops asking for attention.
+//! Silencing: per-user, targeted suppression of push and badges (§2.3); the inbox
+//! and stream are untouched. Do-not-disturb is the planned counterpart (§7.4).
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -41,8 +34,7 @@ pub struct Silence {
     pub user: UserId,
     /// What it covers.
     pub target: SilenceTarget,
-    /// When it lifts. `None` only for a notification-scoped silence, which ends
-    /// when the notification does.
+    /// When it lifts; `None` only for a notification-scoped silence, which ends with the notification.
     #[serde(with = "time::serde::rfc3339::option", default)]
     pub until: Option<OffsetDateTime>,
     /// When it was set.
@@ -51,12 +43,7 @@ pub struct Silence {
 }
 
 impl Silence {
-    /// Start a silence.
-    ///
-    /// A group silence with no duration is refused: muting a whole group with no
-    /// end date is the kind of thing someone does at 3am and rediscovers a quarter
-    /// later (design §2.3). Scoped to a single notification, "until it closes" is a
-    /// perfectly good answer, so no duration is required there.
+    /// Start a silence. A group silence needs a duration; a notification one may last until it closes (§2.3).
     pub fn start(
         user: UserId,
         target: SilenceTarget,
@@ -96,8 +83,7 @@ impl Silence {
         self.until.is_none_or(|until| now < until)
     }
 
-    /// Whether it covers a given notification, identified by its id and its
-    /// `group_key`.
+    /// Whether it covers a notification, given its id and `group_key`.
     #[must_use]
     pub fn covers(&self, notification: NotificationId, group_key: Option<&str>) -> bool {
         match &self.target {
@@ -107,11 +93,7 @@ impl Silence {
     }
 }
 
-/// The scope an action asked for, resolved into a concrete target.
-///
-/// A group-scoped `silence` button on a notification with no `group_key` has
-/// nothing to act on; rather than silently silencing only that notification —
-/// which would look like the button half-worked — it is refused.
+/// Resolve an action's scope into a target; group scope without a `group_key` is refused.
 pub fn target_for(
     scope: SilenceScope,
     notification: NotificationId,

@@ -1,9 +1,5 @@
-//! The duration spelling used everywhere a human writes a delay: `"7d"`, `"4h"`,
-//! `"30s"` — in a publish payload (`ttl`), in a silence action (`duration`) and in
-//! the GitOps channel config (design §7.2bis, §2.3, §11).
-//!
-//! One parser, one formatter, one vocabulary. Anything a publisher can write, an
-//! operator can write in TOML and a client can read back unchanged.
+//! The single-unit duration spelling (`"7d"`, `"4h"`, `"30s"`) shared by payload
+//! TTLs, silences and GitOps config (§7.2bis, §2.3, §11).
 
 use core::fmt;
 use core::time::Duration;
@@ -19,11 +15,7 @@ const HOUR: u64 = 60 * MINUTE;
 const DAY: u64 = 24 * HOUR;
 const WEEK: u64 = 7 * DAY;
 
-/// A duration written the way people write them.
-///
-/// Deliberately whole-second and single-unit: `"90m"` is fine, `"1h30m"` is not.
-/// A notification TTL is a rough intent, not a schedule, and one unit per value
-/// keeps the config, the payload and the client display identical.
+/// A whole-second, single-unit duration: `"90m"` is fine, `"1h30m"` is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
@@ -33,22 +25,17 @@ const WEEK: u64 = 7 * DAY;
 pub struct HumanDuration(Duration);
 
 impl HumanDuration {
-    /// Zero. Where a TTL is expected this means "never expire", which is a policy
-    /// decision rather than a duration — see [`crate::ttl::Ttl`].
+    /// Zero; as a TTL it means "never expire" (see [`crate::ttl::Ttl`]).
     pub const ZERO: Self = Self(Duration::ZERO);
 
-    /// Build from seconds in a `const` context, for literals that are obviously
-    /// within [`MAX_DURATION`]. Runtime input goes through [`Self::from_secs`],
-    /// which checks.
+    /// Build from seconds in a `const` context; runtime input goes through
+    /// [`Self::from_secs`], which checks.
     #[must_use]
     pub const fn from_secs_const(seconds: u64) -> Self {
         Self(Duration::from_secs(seconds))
     }
 
-    /// Parse `<integer><unit>`, with unit in `s`, `m`, `h`, `d`, `w`.
-    ///
-    /// A bare integer is read as seconds, so a config that says `30` and one that
-    /// says `"30s"` agree.
+    /// Parse `<integer><unit>`, with unit in `s`, `m`, `h`, `d`, `w`; a bare integer is seconds.
     pub fn parse(raw: &str, field: &'static str) -> Result<Self> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -81,8 +68,7 @@ impl HumanDuration {
         Self::from_secs(seconds, field)
     }
 
-    /// Build from a whole number of seconds, refusing anything past the sanity
-    /// ceiling (design guard rail, [`MAX_DURATION`]).
+    /// Build from whole seconds, refusing anything past [`MAX_DURATION`].
     pub fn from_secs(seconds: u64, field: &'static str) -> Result<Self> {
         if seconds > MAX_DURATION.as_secs() {
             return Err(DomainError::TooLong {
@@ -114,8 +100,7 @@ impl HumanDuration {
 }
 
 impl fmt::Display for HumanDuration {
-    /// Render in the largest unit that divides evenly, so a value parsed from
-    /// `"7d"` comes back as `"7d"` and not as `"604800s"`.
+    /// Render in the largest unit that divides evenly.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let seconds = self.0.as_secs();
         if seconds == 0 {
@@ -144,8 +129,7 @@ impl Serialize for HumanDuration {
 
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, D::Error> {
-        /// `"7d"` and `604800` are both accepted, because TOML config reaches for
-        /// integers and JSON payloads reach for strings.
+        /// Accepts `"7d"` and `604800` alike (TOML integers, JSON strings).
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Repr {
@@ -188,8 +172,6 @@ mod tests {
             let parsed = HumanDuration::parse(raw, "ttl").unwrap();
             assert_eq!(parsed.to_string(), raw);
         }
-        // Equivalent spellings collapse onto the largest unit that divides evenly,
-        // so the canonical form is what a client reads back.
         assert_eq!(HumanDuration::parse("7d", "ttl").unwrap().to_string(), "1w");
         assert_eq!(
             HumanDuration::parse("60m", "ttl").unwrap().to_string(),

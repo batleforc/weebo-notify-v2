@@ -1,8 +1,5 @@
 //! Reading notifications: the inbox, one notification, its timeline, and search.
-//!
-//! Every read is scoped to the channels the caller may subscribe to, resolved once
-//! through [`Authorizer::readable_channels`]. An empty scope returns an empty page
-//! rather than an error — "you are in no channels" is a valid state, not a failure.
+//! Every read is scoped through [`Authorizer::readable_channels`]; no channels is an empty page.
 
 use std::sync::Arc;
 
@@ -16,29 +13,9 @@ use notify_ports::{
 
 use crate::authz::{Authorizer, Caller};
 
-/// `GET /api/v1/unread` — the badge (design §7.3, §9.2, §10.4, §10bis).
-///
-/// # Why this is a route of its own
-///
-/// It could have hung off `GET /channels`, which is what the sidebar renders. It
-/// does not, and the reason is how the two change: a channel list changes when an
-/// operator edits configuration, and is cached accordingly; an unread count
-/// changes every time anybody publishes or anybody reads. Folding the second into
-/// the first would mean either re-fetching the channel list constantly or showing
-/// a badge as stale as the configuration.
-///
-/// Flat under `/api/v1`, next to `/search`, `/sync` and `/receipts`, rather than
-/// under an `/inbox` prefix that would have exactly one member: like those, this
-/// is a question about everything the caller can read, not about one resource.
-///
-/// # What "unread" means here, stated once
-///
-/// A notification the caller may read, still live, with no `seen` receipt from
-/// them. `seen` is recorded on every channel since the increment that added this
-/// (§7.3): the channel's `receipts_enabled` policy governs whether *other people*
-/// are shown who read it, never whether the reading is recorded. Without that,
-/// this count would be permanently equal to the channel's size wherever an
-/// operator had left receipts off — a badge that only ever grows.
+/// `GET /api/v1/unread` — the badge (§7.3, §9.2, §10.4). Its own route because it
+/// changes on every publish and read, unlike the channel list. Unread: readable, live,
+/// no `seen` receipt from the caller (`seen` is recorded on every channel).
 #[derive(Clone)]
 pub struct CountUnread {
     notifications: Arc<dyn NotificationRepository>,
@@ -52,7 +29,6 @@ impl core::fmt::Debug for CountUnread {
 }
 
 impl CountUnread {
-    /// Wire it.
     #[must_use]
     pub fn new(notifications: Arc<dyn NotificationRepository>, authorizer: Authorizer) -> Self {
         Self {
@@ -62,10 +38,6 @@ impl CountUnread {
     }
 
     /// Count, over every channel the caller may read.
-    ///
-    /// No channel filter parameter, unlike the inbox: a badge is drawn for the
-    /// whole sidebar at once, and a caller wanting one channel reads the one entry
-    /// out of the answer rather than paying a round trip per channel.
     pub async fn execute(&self, caller: &Caller) -> Result<Vec<UnreadCount>, Failure> {
         let readable = self.authorizer.readable_channels(caller).await?;
         Ok(self
@@ -85,8 +57,7 @@ pub struct ListInbox {
 /// Inbox filters as a caller supplies them.
 #[derive(Debug, Clone, Default)]
 pub struct InboxFilters {
-    /// Restrict to these channels. Empty means every channel the caller may read —
-    /// which is what the unified inbox asks for.
+    /// Restrict to these channels; empty means every channel the caller may read.
     pub channels: Vec<ChannelId>,
     /// Lifecycle states to keep.
     pub states: Vec<State>,
@@ -111,7 +82,6 @@ impl core::fmt::Debug for ListInbox {
 }
 
 impl ListInbox {
-    /// Wire it.
     #[must_use]
     pub fn new(notifications: Arc<dyn NotificationRepository>, authorizer: Authorizer) -> Self {
         Self {
@@ -120,7 +90,6 @@ impl ListInbox {
         }
     }
 
-    /// List.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -128,9 +97,7 @@ impl ListInbox {
     ) -> Result<Page<Notification>, Failure> {
         let readable = self.authorizer.readable_channels(caller).await?;
 
-        // An explicit channel list narrows what the caller may already see; it can
-        // never widen it. Doing the intersection here rather than trusting the
-        // caller is what keeps `?channels=` from being an access-control bypass.
+        // An explicit channel list narrows what the caller may see, never widens it.
         let channels = if filters.channels.is_empty() {
             readable
         } else {
@@ -176,7 +143,6 @@ impl core::fmt::Debug for GetNotification {
 }
 
 impl GetNotification {
-    /// Wire it.
     #[must_use]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
@@ -190,11 +156,8 @@ impl GetNotification {
         }
     }
 
-    /// Fetch, checking the caller may read its channel.
-    ///
-    /// A notification that is gone answers `notification.gone` rather than a bare
-    /// 404, but only *after* the channel check: otherwise "gone" versus "no such
-    /// notification" would tell a stranger which ids exist.
+    /// Fetch, checking the caller may read its channel. `notification.gone` only after
+    /// the channel check, so strangers cannot probe ids.
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -231,7 +194,6 @@ impl core::fmt::Debug for ListRevisions {
 }
 
 impl ListRevisions {
-    /// Wire it.
     #[must_use]
     pub fn new(notifications: Arc<dyn NotificationRepository>, get: GetNotification) -> Self {
         Self { notifications, get }
@@ -244,8 +206,7 @@ impl ListRevisions {
         id: NotificationId,
         page: PageRequest,
     ) -> Result<Page<Revision>, Failure> {
-        // Authorised through the notification, so the timeline cannot be read by
-        // anyone who could not read the notification itself.
+        // Authorised through the notification itself.
         self.get.execute(caller, id).await?;
         Ok(self.notifications.revisions(id, page).await?)
     }
@@ -268,7 +229,6 @@ impl core::fmt::Debug for SearchNotifications {
 }
 
 impl SearchNotifications {
-    /// Wire it.
     #[must_use]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
@@ -291,15 +251,13 @@ impl SearchNotifications {
         text: &str,
         page: PageRequest,
     ) -> Result<Page<Notification>, Failure> {
-        // Full text is the expensive read; the palette debounces client-side, this
-        // is the floor under that (design §8.2).
+        // Full text is the expensive read (§8.2).
         let quota = Quota::Search {
             principal: caller.principal.reference(),
         };
         if let Allowance::Limited {
             retry_after_seconds,
-            // No override: §8.2 makes `limits` a property of a channel, and a search
-            // crosses every channel the caller can read.
+            // No channel override: a search crosses every readable channel.
         } = self.limiter.check(&quota, None, self.clock.now()).await?
         {
             return Err(Failure::RateLimited {
@@ -344,7 +302,6 @@ impl core::fmt::Debug for DeleteNotification {
 }
 
 impl DeleteNotification {
-    /// Wire it.
     #[must_use]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
@@ -360,8 +317,7 @@ impl DeleteNotification {
         }
     }
 
-    /// Delete. Idempotent: deleting an already-deleted notification succeeds and
-    /// emits nothing, so a retried request cannot produce a second tombstone.
+    /// Delete. Idempotent: an already-deleted notification succeeds and emits nothing.
     pub async fn execute(&self, caller: &Caller, id: NotificationId) -> Result<(), Failure> {
         let found = self
             .notifications
@@ -529,11 +485,7 @@ mod tests {
         );
     }
 
-    /// Mark a notification read, the way `PostReceipt` eventually does.
-    ///
-    /// Straight at the port rather than through the use case: what is under test
-    /// here is the counting, and routing it through the receipt path would make
-    /// these tests fail for reasons that belong to `interact.rs`.
+    /// Mark a notification read straight at the port, keeping these tests about counting.
     async fn mark_seen(fixture: &Fixture, notification: NotificationId, who: &Principal) {
         notify_ports::ReceiptRepository::record(
             &fixture.store,
@@ -545,8 +497,7 @@ mod tests {
                 kind: notify_domain::ReceiptKind::Seen,
                 at: fixture.clock.now(),
             },
-            // The channel here collects no receipts, which is the default and the
-            // case the badge has to work in — so this is the private read.
+            // The default channel collects no receipts: the private read.
             notify_ports::Visibility::Reader,
         )
         .await
@@ -588,8 +539,7 @@ mod tests {
 
         mark_seen(&fixture, only.id, &fixture.alice).await;
 
-        // Not `[{channel, unread: 0}]`. "No badge" has one representation, so that
-        // a client renders a badge per entry instead of filtering the answer first.
+        // "No badge" has one representation: no entry.
         assert!(fixture.unread.execute(&caller).await.unwrap().is_empty());
     }
 
@@ -604,9 +554,7 @@ mod tests {
         fixture.store.seed_channel(theirs);
         seed(&fixture, "cluster-ovh-1", "not for alice").await;
 
-        // The count is taken over `readable_channels`, so a channel alice is not in
-        // cannot reach the answer — a badge is a smaller leak than a listing, and a
-        // leak all the same.
+        // A channel alice is not in cannot reach the count.
         assert!(
             fixture
                 .unread

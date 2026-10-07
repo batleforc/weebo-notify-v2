@@ -1,19 +1,5 @@
-//! Storing and reading notifications.
-//!
-//! Two conventions run through this port and are worth stating once rather than on
-//! every method:
-//!
-//! **A write returns the cursor it produced.** Recording a revision and appending
-//! its event row are one transaction (ADR-0012), so the write is the only place
-//! that knows the resulting position. Handing it back is what lets a publisher be
-//! told where its notification landed, and what lets the fan-out poke carry a
-//! cursor instead of a payload.
-//!
-//! **Reads never resurrect what is gone.** Deleted and expired notifications are
-//! excluded from every list, every search and every lookup by external id. Only
-//! [`NotificationRepository::get`] can still see a tombstoned row, because a caller
-//! sometimes has to tell "never existed" from "no longer exists" — a distinction a
-//! 404 loses.
+//! Storing and reading notifications. Writes return their cursor (ADR-0012); reads
+//! exclude deleted/expired rows, except [`NotificationRepository::get`].
 
 use notify_domain::{
     AttachmentId, ChannelId, Cursor, ExternalId, Notification, NotificationId, Principal, Priority,
@@ -30,23 +16,16 @@ use crate::pagination::{Page, PageRequest};
 pub struct UnreadCount {
     /// The channel the badge hangs off.
     pub channel: ChannelId,
-    /// How many of its notifications this principal has not read.
-    ///
-    /// Never zero — a channel with nothing unread is absent from the list rather
-    /// than present with a zero, so that "no badge" has one representation instead
-    /// of two.
+    /// How many of its notifications this principal has not read; never zero (such
+    /// channels are omitted).
     pub unread: u64,
 }
 
-/// Filters for an inbox listing (design §8, `GET /channels/{id}/notifications`).
-///
-/// Every field is a narrowing: empty vectors and `None` mean "do not filter on
-/// this", never "match nothing".
+/// Filters for an inbox listing (§8); empty/`None` means "do not filter".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InboxQuery {
-    /// Which channels to read. Must already be narrowed to what the caller may
-    /// see — this port does not do authorisation, and an empty list means
-    /// "no channels", which correctly returns nothing.
+    /// Which channels to read, already narrowed to what the caller may see (this
+    /// port does not authorise).
     pub channels: Vec<ChannelId>,
     /// Keep only these lifecycle states.
     pub states: Vec<State>,
@@ -58,19 +37,14 @@ pub struct InboxQuery {
     pub min_priority: Option<Priority>,
     /// Keep only notifications sharing this grouping key.
     pub group_key: Option<String>,
-    /// Keep only notifications whose head revision carries at least one action
-    /// button (design §2.3). `Some(false)` narrows the other way, to notifications
-    /// with none.
+    /// Keep only notifications whose head revision has action buttons (`Some(false)`:
+    /// none) (§2.3).
     pub has_actions: Option<bool>,
     /// Where and how much.
     pub page: PageRequest,
 }
 
-/// A full-text query (design §8, `GET /search`).
-///
-/// Scoped by construction: `channels` is the caller's own membership list, so a
-/// search cannot return a notification from a channel they are not in — the
-/// property scenario T27 exists to pin down.
+/// A full-text query (§8), scoped to the caller's own channels (T27).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchQuery {
     /// What to look for, across title, body and tags.
@@ -86,11 +60,9 @@ pub struct SearchQuery {
 pub struct ExpiredNotification {
     /// Which one.
     pub id: NotificationId,
-    /// Where it lived — the purge broadcasts a tombstone to that channel, and
-    /// counts towards its "N expired while you were away".
+    /// Where it lived; gets a tombstone and an "expired while away" count.
     pub channel: ChannelId,
-    /// Whether anybody ever received it. An expired-undelivered notification is
-    /// the one that feeds the counter rather than the backlog (design §7.2bis).
+    /// Whether anybody ever received it; undelivered ones feed the counter (§7.2bis).
     pub was_delivered: bool,
 }
 
@@ -99,46 +71,31 @@ pub struct ExpiredNotification {
 pub struct ClosedNotification {
     /// Which one.
     pub id: NotificationId,
-    /// Where it lived. The closure event goes to that channel, and an operator
-    /// watching a channel close everything it publishes is watching a publisher
-    /// that has stopped calling — which is the signal this feature exists to make
-    /// visible rather than to hide.
+    /// Where it lived; the closure event goes to that channel.
     pub channel: ChannelId,
 }
 
 /// Notifications and their revisions.
 #[async_trait::async_trait]
 pub trait NotificationRepository: Send + Sync {
-    /// Fetch one, including a deleted or expired one.
-    ///
-    /// The only read that sees tombstoned rows, so a caller can answer "gone" with
-    /// [`notify_domain::DomainError::NotificationGone`] rather than a bare 404.
+    /// Fetch one, deleted or expired included, so callers can answer
+    /// [`notify_domain::DomainError::NotificationGone`].
     async fn get(&self, id: NotificationId) -> PortResult<Option<Notification>>;
 
-    /// Find the live notification a publisher's own identifier points at
-    /// (design §8, `PUT .../{external_id}`).
-    ///
-    /// Excludes deleted and expired rows on purpose: re-running a job whose
-    /// previous notification has aged out creates a new one rather than resurrecting
-    /// a tombstone.
+    /// Find the live notification behind a publisher's `external_id` (§8); tombstones
+    /// are never resurrected.
     async fn find_by_external_id(
         &self,
         channel: &ChannelId,
         external_id: &ExternalId,
     ) -> PortResult<Option<Notification>>;
 
-    /// Store a new notification and its first revision, appending the event row in
-    /// the same transaction.
-    ///
-    /// Returns [`crate::error::PortError::Conflict`] when a concurrent publisher won
-    /// the race on the same `external_id`; the caller re-reads and revises instead,
-    /// which is what makes the upsert idempotent under retries (scenario T16).
+    /// Store a new notification and its first revision with its event row.
+    /// [`crate::error::PortError::Conflict`] if a concurrent publisher won the
+    /// `external_id` race; the caller re-reads and revises (T16).
     async fn insert(&self, notification: &Notification, revision: &Revision) -> PortResult<Cursor>;
 
-    /// Append a revision to an existing notification and update its head.
-    ///
-    /// The domain has already assigned the `seq` and applied last-write-wins; the
-    /// adapter persists that decision rather than re-deciding it.
+    /// Append a revision and update the head, persisting the domain's `seq` decision.
     async fn append_revision(
         &self,
         notification: &Notification,
@@ -148,21 +105,8 @@ pub trait NotificationRepository: Send + Sync {
     /// List an inbox.
     async fn list(&self, query: &InboxQuery) -> PortResult<Page<Notification>>;
 
-    /// How many notifications this principal has not read, per channel (§7.3).
-    ///
-    /// The unread badge §9.2, §10.4 and §10bis all promise, and the reason it is a
-    /// repository method rather than something a client folds over its inbox page:
-    /// a badge counts a whole channel, and a page is a page. Counting client-side
-    /// would make the number mean "unread among the fifty rows I happen to have
-    /// loaded", which is a different number that looks like the right one.
-    ///
-    /// Same visibility rules as [`NotificationRepository::list`] — deleted and
-    /// expired rows are not counted, because a badge that outlives the thing it
-    /// counts sends its reader looking for a notification that is gone.
-    ///
-    /// Channels with nothing unread are **omitted** rather than returned as zero:
-    /// the caller renders a badge per non-zero entry, and a list of zeroes is a
-    /// list the caller has to filter anyway.
+    /// Unread notifications per channel for this principal (§7.3), counted server-side
+    /// over the whole channel. Same visibility as `list`; zero channels are omitted.
     async fn unread_counts(
         &self,
         principal: &Principal,
@@ -175,90 +119,44 @@ pub trait NotificationRepository: Send + Sync {
     /// Full-text search within the caller's channels.
     async fn search(&self, query: &SearchQuery) -> PortResult<Page<Notification>>;
 
-    /// Mark a notification deleted and append its tombstone.
-    ///
-    /// Idempotent: deleting an already-deleted notification returns `None` rather
-    /// than failing or emitting a second tombstone.
+    /// Mark a notification deleted and append its tombstone; idempotent (`None` if
+    /// already deleted).
     async fn mark_deleted(
         &self,
         id: NotificationId,
         at: OffsetDateTime,
     ) -> PortResult<Option<Cursor>>;
 
-    /// Claim a batch of notifications whose retention has run out.
-    ///
-    /// Batched and leader-only (design §11): the purge job calls this in a loop
-    /// until it comes back short. Returning the batch rather than deleting it
-    /// outright lets the caller emit tombstones and update the expired counters
-    /// before the rows go.
+    /// Claim a batch of expired notifications, leader-only (§11), so the caller can
+    /// emit tombstones and counters before the rows go.
     async fn claim_expired(
         &self,
         now: OffsetDateTime,
         limit: u32,
     ) -> PortResult<Vec<ExpiredNotification>>;
 
-    /// Whether any live notification in `channels` references this attachment
-    /// (design §6.1, §8 — `GET /attachments/{id}`).
-    ///
-    /// The authorisation for downloading an attachment, and it is phrased as a
-    /// question about *notifications* rather than about the object because an
-    /// attachment has no access control of its own: the bucket is private, the
-    /// object is not scoped to a channel, and what entitles somebody to the bytes
-    /// is being able to read something that shows them.
-    ///
-    /// Deleted and expired rows do not count. An attachment stops being readable
-    /// when the last notification showing it goes, which is the same instant the
-    /// sweep starts considering the object collectable — the two answers agreeing
-    /// is what stops a reader from holding a URL to bytes that are about to vanish.
+    /// Whether any live notification in `channels` references this attachment: the
+    /// download authorisation, since objects have no ACL of their own (§6.1).
     async fn attachment_is_visible(
         &self,
         attachment: &AttachmentId,
         channels: &[ChannelId],
     ) -> PortResult<bool>;
 
-    /// The attachment objects that only rows due for purge still reference
-    /// (design §7.2bis, §6.1).
-    ///
-    /// Asked with the same window as [`Self::purge`] and **before** it, because
-    /// the rows are the only record of which objects belong to what: deleting them
-    /// first would leave the bucket holding objects nothing can name. Doing it in
-    /// this order also makes a failed object delete harmless — the rows stay, and
-    /// the next pass asks the same question and gets the same answer.
-    ///
-    /// "Only" is the whole of the safety here. An id referenced by any revision
-    /// outside the window is left alone: nothing stops a publisher from naming one
-    /// attachment in two notifications, and deleting a live notification's image
-    /// because an unrelated expired one pointed at it would be data loss caused by
-    /// a cleanup job.
+    /// Attachment ids referenced **only** by rows due for purge (§7.2bis); call before
+    /// [`Self::purge`]. Never returns an id a live revision still uses.
     async fn orphaned_attachments(
         &self,
         deleted_before: OffsetDateTime,
         limit: u32,
     ) -> PortResult<Vec<AttachmentId>>;
 
-    /// Hard-delete previously soft-deleted rows, once their tombstones have had
-    /// time to reach every client (design §7.2bis).
+    /// Hard-delete soft-deleted rows once their tombstones have reached clients (§7.2bis).
     async fn purge(&self, deleted_before: OffsetDateTime, limit: u32) -> PortResult<u64>;
 
-    /// Close the open lifecycle notifications whose channel has run out of
-    /// patience, and say which ones (design §7.2bis).
-    ///
-    /// `deadlines` pairs a channel with the instant a notification's **last
-    /// activity** must predate to count as abandoned. One list rather than one
-    /// call per channel: the sweep is a background pass and would otherwise issue
-    /// a query per channel per tick, which is a cost that grows with an operator's
-    /// org chart for no reason.
-    ///
-    /// A channel whose policy is [`CloseAfter::Never`] is simply absent from the
-    /// list. That is the whole of the opt-out, and it is why the caller computes
-    /// deadlines rather than passing durations: "no deadline" and "a deadline very
-    /// far away" have to be different things, or a channel that opted out would be
-    /// swept the day the arithmetic overflowed.
-    ///
-    /// Closing is a state change and not a revision: no principal asked for it, so
-    /// there is nobody to author one (see `EventPayload::Closure`). Implementations
-    /// set `state`/`closed_at`, which starts the retention clock, and append that
-    /// event so connected clients mark their copy closed.
+    /// Close open lifecycle notifications idle past their channel's deadline (§7.2bis).
+    /// Channels with [`CloseAfter::Never`] are absent from `deadlines`. Sets
+    /// `state`/`closed_at` and appends a closure event (no revision).
     ///
     /// [`CloseAfter::Never`]: notify_domain::CloseAfter::Never
     async fn close_stale(

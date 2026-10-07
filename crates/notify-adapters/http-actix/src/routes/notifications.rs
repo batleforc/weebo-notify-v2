@@ -14,11 +14,7 @@ use crate::extract::{Authenticated, csv, page, parse_enum};
 use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
 
-/// `POST /notifications`: a revision, plus the channel it belongs to.
-///
-/// The channel is the only thing this shape adds to the upsert body — everything
-/// else is the same revision draft, because there is exactly one ingestion shape
-/// (design §8.3).
+/// `POST /notifications`: the upsert body's revision draft plus its channel (§8.3).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PublishBody {
     /// Where it goes.
@@ -33,13 +29,11 @@ pub struct PublishBody {
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct InboxParams {
-    /// Comma-separated channel ids. Narrows what the caller may already read; it
-    /// can never widen it.
+    /// Comma-separated channel ids; narrows what the caller may read, never widens it.
     pub channels: Option<String>,
     /// Comma-separated lifecycle states: `open`, `working`, `closed`.
     pub state: Option<String>,
-    /// Comma-separated statuses: `success`, `failure`, `warning`, `info`,
-    /// `cancelled`.
+    /// Comma-separated statuses: `success`, `failure`, `warning`, `info`, `cancelled`.
     pub status: Option<String>,
     /// Comma-separated tags. All of them must be present.
     pub tag: Option<String>,
@@ -47,8 +41,7 @@ pub struct InboxParams {
     pub min_priority: Option<String>,
     /// Restrict to one client-side group.
     pub group_key: Option<String>,
-    /// Keep only notifications carrying at least one action button (`true`) or
-    /// none (`false`). Absent means "do not filter on this".
+    /// Only notifications with (`true`) or without (`false`) action buttons; absent = no filter.
     pub has_actions: Option<bool>,
     /// Opaque page cursor, from the previous page's `next`.
     pub cursor: Option<String>,
@@ -161,16 +154,12 @@ pub(crate) async fn publish(
         )
         .await?;
 
-    // Counted where the request is accepted, and only when it was: design §8.3 makes
-    // these two handlers the whole of ingestion, so counting them counts every
-    // publish — from `curl`, from the CLI, from a CI job. A replay is not one: it
-    // published once, and was counted then.
+    // A replay was already counted when it first published.
     if !published.replayed {
         state.metrics.published(&published.notification.channel);
     }
 
-    // A replay is not a creation: answering 201 twice would tell a client it
-    // published twice, which is the one thing the header exists to prevent.
+    // 201 twice would tell the client it published twice.
     let status = if published.replayed {
         actix_web::http::StatusCode::OK
     } else {
@@ -221,8 +210,7 @@ pub(crate) async fn upsert(
 
     state.metrics.published(&published.notification.channel);
 
-    // Always 200, never 201: whether this call created the notification or revised
-    // it is an implementation detail of the retry the caller is making.
+    // Always 200: created vs revised is an implementation detail of a retry.
     Ok(web::Json(published))
 }
 
@@ -369,9 +357,7 @@ pub(crate) async fn unread(
     state: web::Data<ApiState>,
     caller: Authenticated,
 ) -> Result<web::Json<Vec<UnreadCount>>, ApiError> {
-    // No `?channels=`, unlike the inbox: the sidebar draws every badge at once, and
-    // a caller after one channel reads one entry out of the answer rather than
-    // paying a round trip per channel.
+    // No `?channels=`: the sidebar draws every badge at once.
     Ok(web::Json(state.unread.execute(&caller.0).await?))
 }
 

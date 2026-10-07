@@ -1,29 +1,6 @@
-//! Devices: where a notification is delivered, and how far each one has read.
-//!
-//! A device is two things at once. It holds a **sync cursor**, which is what makes
-//! going offline survivable (design §7.2), and it holds a **push transport**, which
-//! is what makes a phone buzz. Not every device has both: a `notify watch` in a
-//! debug pod is a cursor and nothing else, and that is a supported shape rather
-//! than a degraded one.
-//!
-//! # Why only some devices carry a key
-//!
-//! Application-level encryption exists on exactly the paths where a **third party
-//! carries the payload** (design §6.2):
-//!
-//! | Transport | Third-party relay | Protection | Device key |
-//! | --- | --- | --- | --- |
-//! | SSE / WS / sync | no — TLS to us | TLS | none |
-//! | Web Push | browser push service | RFC 8291, keys held by the browser | none |
-//! | UnifiedPush | the distributor | sealed box | X25519 |
-//! | APNs | Apple | sealed box | X25519 |
-//!
-//! So enrolling a browser, a desktop or a CLI is *registering a transport*, with no
-//! client-side crypto at all. Only mobile devices generate a keypair in hardware
-//! and publish its public half, and the server re-encrypts to it at delivery.
-//! Sealed-box delivery landed with M6 (`notify-push-unifiedpush`, APNs still to
-//! come in M7); the invariant was enforced from the start so no device could be
-//! enrolled that would later have to be re-enrolled.
+//! Devices: where a notification is delivered (push transport) and how far each
+//! has read (sync cursor) (§7.2). Only relayed transports (UnifiedPush, APNs) need
+//! an X25519 key; Web Push uses RFC 8291 browser keys, streams just TLS (§6.2).
 
 use core::fmt;
 use core::net::IpAddr;
@@ -39,10 +16,8 @@ use crate::ids::DeviceId;
 use crate::limits::MAX_TITLE_CHARS;
 use crate::principal::Principal;
 
-/// An X25519 public key, published by a mobile device at enrolment.
-///
-/// The private half never leaves the device's hardware keystore — Android Keystore
-/// or the iOS Keychain (design §6.2). This type only ever holds the public half.
+/// An X25519 public key published by a mobile device; the private half never
+/// leaves its hardware keystore (§6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
@@ -65,10 +40,6 @@ impl DevicePublicKey {
     }
 
     /// Parse the lowercase hex form used on the wire.
-    ///
-    /// Hex rather than base64: a key is copied through logs, config and support
-    /// tickets, and hex has no variant to get wrong (padding, URL-safe alphabet)
-    /// at the cost of 22 characters nobody is counting.
     pub fn parse_hex(raw: &str) -> Result<Self> {
         let malformed = DomainError::Malformed {
             field: "device.public_key",
@@ -84,8 +55,7 @@ impl DevicePublicKey {
             let pair = raw.get(start..start + 2).ok_or(malformed.clone())?;
             *byte = u8::from_str_radix(pair, 16).map_err(|_| malformed.clone())?;
         }
-        // Reject the uppercase spelling rather than accepting both: one rendering
-        // means one string to compare, index and log.
+        // One rendering only: refuse uppercase.
         if raw.chars().any(|c| c.is_ascii_uppercase()) {
             return Err(malformed);
         }
@@ -125,11 +95,9 @@ impl<'de> Deserialize<'de> for DevicePublicKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum PushTransport {
-    /// None. The device is reachable only while it holds a stream — a CLI, a TUI,
-    /// a service account's logical subscription.
+    /// None: reachable only while it holds a stream (CLI, TUI, service account).
     Stream,
-    /// Web Push (RFC 8030/8291), for browsers and installed PWAs. The browser
-    /// holds the decryption keys; we never see one (design §6.2).
+    /// Web Push (RFC 8030/8291), for browsers and installed PWAs; the browser holds the keys (§6.2).
     WebPush {
         /// The push service endpoint the browser handed us.
         endpoint: Url,
@@ -138,8 +106,7 @@ pub enum PushTransport {
         /// The subscription's `auth` secret, as given by the browser.
         auth: String,
     },
-    /// UnifiedPush, self-hosted end to end: we expose the push endpoint ourselves
-    /// and the distributor lives on the device (design §7.1bis).
+    /// UnifiedPush, self-hosted end to end (§7.1bis).
     UnifiedPush {
         /// The distributor endpoint to POST to.
         endpoint: Url,
@@ -152,18 +119,14 @@ pub enum PushTransport {
 }
 
 impl PushTransport {
-    /// Whether a third party carries the payload on this path, and therefore
-    /// whether the device must publish an X25519 key (design §6.2).
-    ///
-    /// Web Push says *no* despite going through a push service: RFC 8291 already
-    /// encrypts end to end with keys the browser holds internally, and there is no
-    /// application key on the web at all.
+    /// Whether a third party carries the payload, so the device must publish an X25519
+    /// key (§6.2). False for Web Push, which RFC 8291 already encrypts.
     #[must_use]
     pub const fn requires_device_key(&self) -> bool {
         matches!(self, Self::UnifiedPush { .. } | Self::Apns { .. })
     }
 
-    /// The label used in metrics and logs (design §13).
+    /// The label used in metrics and logs (§13).
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
@@ -184,13 +147,8 @@ impl PushTransport {
     }
 }
 
-/// Whether the server may `POST` to an endpoint a client handed it.
-///
-/// A push endpoint is a URL any authenticated user picks, and the server calls it
-/// on every fan-out — without this, enrolling `http://169.254.169.254/` makes the
-/// server a proxy into its own network. HTTPS only, and no host that names or is a
-/// non-public address. A name that *resolves* to one is the transport's job at
-/// connect time; this is the part that needs no I/O.
+/// Whether the server may `POST` to a client-chosen endpoint: HTTPS only and no
+/// non-public host literal (SSRF). DNS resolution is checked by the transport.
 pub fn check_push_endpoint(endpoint: &Url) -> Result<()> {
     let refused = DomainError::Malformed {
         field: "device.endpoint",
@@ -212,10 +170,8 @@ pub fn check_push_endpoint(endpoint: &Url) -> Result<()> {
     }
 }
 
-/// Whether an address is on the public internet: not loopback, private,
-/// link-local, unique-local, shared (CGNAT), benchmarking, documentation,
-/// multicast, reserved or unspecified. An IPv4-mapped IPv6 address is judged as
-/// the IPv4 it carries.
+/// Whether an address is publicly routable (not loopback, private, link-local, CGNAT,
+/// documentation, multicast, reserved…); IPv4-mapped IPv6 is judged as IPv4.
 #[must_use]
 pub fn is_public_address(ip: IpAddr) -> bool {
     match ip {
@@ -254,19 +210,16 @@ pub fn is_public_address(ip: IpAddr) -> bool {
 pub struct Device {
     /// Identity.
     pub id: DeviceId,
-    /// Whose it is. Service accounts hold devices too — logical ones, with no push
-    /// transport (design §5.2bis).
+    /// Whose it is; service accounts hold logical devices with no push transport (§5.2bis).
     pub owner: Principal,
-    /// What the owner calls it in the device list, so revoking the right one does
-    /// not require guessing.
+    /// What the owner calls it in the device list.
     pub label: String,
     /// How to reach it.
     pub transport: PushTransport,
     /// Its X25519 public key, when the transport needs one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<DevicePublicKey>,
-    /// How far it has read. `None` means it has never synced, and will receive
-    /// everything still retained.
+    /// How far it has read; `None` means it has never synced.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<Cursor>,
     /// When it was enrolled.
@@ -281,12 +234,7 @@ pub struct Device {
 }
 
 impl Device {
-    /// Enrol a device (design §8, `POST /devices`).
-    ///
-    /// The one invariant worth failing on: a transport that goes through a
-    /// third-party relay must arrive with a public key. Enrolling one without would
-    /// produce a device the server cannot deliver to, discovered at the worst
-    /// possible moment — the first incident push.
+    /// Enrol a device (§8, `POST /devices`); relayed transports must come with a public key.
     pub fn enrol(
         id: DeviceId,
         owner: Principal,
@@ -317,12 +265,7 @@ impl Device {
         })
     }
 
-    /// Revoke it (design §8, §15).
-    ///
-    /// Revocation drops the push subscription, the sync cursor **and** the public
-    /// key in one move. Leaving the cursor behind would let a re-enrolled device
-    /// silently resume somebody else's position; leaving the key behind would keep
-    /// a payload sealed to hardware that is no longer trusted.
+    /// Revoke it (§8, §15), dropping the push subscription, sync cursor and public key together.
     pub fn revoke(&mut self, now: OffsetDateTime) {
         if self.revoked_at.is_some() {
             return;
@@ -339,10 +282,7 @@ impl Device {
         self.revoked_at.is_none()
     }
 
-    /// Advance the sync cursor.
-    ///
-    /// Monotonic: a client replaying an old cursor — a retry, a race between two
-    /// tabs — must never rewind the device and re-deliver what it has already seen.
+    /// Advance the sync cursor, monotonically (stale cursors never rewind it).
     pub fn advance(&mut self, cursor: Cursor, now: OffsetDateTime) {
         self.last_seen_at = Some(now);
         if self.cursor.is_none_or(|current| cursor > current) {
@@ -402,8 +342,7 @@ mod tests {
 
     #[test]
     fn direct_transports_need_no_client_side_crypto() {
-        // Web Push goes through a third party but is already encrypted end to end
-        // by the browser's own keys (design §6.2) — no application key exists.
+        // Web Push needs no application key (§6.2).
         let webpush = PushTransport::WebPush {
             endpoint: Url::parse("https://push.example/abc").unwrap(),
             p256dh: "BPk...".to_owned(),
@@ -416,7 +355,7 @@ mod tests {
         assert!(enrol(PushTransport::Stream, None).is_ok());
     }
 
-    // --- T18 · Device revocation (design §3.4) ----------------------------
+    // --- T18 · Device revocation ------------------------------------------
 
     #[test]
     fn critical_t18_revocation_drops_the_subscription_the_key_and_the_cursor() {
@@ -468,9 +407,7 @@ mod tests {
 
     #[test]
     fn every_transport_keeps_its_metric_label() {
-        // These strings are the `transport` dimension of `push_delivery_duration_seconds`
-        // and `push_failures_total` (design §13): renaming one silently breaks a
-        // dashboard rather than a build.
+        // These are metric label values (§13): renaming breaks dashboards.
         assert_eq!(PushTransport::Stream.name(), "stream");
         assert_eq!(
             PushTransport::WebPush {

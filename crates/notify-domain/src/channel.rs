@@ -1,13 +1,5 @@
-//! Channels: the unit of membership, policy and fan-out (design §2.1).
-//!
-//! A channel is the *only* door to content. Being a platform admin gets you the
-//! inventory, the quotas and the audit log, but not a single notification body of
-//! a channel you are not a member of (design §5.4) — so "who may read this" has
-//! exactly one answer everywhere, and it is this type.
-//!
-//! A channel is [`Origin::Managed`] or [`Origin::Dynamic`] like every other
-//! reconciled object (design §11): config owns the shape of the first, the API owns
-//! the shape of the second.
+//! Channels: the unit of membership, policy and fan-out (§2.1), and the only door
+//! to content, platform admins included (§5.4).
 
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +22,7 @@ pub enum Scope {
     Publish,
     /// Read the inbox, the stream and the sync backlog.
     Subscribe,
-    /// Administer *this* channel: members, keys, policy. Not the instance —
-    /// that is the platform role (design §5.4).
+    /// Administer this channel (members, keys, policy); not the instance (§5.4).
     Manage,
 }
 
@@ -39,12 +30,9 @@ pub enum Scope {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Membership {
-    /// Who. Users and service accounts are members in exactly the same way
-    /// (design §5.2bis).
+    /// Who; users and service accounts are members alike (§5.2bis).
     pub principal: Principal,
-    /// What they may do. Empty means a member with no rights, which is a
-    /// configuration mistake rather than a state the domain needs to model — so it
-    /// is refused at construction.
+    /// What they may do; never empty.
     pub scopes: Vec<Scope>,
 }
 
@@ -69,15 +57,8 @@ impl Membership {
     }
 }
 
-/// The scopes everyone in an identity-provider group holds in one channel
-/// (design §11, `[[channels.managed.access]] oidc_group`).
-///
-/// Deliberately *not* a [`Membership`]: there is no principal to name. Who is in
-/// `infra-admins` is a fact the identity provider owns and the token carries, and
-/// it changes without anyone telling us. Resolving it at authorisation time is what
-/// keeps design §5.1's promise — pure JWKS validation, zero server session — and it
-/// is why somebody removed from a group loses access on their next token rather
-/// than whenever a reconciler next runs.
+/// The scopes everyone in an identity-provider group holds in one channel (§11).
+/// Resolved from the token's `groups` claim at request time, never stored per user.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupBinding {
@@ -88,8 +69,7 @@ pub struct GroupBinding {
 }
 
 impl GroupBinding {
-    /// Build a binding, refusing the rightless case for the same reason
-    /// [`Membership::new`] does.
+    /// Build a binding, refusing the rightless case.
     pub fn new(group: impl Into<String>, scopes: Vec<Scope>) -> Result<Self> {
         let group = group.into();
         if group.trim().is_empty() {
@@ -120,47 +100,19 @@ impl GroupBinding {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelPolicy {
-    /// Retention rules (design §7.2bis).
+    /// Retention rules (§7.2bis).
     pub ttl: TtlPolicy,
-    /// How long a lifecycle notification may go without activity before the
-    /// server closes it, which is what makes [`ttl`](Self::ttl) apply to one at
-    /// all — until a notification closes, its retention clock has not started
-    /// (see [`CloseAfter`]).
-    ///
-    /// Defaulted on the wire like `publish_per_minute` below, and the consequence
-    /// is worth stating rather than discovering: a policy stored before this
-    /// field existed deserialises to one week, so every channel that predates it
-    /// starts closing its abandoned notifications. That is the intent — the
-    /// alternative, defaulting old channels to `Never`, would leave exactly the
-    /// notifications this was written for untouched forever.
-    /// `serde(default)` is for *stored* JSON, where a policy written before this
-    /// field existed has to load; `schema(required)` is for the wire, where it is
-    /// never absent because the server always serialises it. Without the second,
-    /// utoipa reads the first and every generated client gets an `Option` it can
-    /// never see as `None` — an unwrap in each of them, forever, for a case that
-    /// cannot happen.
+    /// How long a lifecycle notification may go without activity before the server
+    /// closes it, which starts its TTL (see [`CloseAfter`]).
     #[serde(default)]
     #[cfg_attr(feature = "openapi", schema(required))]
     pub close_after: CloseAfter,
     /// Priority applied when a publisher says nothing.
     pub default_priority: Priority,
-    /// Whether delivery and read receipts are collected and shown as "seen by
-    /// 3/5" (design §7.3). Opt-in: a channel that tells publishers who read what
-    /// is a product decision, not a default.
+    /// Whether delivery and read receipts are collected and shown as "seen by 3/5" (§7.3); opt-in.
     pub receipts_enabled: bool,
-    /// This channel's own publish ceiling, per minute, overriding the 600/min of
-    /// design §8.2. `None` means the published default applies.
-    ///
-    /// **GitOps only** (`limits.publish_per_min` in `[[channels.managed]]`, §11),
-    /// and deliberately absent from the `PATCH /channels/{id}` body: a publisher
-    /// who could raise their own channel's ceiling through the API would be a
-    /// publisher for whom the ceiling is a suggestion. A dynamic channel has no
-    /// configuration file to be named in, so it keeps the default — which is the
-    /// right answer rather than a gap, the default being what §8.2 publishes.
-    ///
-    /// Defaulted on the wire so a policy stored before this field existed still
-    /// deserialises; the policy is persisted as JSON, so there is no column and no
-    /// migration behind this.
+    /// This channel's own publish ceiling per minute, overriding the §8.2 default;
+    /// set through GitOps only (§11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_per_minute: Option<u32>,
 }
@@ -177,10 +129,7 @@ impl Default for ChannelPolicy {
     }
 }
 
-/// What a ceiling is being changed *to* (design §8, `PATCH /channels/{id}`).
-///
-/// Two states, because lifting a ceiling has to be sayable: an edit that could only
-/// lower one would leave a channel stuck with whatever the first admin typed.
+/// What a TTL ceiling is being changed to (`PATCH /channels/{id}`), lifting included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ceiling {
     /// No ceiling: nothing gets clamped.
@@ -189,25 +138,16 @@ pub enum Ceiling {
     At(HumanDuration),
 }
 
-/// A requested change to a channel policy. Absent fields are left exactly as they
-/// are — a `PATCH` that names one knob must not reset the other three.
-///
-/// `allow_forever` is deliberately **not** here. §7.2bis calls unbounded retention
-/// an operator decision, so it comes from configuration; letting a channel manager
-/// grant it through the API would make the config's answer advisory.
+/// A requested change to a channel policy; absent fields are left alone.
+/// `allow_forever` is GitOps-only (§7.2bis).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PolicyEdit {
     /// The TTL applied when a publisher says nothing.
     pub default_ttl: Option<Ttl>,
     /// The forced ceiling, or its removal.
     pub max_ttl: Option<Ceiling>,
-    /// How long without activity before the server closes a lifecycle
-    /// notification. `CloseAfter::Never` turns it off for this channel.
-    ///
-    /// Editable through the API, unlike `publish_per_minute`: this one cannot be
-    /// used to escape an operator's limits. Turning it off only means a channel's
-    /// publishers keep the job of closing what they open, and the retention
-    /// ceiling the operator set still applies the moment they do.
+    /// How long without activity before the server closes a lifecycle notification;
+    /// `CloseAfter::Never` turns it off.
     pub close_after: Option<CloseAfter>,
     /// The priority applied when a publisher says nothing.
     pub default_priority: Option<Priority>,
@@ -216,10 +156,7 @@ pub struct PolicyEdit {
 }
 
 impl PolicyEdit {
-    /// Whether this edit asks for anything at all.
-    ///
-    /// An empty `PATCH` is not an error — it is idempotent — but it should not cost
-    /// a write and an audit entry claiming a policy changed.
+    /// Whether this edit asks for anything at all (empty edits cost no write).
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.default_ttl.is_none()
@@ -245,11 +182,7 @@ pub struct Channel {
     pub policy: ChannelPolicy,
     /// Its members, users and service accounts alike.
     pub members: Vec<Membership>,
-    /// Access granted to whole identity-provider groups (design §11).
-    ///
-    /// Resolved against the `groups` claim of the caller's token rather than stored
-    /// per user — see [`GroupBinding`]. Defaulted on the wire so a client written
-    /// against an older build still parses a channel.
+    /// Access granted to whole identity-provider groups (§11), resolved per request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_access: Vec<GroupBinding>,
 }
@@ -288,27 +221,16 @@ impl Channel {
             .find(|member| &member.principal == principal)
     }
 
-    /// Whether `principal` holds `scope` here.
-    ///
-    /// Channel keys are deliberately *not* resolved through membership: a key
-    /// carries its own scopes and its own channel list (design §5.2), and the
-    /// authentication adapter checks those. Mixing the two would give a key rights
-    /// nobody granted it.
+    /// Whether `principal` holds `scope` here via membership. Channel keys are
+    /// checked against their own grants instead (§5.2).
     #[must_use]
     pub fn grants(&self, principal: &Principal, scope: Scope) -> bool {
         self.membership(principal)
             .is_some_and(|member| member.grants(scope))
     }
 
-    /// Whether any of these groups holds `scope` here (design §11).
-    ///
-    /// The second door to a channel, and the one that needs no row per user: an
-    /// identity provider that stops putting somebody in `infra-admins` revokes
-    /// their access on their next token, with nothing to reconcile.
-    ///
-    /// An empty group list answers `false` for every scope, which is exactly the
-    /// degradation an issuer that emits no groups at all requires (scenario T29):
-    /// the caller falls back to their individual bindings and reaches nothing else.
+    /// Whether any of these groups holds `scope` here (§11). No groups means no
+    /// group access (T29).
     #[must_use]
     pub fn grants_group(&self, groups: &[String], scope: Scope) -> bool {
         self.group_access
@@ -316,9 +238,7 @@ impl Channel {
             .any(|binding| binding.grants(scope) && groups.contains(&binding.group))
     }
 
-    /// Whether `principal`, holding `groups`, may do `scope` here.
-    ///
-    /// The two doors in one place, so no caller can check one and forget the other.
+    /// Whether `principal`, holding `groups`, may do `scope` here (both doors at once).
     #[must_use]
     pub fn allows(&self, principal: &Principal, groups: &[String], scope: Scope) -> bool {
         self.grants(principal, scope) || self.grants_group(groups, scope)
@@ -348,33 +268,25 @@ impl Channel {
         }
     }
 
-    /// Remove a membership. Returns whether anything was removed, so a caller can
-    /// tell "left the channel" from "was not in it".
+    /// Remove a membership; returns whether anything was removed.
     pub fn remove_member(&mut self, principal: &Principal) -> bool {
         let before = self.members.len();
         self.members.retain(|member| &member.principal != principal);
         self.members.len() != before
     }
 
-    /// Refuse destructive API operations on a GitOps-owned channel: config is the
-    /// source of truth and would put it straight back (design §8, §11).
+    /// Refuse destructive API operations on a GitOps-owned channel (§8, §11).
     pub fn ensure_mutable_through_api(&self) -> Result<()> {
         self.origin.ensure_mutable_through_api("channel")
     }
 
-    /// Apply a partial policy change (design §8, `PATCH /channels/{id}`).
-    ///
-    /// Returns whether anything actually changed, so a caller can skip the write and
-    /// the audit entry for a `PATCH` that asked for what is already true.
+    /// Apply a partial policy change (`PATCH /channels/{id}`), returning whether
+    /// anything changed.
     ///
     /// # Errors
     ///
-    /// Refuses an edit that leaves the channel unable to answer its own publishers:
-    /// the resulting policy is asked to resolve a publish that requests nothing, and
-    /// its refusal is returned. That is the check made *here* rather than in each
-    /// publisher's face — a default of `forever` on a channel that does not allow it
-    /// would otherwise fail every publish from now on, far from the edit that caused
-    /// it.
+    /// Refuses an edit whose resulting policy cannot resolve a default publish
+    /// (e.g. a `forever` default without `allow_forever`).
     pub fn edit_policy(&mut self, edit: PolicyEdit) -> Result<bool> {
         let mut policy = self.policy;
 
@@ -509,7 +421,7 @@ mod group_access_tests {
 
     #[test]
     fn a_group_binding_grants_without_a_membership() {
-        // The whole point: nobody wrote a row for this person, and they still get in.
+        // No row for this person, and they still get in.
         let channel = bound("infra-admins", vec![Scope::Publish, Scope::Subscribe]);
         let alice = user();
         let groups = vec!["infra-admins".to_owned()];
@@ -528,8 +440,7 @@ mod group_access_tests {
 
     #[test]
     fn leaving_a_group_revokes_access_with_nothing_to_reconcile() {
-        // The reason the model is derived rather than materialised: the next token
-        // simply carries fewer groups.
+        // Losing a group takes effect with the next token.
         let channel = bound("infra-admins", vec![Scope::Subscribe]);
         let alice = user();
 
@@ -539,8 +450,7 @@ mod group_access_tests {
 
     #[test]
     fn critical_t29_an_issuer_that_emits_no_groups_degrades_to_individual_bindings() {
-        // Dex sends no `groups` claim at all. The required behaviour is that the
-        // caller reaches their own bindings and nothing else — never a default grant.
+        // T29: no `groups` claim reaches own bindings only, never a default grant.
         let mut channel = bound("infra-admins", vec![Scope::Subscribe]);
         let (alice, carol) = (user(), user());
         channel.upsert_member(Membership::new(alice.clone(), vec![Scope::Subscribe]).unwrap());
@@ -589,7 +499,7 @@ mod group_access_tests {
     }
 }
 
-/// Policy edits (design §8, `PATCH /channels/{id}`).
+/// Policy edits (`PATCH /channels/{id}`).
 #[cfg(test)]
 mod policy_tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
@@ -606,8 +516,7 @@ mod policy_tests {
 
     #[test]
     fn an_edit_touches_only_what_it_names() {
-        // The property a PATCH exists for: setting a ceiling must not reset the
-        // default TTL to whatever the client happened not to send.
+        // Setting a ceiling must not reset the default TTL.
         let mut channel = channel();
         let before = channel.policy;
 
@@ -649,8 +558,6 @@ mod policy_tests {
             ChannelPolicy::default().ttl.default
         );
 
-        // The opt-out has to be reachable through the same road, or a channel whose
-        // publishers do close what they open has no way to say so.
         assert!(
             channel
                 .edit_policy(PolicyEdit {
@@ -662,9 +569,7 @@ mod policy_tests {
         assert_eq!(channel.policy.close_after, CloseAfter::Never);
     }
 
-    /// A policy written before `close_after` existed has to load, and has to load
-    /// as "close after a week" rather than as "never" — the notifications this
-    /// feature exists for are exactly the ones stored under the old shape.
+    /// A policy stored before `close_after` existed loads as "after a week".
     #[test]
     fn a_policy_stored_without_close_after_reads_as_the_default() {
         let stored = serde_json::json!({
@@ -678,8 +583,6 @@ mod policy_tests {
 
     #[test]
     fn a_ceiling_can_be_removed_and_not_only_lowered() {
-        // An edit that could only lower a ceiling would leave a channel stuck with
-        // whatever its first admin typed.
         let mut channel = channel();
         channel
             .edit_policy(PolicyEdit {
@@ -700,9 +603,7 @@ mod policy_tests {
 
     #[test]
     fn an_edit_that_would_break_every_later_publish_is_refused_now() {
-        // A default of `forever` on a channel that does not allow it makes every
-        // publish fail with `ttl.infinite_not_allowed` — a long way from the edit
-        // that caused it. Refusing here is the whole reason `edit_policy` resolves.
+        // Refused here rather than on every later publish.
         let mut channel = channel();
 
         let refused = channel.edit_policy(PolicyEdit {

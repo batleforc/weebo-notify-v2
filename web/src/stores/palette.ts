@@ -1,25 +1,6 @@
 /**
- * The command palette's state (design §10.4).
- *
- * # What this store is for, and what it deliberately is not
- *
- * It holds what is typed, what the server answered, and whether the palette is
- * open. The *matching* lives in `lib/palette.ts` as pure functions, because that is
- * the part whose behaviour has to be pinned by tests rather than by opening the app
- * — a ranking is not something looking at a screenshot can check.
- *
- * # Why the server is asked at all
- *
- * Channels and screens are already in memory, so they match instantly. Notifications
- * are not: the inbox holds a page, and §10.4 wants the palette to find a
- * notification the user cannot see. `GET /api/v1/search` is what answers that (§8),
- * and until now nothing in any client called it.
- *
- * The request is **debounced** and **the last one wins**: typing `etcd` would
- * otherwise fire four searches, and the answer to `etc` arriving after the answer to
- * `etcd` would leave the wrong list on screen. §8.2 also caps search at 30/min per
- * principal, which a keystroke-per-request palette would burn through in twenty
- * seconds.
+ * Command palette state (§10.4); matching lives in `lib/palette.ts`. Notifications
+ * come from `GET /search` (§8), debounced and last-wins: search is capped at 30/min (§8.2).
  */
 
 import { defineStore } from "pinia";

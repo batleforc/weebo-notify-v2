@@ -2,12 +2,7 @@
 
 use notify_client_api::types::Problem;
 
-/// A failed call.
-///
-/// The distinction that earns its place is [`Self::Refused`] versus the rest: a
-/// refusal carries the server's stable `code` (design §8), which is what a script
-/// branches on and what a UI turns into a sentence. Everything else is "we never
-/// got an answer", and no amount of parsing changes what the caller should do.
+/// A failed call: [`Self::Refused`] carries the server's stable `code` (§8); the rest mean no answer.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     /// The server answered, and said no.
@@ -25,31 +20,18 @@ pub enum ClientError {
     #[error("could not reach the server: {0}")]
     Transport(#[source] reqwest::Error),
 
-    /// The configured token cannot be put in a header — a stray newline, usually
-    /// from a shell that captured more than the value.
+    /// The configured token cannot be put in a header (usually a stray newline).
     #[error("the configured token is not a usable credential")]
     BadCredential,
 
-    /// A value this client was handed cannot be used.
-    ///
-    /// Distinct from [`ClientError::Refused`], which is the *server* saying no: this
-    /// is the client refusing to act on something it was given — a preference naming
-    /// a timezone that is not in this build's IANA database, most often. The detail
-    /// is meant to be shown, because the person reading it is the one who can fix
-    /// the value.
+    /// A value this client was handed cannot be used (e.g. an unknown timezone); shown verbatim.
     #[error("{detail}")]
     Invalid {
         /// What was wrong with it, phrased for whoever has to correct it.
         detail: String,
     },
 
-    /// The local store could not be opened, read or written (design §9.3bis).
-    ///
-    /// Its own variant because it is the one failure that has nothing to do with
-    /// the server: a full disk, a data directory somebody made read-only, a store
-    /// written by a newer client. The detail is meant to be shown — "cannot open
-    /// /home/…/store.db: permission denied" is something the person reading it can
-    /// act on, which is not true of most error text.
+    /// The local store could not be opened, read or written (§9.3bis); the detail is shown verbatim.
     #[error("the local store is unusable: {detail}")]
     Store {
         /// What went wrong, phrased for whoever has to fix it.
@@ -58,10 +40,7 @@ pub enum ClientError {
 }
 
 impl ClientError {
-    /// The server's stable code, when there is one.
-    ///
-    /// Scripts match on this, not on the message: the message is prose and gets
-    /// reworded (design §8).
+    /// The server's stable code, when there is one; scripts match on this, not the message (§8).
     #[must_use]
     pub fn code(&self) -> Option<&str> {
         match self {
@@ -71,18 +50,12 @@ impl ClientError {
     }
 
     /// Whether trying the exact same call again could work.
-    ///
-    /// A rate limit says yes and says when; a validation failure says no however
-    /// many times it is asked.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Refused(problem) => problem.status >= 500 || problem.status == 429,
             Self::Transport(_) => true,
             Self::Unexpected { status } => *status >= 500,
-            // None is fixed by asking again: a token with a newline in it stays
-            // unusable, a full disk stays full, and a timezone that is not one will
-            // not become one on the second attempt.
             Self::BadCredential | Self::Invalid { .. } | Self::Store { .. } => false,
         }
     }
@@ -108,8 +81,6 @@ impl From<progenitor_client::Error<Problem>> for ClientError {
             Generated::CommunicationError(source) | Generated::ResponseBodyError(source) => {
                 Self::Transport(source)
             }
-            // Invalid requests and undocumented statuses are our bug rather than the
-            // server's, but the caller can only be told the call did not land.
             other => Self::Unexpected {
                 status: other.status().map_or(0, |status| status.as_u16()),
             },

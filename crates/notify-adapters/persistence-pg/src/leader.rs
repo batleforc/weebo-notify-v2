@@ -1,15 +1,6 @@
-//! Electing the replica that runs the background jobs, with a Postgres advisory
-//! lock (design §11, scenario T22).
-//!
-//! Zero extra infrastructure: the database the instance already needs is the thing
-//! that decides. A session advisory lock is held for as long as its **connection**
-//! is, which is what makes this safe — a replica that is partitioned, killed or
-//! stalled loses its connection, and the lock goes with it. Nothing has to time out
-//! and nothing has to be renewed.
-//!
-//! That is also why the guard holds a connection out of the pool rather than
-//! borrowing one per call. A pooled connection handed back would take the lock with
-//! it, and the next unrelated query would silently be leading.
+//! Leader election for background jobs via a Postgres session advisory lock (design §11, T22).
+//! The lock lives as long as its dedicated connection, so a dead or partitioned replica loses it;
+//! never return that connection to the pool, or an unrelated query would silently be leading.
 
 use std::sync::Arc;
 
@@ -27,10 +18,7 @@ pub struct PgLeaderElection {
 }
 
 impl PgLeaderElection {
-    /// Wrap a pool.
-    ///
-    /// It should have room to spare: every job that leads holds one connection for
-    /// as long as it runs.
+    /// Wrap a pool; each leading job holds one connection while it runs.
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -46,8 +34,7 @@ impl LeaderElection for PgLeaderElection {
             .await
             .map_err(|error| fail("leader", error))?;
 
-        // Non-blocking: a replica that is not the leader must go on serving the API
-        // immediately rather than parking a task on a lock it may never get.
+        // Non-blocking, so followers keep serving immediately.
         let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(lock_key(job))
             .fetch_one(&mut *connection)
@@ -55,7 +42,7 @@ impl LeaderElection for PgLeaderElection {
             .map_err(|error| fail("leader", error))?;
 
         if !acquired {
-            // Somebody else has it. A normal answer, not a failure.
+            // Somebody else leads: a normal answer.
             return Ok(None);
         }
 
@@ -90,10 +77,7 @@ impl LeaderGuard for PgLeaderGuard {
             return false;
         };
 
-        // The connection *is* the lock, so asking whether it still answers is
-        // asking whether we still lead. Checked between batches rather than once at
-        // the top: a purge loop that took the lock, lost it during a partition and
-        // kept deleting is the failure this exists to prevent (scenario T22).
+        // The connection is the lock: checked between batches so a partitioned leader stops (T22).
         match sqlx::query_scalar::<_, i32>("SELECT 1")
             .fetch_one(&mut **connection)
             .await
@@ -101,7 +85,7 @@ impl LeaderGuard for PgLeaderGuard {
             Ok(_) => true,
             Err(error) => {
                 tracing::warn!(job = self.job, %error, "lost the leader connection");
-                // Dropped rather than handed a dead connection back to the pool.
+                // Dropped, never handed back to the pool.
                 held.take();
                 false
             }
@@ -113,9 +97,7 @@ impl LeaderGuard for PgLeaderGuard {
             return;
         };
 
-        // Explicit rather than implicit, so a clean SIGTERM drain hands leadership
-        // over immediately instead of leaving the instance leaderless until this
-        // connection is eventually recycled (design §11).
+        // Explicit so a SIGTERM drain hands over leadership immediately (§11).
         if let Err(error) = sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(lock_key(self.job))
             .execute(&mut *connection)
@@ -130,13 +112,7 @@ impl LeaderGuard for PgLeaderGuard {
 
 impl Drop for PgLeaderGuard {
     fn drop(&mut self) {
-        // Returning this connection to the pool would take the lock with it, and the
-        // next unrelated query on that connection would silently be leading. Closing
-        // it instead ends the session, which is how Postgres releases everything the
-        // session held.
-        //
-        // `try_lock` because `Drop` cannot await. On the normal path `release` has
-        // already emptied this and there is nothing to do.
+        // Closing (not pooling) the connection releases the lock. `try_lock` since `Drop` cannot await.
         if let Ok(mut held) = self.connection.try_lock()
             && let Some(mut connection) = held.take()
         {
@@ -145,11 +121,7 @@ impl Drop for PgLeaderGuard {
     }
 }
 
-/// The advisory-lock key a job name takes.
-///
-/// FNV-1a rather than the standard library's hasher: `DefaultHasher` is explicitly
-/// allowed to change between releases, and a lock key that moved on a toolchain
-/// upgrade would let two replicas lead the same job across a rolling deploy.
+/// The advisory-lock key for a job: FNV-1a, stable across toolchains unlike `DefaultHasher`.
 fn lock_key(job: &str) -> i64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -160,8 +132,7 @@ fn lock_key(job: &str) -> i64 {
         hash = hash.wrapping_mul(PRIME);
     }
 
-    // Reinterpreted rather than truncated: `pg_try_advisory_lock` takes a signed
-    // 64-bit key, and every bit of the hash is worth keeping.
+    // Reinterpreted as the signed key Postgres takes, keeping every bit.
     i64::from_ne_bytes(hash.to_ne_bytes())
 }
 
@@ -171,8 +142,7 @@ mod tests {
 
     #[test]
     fn a_job_name_always_maps_to_the_same_lock() {
-        // If this moved between builds, two replicas of different versions would
-        // each believe they lead the purge during a rolling deploy.
+        // A moving key would let two versions both lead during a rolling deploy.
         assert_eq!(lock_key("purge"), lock_key("purge"));
         assert_ne!(lock_key("purge"), lock_key("reconcile"));
     }

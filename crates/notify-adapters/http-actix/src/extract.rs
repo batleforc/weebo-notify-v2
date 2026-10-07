@@ -13,11 +13,7 @@ use serde::de::DeserializeOwned;
 use crate::problem::ApiError;
 use crate::state::ApiState;
 
-/// An authenticated caller, extracted from `Authorization`.
-///
-/// Every handler that touches anything takes one. There is no "optional auth" path
-/// in M1: an endpoint that can be reached anonymously is a decision, and none of
-/// these are it.
+/// An authenticated caller, extracted from `Authorization`; there is no anonymous path.
 #[derive(Debug, Clone)]
 pub struct Authenticated(pub Caller);
 
@@ -26,31 +22,33 @@ impl FromRequest for Authenticated {
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        let state = req.app_data::<web::Data<ApiState>>().cloned();
         let presented = req
             .headers()
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned);
-
-        Box::pin(async move {
-            let Some(state) = state else {
-                // Only reachable if the composition root forgot the app data, which
-                // is a wiring bug rather than anything the caller did.
-                return Err(PortError::NotConfigured { what: "http.state" }.into());
-            };
-            let credential = credential_from(presented.as_deref())?;
-            Ok(Self(state.authenticate.execute(credential).await?))
-        })
+        authenticate(req, presented)
     }
 }
 
-/// Read the `Authorization` header.
-///
-/// Both credentials arrive as `Bearer`, because that is what every client and every
-/// `curl` example already does (design §8). They are told apart by the key format
-/// rather than by a second scheme: `wnk_` is a prefix we mint, so the test is exact
-/// and a JWT can never be mistaken for a key.
+/// Verify an `Authorization`-shaped value; shared with the compat routes' extractor.
+pub(crate) fn authenticate(
+    req: &HttpRequest,
+    presented: Option<String>,
+) -> Pin<Box<dyn Future<Output = Result<Authenticated, ApiError>>>> {
+    let state = req.app_data::<web::Data<ApiState>>().cloned();
+    Box::pin(async move {
+        // Missing app data is a wiring bug, not the caller's fault.
+        let Some(state) = state else {
+            return Err(PortError::NotConfigured { what: "http.state" }.into());
+        };
+        let credential = credential_from(presented.as_deref())?;
+        Ok(Authenticated(state.authenticate.execute(credential).await?))
+    })
+}
+
+/// Read the `Authorization` header: keys and tokens both arrive as `Bearer` (design §8),
+/// told apart by our minted `wnk_` prefix so a JWT is never mistaken for a key.
 pub(crate) fn credential_from(header: Option<&str>) -> Result<Credential, DomainError> {
     let raw = header.ok_or(DomainError::InvalidCredential)?;
     let token = raw
@@ -70,12 +68,8 @@ pub(crate) fn credential_from(header: Option<&str>) -> Result<Credential, Domain
     }
 }
 
-/// Parse a value the domain deserialises from a string — a lifecycle state, a
-/// status, a priority.
-///
-/// Going through serde rather than a hand-written match means the query string
-/// accepts exactly what the JSON body accepts, which is one fewer place for
-/// `in_progress` versus `working` to diverge.
+/// Parse a string-shaped domain enum through serde, so a query accepts exactly what
+/// the JSON body accepts.
 pub(crate) fn parse_enum<T: DeserializeOwned>(
     raw: &str,
     field: &'static str,
@@ -88,10 +82,7 @@ pub(crate) fn parse_enum<T: DeserializeOwned>(
     })
 }
 
-/// Split a comma-separated query parameter, dropping the empties.
-///
-/// `?channels=` with nothing after it means "no filter", not "one channel whose
-/// name is the empty string".
+/// Split a comma-separated parameter, dropping empties (`?channels=` means no filter).
 pub(crate) fn csv(raw: Option<&str>) -> Vec<&str> {
     raw.map(|value| {
         value
@@ -182,8 +173,7 @@ mod tests {
 
     #[test]
     fn a_cursor_that_is_not_ours_is_a_refusal_rather_than_a_silent_restart() {
-        // Silently restarting from the beginning would replay the whole backlog to
-        // a client that only mistyped.
+        // Restarting silently would replay the whole backlog to a client that mistyped.
         assert!(page(Some("not-a-cursor"), None).is_err());
     }
 }

@@ -1,18 +1,5 @@
-//! The coverage gate (design §3.2).
-//!
-//! Two rules, both computable from the pull request alone — no stored baseline, no
-//! third-party service, no extra runtime in CI:
-//!
-//! 1. **Domain floor.** `notify-domain` and `notify-app` are pure logic, testable
-//!    in memory with no I/O. There is no excuse for gaps there, so they must stay
-//!    at or above 90 %.
-//! 2. **Diff coverage.** At least 80 % of the lines this change *touched* must be
-//!    covered. This is what stops coverage decaying one untested branch at a time.
-//!
-//! Deliberately absent: a gate on the global percentage. A single number is easy to
-//! game with assertion-free tests and unfairly punishes adapter code, which is
-//! exercised through end-to-end tests that source-based coverage attributes
-//! elsewhere.
+//! The coverage gate (§3.2): `notify-domain`/`notify-app` stay ≥ 90 %, and ≥ 80 % of the
+//! lines a change touched are covered. No global-percentage gate: it is easy to game.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -29,8 +16,7 @@ pub(crate) struct Coverage {
 }
 
 impl Coverage {
-    /// Parse the subset of LCOV that matters here: `SF:` starts a file record,
-    /// `DA:<line>,<hits>` is a line, `end_of_record` closes it.
+    /// Parse the LCOV subset that matters: `SF:`, `DA:<line>,<hits>`, `end_of_record`.
     pub(crate) fn from_lcov(text: &str) -> Self {
         let mut files = BTreeMap::new();
         let mut current: Option<(String, Hits)> = None;
@@ -46,9 +32,7 @@ impl Coverage {
                     continue;
                 };
                 if let Some((_, lines)) = current.as_mut() {
-                    // A line can appear more than once (generics, inlining): keep the
-                    // best hit count, otherwise a monomorphisation that was never
-                    // called would mask one that was.
+                    // Keep the best hit count: an uncalled monomorphisation must not mask a called one.
                     lines
                         .entry(number)
                         .and_modify(|e| *e = (*e).max(hits))
@@ -64,9 +48,8 @@ impl Coverage {
         Self { files }
     }
 
-    /// Ratio of covered lines across every file whose path contains `needle`.
-    /// Returns `None` when nothing matched — an empty crate is not 0 % coverage,
-    /// it is an absent measurement, and the two must not be confused.
+    /// Ratio of covered lines across files whose path contains a needle; `None` when nothing
+    /// matched (an absent measurement is not 0 %).
     fn ratio_for(&self, needles: &[&str]) -> Option<(u64, u64)> {
         let mut total = 0;
         let mut covered = 0;
@@ -101,8 +84,7 @@ impl Coverage {
                 continue;
             };
             for line in wanted {
-                // A touched line with no LCOV entry is not executable (a comment, a
-                // blank line, a `}`) — it cannot be covered and must not count against us.
+                // No LCOV entry means not executable (comment, blank, `}`); it can't count against us.
                 if let Some(hits) = lines.get(line) {
                     total += 1;
                     if *hits > 0 {
@@ -130,8 +112,7 @@ fn percent((covered, total): (u64, u64)) -> f64 {
 
 /// Lines added or modified by `git diff <base>...HEAD`, per file.
 ///
-/// Parsed from `--unified=0` hunk headers: `@@ -old,n +new,m @@`. Only the `+` side
-/// matters — a deleted line cannot be covered.
+/// Parsed from `--unified=0` hunk headers; only the `+` side matters.
 fn touched_lines(base: &str) -> anyhow::Result<BTreeMap<String, BTreeSet<u32>>> {
     let output = std::process::Command::new("git")
         .args([
@@ -298,16 +279,12 @@ end_of_record
 
     #[test]
     fn absent_measurement_is_not_zero_percent() {
-        // The distinction matters: an empty crate must not fail a floor it was
-        // never measured against.
         let coverage = Coverage::from_lcov(SAMPLE);
         assert!(coverage.ratio_for(&["notify-cli/src"]).is_none());
     }
 
     #[test]
     fn repeated_lines_keep_the_best_hit_count() {
-        // Generic instantiations emit one DA per monomorphisation; an uncalled one
-        // must not mask a called one.
         let coverage = Coverage::from_lcov(
             "SF:/repo/crates/notify-domain/src/a.rs\nDA:1,0\nDA:1,7\nend_of_record\n",
         );
@@ -316,8 +293,6 @@ end_of_record
 
     #[test]
     fn touched_lines_without_an_lcov_entry_are_not_counted() {
-        // Comments and braces are touched but not executable — counting them would
-        // make the diff gate unmeetable.
         let coverage = Coverage::from_lcov(SAMPLE);
         let mut touched = BTreeMap::new();
         touched.insert(

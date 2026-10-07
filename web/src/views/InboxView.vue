@@ -1,20 +1,7 @@
 <script setup lang="ts">
 /**
- * The middle zone: the inbox itself (§10.4).
- *
- * # Arrivals are announced, not inserted
- *
- * §10.5 forbids the list moving under a cursor. New notifications land in the
- * store's `pending` buffer and this view shows a "N nouvelles" separator; the list
- * only grows when somebody asks it to. Updates to rows already on screen apply
- * immediately, because that is the revision model doing its job — a pipeline going
- * from `working` to `failure` must not wait for a click.
- *
- * # Keyboard first
- *
- * ↑ ↓ move, Entrée opens, Échap closes. Parity with the TUI is a stated goal
- * (§10.1), and it is also what makes the list usable while reading a stack trace
- * with the other hand on a terminal.
+ * The inbox list (§10.4). Arrivals wait behind a "N new" separator (§10.5); updates
+ * to visible rows apply at once. Keyboard: ↑ ↓ move, Enter opens, Esc closes (§10.1).
  */
 import { Inbox as InboxIcon, RefreshCw } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -36,8 +23,7 @@ const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
 
-/** Whether any filter narrows the inbox — the empty state reads differently
- * when it does (§10.4). */
+/** The empty state reads differently when filtered (§10.4). */
 const isFiltered = computed(
   () =>
     inbox.filters.channels.length > 0 ||
@@ -52,15 +38,17 @@ const list = ref<HTMLElement | null>(null);
 const cursor = ref(0);
 
 const groups = computed(() => inbox.groups);
+const liveCount = computed(
+  () => groups.value.filter((g) => g.head.head.state !== "closed").length,
+);
+const title = computed(() => {
+  const channel = route.params.channel;
+  return typeof channel === "string"
+    ? channels.nameOf(channel)
+    : t("sidebar.channels.all");
+});
 
-/**
- * How late a row reached this client (§7.2).
- *
- * Only rows the stream delivered are measured: a page of `GET /notifications` is
- * "what exists", not "what was delivered to me", and pretending otherwise would
- * badge every notification older than the threshold on a cold load. The complete
- * version needs the per-device sync cursor, which is M2's `GET /sync`.
- */
+/** Lateness (§7.2), only for rows delivered after this view opened: a cold page isn't "late". */
 const LATE_THRESHOLD_MS = 5 * 60_000;
 const openedAt = Date.now();
 
@@ -74,18 +62,13 @@ function lateness(receivedAt: string): number | undefined {
 }
 
 function open(id: string, viaKeyboard = false): void {
-  // Inside a channel, the row opens *within* it: `/c/<channel>/n/<id>`. Pushing
-  // the bare `/n/<id>` from here is what threw the reader back to every channel —
-  // the URL stopped naming the channel, so the list widened underneath the panel.
+  // Inside a channel, open within it so the URL keeps naming the channel.
   const channel = route.params.channel;
   const target =
     typeof channel === "string"
       ? { name: "channel-notification", params: { channel, id } }
       : { name: "notification", params: { id } };
-  // Arrow keys REPLACE rather than push: holding a key through fifty rows would
-  // otherwise leave fifty history entries, and Back would walk the list backwards
-  // one row at a time instead of leaving it. A click is a real navigation and
-  // keeps its entry.
+  // Arrow keys replace, so Back leaves the list instead of walking it.
   void (viaKeyboard ? router.replace(target) : router.push(target));
 }
 
@@ -98,7 +81,6 @@ function move(delta: number): void {
   const row = rows[cursor.value];
   open(row.head.id, true);
 
-  // Keep the focused row in view without yanking the whole list around.
   const element = list.value?.querySelector<HTMLElement>(
     `[data-row="${row.head.id}"]`,
   );
@@ -126,52 +108,55 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
+    <header class="flex items-end justify-between gap-3 border-b border-rule px-4 pb-3 pt-4 sm:px-5">
+      <div class="min-w-0">
+        <h1 class="pixel truncate text-2xl font-bold uppercase">{{ title }}</h1>
+        <p class="meta mt-1 tabular-nums">
+          {{ t("inbox.summary", { total: groups.length, live: liveCount }) }}
+        </p>
+      </div>
+      <span v-if="isFiltered" class="meta shrink-0 text-copper">{{ t("inbox.filtered") }}</span>
+    </header>
+
     <!-- §10.5: the separator is how an arrival announces itself. -->
     <button
-      v-if="inbox.pendingCount"
+      v-if="inbox.pendingCount && !inbox.loading"
       type="button"
-      class="flex items-center justify-center gap-2 border-b border-border bg-accent/50 py-2 text-xs font-medium transition-colors hover:bg-accent"
+      class="meta flex items-center justify-center gap-2 border-b border-rule-strong bg-ground-raised py-2 text-ink hover:bg-ground-sunk"
       @click="inbox.revealPending()"
     >
       <RefreshCw class="size-3.5" />
       {{ t("inbox.newNotifications", { count: inbox.pendingCount }, inbox.pendingCount) }}
     </button>
 
-    <div ref="list" class="min-h-0 flex-1 overflow-y-auto">
-      <div v-if="inbox.loading" class="space-y-1 p-3">
-        <Skeleton v-for="index in 6" :key="index" class="h-12 w-full" />
+    <div ref="list" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div v-if="inbox.loading" class="space-y-px">
+        <Skeleton v-for="index in 6" :key="index" class="h-16 w-full" />
       </div>
 
-      <div
-        v-else-if="inbox.error"
-        class="flex flex-col items-center gap-3 p-10 text-center text-sm"
-      >
-        <p class="text-destructive">{{ inbox.error }}</p>
-        <Button variant="outline" size="sm" @click="inbox.load()">
+      <div v-else-if="inbox.error" class="m-4 border border-signal px-6 py-10 text-center sm:m-5">
+        <p class="pixel text-base font-bold uppercase text-signal">{{ t("inbox.errorTitle") }}</p>
+        <p class="mx-auto mt-2 max-w-[64ch] text-sm text-ink-dim">{{ inbox.error }}</p>
+        <Button variant="outline" size="sm" class="mt-4" @click="inbox.load()">
           {{ t("inbox.retry") }}
         </Button>
       </div>
 
       <!-- An empty inbox is not an error, and neither is a filter that matches
            nothing — §10.4 asks for those to read differently. -->
-      <div
-        v-else-if="!groups.length"
-        class="flex flex-col items-center gap-2 p-10 text-center text-sm text-muted-foreground"
-      >
-        <InboxIcon class="size-6" />
+      <div v-else-if="!groups.length" class="m-4 border border-rule-strong px-6 py-10 text-center sm:m-5">
+        <InboxIcon class="mx-auto size-6 text-ink-dim" />
         <template v-if="isFiltered">
-          <p>{{ t("inbox.emptyFiltered.title") }}</p>
-          <p class="text-xs">{{ t("inbox.emptyFiltered.hint") }}</p>
+          <p class="pixel mt-3 text-base font-bold uppercase">{{ t("inbox.emptyFiltered.title") }}</p>
+          <p class="mx-auto mt-2 max-w-[64ch] text-sm text-ink-dim">{{ t("inbox.emptyFiltered.hint") }}</p>
         </template>
         <template v-else>
-          <p>{{ t("inbox.emptyDefault.title") }}</p>
-          <p class="text-xs">
-            {{ t("inbox.emptyDefault.hint") }}
-          </p>
+          <p class="pixel mt-3 text-base font-bold uppercase">{{ t("inbox.emptyDefault.title") }}</p>
+          <p class="mx-auto mt-2 max-w-[64ch] text-sm text-ink-dim">{{ t("inbox.emptyDefault.hint") }}</p>
         </template>
       </div>
 
-      <ul v-else class="divide-y divide-border">
+      <ul v-else>
         <li v-for="group in groups" :key="group.head.id" :data-row="group.head.id">
           <NotificationRow
             :row="group.head"
@@ -184,7 +169,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         </li>
       </ul>
 
-      <div v-if="inbox.hasMore" class="p-3">
+      <div v-if="inbox.hasMore" class="p-4">
         <Button
           variant="outline"
           size="sm"

@@ -24,10 +24,7 @@ beforeEach(() => {
 
 describe("fetching an avatar", () => {
   it("goes through the API client rather than through the img tag", async () => {
-    // The bug this module exists for: the settings page used
-    // `<img src="/api/v1/avatars/{id}">` against a route whose credential comes
-    // only from the `Authorization` header, on an application that keeps zero
-    // cookies (§5.1). A browser sends neither, so every avatar answered 401.
+    // The route needs the `Authorization` header; a plain `<img>` got 401 (§5.1).
     readAvatar.mockResolvedValue({ data: new Blob(["png"]) });
 
     const url = await avatarObjectUrl("att_01J");
@@ -51,9 +48,7 @@ describe("fetching an avatar", () => {
   });
 
   it("fetches one avatar once however many rows show it", async () => {
-    // §2.4 mints a new id on every upload, so a cached entry can never be stale
-    // — which is what lets an inbox render the same face on fifty rows for one
-    // request instead of fifty.
+    // Ids are immutable (§2.4): one request for fifty rows.
     readAvatar.mockResolvedValue({ data: new Blob(["png"]) });
 
     const [first, second] = await Promise.all([

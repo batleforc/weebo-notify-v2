@@ -1,25 +1,5 @@
-//! Traces, and where they go (design §13).
-//!
-//! Logs answer "what happened here"; a trace answers "what happened to *this
-//! request*, everywhere". The difference is the whole reason this module exists:
-//! `publish → fanout → push transport` crosses three layers and a background loop,
-//! and without spans an incident is reconstructed by correlating log lines by hand —
-//! bearable on one replica, not on the third.
-//!
-//! # Off unless somebody asked
-//!
-//! No `[telemetry]` section means no exporter, no span processor and no background
-//! thread: the process emits structured logs exactly as before. That is the default
-//! because a collector endpoint is a fact about a deployment — a built-in
-//! `localhost:4318` would make every instance without a collector retry an export
-//! nobody asked for, forever.
-//!
-//! # Why the layer is installed here and not next to the spans
-//!
-//! The spans themselves are plain `tracing` — `#[instrument]` on the use cases, and
-//! `notify-app` has no idea whether anything is listening. Same rule as the metrics
-//! port: what is emitted belongs to the code, where it goes belongs to the
-//! composition root.
+//! Traces and where they go (design §13). Off unless `[telemetry]` is set; spans are plain `tracing`
+//! in the code, the exporter is wired only here.
 
 use anyhow::Context as _;
 use opentelemetry::trace::TracerProvider as _;
@@ -31,20 +11,10 @@ use tracing_subscriber::util::SubscriberInitExt as _;
 
 use crate::config::Telemetry;
 
-/// The OTLP/HTTP path every collector serves traces on.
-///
-/// Appended here rather than left to the operator, and worth a constant because the
-/// library only appends it to endpoints it reads from the environment — an endpoint
-/// passed programmatically is used verbatim. Configuring `http://collector:4318`
-/// and getting silent 404s is the footgun this removes.
+/// The OTLP/HTTP traces path, appended since the library uses programmatic endpoints verbatim.
 const TRACES_PATH: &str = "/v1/traces";
 
-/// Whatever has to stay alive for spans to keep being exported, and be flushed
-/// before the process leaves.
-///
-/// [`Traces::shutdown`] is not optional politeness: the batch processor holds
-/// finished spans until its next tick, so a process that exits without it drops
-/// precisely the spans of the request that made somebody restart it.
+/// What must stay alive for export; call [`Traces::shutdown`] before exit or the last spans are lost.
 pub(crate) struct Traces {
     provider: Option<SdkTracerProvider>,
 }
@@ -55,23 +25,15 @@ impl Traces {
         if let Some(provider) = self.provider
             && let Err(error) = provider.shutdown()
         {
-            // Reported and not propagated: the process is already on its way out,
-            // and failing a clean shutdown over unexported telemetry would turn a
-            // stop into a crash.
+            // Reported, not propagated: a failed flush must not turn a stop into a crash.
             tracing::warn!(%error, "the trace exporter did not shut down cleanly");
         }
     }
 }
 
-/// Install the subscriber, with an OTLP layer when `[telemetry]` asks for one.
-///
-/// Called once, before anything else logs — including configuration loading, which
-/// is why it takes the section rather than the whole [`crate::config::Config`]: the
-/// caller has to have read the file already, and everything between the two is
-/// silent.
+/// Install the subscriber, with an OTLP layer when `[telemetry]` asks for one; call once, first.
 pub(crate) fn install(telemetry: Option<&Telemetry>) -> anyhow::Result<Traces> {
-    // Unchanged from before there were traces: JSON lines, and a filter an operator
-    // can widen with `RUST_LOG` without a rebuild.
+    // JSON lines, filterable with `RUST_LOG`.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,sqlx=warn"));
     let logs = tracing_subscriber::fmt::layer().json();
@@ -93,11 +55,7 @@ pub(crate) fn install(telemetry: Option<&Telemetry>) -> anyhow::Result<Traces> {
         .with(layer)
         .init();
 
-    // W3C `traceparent`, in both directions: it is what the HTTP middleware reads
-    // off an incoming request (§13 — a CI job can link its own trace to the
-    // notification it publishes) and what an outgoing call would carry. Set on the
-    // global rather than passed around, because that is the only thing the
-    // propagation API offers.
+    // W3C `traceparent` on the global propagator, so CI jobs can link their traces (§13).
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
     tracing::info!(
@@ -112,10 +70,7 @@ pub(crate) fn install(telemetry: Option<&Telemetry>) -> anyhow::Result<Traces> {
     })
 }
 
-/// Read a W3C `traceparent` off an actix request.
-///
-/// `opentelemetry-http` ships one of these for `http::HeaderMap`, and actix has its
-/// own header map, so the ten lines are cheaper than the dependency.
+/// Read a W3C `traceparent` off an actix request (cheaper than the `opentelemetry-http` dependency).
 struct Headers<'a>(&'a actix_web::http::header::HeaderMap);
 
 impl opentelemetry::propagation::Extractor for Headers<'_> {
@@ -131,20 +86,8 @@ impl opentelemetry::propagation::Extractor for Headers<'_> {
     }
 }
 
-/// Continue the caller's trace, or start one (design §13).
-///
-/// # Why an incoming `traceparent` is trusted
-///
-/// It is a correlation id, not a credential: the worst a forged one does is attach
-/// this request to a trace it does not belong to, in a system the sender can already
-/// write to by publishing. Refusing it would cost the thing the header is for — a CI
-/// job linking its own pipeline trace to the notification it published (§13) — and
-/// buy nothing, because the sampling decision it carries is the caller's to make
-/// about their own trace.
-///
-/// The span is created whether or not an exporter exists. With `[telemetry]` absent
-/// the propagator is a no-op, the parent context is empty, and what remains is an
-/// ordinary `tracing` span that costs a field or two on the log lines beneath it.
+/// Continue the caller's trace, or start one (design §13). An incoming `traceparent` is trusted:
+/// it is a correlation id, not a credential. Without an exporter this is a plain `tracing` span.
 pub(crate) async fn continue_trace(
     request: actix_web::dev::ServiceRequest,
     next: actix_web::middleware::Next<impl actix_web::body::MessageBody>,
@@ -156,16 +99,13 @@ pub(crate) async fn continue_trace(
         propagator.extract(&Headers(request.headers()))
     });
 
-    // The route pattern rather than the path: `/api/v1/notifications/{id}` is one
-    // operation, and the id-per-span spelling would make the collector's list of
-    // operations as long as the table.
+    // The route pattern, not the path, keeps the operation list bounded.
     let span = tracing::info_span!(
         "http",
         method = %request.method(),
         route = request.match_pattern().unwrap_or_else(|| "unmatched".to_owned()),
     );
-    // The error case is "no subscriber is collecting spans", which is every build
-    // without `[telemetry]` and is not something to report once per request.
+    // Errors only when no subscriber collects spans: not worth reporting.
     let _ = span.set_parent(parent);
 
     next.call(request).instrument(span).await
@@ -192,10 +132,7 @@ fn provider(telemetry: &Telemetry) -> anyhow::Result<SdkTracerProvider> {
 
     Ok(SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
-        // Parent-based: a child follows the decision taken for its root, here or in
-        // the caller that sent us a `traceparent`. Sampling each span on its own
-        // would produce traces with holes in the middle, which are worse to read
-        // than no trace at all.
+        // Parent-based, so traces have no holes.
         .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
             telemetry.sample_ratio,
         ))))
@@ -228,12 +165,7 @@ mod tests {
 
     #[actix_web::test]
     async fn the_middleware_knows_which_route_it_is_on() {
-        // The reason this is a test and not a comment: an app-level middleware runs
-        // around routing, and whether `match_pattern()` is populated by the time it
-        // asks decides whether the span carries `/api/v1/notifications/{id}` or the
-        // useless `unmatched` for every request in the deployment. Guessing was not
-        // an option; this pins the answer, so an actix upgrade that changes it fails
-        // here rather than degrading a collector nobody is reading yet.
+        // Pins that `match_pattern()` is populated in app-level middleware, across actix upgrades.
         async fn probe(
             request: actix_web::dev::ServiceRequest,
             next: actix_web::middleware::Next<impl actix_web::body::MessageBody>,
@@ -276,8 +208,7 @@ mod tests {
 
     #[test]
     fn a_collector_base_url_gains_the_path_and_never_gains_it_twice() {
-        // Both spellings appear in collector documentation, and the difference
-        // between them is silent 404s rather than an error anybody sees.
+        // Both spellings occur; the wrong one is a silent 404.
         assert_eq!(
             endpoint("http://collector:4318"),
             "http://collector:4318/v1/traces"
@@ -306,8 +237,7 @@ mod tests {
 
     #[test]
     fn a_ratio_outside_the_unit_interval_stops_the_process() {
-        // 0 and 1 are both meaningful — "record nothing" and "record everything" —
-        // so the check is on the interval, not on zero.
+        // 0 and 1 are both meaningful, so the check is on the interval.
         let over = Telemetry {
             otlp_endpoint: "http://collector:4318".to_owned(),
             sample_ratio: 1.5,

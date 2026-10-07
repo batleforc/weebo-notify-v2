@@ -1,24 +1,6 @@
-//! A guided menu over `channel`/`dnd`/`device` management (design §9.2).
-//!
-//! # A discoverability layer, not a second implementation
-//!
-//! Everything here is a curated, hand-labelled view of `manage.rs`'s
-//! subcommands — not generated from the clap tree, because the wording and
-//! grouping are worth choosing by hand — but every leaf bottoms out in a `:`
-//! line, exactly the string that would otherwise have to be typed and
-//! remembered. Running one goes through the same [`super::app::run_command`]
-//! the `:` line itself calls; seeding one hands off to the ordinary `:` line
-//! editing, so `completion.rs`'s tab completion and `history.rs`'s recall
-//! keep working for free. The parity mechanism of §9 is reused, not
-//! duplicated — only its *entry point* is made discoverable without the
-//! grammar being memorised first.
-//!
-//! # A stack, because "back" is `pop`
-//!
-//! [`Menu`] holds a stack of `(items at this level, cursor)`. Drawing is
-//! always "whatever's on top", and going back one level is popping it — the
-//! same "closed and empty read the same way" simplicity `App::selected_action`
-//! already uses, one level deeper.
+//! A guided menu over `channel`/`dnd`/`device` management (§9.2): hand-labelled, but every
+//! leaf is a `:` line run through [`super::app::run_command`] or seeded into the `:` editor.
+//! A stack of levels, so "back" is a pop.
 
 /// One entry of the menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,14 +10,12 @@ pub(crate) enum MenuItem {
         label: &'static str,
         items: Vec<MenuItem>,
     },
-    /// Runs immediately, through the same path the `:` line uses — for
-    /// commands that need no argument (`channel list`, `dnd status`, `dnd off`).
+    /// Runs immediately through the `:` line's path (commands needing no argument).
     Run {
         label: &'static str,
         line: &'static str,
     },
-    /// Seeds the `:` line and hands off to it — for commands that need
-    /// arguments a menu has no business guessing (`channel create <id>`).
+    /// Seeds the `:` line, for commands needing arguments (`channel create <id>`).
     Prefill {
         label: &'static str,
         line: &'static str,
@@ -52,9 +32,7 @@ impl MenuItem {
     }
 }
 
-/// Where the menu is: a stack of levels, root first. Never empty while the
-/// menu itself exists — [`Menu::back`] refuses to pop the last frame, and
-/// reports that instead so the caller can close the menu entirely.
+/// Where the menu is: a stack of levels, root first, never empty ([`Menu::back`] won't pop the root).
 #[derive(Debug, Clone)]
 pub(crate) struct Menu {
     stack: Vec<(Vec<MenuItem>, usize)>,
@@ -69,15 +47,12 @@ pub(crate) enum MenuOutcome {
     RunLine(String),
     /// A [`MenuItem::Prefill`] line — seed the `:` line and close the menu.
     PrefillLine(String),
-    /// Nothing is highlighted (an empty level, which the fixed root content
-    /// below never produces, but `activate` stays total rather than panicking
-    /// if one ever did).
+    /// Nothing is highlighted (an empty level; keeps `activate` total).
     Nothing,
 }
 
 impl Menu {
-    /// Open at the root: Canaux, Ne pas déranger, Appareils — mirroring
-    /// `manage.rs`'s `ChannelCommand`/`DndCommand`/`DeviceCommand` exactly.
+    /// Open at the root, mirroring `manage.rs`'s channel/dnd/device subcommands.
     pub(crate) fn root() -> Self {
         Self {
             stack: vec![(Self::root_items(), 0)],
@@ -163,9 +138,7 @@ impl Menu {
         items.get(*cursor)
     }
 
-    /// Move the cursor within the current level. Clamped at both ends, same
-    /// rule as everywhere else in the TUI — holding the key at the end must
-    /// not wrap to the other one.
+    /// Move the cursor within the current level, clamped (never wraps).
     pub(crate) fn move_cursor(&mut self, delta: i32) {
         let Some((items, cursor)) = self.stack.last_mut() else {
             return;
@@ -194,8 +167,7 @@ impl Menu {
         }
     }
 
-    /// Pop one level. `false` means there was only the root left to pop —
-    /// the caller closes the menu entirely rather than showing an empty one.
+    /// Pop one level; `false` when only the root was left (the caller closes the menu).
     pub(crate) fn back(&mut self) -> bool {
         if self.stack.len() <= 1 {
             return false;
@@ -296,11 +268,7 @@ mod tests {
 
     #[test]
     fn every_menu_line_is_a_real_command_the_clap_tree_knows_about() {
-        // The drift guard: a hand-curated line that no longer names a real
-        // subcommand would fail silently in `run_command`'s own clap parser,
-        // with the parser's error as the only symptom. Catching it here, at
-        // the source of the wording, is cheaper than finding it by clicking
-        // through the menu.
+        // Drift guard: every hand-written line must still parse as a real subcommand.
         for item in leaves(&Menu::root_items()) {
             let (MenuItem::Run { line, .. } | MenuItem::Prefill { line, .. }) = item else {
                 unreachable!("`leaves` only ever returns Run/Prefill items")
