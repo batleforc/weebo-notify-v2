@@ -40,3 +40,7 @@ auditConfig:
     # fast-glob, matching globs written in this repository at build time. Remove when
     # braces ships a fix or the plugin drops fast-glob.
     - GHSA-vfj7-8cjw-p6xm
+
+# Same supply-chain gate CI's pnpm enforces: never resolve a version published less
+# than a day ago, so a local install cannot produce a lockfile CI then refuses.
+minimumReleaseAge: 1440
