@@ -407,6 +407,36 @@ export type Configured = {
 };
 
 /**
+ * One live connection.
+ */
+export type Connection = {
+    /**
+     * What the client calls itself (its `User-Agent`).
+     */
+    client: string;
+    /**
+     * How it signed in: `session`, `key`, `device:<id>` or `ci`.
+     */
+    credential: string;
+    /**
+     * Whether it uses the credential of this very request (this browser, this CLI).
+     */
+    current: boolean;
+    /**
+     * The id `DELETE /streams/{id}` takes.
+     */
+    id: string;
+    /**
+     * When it connected.
+     */
+    opened_at: string;
+    /**
+     * `sse` or `websocket`.
+     */
+    transport: string;
+};
+
+/**
  * The validated body of a revision.
  */
 export type Content = {
@@ -4188,6 +4218,61 @@ export type StreamResponses = {
      */
     200: unknown;
 };
+
+export type ListStreamsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/streams';
+};
+
+export type ListStreamsErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+};
+
+export type ListStreamsError = ListStreamsErrors[keyof ListStreamsErrors];
+
+export type ListStreamsResponses = {
+    /**
+     * The connections
+     */
+    200: Array<Connection>;
+};
+
+export type ListStreamsResponse = ListStreamsResponses[keyof ListStreamsResponses];
+
+export type DisconnectStreamData = {
+    body?: never;
+    path: {
+        /**
+         * The connection id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/streams/{id}';
+};
+
+export type DisconnectStreamErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+};
+
+export type DisconnectStreamError = DisconnectStreamErrors[keyof DisconnectStreamErrors];
+
+export type DisconnectStreamResponses = {
+    /**
+     * Disconnected, or already gone
+     */
+    204: void;
+};
+
+export type DisconnectStreamResponse = DisconnectStreamResponses[keyof DisconnectStreamResponses];
 
 export type SyncData = {
     body?: never;

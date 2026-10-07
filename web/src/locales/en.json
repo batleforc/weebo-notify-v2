@@ -48,7 +48,8 @@
       "live": "live",
       "reconnecting": "reconnecting…",
       "offline": "offline",
-      "tooltip": "SSE stream — resumed by cursor on reconnect (§8.1)."
+      "tooltip": "SSE stream — resumed by cursor on reconnect (§8.1).",
+      "disconnected": "disconnected"
     },
     "channels": {
       "title": "Channels",
@@ -446,6 +447,21 @@
       "cli": "Command line & TUI",
       "pwa": "This device",
       "install": "Install the app"
+    },
+    "connections": {
+      "title": "Active connections",
+      "description": "Every device holding a live connection to your inbox. Disconnecting one cuts it now and keeps that sign-in off realtime for up to 12 h; to remove its access for good, revoke its key or device, or sign out there.",
+      "empty": "No live connection.",
+      "current": "this device",
+      "disconnect": "Disconnect",
+      "refresh": "Refresh",
+      "since": "connected {at}",
+      "credential": {
+        "session": "browser session",
+        "key": "API key",
+        "ci": "CI token",
+        "device": "enrolled device"
+      }
     }
   },
   "problem": {

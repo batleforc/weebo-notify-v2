@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use notify_domain::{Principal, limits::MAX_STREAMS_PER_PRINCIPAL};
-use notify_ports::StreamLeases;
+use notify_ports::{Acquired, Lease, LeaseRequest, PortResult, StreamLeases};
+use tokio::sync::Notify;
 
 /// Advisory `Retry-After` for a refused client: a slot frees whenever somebody closes a tab.
 pub(crate) const RETRY_AFTER_SECONDS: u32 = 30;
@@ -24,6 +25,17 @@ pub struct StreamSlots {
     total: Mutex<usize>,
     /// The instance-wide count, and this replica's name in it.
     cluster: Option<(Arc<dyn StreamLeases>, String)>,
+    /// This replica's leases, each with the signal that closes its connection.
+    local: Mutex<HashMap<String, Arc<Notify>>>,
+}
+
+/// Why a connection was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// At the ceiling (§8.2): `429`, retry later.
+    Full,
+    /// Disconnected by its owner: `403`, don't retry.
+    Disconnected,
 }
 
 impl std::fmt::Debug for StreamSlots {
@@ -51,30 +63,85 @@ impl StreamSlots {
         }
     }
 
-    /// Take the instance-wide lease for a local `slot`; `false` means refuse with `429`.
-    /// A store outage fails open: the local ceiling still protects this process.
-    pub async fn lease(&self, slot: &mut StreamSlot) -> bool {
-        let Some((leases, replica)) = &self.cluster else {
-            return true;
+    /// Take the instance-wide lease for a local `slot`. A store outage fails open:
+    /// the local ceiling still protects this process.
+    pub async fn lease(&self, slot: &mut StreamSlot, request: LeaseRequest) -> Result<(), Refusal> {
+        let Some((leases, _)) = &self.cluster else {
+            return Ok(());
         };
-        let principal = slot.principal.reference();
-        match leases
-            .acquire(&principal, replica, MAX_STREAMS_PER_PRINCIPAL)
-            .await
-        {
-            Ok(Some(id)) => {
+        match leases.acquire(&request, MAX_STREAMS_PER_PRINCIPAL).await {
+            Ok(Acquired::Granted(id)) => {
+                let kicked = Arc::new(Notify::new());
+                self.local_leases().insert(id.clone(), Arc::clone(&kicked));
+                slot.kicked = Some(kicked);
                 slot.lease = Some((Arc::clone(leases), id));
-                true
+                Ok(())
             }
-            Ok(None) => false,
+            Ok(Acquired::Full) => Err(Refusal::Full),
+            Ok(Acquired::Blocked) => Err(Refusal::Disconnected),
             Err(error) => {
                 tracing::warn!(
                     ?error,
                     "stream lease store unavailable; admitting on the local ceiling"
                 );
-                true
+                Ok(())
             }
         }
+    }
+
+    /// This replica's name in the lease table, when clustered.
+    #[must_use]
+    pub fn replica(&self) -> Option<&str> {
+        self.cluster.as_ref().map(|(_, replica)| replica.as_str())
+    }
+
+    /// Keep this replica's leases alive and close every connection whose lease was
+    /// disconnected from another replica.
+    pub async fn renew(&self) -> PortResult<()> {
+        let Some((leases, replica)) = &self.cluster else {
+            return Ok(());
+        };
+        let live = leases.renew(replica).await?;
+        for (id, kicked) in self.local_leases().iter() {
+            if !live.contains(id) {
+                kicked.notify_one();
+            }
+        }
+        Ok(())
+    }
+
+    /// `principal`'s live connections, across every replica.
+    pub async fn list(&self, principal: &Principal) -> PortResult<Vec<Lease>> {
+        match &self.cluster {
+            Some((leases, _)) => leases.list(&principal.reference()).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Close one of `principal`'s connections and keep its credential off realtime
+    /// until `until`; here at once, elsewhere at that replica's next renewal.
+    pub async fn disconnect(
+        &self,
+        principal: &Principal,
+        lease: &str,
+        until: time::OffsetDateTime,
+    ) -> PortResult<bool> {
+        let Some((leases, _)) = &self.cluster else {
+            return Ok(false);
+        };
+        let gone = leases
+            .disconnect(&principal.reference(), lease, until)
+            .await?;
+        if let Some(kicked) = self.local_leases().get(lease) {
+            kicked.notify_one();
+        }
+        Ok(gone)
+    }
+
+    fn local_leases(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Notify>>> {
+        self.local
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Take a slot for `principal` before serving; `None` means refuse with `429`.
@@ -106,6 +173,7 @@ impl StreamSlots {
             slots: Arc::clone(self),
             principal: principal.clone(),
             lease: None,
+            kicked: None,
         })
     }
 
@@ -156,6 +224,17 @@ pub struct StreamSlot {
     slots: Arc<StreamSlots>,
     principal: Principal,
     lease: Option<(Arc<dyn StreamLeases>, String)>,
+    kicked: Option<Arc<Notify>>,
+}
+
+impl StreamSlot {
+    /// Resolves when its owner disconnects this connection; never, without a lease.
+    pub async fn kicked(&self) {
+        match &self.kicked {
+            Some(kicked) => kicked.notified().await,
+            None => std::future::pending().await,
+        }
+    }
 }
 
 impl std::fmt::Debug for StreamSlot {
@@ -170,6 +249,7 @@ impl Drop for StreamSlot {
     fn drop(&mut self) {
         self.slots.release(&self.principal);
         if let Some((leases, id)) = self.lease.take() {
+            self.slots.local_leases().remove(&id);
             // Best effort: a missed release expires with the lease TTL.
             tokio::spawn(async move {
                 if let Err(error) = leases.release(&id).await {
@@ -414,22 +494,75 @@ mod ceiling_tests {
         let b = Arc::new(StreamSlots::clustered(leases.clone(), "b".to_owned()));
         let me = somebody();
 
+        let request = |replica: &str, n: usize| LeaseRequest {
+            principal: me.reference(),
+            replica: replica.to_owned(),
+            transport: "sse".to_owned(),
+            client: "test".to_owned(),
+            credential: "session".to_owned(),
+            fingerprint: format!("token-{n}"),
+        };
+
         let mut held = Vec::new();
         for i in 0..MAX_STREAMS_PER_PRINCIPAL {
             let slots = if i % 2 == 0 { &a } else { &b };
             let mut slot = slots.acquire(&me).unwrap();
-            assert!(slots.lease(&mut slot).await);
+            slots.lease(&mut slot, request("x", i)).await.unwrap();
             held.push(slot);
         }
 
         // Each replica is under the ceiling locally; the instance is not.
         let mut extra = b.acquire(&me).unwrap();
-        assert!(!b.lease(&mut extra).await);
+        assert_eq!(
+            b.lease(&mut extra, request("b", 99)).await,
+            Err(Refusal::Full)
+        );
 
         held.pop();
         tokio::task::yield_now().await;
         assert_eq!(leases.held(), MAX_STREAMS_PER_PRINCIPAL - 1);
         let mut again = a.acquire(&me).unwrap();
-        assert!(a.lease(&mut again).await);
+        a.lease(&mut again, request("a", 100)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_disconnected_connection_closes_and_its_credential_stays_out() {
+        let leases = Arc::new(notify_ports::test_utils::TestStreamLeases::new());
+        let slots = Arc::new(StreamSlots::clustered(leases.clone(), "a".to_owned()));
+        let me = somebody();
+        let request = LeaseRequest {
+            principal: me.reference(),
+            replica: "a".to_owned(),
+            transport: "sse".to_owned(),
+            client: "phone".to_owned(),
+            credential: "session".to_owned(),
+            fingerprint: "stolen-phone".to_owned(),
+        };
+        let mut slot = slots.acquire(&me).unwrap();
+        slots.lease(&mut slot, request.clone()).await.unwrap();
+        let listed = slots.list(&me).await.unwrap();
+        assert_eq!(listed.len(), 1);
+
+        assert!(
+            slots
+                .disconnect(&me, &listed[0].id, time::OffsetDateTime::now_utc())
+                .await
+                .unwrap()
+        );
+        // Resolves at once: the signal was stored for the connection to pick up.
+        slot.kicked().await;
+        drop(slot);
+
+        let mut retry = slots.acquire(&me).unwrap();
+        assert_eq!(
+            slots.lease(&mut retry, request).await,
+            Err(Refusal::Disconnected)
+        );
+        assert!(
+            !slots
+                .disconnect(&somebody(), "1", time::OffsetDateTime::now_utc())
+                .await
+                .unwrap()
+        );
     }
 }

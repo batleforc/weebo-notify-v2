@@ -34,6 +34,16 @@ the deployment configures it. A push arriving while the tab is visible is handed
 the page instead of the operating system, so it goes through the same
 do-not-disturb gate as everything else.
 
+## Your connected devices
+
+**Settings › Active connections** lists every device holding a live connection to
+your inbox — browser tabs, the PWA on your phone, the TUI — across every server
+replica, with how it signed in and since when. *Disconnect* cuts one now and keeps
+that sign-in off realtime for up to 12 hours; the device shows *disconnected* and
+stops retrying. To remove a device's access for good, revoke its API key or its
+enrolled device, or sign out on it. A tab you just closed can stay listed for about
+15 seconds, until the server notices it left.
+
 ## What the browser holds
 
 The access token stays in memory. The refresh token is in `sessionStorage`, which

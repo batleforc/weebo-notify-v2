@@ -48,7 +48,8 @@
       "live": "temps réel",
       "reconnecting": "reconnexion…",
       "offline": "hors ligne",
-      "tooltip": "Flux SSE — reprise par curseur à la reconnexion (§8.1)."
+      "tooltip": "Flux SSE — reprise par curseur à la reconnexion (§8.1).",
+      "disconnected": "déconnecté"
     },
     "channels": {
       "title": "Canaux",
@@ -446,6 +447,21 @@
       "cli": "Ligne de commande & TUI",
       "pwa": "Cet appareil",
       "install": "Installer l'application"
+    },
+    "connections": {
+      "title": "Connexions actives",
+      "description": "Chaque appareil connecté en temps réel à ton inbox. Déconnecter le coupe tout de suite et tient cette connexion à l'écart du temps réel jusqu'à 12 h ; pour lui retirer l'accès pour de bon, révoque sa clé ou son appareil, ou déconnecte-toi depuis celui-ci.",
+      "empty": "Aucune connexion en cours.",
+      "current": "cet appareil",
+      "disconnect": "Déconnecter",
+      "refresh": "Actualiser",
+      "since": "connecté {at}",
+      "credential": {
+        "session": "session navigateur",
+        "key": "clé API",
+        "ci": "jeton CI",
+        "device": "appareil enrôlé"
+      }
     }
   },
   "problem": {

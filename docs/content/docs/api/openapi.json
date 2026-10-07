@@ -3690,6 +3690,85 @@
         ]
       }
     },
+    "/api/v1/streams": {
+      "get": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Every realtime connection the caller holds, oldest first.",
+        "operationId": "list_streams",
+        "responses": {
+          "200": {
+            "description": "The connections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Connection"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/streams/{id}": {
+      "delete": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Disconnect one of the caller's connections. Its credential is kept off realtime\nfor up to 12 h; to remove access for good, revoke the key or the device.",
+        "operationId": "disconnect_stream",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The connection id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Disconnected, or already gone"
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/sync": {
       "get": {
         "tags": [
@@ -4928,6 +5007,45 @@
           }
         ],
         "description": "The single-valued tag behind [`AuditActor::Configuration`] (an enum so it serialises as `{\"kind\":\"configuration\"}`)."
+      },
+      "Connection": {
+        "type": "object",
+        "description": "One live connection.",
+        "required": [
+          "id",
+          "transport",
+          "client",
+          "credential",
+          "opened_at",
+          "current"
+        ],
+        "properties": {
+          "client": {
+            "type": "string",
+            "description": "What the client calls itself (its `User-Agent`)."
+          },
+          "credential": {
+            "type": "string",
+            "description": "How it signed in: `session`, `key`, `device:<id>` or `ci`."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "Whether it uses the credential of this very request (this browser, this CLI)."
+          },
+          "id": {
+            "type": "string",
+            "description": "The id `DELETE /streams/{id}` takes."
+          },
+          "opened_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it connected."
+          },
+          "transport": {
+            "type": "string",
+            "description": "`sse` or `websocket`."
+          }
+        }
       },
       "Content": {
         "type": "object",

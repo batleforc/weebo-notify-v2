@@ -21,6 +21,7 @@ pub mod dto {
     pub use crate::routes::compat::{
         Alert, AlertmanagerBody, CompatQuery, GotifyBody, GotifyMessage, NtfyBody, NtfyMessage,
     };
+    pub use crate::routes::connections::Connection;
     pub use crate::routes::identity::{
         ApiKeyLimitBody, CreateKeyBody, EnrolBody, MintedKey, Whoami,
     };

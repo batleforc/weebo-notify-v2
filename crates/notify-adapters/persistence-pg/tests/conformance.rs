@@ -3122,42 +3122,75 @@ mod e2e {
 
     #[tokio::test]
     async fn stream_leases_cap_a_principal_across_replicas_and_expire_unrenewed() {
+        use notify_ports::{Acquired, LeaseRequest, StreamLeases};
         let store = store!();
         let me = format!("user:{}", UserId::generate());
         let you = format!("user:{}", UserId::generate());
+        let ask = |principal: &str, replica: &str, token: &str| LeaseRequest {
+            principal: principal.to_owned(),
+            replica: replica.to_owned(),
+            transport: "sse".to_owned(),
+            client: "Firefox".to_owned(),
+            credential: "session".to_owned(),
+            fingerprint: format!("{principal}-{token}"),
+        };
+        let granted = |acquired: Acquired| match acquired {
+            Acquired::Granted(id) => id,
+            other => panic!("expected a lease, got {other:?}"),
+        };
 
         // Two replicas share one count.
-        let a = notify_ports::StreamLeases::acquire(&store, &me, "replica-a", 2)
-            .await
-            .unwrap()
-            .unwrap();
-        notify_ports::StreamLeases::acquire(&store, &me, "replica-b", 2)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            notify_ports::StreamLeases::acquire(&store, &me, "replica-a", 2)
+        let a = granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t1"), 2)
                 .await
-                .unwrap()
-                .is_none()
+                .unwrap(),
         );
-        assert!(
-            notify_ports::StreamLeases::acquire(&store, &you, "replica-a", 2)
+        granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-b", "t2"), 2)
                 .await
-                .unwrap()
-                .is_some(),
-            "per principal"
+                .unwrap(),
+        );
+        assert_eq!(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t3"), 2)
+                .await
+                .unwrap(),
+            Acquired::Full
+        );
+        granted(
+            StreamLeases::acquire(&store, &ask(&you, "replica-a", "t1"), 2)
+                .await
+                .unwrap(),
         );
 
-        notify_ports::StreamLeases::release(&store, &a)
-            .await
-            .unwrap();
+        // Its owner sees both, with what each said about itself.
+        let mine = StreamLeases::list(&store, &me).await.unwrap();
+        assert_eq!(mine.len(), 2);
+        assert_eq!(mine[0].client, "Firefox");
+
+        // Disconnecting frees the slot, keeps that credential out, and is owner-only.
         assert!(
-            notify_ports::StreamLeases::acquire(&store, &me, "replica-b", 2)
+            !StreamLeases::disconnect(&store, &you, &a, now() + Duration::hours(1))
                 .await
                 .unwrap()
-                .is_some()
         );
+        assert!(
+            StreamLeases::disconnect(&store, &me, &a, now() + Duration::hours(1))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t1"), 2)
+                .await
+                .unwrap(),
+            Acquired::Blocked
+        );
+        granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t4"), 2)
+                .await
+                .unwrap(),
+        );
+        let live = StreamLeases::renew(&store, "replica-a").await.unwrap();
+        assert!(!live.contains(&a), "the replica learns its lease is gone");
 
         // A replica that died stops renewing: its leases lapse and free the slots.
         sqlx::query("UPDATE stream_leases SET expires_at = now() - interval '1 second' WHERE principal = $1")
@@ -3165,14 +3198,11 @@ mod e2e {
             .execute(store.pool())
             .await
             .unwrap();
-        notify_ports::StreamLeases::renew(&store, "replica-a")
-            .await
-            .unwrap();
-        assert!(
-            notify_ports::StreamLeases::acquire(&store, &me, "replica-a", 1)
+        StreamLeases::renew(&store, "replica-z").await.unwrap();
+        granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t5"), 1)
                 .await
-                .unwrap()
-                .is_some()
+                .unwrap(),
         );
     }
 

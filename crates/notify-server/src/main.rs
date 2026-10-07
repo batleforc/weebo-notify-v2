@@ -168,6 +168,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let cors_origins = config.server.cors_origins.clone();
     let serve_docs = config.server.docs;
     let state = actix_web::web::Data::new(application.state);
+    let streams = std::sync::Arc::clone(&state.streams);
     let readiness = actix_web::web::Data::new(health::Dependencies::new(
         application.store.clone(),
         application.transports.names(),
@@ -241,7 +242,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         },
         store.clone(),
     ));
-    let leases = actix_web::rt::spawn(renew_leases(store.clone(), application.replica));
+    let leases = actix_web::rt::spawn(renew_leases(streams));
 
     tracing::info!(%bind, "weebo-notify is listening");
     let outcome = server.await;
@@ -522,12 +523,13 @@ async fn background(
     );
 }
 
-/// Every replica, not only the leader, keeps its own stream leases alive (§8.2).
-async fn renew_leases(store: notify_persistence_pg::PgStore, replica: String) {
+/// Every replica keeps its own stream leases alive and closes the ones their owner
+/// disconnected from another replica (§8.2).
+async fn renew_leases(streams: std::sync::Arc<notify_http_actix::StreamSlots>) {
     let mut tick = every(notify_persistence_pg::LEASE_RENEW);
     loop {
         tick.tick().await;
-        if let Err(error) = notify_ports::StreamLeases::renew(&store, &replica).await {
+        if let Err(error) = streams.renew().await {
             tracing::warn!(?error, "could not renew stream leases");
         }
     }

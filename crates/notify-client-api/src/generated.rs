@@ -1860,6 +1860,67 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
             value.parse()
         }
     }
+    ///One live connection.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One live connection.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "client",
+    ///    "credential",
+    ///    "current",
+    ///    "id",
+    ///    "opened_at",
+    ///    "transport"
+    ///  ],
+    ///  "properties": {
+    ///    "client": {
+    ///      "description": "What the client calls itself (its `User-Agent`).",
+    ///      "type": "string"
+    ///    },
+    ///    "credential": {
+    ///      "description": "How it signed in: `session`, `key`, `device:<id>` or `ci`.",
+    ///      "type": "string"
+    ///    },
+    ///    "current": {
+    ///      "description": "Whether it uses the credential of this very request (this browser, this CLI).",
+    ///      "type": "boolean"
+    ///    },
+    ///    "id": {
+    ///      "description": "The id `DELETE /streams/{id}` takes.",
+    ///      "type": "string"
+    ///    },
+    ///    "opened_at": {
+    ///      "description": "When it connected.",
+    ///      "type": "string",
+    ///      "format": "date-time"
+    ///    },
+    ///    "transport": {
+    ///      "description": "`sse` or `websocket`.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Connection {
+        ///What the client calls itself (its `User-Agent`).
+        pub client: ::std::string::String,
+        ///How it signed in: `session`, `key`, `device:<id>` or `ci`.
+        pub credential: ::std::string::String,
+        ///Whether it uses the credential of this very request (this browser, this CLI).
+        pub current: bool,
+        ///The id `DELETE /streams/{id}` takes.
+        pub id: ::std::string::String,
+        ///When it connected.
+        pub opened_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///`sse` or `websocket`.
+        pub transport: ::std::string::String,
+    }
     ///The validated body of a revision.
     ///
     /// <details><summary>JSON schema</summary>
@@ -11415,6 +11476,95 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Every realtime connection the caller holds, oldest first
+
+Sends a `GET` request to `/api/v1/streams`
+
+*/
+    pub async fn list_streams<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::Connection>>,
+        Error<types::Problem>,
+    > {
+        let url = format!("{}/api/v1/streams", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_streams",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Disconnect one of the caller's connections. Its credential is kept off realtime
+for up to 12 h; to remove access for good, revoke the key or the device
+
+Sends a `DELETE` request to `/api/v1/streams/{id}`
+
+Arguments:
+- `id`: The connection id
+*/
+    pub async fn disconnect_stream<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<()>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/streams/{}", self.baseurl, encode_path(& id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "disconnect_stream",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            204u16 => Ok(ResponseValue::empty(response)),
+            401u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

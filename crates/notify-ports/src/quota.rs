@@ -68,19 +68,70 @@ pub trait RateLimiter: Send + Sync {
     ) -> PortResult<Allowance>;
 }
 
+/// What a connection tells the lease table about itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseRequest {
+    /// Whose connection (`Principal::reference`).
+    pub principal: String,
+    /// Which replica holds it.
+    pub replica: String,
+    /// `sse` or `websocket`.
+    pub transport: String,
+    /// The client's own name for itself (its `User-Agent`), truncated.
+    pub client: String,
+    /// How it authenticated: `session`, `key`, `device:<id>`, `ci`.
+    pub credential: String,
+    /// A hash of the presented credential, never the credential itself.
+    pub fingerprint: String,
+}
+
+/// One live connection, as its owner sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lease {
+    /// The lease id.
+    pub id: String,
+    /// `sse` or `websocket`.
+    pub transport: String,
+    /// The client's `User-Agent`.
+    pub client: String,
+    /// How it authenticated.
+    pub credential: String,
+    /// Hash of its credential, so a caller can recognise its own connection.
+    pub fingerprint: String,
+    /// When it connected.
+    pub opened_at: OffsetDateTime,
+}
+
+/// The answer to a connection asking for a lease.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Acquired {
+    /// Granted, under this id.
+    Granted(String),
+    /// The principal already holds `max` (§8.2): `429`.
+    Full,
+    /// Its owner disconnected this credential from realtime: `403`, don't retry.
+    Blocked,
+}
+
 /// Live stream connections counted across every replica (§8.2). A lease its replica
 /// stops renewing expires, so a killed replica cannot lock anyone out for long.
 #[async_trait::async_trait]
 pub trait StreamLeases: Send + Sync {
-    /// Take one of `max` leases for `principal` on `replica`; `None` when all are held.
-    async fn acquire(
-        &self,
-        principal: &str,
-        replica: &str,
-        max: usize,
-    ) -> PortResult<Option<String>>;
+    /// Take one of `max` leases for the request's principal.
+    async fn acquire(&self, request: &LeaseRequest, max: usize) -> PortResult<Acquired>;
     /// Give one back.
     async fn release(&self, lease: &str) -> PortResult<()>;
-    /// Extend every lease `replica` holds, and drop whatever expired anywhere.
-    async fn renew(&self, replica: &str) -> PortResult<()>;
+    /// Extend every lease `replica` holds, drop what expired anywhere, and return the
+    /// ids `replica` still holds — any other was disconnected and must close.
+    async fn renew(&self, replica: &str) -> PortResult<Vec<String>>;
+    /// The principal's live connections, oldest first.
+    async fn list(&self, principal: &str) -> PortResult<Vec<Lease>>;
+    /// Drop one of the principal's leases and keep its credential off realtime until
+    /// `until`; `false` when it is not theirs or already gone.
+    async fn disconnect(
+        &self,
+        principal: &str,
+        lease: &str,
+        until: OffsetDateTime,
+    ) -> PortResult<bool>;
 }

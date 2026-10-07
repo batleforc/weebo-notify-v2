@@ -554,7 +554,7 @@ L'objet est **plat** : l'enveloppe et le payload partagent un seul espace de nom
 - `tombstone` : `{ "channel_id", "notification_id", "reason": "deleted" | "expired" }` — le client retire l'entrée localement.
 - `receipt` / `interaction` : diffusés aux membres autorisés du canal (si receipts actifs, §7.3).
 - `preference` : émis **uniquement aux connexions du user concerné** — état DND et silences actifs (§7.4) ; ses autres clients se mettent à jour en temps réel.
-- Keep-alive : commentaire SSE (`: ping`) toutes les 25 s, sans `id` (proxy-friendly).
+- Keep-alive : commentaire SSE (`: ping`) toutes les 15 s, sans `id` (proxy-friendly) — c'est aussi ce qui révèle un client parti, donc ce qui libère son bail (§8.2).
 - **Un seul mécanisme de reprise** : `Last-Event-ID` (SSE) et `GET /sync?cursor=` consomment le même curseur ; le WebSocket transporte les mêmes événements en frames JSON.
 
 ### 8.2 Limites & quotas

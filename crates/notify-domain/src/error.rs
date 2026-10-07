@@ -184,6 +184,10 @@ pub enum DomainError {
     /// The action needs a person's own session, not a key or a CI token.
     #[error("this action needs a person's own session, not a key or a CI token")]
     SessionRequired,
+
+    /// Its owner disconnected this credential from realtime; reconnecting won't help.
+    #[error("this connection was disconnected by its owner")]
+    StreamDisconnected,
 }
 
 impl DomainError {
@@ -216,6 +220,7 @@ impl DomainError {
             Self::NotAPerson => "principal.not_a_person",
             Self::NotPlatformAdmin => "platform.role_required",
             Self::SessionRequired => "credential.session_required",
+            Self::StreamDisconnected => "stream.disconnected",
         }
     }
 
@@ -247,7 +252,8 @@ impl DomainError {
             Self::ScopeMissing { .. }
             | Self::NotAPerson
             | Self::NotPlatformAdmin
-            | Self::SessionRequired => ErrorKind::Forbidden,
+            | Self::SessionRequired
+            | Self::StreamDisconnected => ErrorKind::Forbidden,
         }
     }
 }

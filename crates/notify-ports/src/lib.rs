@@ -67,7 +67,7 @@ pub use preferences::{DeferredTally, PreferenceRepository};
 pub use push::{
     PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport, SEALED_ENVELOPE_VERSION,
 };
-pub use quota::{Allowance, Quota, RateLimiter, StreamLeases};
+pub use quota::{Acquired, Allowance, Lease, LeaseRequest, Quota, RateLimiter, StreamLeases};
 pub use receipts::{ReceiptRepository, Visibility};
 pub use sinks::{
     DeadLetter, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkRegistry, SinkTarget,

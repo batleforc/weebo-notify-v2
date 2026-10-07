@@ -1,7 +1,9 @@
 //! Rate limits counted in the database (design §8.2, T14), so the limit holds across replicas.
 //! A fixed window: the §8.2 burst allowance covers what a sliding window would smooth.
 
-use notify_ports::{Allowance, PortResult, Quota, RateLimiter, StreamLeases};
+use notify_ports::{
+    Acquired, Allowance, Lease, LeaseRequest, PortResult, Quota, RateLimiter, StreamLeases,
+};
 use time::{Duration, OffsetDateTime};
 
 use crate::PgStore;
@@ -115,48 +117,55 @@ pub const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[async_trait::async_trait]
 impl StreamLeases for PgStore {
-    async fn acquire(
-        &self,
-        principal: &str,
-        replica: &str,
-        max: usize,
-    ) -> PortResult<Option<String>> {
-        let mut tx = self
-            .pool()
-            .begin()
-            .await
-            .map_err(|e| fail("stream lease", e))?;
+    async fn acquire(&self, request: &LeaseRequest, max: usize) -> PortResult<Acquired> {
+        let fail = |e| fail("stream lease", e);
+        let mut tx = self.pool().begin().await.map_err(fail)?;
         // Serialises one principal's concurrent connects; other principals don't wait.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(principal)
+            .bind(&request.principal)
             .execute(&mut *tx)
             .await
-            .map_err(|e| fail("stream lease", e))?;
+            .map_err(fail)?;
+        let blocked: Option<(i32,)> =
+            sqlx::query_as("SELECT 1 FROM stream_blocks WHERE fingerprint = $1 AND until > now()")
+                .bind(&request.fingerprint)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(fail)?;
+        if blocked.is_some() {
+            return Ok(Acquired::Blocked);
+        }
         let (held,): (i64,) = sqlx::query_as(
             "SELECT count(*) FROM stream_leases WHERE principal = $1 AND expires_at > now()",
         )
-        .bind(principal)
+        .bind(&request.principal)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| fail("stream lease", e))?;
+        .map_err(fail)?;
         if usize::try_from(held).unwrap_or(usize::MAX) >= max {
-            return Ok(None);
+            return Ok(Acquired::Full);
         }
         let (id,): (String,) = sqlx::query_as(
-            "INSERT INTO stream_leases (principal, replica, expires_at)
-             VALUES ($1, $2, now() + interval '90 seconds') RETURNING id::text",
+            "INSERT INTO stream_leases
+                 (principal, replica, transport, client, credential, fingerprint, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, now() + interval '90 seconds')
+             RETURNING id::text",
         )
-        .bind(principal)
-        .bind(replica)
+        .bind(&request.principal)
+        .bind(&request.replica)
+        .bind(&request.transport)
+        .bind(&request.client)
+        .bind(&request.credential)
+        .bind(&request.fingerprint)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| fail("stream lease", e))?;
-        tx.commit().await.map_err(|e| fail("stream lease", e))?;
-        Ok(Some(id))
+        .map_err(fail)?;
+        tx.commit().await.map_err(fail)?;
+        Ok(Acquired::Granted(id))
     }
 
     async fn release(&self, lease: &str) -> PortResult<()> {
-        sqlx::query("DELETE FROM stream_leases WHERE id = $1::uuid")
+        sqlx::query("DELETE FROM stream_leases WHERE id::text = $1")
             .bind(lease)
             .execute(self.pool())
             .await
@@ -164,19 +173,80 @@ impl StreamLeases for PgStore {
         Ok(())
     }
 
-    async fn renew(&self, replica: &str) -> PortResult<()> {
-        sqlx::query(
-            "UPDATE stream_leases SET expires_at = now() + interval '90 seconds' WHERE replica = $1",
+    async fn renew(&self, replica: &str) -> PortResult<Vec<String>> {
+        let fail = |e| fail("stream lease", e);
+        let live: Vec<(String,)> = sqlx::query_as(
+            "UPDATE stream_leases SET expires_at = now() + interval '90 seconds'
+             WHERE replica = $1 RETURNING id::text",
         )
         .bind(replica)
-        .execute(self.pool())
+        .fetch_all(self.pool())
         .await
-        .map_err(|e| fail("stream lease", e))?;
+        .map_err(fail)?;
         sqlx::query("DELETE FROM stream_leases WHERE expires_at < now()")
             .execute(self.pool())
             .await
-            .map_err(|e| fail("stream lease", e))?;
-        Ok(())
+            .map_err(fail)?;
+        sqlx::query("DELETE FROM stream_blocks WHERE until < now()")
+            .execute(self.pool())
+            .await
+            .map_err(fail)?;
+        Ok(live.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn list(&self, principal: &str) -> PortResult<Vec<Lease>> {
+        let rows: Vec<(String, String, String, String, String, OffsetDateTime)> = sqlx::query_as(
+            "SELECT id::text, transport, client, credential, fingerprint, opened_at
+             FROM stream_leases WHERE principal = $1 AND expires_at > now()
+             ORDER BY opened_at",
+        )
+        .bind(principal)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|e| fail("stream lease", e))?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, transport, client, credential, fingerprint, opened_at)| Lease {
+                    id,
+                    transport,
+                    client,
+                    credential,
+                    fingerprint,
+                    opened_at,
+                },
+            )
+            .collect())
+    }
+
+    async fn disconnect(
+        &self,
+        principal: &str,
+        lease: &str,
+        until: OffsetDateTime,
+    ) -> PortResult<bool> {
+        let fail = |e| fail("stream lease", e);
+        let gone: Option<(String,)> = sqlx::query_as(
+            "DELETE FROM stream_leases WHERE id::text = $1 AND principal = $2 RETURNING fingerprint",
+        )
+        .bind(lease)
+        .bind(principal)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(fail)?;
+        let Some((fingerprint,)) = gone else {
+            return Ok(false);
+        };
+        sqlx::query(
+            "INSERT INTO stream_blocks (fingerprint, until) VALUES ($1, $2)
+             ON CONFLICT (fingerprint) DO UPDATE SET until = GREATEST(stream_blocks.until, EXCLUDED.until)",
+        )
+        .bind(fingerprint)
+        .bind(until)
+        .execute(self.pool())
+        .await
+        .map_err(fail)?;
+        Ok(true)
     }
 }
 

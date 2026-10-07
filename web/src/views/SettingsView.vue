@@ -21,6 +21,7 @@ import type {
 } from "@/api/generated/types.gen";
 import { failureOf } from "@/api/problem";
 import { useSession } from "@/auth/session";
+import ConnectionsPanel from "@/components/settings/ConnectionsPanel.vue";
 import DndPanel from "@/components/settings/DndPanel.vue";
 import PushPanel from "@/components/settings/PushPanel.vue";
 import { Badge } from "@/components/ui/badge";
@@ -450,6 +451,8 @@ const appearance = computed(() => [
     </Card>
 
     <!-- Web Push is a browser's; the desktop shell notifies natively (§10bis). -->
+    <ConnectionsPanel />
+
     <PushPanel v-if="!desktop" />
 
     <DndPanel />

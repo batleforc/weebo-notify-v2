@@ -46,7 +46,7 @@ function decodeBlock(block: string): Frame | null {
   const data: string[] = [];
 
   for (const line of block.split("\n")) {
-    // Comment lines are the 25 s keep-alive (§8.1); they never move the cursor.
+    // Comment lines are the 15 s keep-alive (§8.1); they never move the cursor.
     if (line === "" || line.startsWith(":")) {
       continue;
     }
@@ -71,7 +71,12 @@ function decodeBlock(block: string): Frame | null {
 }
 
 /** What the shell shows next to the channel list. */
-export type StreamStatus = "connecting" | "live" | "reconnecting" | "offline";
+export type StreamStatus =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "offline"
+  | "disconnected";
 
 export interface StreamOptions {
   onEvent: (event: StreamEvent) => void;
@@ -92,7 +97,7 @@ export interface Stream {
 /** Backoff, capped: a server coming back must not be met with a thundering herd. */
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
-/** Two missed 25 s keep-alives (§8.1): the socket died without a FIN. */
+/** Four missed 15 s keep-alives (§8.1): the socket died without a FIN. */
 export const IDLE_MS = 60_000;
 
 /** Open the stream and keep it open; refresh, resume and backoff are internal. */
@@ -164,6 +169,15 @@ export function openStream(options: StreamOptions): Stream {
           continue;
         }
         refreshed = false;
+
+        // Its owner cut this device off from another one: retrying would only be refused.
+        if (response.status === 403) {
+          const problem = await response.json().catch(() => null);
+          if (problem?.code === "stream.disconnected") {
+            status("disconnected");
+            return;
+          }
+        }
 
         if (!response.ok || !response.body) {
           throw new Error(`stream refused with ${response.status}`);

@@ -17,7 +17,7 @@ use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
 
 /// Short enough that a dead connection is noticed within a reconnect (design §8.1).
-const KEEP_ALIVE: Duration = Duration::from_secs(25);
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// How far a slow client may fall behind before it is dropped; it then replays via
 /// `Last-Event-ID` instead of the buffer growing unbounded.
@@ -32,8 +32,8 @@ const REAUTHENTICATE: Duration = Duration::from_secs(300);
 struct Connected {
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     transport: notify_ports::StreamKind,
-    /// Released on drop; never read (see [`crate::slots::StreamSlot`]).
-    _slot: crate::slots::StreamSlot,
+    /// Released on drop; also says when its owner disconnects it.
+    slot: crate::slots::StreamSlot,
 }
 
 impl Connected {
@@ -43,27 +43,77 @@ impl Connected {
         state: &ApiState,
         caller: &Caller,
         transport: notify_ports::StreamKind,
+        request: &HttpRequest,
+        device: Option<&str>,
     ) -> Result<Self, ApiError> {
-        let refused = || {
+        let full = || {
             ApiError::from(notify_ports::Failure::RateLimited {
                 retry_after_seconds: crate::slots::RETRY_AFTER_SECONDS,
             })
         };
-        let mut slot = state
-            .streams
-            .acquire(&caller.principal)
-            .ok_or_else(refused)?;
-        if !state.streams.lease(&mut slot).await {
-            return Err(refused());
+        let mut slot = state.streams.acquire(&caller.principal).ok_or_else(full)?;
+        let lease = lease_request(state, caller, transport, request, device);
+        match state.streams.lease(&mut slot, lease).await {
+            Ok(()) => {}
+            Err(crate::slots::Refusal::Full) => return Err(full()),
+            Err(crate::slots::Refusal::Disconnected) => {
+                return Err(notify_domain::DomainError::StreamDisconnected.into());
+            }
         }
 
         state.metrics.stream_opened(transport);
         Ok(Self {
             metrics: std::sync::Arc::clone(&state.metrics),
             transport,
-            _slot: slot,
+            slot,
         })
     }
+}
+
+/// What the lease table records about a connection (its owner lists and disconnects them).
+fn lease_request(
+    state: &ApiState,
+    caller: &Caller,
+    transport: notify_ports::StreamKind,
+    request: &HttpRequest,
+    device: Option<&str>,
+) -> notify_ports::LeaseRequest {
+    let header = |name| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+    };
+    let credential = match (&caller.grant, device) {
+        (notify_app::Grant::ApiKey { .. }, _) => "key".to_owned(),
+        (notify_app::Grant::Federated { .. }, _) => "ci".to_owned(),
+        (_, Some(device)) => format!("device:{device}"),
+        _ => "session".to_owned(),
+    };
+    notify_ports::LeaseRequest {
+        principal: caller.principal.reference(),
+        replica: state.streams.replica().unwrap_or_default().to_owned(),
+        transport: match transport {
+            notify_ports::StreamKind::Sse => "sse",
+            notify_ports::StreamKind::WebSocket => "websocket",
+        }
+        .to_owned(),
+        client: header(actix_web::http::header::USER_AGENT)
+            .chars()
+            .take(160)
+            .collect(),
+        credential,
+        fingerprint: fingerprint(header(actix_web::http::header::AUTHORIZATION)),
+    }
+}
+
+/// A hash of the presented credential: recognises it again without storing it.
+pub(crate) fn fingerprint(authorization: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(authorization.as_bytes()))
 }
 
 impl Drop for Connected {
@@ -229,7 +279,14 @@ pub(crate) async fn stream(
         .map(ToOwned::to_owned);
 
     // First, so the one refusal that should cost nothing never touches the store.
-    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::Sse).await?;
+    let connected = Connected::open(
+        &state,
+        &caller.0,
+        notify_ports::StreamKind::Sse,
+        &request,
+        params.device.as_deref(),
+    )
+    .await?;
     let credential = credential_of(&request)?;
     let mut connection =
         Connection::open(&state, caller.0, &params, last_event_id.as_deref()).await?;
@@ -250,7 +307,7 @@ pub(crate) async fn stream(
 
     actix_web::rt::spawn(async move {
         // Moved into the task so the gauge drops however it ends.
-        let _connected = connected;
+        let connected = connected;
         let mut reauthenticate = tokio::time::interval(REAUTHENTICATE);
         reauthenticate.tick().await;
 
@@ -280,6 +337,7 @@ pub(crate) async fn stream(
             tokio::select! {
                 // Learn the client left without waiting for a publish.
                 () = sender.closed() => return,
+                () = connected.slot.kicked() => return,
                 () = connection.expired(&state) => return,
                 _ = reauthenticate.tick() => {
                     if !connection.still_authorised(&state, &credential).await {
@@ -333,7 +391,14 @@ pub(crate) async fn websocket(
 ) -> Result<HttpResponse, ApiError> {
     let params = params.into_inner();
     // Before the handshake, as for SSE.
-    let connected = Connected::open(&state, &caller.0, notify_ports::StreamKind::WebSocket).await?;
+    let connected = Connected::open(
+        &state,
+        &caller.0,
+        notify_ports::StreamKind::WebSocket,
+        &request,
+        params.device.as_deref(),
+    )
+    .await?;
     let credential = credential_of(&request)?;
     let mut connection = Connection::open(&state, caller.0, &params, None).await?;
     let mut pokes = state.bus.subscribe().await?;
@@ -352,7 +417,7 @@ pub(crate) async fn websocket(
     };
 
     actix_web::rt::spawn(async move {
-        let _connected = connected;
+        let connected = connected;
         let mut reauthenticate = tokio::time::interval(REAUTHENTICATE);
         reauthenticate.tick().await;
 
@@ -392,6 +457,7 @@ pub(crate) async fn websocket(
                     Some(Ok(_)) => {}
                 },
                 () = connection.expired(&state) => break,
+                () = connected.slot.kicked() => break,
                 _ = reauthenticate.tick() => {
                     if !connection.still_authorised(&state, &credential).await {
                         break;

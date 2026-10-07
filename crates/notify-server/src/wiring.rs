@@ -70,8 +70,6 @@ pub(crate) struct Application {
     pub transports: TransportRegistry,
     /// The registry `GET /metrics` serves (design §13).
     pub metrics: Arc<dyn notify_ports::Metrics>,
-    /// This process's name in the stream-lease table; it renews what it holds.
-    pub replica: String,
 }
 
 impl core::fmt::Debug for Application {
@@ -204,7 +202,7 @@ impl Application {
             metrics: metrics.clone(),
             streams: Arc::new(notify_http_actix::StreamSlots::clustered(
                 Arc::new(store.clone()),
-                replica.clone(),
+                replica,
             )),
             authenticate: {
                 let base = Authenticate::new(
@@ -490,7 +488,6 @@ impl Application {
             reconciliation_log,
             transports,
             metrics,
-            replica,
         })
     }
 }

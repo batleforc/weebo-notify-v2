@@ -7,6 +7,7 @@ pub(crate) mod attachments_fs;
 pub(crate) mod channels;
 pub(crate) mod cli;
 pub(crate) mod compat;
+pub(crate) mod connections;
 pub(crate) mod federation;
 pub(crate) mod identity;
 pub(crate) mod interactions;
@@ -80,6 +81,8 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(profile::update_profile)
             .service(profile::set_avatar)
             .service(profile::read_avatar)
+            .service(connections::list_streams)
+            .service(connections::disconnect_stream)
             .service(accounts::search_users)
             .service(accounts::list_accounts)
             .service(accounts::create_account)

@@ -194,6 +194,11 @@ const connection = computed(() => {
         label: t("sidebar.connection.reconnecting"),
         class: "text-copper",
       };
+    case "disconnected":
+      return {
+        label: t("sidebar.connection.disconnected"),
+        class: "text-signal",
+      };
     default:
       return { label: t("sidebar.connection.offline"), class: "text-ink-dim" };
   }
@@ -207,7 +212,7 @@ const connection = computed(() => {
         <Wordmark />
       </RouterLink>
       <Tooltip side="right">
-        <span :class="['meta inline-flex items-center gap-1.5', connection.class]">
+        <span :class="['meta inline-flex items-center gap-1.5 whitespace-nowrap', connection.class]">
           <span class="size-1.5 bg-current" aria-hidden="true" />
           {{ connection.label }}
         </span>

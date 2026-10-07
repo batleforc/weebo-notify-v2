@@ -15,7 +15,7 @@ use crate::clock::Clock;
 use crate::error::{PortError, PortResult};
 use crate::identities::{KeyGenerator, SecretHasher};
 use crate::leader::{LeaderElection, LeaderGuard};
-use crate::quota::{Allowance, Quota, RateLimiter, StreamLeases};
+use crate::quota::{Acquired, Allowance, Lease, LeaseRequest, Quota, RateLimiter, StreamLeases};
 use crate::sinks::{SinkDelivery, SinkDispatcher, SinkOutcome};
 use crate::tokens::{
     FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,
@@ -640,10 +640,11 @@ impl KeyGenerator for CountingKeyGenerator {
 
 // --- Stream leases --------------------------------------------------------
 
-/// Cluster stream leases in memory: one shared instance stands for two replicas.
+/// Cluster stream leases in memory: one shared instance stands for every replica.
 #[derive(Debug, Clone, Default)]
 pub struct TestStreamLeases {
-    held: Arc<Mutex<Vec<(String, String)>>>,
+    held: Arc<Mutex<Vec<(LeaseRequest, Lease)>>>,
+    blocked: Arc<Mutex<Vec<String>>>,
     next: Arc<Mutex<u64>>,
 }
 
@@ -661,30 +662,70 @@ impl TestStreamLeases {
 
 #[async_trait::async_trait]
 impl StreamLeases for TestStreamLeases {
-    async fn acquire(
-        &self,
-        principal: &str,
-        _replica: &str,
-        max: usize,
-    ) -> PortResult<Option<String>> {
+    async fn acquire(&self, request: &LeaseRequest, max: usize) -> PortResult<Acquired> {
+        if lock(&self.blocked).contains(&request.fingerprint) {
+            return Ok(Acquired::Blocked);
+        }
         let mut held = lock(&self.held);
-        if held.iter().filter(|(_, p)| p == principal).count() >= max {
-            return Ok(None);
+        if held
+            .iter()
+            .filter(|(r, _)| r.principal == request.principal)
+            .count()
+            >= max
+        {
+            return Ok(Acquired::Full);
         }
         let mut next = lock(&self.next);
         *next += 1;
-        let id = next.to_string();
-        held.push((id.clone(), principal.to_owned()));
-        Ok(Some(id))
+        let lease = Lease {
+            id: next.to_string(),
+            transport: request.transport.clone(),
+            client: request.client.clone(),
+            credential: request.credential.clone(),
+            fingerprint: request.fingerprint.clone(),
+            opened_at: OffsetDateTime::now_utc(),
+        };
+        held.push((request.clone(), lease.clone()));
+        Ok(Acquired::Granted(lease.id))
     }
 
     async fn release(&self, lease: &str) -> PortResult<()> {
-        lock(&self.held).retain(|(id, _)| id != lease);
+        lock(&self.held).retain(|(_, l)| l.id != lease);
         Ok(())
     }
 
-    async fn renew(&self, _replica: &str) -> PortResult<()> {
-        Ok(())
+    async fn renew(&self, replica: &str) -> PortResult<Vec<String>> {
+        Ok(lock(&self.held)
+            .iter()
+            .filter(|(r, _)| r.replica == replica)
+            .map(|(_, l)| l.id.clone())
+            .collect())
+    }
+
+    async fn list(&self, principal: &str) -> PortResult<Vec<Lease>> {
+        Ok(lock(&self.held)
+            .iter()
+            .filter(|(r, _)| r.principal == principal)
+            .map(|(_, l)| l.clone())
+            .collect())
+    }
+
+    async fn disconnect(
+        &self,
+        principal: &str,
+        lease: &str,
+        _until: OffsetDateTime,
+    ) -> PortResult<bool> {
+        let mut held = lock(&self.held);
+        let Some(at) = held
+            .iter()
+            .position(|(r, l)| r.principal == principal && l.id == lease)
+        else {
+            return Ok(false);
+        };
+        let (_, gone) = held.remove(at);
+        lock(&self.blocked).push(gone.fingerprint);
+        Ok(true)
     }
 }
 
