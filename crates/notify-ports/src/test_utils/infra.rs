@@ -460,6 +460,13 @@ impl SinkDispatcher for RecordingSinkDispatcher {
     }
 }
 
+/// The fingerprint key test doubles name webhooks under (`[sinks] fingerprint_key`).
+#[must_use]
+pub fn test_fingerprint_key() -> crate::sinks::FingerprintKey {
+    crate::sinks::FingerprintKey::new(b"weebo-notify-test-fingerprint-key")
+        .expect("33 bytes is over the minimum")
+}
+
 /// A hand-written routing table standing in for `[[channels.managed.sinks]]` (§11).
 #[derive(Debug, Clone, Default)]
 pub struct StaticSinkRegistry {
@@ -485,7 +492,8 @@ impl StaticSinkRegistry {
 
     /// Forget a target, as if removed from config while a delivery was queued.
     pub fn withdraw(&self, sink: &notify_domain::SinkId) {
-        lock(&self.routes).retain(|(_, target)| target.id().as_ref() != Ok(sink));
+        lock(&self.routes)
+            .retain(|(_, target)| target.id(&test_fingerprint_key()).as_ref() != Ok(sink));
     }
 }
 
@@ -494,7 +502,7 @@ impl crate::sinks::SinkRegistry for StaticSinkRegistry {
         lock(&self.routes)
             .iter()
             .filter(|(id, _)| id == channel)
-            .filter_map(|(_, target)| target.id().ok())
+            .filter_map(|(_, target)| target.id(&test_fingerprint_key()).ok())
             .collect()
     }
 
@@ -505,7 +513,9 @@ impl crate::sinks::SinkRegistry for StaticSinkRegistry {
     ) -> Option<crate::sinks::SinkTarget> {
         lock(&self.routes)
             .iter()
-            .find(|(id, target)| id == channel && target.id().as_ref() == Ok(sink))
+            .find(|(id, target)| {
+                id == channel && target.id(&test_fingerprint_key()).as_ref() == Ok(sink)
+            })
             .map(|(_, target)| target.clone())
     }
 
@@ -525,6 +535,7 @@ mod tests {
             issuer: Url::parse("https://auth.weebo.poc").unwrap(),
             subject: "ak-user-42".to_owned(),
             email: None,
+            email_unverified: false,
             display_name: None,
             groups: vec!["dev-team".to_owned()],
             expires_at,
@@ -606,7 +617,7 @@ mod tests {
 
         store.delete(signed.id).await.unwrap();
         assert!(!store.exists(signed.id).await.unwrap());
-        assert!(store.uploaded().is_empty());
+        assert_eq!(store.uploaded(), []);
     }
 }
 

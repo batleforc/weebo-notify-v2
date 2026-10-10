@@ -49,6 +49,38 @@ impl StreamKind {
     }
 }
 
+/// How far the retention jobs are behind, as the leader last measured it
+/// (design §7.2bis, §13).
+///
+/// A purge that cannot keep up does not fail — it just deletes less than arrives,
+/// every pass, until the disk says so. These are what make that visible first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetentionBacklog {
+    /// Age in seconds of the oldest event row, retained or not. Compared against
+    /// the event retention it says how far the prune is behind.
+    pub oldest_event_age_seconds: u64,
+    /// Event rows already past retention and still there.
+    pub events_prunable: u64,
+    /// Notifications whose TTL ran out and that have not been expired yet.
+    pub pending_expiry: u64,
+    /// Tombstoned rows past their grace period and not purged yet.
+    pub pending_purge: u64,
+}
+
+/// How the fan-out outbox is doing (ADR-0025), as the leader last measured it.
+///
+/// A drain that cannot keep up, or rows piling up dead, does not fail anything
+/// anybody sees — phones just stop buzzing. These are what an alert watches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FanoutBacklog {
+    /// Rows still owed.
+    pub pending: u64,
+    /// Rows retired as dead, waiting for an operator.
+    pub dead: u64,
+    /// Age in seconds of the oldest row still owed; zero when there is none.
+    pub oldest_pending_age_seconds: u64,
+}
+
 /// The numbers design §13 publishes.
 pub trait Metrics: Send + Sync {
     /// A notification revision was accepted — `notifications_published_total{channel}`.
@@ -70,6 +102,36 @@ pub trait Metrics: Send + Sync {
     /// The current dead-letter depth per channel — `sink_dlq_depth{channel}` (§7.1bis).
     /// Replaces the whole series so emptied queues stop alerting.
     fn dlq_depth(&self, depths: &[(ChannelId, u64)]);
+
+    /// A background job finished a pass — `background_job_last_success_timestamp_seconds{task}`
+    /// when `ok`, `background_job_failures_total{task}` when not (a panic included).
+    ///
+    /// The pair an operator alerts on: a job whose loop stopped looks exactly like a
+    /// job with nothing to do, unless something says when it last *worked*. Defaulted
+    /// so a double that does not care need not say so.
+    fn job_finished(&self, _job: &'static str, _ok: bool) {}
+
+    /// A reconcile pass refused its destructive half because it would have removed
+    /// more than `[reconcile] max_removals` — `reconcile_removals_refused_total`.
+    fn reconcile_removals_refused(&self) {}
+
+    /// The retention backlog — `retention_backlog_rows{kind}` and
+    /// `retention_oldest_event_age_seconds`.
+    ///
+    /// Default no-op so a double that does not care need not say so.
+    fn retention_backlog(&self, _backlog: &RetentionBacklog) {}
+
+    /// The fan-out outbox — `fanout_outbox_rows{kind}` and
+    /// `fanout_outbox_oldest_age_seconds`. Default no-op, like the one above.
+    fn fanout_backlog(&self, _backlog: &FanoutBacklog) {}
+
+    /// How long the oldest committed event has been held back behind the event
+    /// watermark — `event_watermark_lag_seconds` (ADR-0028). Zero when nothing is.
+    ///
+    /// The watermark waits for the oldest transaction still running, so a
+    /// long-running write on the primary delays delivery of everything committed
+    /// after it began; this is what makes that visible. Default no-op.
+    fn event_watermark_lag(&self, _seconds: u64) {}
 
     /// Render the registry in the Prometheus text format, for `GET /metrics`.
     fn render(&self) -> String;
@@ -113,6 +175,6 @@ mod tests {
     fn an_instance_that_measures_nothing_serves_an_empty_document() {
         let metrics = NoMetrics;
         metrics.published(&ChannelId::parse("ci-infra").unwrap_or_else(|_| unreachable!()));
-        assert!(metrics.render().is_empty());
+        assert_eq!(metrics.render(), "");
     }
 }

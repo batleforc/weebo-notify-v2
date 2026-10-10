@@ -100,6 +100,12 @@ const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 /** Four missed 15 s keep-alives (§8.1): the socket died without a FIN. */
 export const IDLE_MS = 60_000;
 
+/** Uptime after which the backoff starts over: a 200 that drops at once isn't healthy. */
+export const HEALTHY_MS = 20_000;
+
+/** Thrown inside `connect` when there is no session left to reconnect with. */
+const SESSION_OVER = new Error("session over");
+
 /** Open the stream and keep it open; refresh, resume and backoff are internal. */
 export function openStream(options: StreamOptions): Stream {
   const session = useSession();
@@ -131,9 +137,8 @@ export function openStream(options: StreamOptions): Stream {
 
         const token = await session.bearer();
         if (!token) {
-          // No session: the router is about to redirect to the provider.
-          status("offline");
-          return;
+          ensureResumable();
+          throw new Error("no token right now");
         }
 
         const url = new URL(`${apiBaseUrl}/api/v1/stream`);
@@ -158,8 +163,8 @@ export function openStream(options: StreamOptions): Stream {
 
         if (response.status === 401) {
           if (!(await session.refresh())) {
-            status("offline");
-            return;
+            ensureResumable();
+            throw new Error("refused, and no token right now");
           }
           // One immediate retry only: a 401 after a fresh token is not staleness.
           if (refreshed) {
@@ -183,10 +188,14 @@ export function openStream(options: StreamOptions): Stream {
           throw new Error(`stream refused with ${response.status}`);
         }
 
-        attempt = 0;
         status("live");
         await pump(response.body);
       } catch (error) {
+        if (error === SESSION_OVER) {
+          // No session: the router is about to redirect to the provider.
+          status("offline");
+          return;
+        }
         if (closed || controller.signal.aborted) {
           return;
         }
@@ -212,8 +221,16 @@ export function openStream(options: StreamOptions): Stream {
     }
   }
 
+  /** No token is only the end without a refresh token; otherwise network/IdP failed: back off. */
+  function ensureResumable(): void {
+    if (session.expired || !session.canResume()) {
+      throw SESSION_OVER;
+    }
+  }
+
   async function pump(body: ReadableStream<Uint8Array>): Promise<void> {
     const reader = body.getReader();
+    const opened = Date.now();
     const decoder = new TextDecoder();
     const parse = createFrameParser();
 
@@ -232,24 +249,34 @@ export function openStream(options: StreamOptions): Stream {
           return;
         }
         watch();
-        ingest(decoder.decode(value, { stream: true }));
+        // Reset the backoff on a proven stream (an event, or HEALTHY_MS up), not on headers.
+        if (
+          ingest(decoder.decode(value, { stream: true })) ||
+          Date.now() - opened >= HEALTHY_MS
+        ) {
+          attempt = 0;
+        }
       }
     } finally {
       clearTimeout(idle);
     }
 
-    function ingest(chunk: string): void {
+    /** Whether at least one event was delivered. */
+    function ingest(chunk: string): boolean {
+      let delivered = false;
       for (const frame of parse(chunk)) {
         if (frame.id) {
           lastEventId = frame.id;
         }
         try {
           options.onEvent(JSON.parse(frame.data) as StreamEvent);
+          delivered = true;
         } catch (error) {
           // One unparseable frame must not take the connection down with it.
           console.warn("dropping an unreadable stream frame", error);
         }
       }
+      return delivered;
     }
   }
 

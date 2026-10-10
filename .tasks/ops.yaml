@@ -1,0 +1,73 @@
+version: "3"
+
+# Operating a deployment, rehearsed against the dev stack (docs/ops/backup.mdx).
+#
+# A backup nobody has restored is a hope, not a backup. `restore-drill` is the
+# smallest honest version of the drill backup.mdx asks for: it runs the same
+# three steps a real restore does — logical dump, restore into an EMPTY database,
+# let this build's `notify-server migrate` accept it — against the compose
+# Postgres, so the procedure is exercised by something other than an incident.
+
+vars:
+  ENGINE:
+    sh: |
+      if [ -n "${ENGINE:-}" ]; then echo "$ENGINE"
+      elif command -v docker >/dev/null 2>&1; then echo docker
+      else echo podman
+      fi
+  COMPOSE: '{{.ENGINE}} compose -f dev/compose.yaml --env-file dev/.env --env-file dev/.env.local'
+  DRILL_DB: weebo_notify_drill
+
+tasks:
+  restore-drill:
+    desc: "Dump the dev database, restore it into a scratch database, run `notify-server migrate` on it and check the row counts (needs `task dev:up`)"
+    # pg_dump/pg_restore run INSIDE the postgres container, so the client tools
+    # always match the server version — a newer pg_dump against an older server is
+    # the classic way a backup turns out unrestorable. The scratch database is
+    # dropped on the way out whatever happens.
+    cmds:
+      - cmd: |
+          if [ -n "${DEVWORKSPACE_ID:-}" ]; then
+            echo "Eclipse Che: no compose stack to exec into — run the drill on a machine with one."
+            exit 1
+          fi
+      - defer: "{{.COMPOSE}} exec -T postgres dropdb -U weebo --if-exists {{.DRILL_DB}} >/dev/null 2>&1 || true"
+      - cmd: |
+          set -eu
+          mkdir -p target/drill
+          dump=target/drill/weebo_notify.dump
+          psql() { {{.COMPOSE}} exec -T postgres psql -U weebo -v ON_ERROR_STOP=1 -tA "$@"; }
+
+          # The dev database is live (a running server, test suites), so an exact
+          # match against it would race. Counts taken before and after the dump
+          # bracket what the dump can contain; the restore must land inside.
+          tables="channels notifications revisions events"
+          count() { psql -d "$1" -c "select count(*) from $2"; }
+          before=""; for t in $tables; do before="$before $(count weebo_notify "$t")"; done
+
+          echo "==> pg_dump weebo_notify -> $dump"
+          {{.COMPOSE}} exec -T postgres pg_dump -U weebo -d weebo_notify -Fc > "$dump"
+
+          echo "==> restore into an empty {{.DRILL_DB}}"
+          {{.COMPOSE}} exec -T postgres dropdb -U weebo --if-exists {{.DRILL_DB}}
+          {{.COMPOSE}} exec -T postgres createdb -U weebo {{.DRILL_DB}}
+          {{.COMPOSE}} exec -T postgres pg_restore -U weebo -d {{.DRILL_DB}} --no-owner --exit-on-error < "$dump"
+
+          echo "==> notify-server migrate (this build must accept the restored schema)"
+          WNK_DATABASE__URL="postgres://weebo:weebo@localhost:5432/{{.DRILL_DB}}" \
+            cargo run --quiet -p notify-server -- --config config/dev.toml migrate
+
+          # Data tables only: `_sqlx_migrations` legitimately grows when this build
+          # carries migrations the dev database has not applied yet.
+          failed="$(psql -d {{.DRILL_DB}} -c "select count(*) from _sqlx_migrations where not success")"
+          [ "$failed" = 0 ] || { echo "restore drill: $failed failed migration(s) recorded" >&2; exit 1; }
+          echo "==> sanity: row counts — before dump <= restored <= now"
+          set -- $before
+          for t in $tables; do
+            lo="$1"; shift
+            got="$(count {{.DRILL_DB}} "$t")"; hi="$(count weebo_notify "$t")"
+            printf '    %-14s %8s <= %8s <= %8s\n' "$t" "$lo" "$got" "$hi"
+            [ "$lo" -le "$got" ] && [ "$got" -le "$hi" ] || {
+              echo "restore drill: $t restored $got rows, outside [$lo, $hi]" >&2; exit 1; }
+          done
+          echo "restore drill passed — dump kept at $dump"

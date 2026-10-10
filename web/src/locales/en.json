@@ -256,7 +256,12 @@
       "unsupported": "This browser cannot receive push.",
       "unavailable": "This deployment doesn't do Web Push.",
       "denied": "Notifications are refused for this site.",
-      "failed": "The service worker isn't available."
+      "failed": "The service worker isn't available.",
+      "incomplete": "The browser returned an incomplete subscription."
+    },
+    "label": {
+      "browser": "Browser",
+      "onPlatform": "{browser} on {platform}"
     },
     "prompt": {
       "ariaLabel": "Enable notifications",

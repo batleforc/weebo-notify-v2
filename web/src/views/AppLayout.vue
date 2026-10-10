@@ -114,6 +114,7 @@ function onKeydown(event: KeyboardEvent): void {
 let unsubscribe: (() => void) | null = null;
 let unhandPush: (() => void) | null = null;
 let unlisten: (() => void) | null = null;
+let unmounted = false;
 
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
@@ -133,6 +134,9 @@ onMounted(async () => {
     const message = event.data as { type?: string; envelope?: unknown } | null;
     if (message?.type === "push" && message.envelope) {
       toasts.pushed(message.envelope as { title?: string });
+      // The worker shows the OS notification itself unless told this tab took
+      // it — a visible tab with no shell mounted (the login page) never answers.
+      event.ports[0]?.postMessage(true);
     }
   };
   if ("serviceWorker" in navigator) {
@@ -144,8 +148,13 @@ onMounted(async () => {
   void register(() => void resubscribe());
 
   // Desktop `weebo-notify://n/<id>` clicks (§10bis.3quater); via the router so its guard runs.
+  // Unmounted before it resolved: nobody is left to call `unlisten`, so stop now.
   void onDeepLink((path) => void router.push(path)).then((stop) => {
-    unlisten = stop;
+    if (unmounted) {
+      stop?.();
+    } else {
+      unlisten = stop;
+    }
   });
 
   // Stream before the page, or events published during the load are missed.
@@ -159,6 +168,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  unmounted = true;
   window.removeEventListener("keydown", onKeydown);
   unsubscribe?.();
   unhandPush?.();
@@ -245,6 +255,7 @@ function closeDetail(): void {
     <div class="grid min-h-0 lg:grid-cols-[17rem_minmax(0,1fr)]">
       <!-- `cn` (tailwind-merge) so `bg-card` really overrides `bg-card/40`. -->
       <div
+        id="app-sidebar"
         :class="
           cn(
             'min-h-0 border-r border-rule bg-ground-sunk',
@@ -313,7 +324,7 @@ function closeDetail(): void {
           class="absolute right-[calc(50%-1.5rem)] top-1.5 min-w-4 bg-signal px-1 text-center text-[0.625rem] font-bold leading-4 text-primary-foreground"
         >{{ unread.total > 99 ? "99+" : unread.total }}</span>
       </RouterLink>
-      <button type="button" :class="tabClass(sidebarOpen)" :aria-expanded="sidebarOpen" @click="sidebarOpen = !sidebarOpen">
+      <button type="button" :class="tabClass(sidebarOpen)" :aria-expanded="sidebarOpen" aria-controls="app-sidebar" @click="sidebarOpen = !sidebarOpen">
         <Menu class="size-5" />
         <span>{{ t("layout.channels") }}</span>
       </button>

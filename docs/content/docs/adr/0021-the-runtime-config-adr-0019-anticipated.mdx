@@ -48,7 +48,7 @@ variables, not three build arguments.**
 `web/public/env.js` is the same file, committed with the local dev stack's
 values, for `pnpm dev` — edited directly rather than copied from an example, the
 same way `config/dev.toml` already is. A real deployment never touches it; its
-image renders its own via `web/nginx/docker-entrypoint.d/05-runtime-config.sh`,
+image renders its own via `web/nginx/docker-entrypoint.d/05-runtime-config.envsh`,
 sourced (not executed — see that file's permission bits) into nginx's own
 entrypoint so `WNK_CSP_HEADER` is still exported when the stock
 `20-envsubst-on-templates.sh` renders `default.conf.template` right after it.
@@ -96,7 +96,7 @@ from the do-not-disturb rule.
 
 - The inline-script hash still has to travel from a build that ran once to a
   container that starts many times, and `csp-template.txt` plus the two-pass
-  `envsubst` in `05-runtime-config.sh` is the shape that costs. A build-time
+  `envsubst` in `05-runtime-config.envsh` is the shape that costs. A build-time
   `<meta>` tag never had this problem, because build and "serving the page" were
   the same event.
 - `contentSecurityPolicy()`'s optional `attachmentOrigin` is no longer run
@@ -109,10 +109,13 @@ from the do-not-disturb rule.
   `csp.ts` already warned for the build-time form; the difference is *who* can
   make that mistake now, and there is no test in this repository standing
   between them and it.
-- `docker-entrypoint.d/05-runtime-config.sh` being sourced rather than executed
-  is load-bearing and easy to lose: `git` does not reliably preserve the missing
-  executable bit through a clone or an editor's save, so `web/Containerfile`
-  asserts it with `chmod 644` rather than trusting the file's mode as committed.
+- `docker-entrypoint.d/05-runtime-config.envsh` being sourced rather than executed
+  is load-bearing and easy to lose: nginx's entrypoint sources only *executable*
+  `*.envsh` files (a `*.sh` runs in a subshell whose exports die with it, and a
+  non-executable file of either kind is skipped with a log line). The first
+  version was a non-executable `.sh` and never ran at all. `web/Containerfile`
+  asserts the mode with `COPY --chmod=755`, and `task build:web:image:smoke`
+  boots the image and checks env.js and the CSP header actually rendered.
 
 **Accepted debt**
 

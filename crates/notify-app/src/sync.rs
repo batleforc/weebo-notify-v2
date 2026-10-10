@@ -206,16 +206,23 @@ impl ResolveStreamStart {
     }
 }
 
-/// The device, if it exists and belongs to the caller.
+/// The device, if it exists, belongs to the caller, and is one this credential
+/// may manage.
+///
+/// The last part is the device policy (`devices::reaches`): a key reaches only
+/// `stream` devices. A push device's cursor is how far its owner's phone has
+/// read, and a key that could resume from it — or name it here at all — would
+/// be reading state the policy says it cannot even list.
 async fn owned_device(
     devices: &dyn DeviceRepository,
     caller: &Caller,
     id: DeviceId,
 ) -> Result<Option<Device>, Failure> {
-    Ok(devices
-        .get(id)
-        .await?
-        .filter(|device| device.owner == caller.principal))
+    Ok(devices.get(id).await?.filter(|device| {
+        device.owner == caller.principal
+            && (caller.grant == Grant::Membership
+                || matches!(device.transport, notify_domain::PushTransport::Stream))
+    }))
 }
 
 #[cfg(test)]
@@ -398,7 +405,10 @@ mod tests {
         .await;
         publish(&fixture, "etcd degraded").await;
 
-        assert!(caught_up(&fixture).await.deferred_by_dnd.is_empty());
+        assert_eq!(
+            caught_up(&fixture).await.deferred_by_dnd,
+            [] as [notify_domain::NotificationId; 0]
+        );
     }
 
     #[tokio::test]
@@ -426,7 +436,10 @@ mod tests {
         let fixture = fixture();
         publish(&fixture, "etcd degraded").await;
 
-        assert!(caught_up(&fixture).await.deferred_by_dnd.is_empty());
+        assert_eq!(
+            caught_up(&fixture).await.deferred_by_dnd,
+            [] as [notify_domain::NotificationId; 0]
+        );
     }
 
     // --- T7 · Resuming (design §3.4) --------------------------------------
@@ -573,7 +586,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, [] as [notify_ports::Event; 0]);
     }
 
     #[tokio::test]
@@ -684,6 +697,68 @@ mod tests {
             .unwrap(),
             groups,
             "a key carries no groups; writing that down would cut group-bound push"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_resumes_from_its_owners_stream_device_but_not_their_phone() {
+        let fixture = fixture();
+        let laptop = device(&fixture);
+        let phone = Device::enrol(
+            DeviceId::generate(),
+            fixture.alice.clone(),
+            "phone",
+            PushTransport::WebPush {
+                endpoint: url::Url::parse("https://push.example/abc").unwrap(),
+                p256dh: "BPk".to_owned(),
+                auth: "k9".to_owned(),
+            },
+            None,
+            fixture.clock.now(),
+        )
+        .unwrap();
+        let phone_id = phone.id;
+        fixture.store.seed_device(phone);
+        for id in [laptop, phone_id] {
+            DeviceRepository::advance_cursor(
+                &fixture.store,
+                id,
+                Cursor::from_sequence(5),
+                fixture.clock.now(),
+            )
+            .await
+            .unwrap();
+        }
+        let as_key = Caller {
+            principal: fixture.alice.clone(),
+            grant: crate::authz::Grant::ApiKey {
+                id: notify_domain::ApiKeyId::generate(),
+                scopes: vec![Scope::Subscribe],
+                channels: vec![channel_id("ci-infra")],
+                publish_per_minute: None,
+                owner_groups: Vec::new(),
+            },
+            groups: Vec::new(),
+            platform_admin: false,
+            expires_at: None,
+        };
+
+        assert_eq!(
+            fixture
+                .start
+                .execute(&as_key, None, Some(laptop))
+                .await
+                .unwrap(),
+            Cursor::from_sequence(5)
+        );
+        assert_eq!(
+            fixture
+                .start
+                .execute(&as_key, None, Some(phone_id))
+                .await
+                .unwrap(),
+            EventStore::head(&fixture.store).await.unwrap(),
+            "a key read how far its owner's phone has got"
         );
     }
 

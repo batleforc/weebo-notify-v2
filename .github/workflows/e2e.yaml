@@ -30,6 +30,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # release.yaml replays this on the tagged commit.
+  workflow_call:
 
 concurrency:
   group: e2e-${{ github.ref }}
@@ -43,6 +45,10 @@ env:
   # string, and a hostname that has just changed is exactly the kind of thing that
   # gets updated in one place and not the other.
   WNK_TEST_DATABASE_URL: postgres://weebo:weebo@localhost:5432/weebo_notify
+  # The Postgres-backed suites skip without a database, which is right on a
+  # laptop and wrong here: with this set, a missing or unreadable URL FAILS them
+  # instead, so a broken service container can never turn the gate green.
+  WNK_TEST_REQUIRE_DB: "1"
 
 # Least privilege; a job that needs more says so itself.
 permissions:
@@ -57,7 +63,9 @@ jobs:
       # testcontainer: they are adapter conformance tests, and giving each of them
       # its own container would spend more time starting Postgres than testing it.
       postgres:
-        image: postgres:17-alpine
+        # By digest, like every other image this project pulls: a tag that moves
+        # between two runs makes a red build nobody can reproduce. Renovate bumps it.
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_USER: weebo
           POSTGRES_PASSWORD: weebo

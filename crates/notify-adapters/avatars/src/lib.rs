@@ -2,7 +2,7 @@
 //! Order is the defence: size, format from magic bytes, header dimensions (decompression bombs),
 //! no animation, then decode/resize/re-encode (which strips EXIF).
 
-use image::{DynamicImage, ImageFormat, ImageReader};
+use image::{DynamicImage, ImageError, ImageFormat, ImageReader, Limits};
 use notify_ports::{
     AttachmentThumbnailer, AvatarProcessor, ImageRejection, PortError, PortResult, ProcessedImage,
 };
@@ -19,12 +19,50 @@ pub const THUMBNAIL_SIZE: u32 = 128;
 /// Max pixels a source may claim before decoding (24 MP fits); the product matters, not either side.
 pub const MAX_SOURCE_PIXELS: u64 = 40_000_000;
 
+/// The longest side a source may have; a 2 000 000 × 20 strip passes the pixel product.
+pub const MAX_SOURCE_SIDE: u32 = 20_000;
+
+/// The decoder's own allocation cap, covering buffers the header does not announce
+/// (40 MP RGBA8 is 160 MB).
+const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+
+/// The largest thumbnail source read at all: the attachment ceiling (§8.2).
+pub const MAX_THUMBNAIL_SOURCE_BYTES: usize = 25 * 1024 * 1024;
+
+/// Decodes running at once, process-wide: each can hold [`MAX_DECODE_ALLOC`], and
+/// unbounded blocking threads would run a replica out of memory with valid files.
+static DECODES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// The decoder limits every reader here is built with.
+fn limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_SOURCE_SIDE);
+    limits.max_image_height = Some(MAX_SOURCE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    limits
+}
+
+/// A reader over `bytes` with its format guessed and [`limits`] applied.
+fn limited_reader(bytes: &[u8]) -> Result<ImageReader<std::io::Cursor<&[u8]>>, ImageRejection> {
+    let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| ImageRejection::Unsupported)?;
+    reader.limits(limits());
+    Ok(reader)
+}
+
+/// A limit hit is "too large"; anything else is a file that does not parse.
+fn rejected(error: &ImageError) -> ImageRejection {
+    match error {
+        ImageError::Limits(_) => ImageRejection::TooLarge,
+        _ => ImageRejection::Corrupt,
+    }
+}
+
 /// Decode PNG/JPEG/WebP with the decompression-bomb defence; shared by avatars and thumbnails (§15).
 fn decode_capped(bytes: &[u8], max_source_pixels: u64) -> Result<DynamicImage, ImageRejection> {
     // Format from the bytes, never the client's `Content-Type`.
-    let reader = ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|_| ImageRejection::Unsupported)?;
+    let reader = limited_reader(bytes)?;
 
     match reader.format() {
         Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP) => {}
@@ -33,18 +71,14 @@ fn decode_capped(bytes: &[u8], max_source_pixels: u64) -> Result<DynamicImage, I
     }
 
     // Header only: must run before the pixels are allocated.
-    let (width, height) = reader
-        .into_dimensions()
-        .map_err(|_| ImageRejection::Corrupt)?;
+    let (width, height) = reader.into_dimensions().map_err(|error| rejected(&error))?;
     if u64::from(width) * u64::from(height) > max_source_pixels {
         return Err(ImageRejection::TooLarge);
     }
 
-    ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|_| ImageRejection::Unsupported)?
+    limited_reader(bytes)?
         .decode()
-        .map_err(|_| ImageRejection::Corrupt)
+        .map_err(|error| rejected(&error))
 }
 
 /// Crop to a square and re-encode as lossless PNG, whatever came in.
@@ -62,11 +96,18 @@ fn square_png(decoded: &DynamicImage, size: u32) -> Result<ProcessedImage, Image
     })
 }
 
-/// Up to 40 MP plus a Lanczos3 resize is seconds of CPU; keep it off async workers.
+/// Up to 40 MP plus a Lanczos3 resize is seconds of CPU; keep it off async workers,
+/// at most [`DECODES`] at a time.
 async fn off_the_runtime(
     bytes: &[u8],
     run: fn(&[u8]) -> Result<ProcessedImage, ImageRejection>,
 ) -> PortResult<Result<ProcessedImage, ImageRejection>> {
+    // Held until the blocking task finishes, not until it is spawned: the
+    // permit is what bounds the memory, and the memory lives in the task.
+    let _permit = DECODES
+        .acquire()
+        .await
+        .map_err(|error| PortError::unavailable("images", error))?;
     let bytes = bytes.to_vec();
     tokio::task::spawn_blocking(move || run(&bytes))
         .await
@@ -121,8 +162,11 @@ impl ImageAttachmentThumbnailer {
         Self
     }
 
-    /// No byte ceiling: the source was bounded at upload (`MAX_ATTACHMENT_BYTES`).
+    /// Bounded again here: the filesystem store or a misconfigured bucket bypass the upload ceiling.
     fn run(bytes: &[u8]) -> Result<ProcessedImage, ImageRejection> {
+        if bytes.len() > MAX_THUMBNAIL_SOURCE_BYTES {
+            return Err(ImageRejection::TooLarge);
+        }
         square_png(&decode_capped(bytes, MAX_SOURCE_PIXELS)?, THUMBNAIL_SIZE)
     }
 }
@@ -130,6 +174,10 @@ impl ImageAttachmentThumbnailer {
 #[async_trait::async_trait]
 impl AttachmentThumbnailer for ImageAttachmentThumbnailer {
     async fn thumbnail(&self, bytes: &[u8]) -> PortResult<Result<ProcessedImage, ImageRejection>> {
+        // Before the copy and before queueing for a permit, like the avatar.
+        if bytes.len() > MAX_THUMBNAIL_SOURCE_BYTES {
+            return Ok(Err(ImageRejection::TooLarge));
+        }
         let outcome = off_the_runtime(bytes, Self::run).await?;
         if let Err(rejection) = &outcome {
             // Debug: an unsupported source just means no thumbnail.
@@ -305,6 +353,26 @@ mod tests {
         assert!(oversized_for_an_avatar.len() > MAX_AVATAR_BYTES);
 
         assert!(ImageAttachmentThumbnailer::run(&oversized_for_an_avatar).is_ok());
+    }
+
+    #[test]
+    fn a_thumbnail_source_over_the_attachment_ceiling_is_never_decoded() {
+        let oversized = vec![0_u8; MAX_THUMBNAIL_SOURCE_BYTES + 1];
+
+        assert_eq!(
+            ImageAttachmentThumbnailer::run(&oversized),
+            Err(ImageRejection::TooLarge)
+        );
+    }
+
+    #[test]
+    fn a_strip_within_the_pixel_budget_is_refused_on_its_longest_side() {
+        // 40 000 × 10 is 400 000 pixels — nowhere near the product cap — and
+        // still twice the side any decoder here will accept.
+        assert_eq!(
+            ImageAvatarProcessor::run(&png_claiming(40_000, 10)),
+            Err(ImageRejection::TooLarge)
+        );
     }
 
     #[test]

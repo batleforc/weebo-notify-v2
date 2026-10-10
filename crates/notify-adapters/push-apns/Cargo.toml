@@ -19,6 +19,8 @@ test-utils = []
 [dependencies]
 notify-domain = { workspace = true }
 notify-ports = { workspace = true }
+# Shared retry loop and policy.
+notify-push-http = { workspace = true }
 notify-sealed-box = { workspace = true }
 
 async-trait = { workspace = true }

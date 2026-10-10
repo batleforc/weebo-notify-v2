@@ -25,11 +25,15 @@ server:
       # an error the API never sees and cannot explain.
       nginx.ingress.kubernetes.io/proxy-body-size: 25m
 
-  # Hard rather than the chart's `soft` default: soft anti-affinity survives a
-  # pod eviction but not a node failure, since nothing stops both replicas being
-  # scheduled together. `DoNotSchedule` means a cluster that cannot spread them
-  # tells you at deploy time instead of at 3am.
-  podAntiAffinity: hard
+  # Spread across nodes with a topology constraint rather than hard
+  # anti-affinity. Hard anti-affinity (one server pod per node, required) plus
+  # the RollingUpdate default (maxSurge 1, maxUnavailable 0 at two replicas)
+  # deadlocks a two-node cluster: the surge pod has no node left, and no old pod
+  # goes away until it schedules. `maxSkew: 1` with `DoNotSchedule` still forbids
+  # both replicas on one node when a second node exists — a 2/1 split during a
+  # surge is skew 1 and allowed — so a node failure still never takes both, and
+  # the soft anti-affinity breaks ties toward empty nodes.
+  podAntiAffinity: soft
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: kubernetes.io/hostname
@@ -61,6 +65,11 @@ server:
       enabled: true
       existingSecret: notify-webpush
       contact: "mailto:ops@example.com"
+
+  sinks:
+    # Only needed once a webhook sink is declared; harmless before.
+    fingerprintKey:
+      existingSecret: notify-sinks
 
   autoscaling:
     enabled: true
@@ -104,3 +113,39 @@ networkPolicy:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: monitoring
+
+  # Egress on, with every destination named. Replace the CIDRs and selectors
+  # with where YOUR dependencies live — they are placeholders, for the same
+  # reason the ingress selectors above are.
+  egress:
+    enabled: true
+    to:
+      # Postgres — a CloudNativePG cluster in namespace `databases`.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: databases
+            podSelector:
+              matchLabels:
+                cnpg.io/cluster: notify-pg
+        ports:
+          - port: 5432
+            protocol: TCP
+      # S3 endpoint and SMTP relay outside the cluster, on a private range the
+      # public-HTTPS rule below deliberately excepts.
+      - to:
+          - ipBlock:
+              cidr: 10.20.0.0/24
+        ports:
+          - port: 443
+            protocol: TCP
+          - port: 587
+            protocol: TCP
+    # Web Push / APNs relays and webhook sinks, plus the public OIDC issuer.
+    allowPublicHttps: true
+
+prometheusRule:
+  enabled: true
+
+grafanaDashboard:
+  enabled: true

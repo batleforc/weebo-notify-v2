@@ -21,15 +21,22 @@ notify-domain = { workspace = true }
 notify-ports = { workspace = true }
 
 async-trait = { workspace = true }
+# `buffer_unordered`, for the sink drain's bounded concurrency.
+futures = { workspace = true }
 getrandom = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
+# `sync::Notify` only: a publish wakes the fan-out outbox worker instead of
+# leaving the push to wait for its next tick.
+tokio = { workspace = true }
 tracing = { workspace = true }
 utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The in-memory doubles: every use case here is tested without a container.
 notify-ports = { workspace = true, features = ["test-utils"] }
-tokio = { workspace = true }
+# `test-util`: the fan-out's lease heartbeat and row ceiling are minutes long, so
+# their tests run on paused time.
+tokio = { workspace = true, features = ["test-util"] }
 url = { workspace = true }

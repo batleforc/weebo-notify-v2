@@ -80,7 +80,7 @@ pub(crate) fn parse<T, E: core::fmt::Display>(
 
 /// A cursor read out of a `bigint` column.
 pub(crate) fn cursor(sequence: i64) -> Cursor {
-    // Unreachable (`bigserial` from 1); saturate rather than panic.
+    // Unreachable (sequence starts at 1, ADR-0028); saturate rather than panic.
     Cursor::from_sequence(u64::try_from(sequence).unwrap_or(0))
 }
 
@@ -89,46 +89,18 @@ pub(crate) fn sequence(cursor: Cursor) -> i64 {
     i64::try_from(cursor.sequence()).unwrap_or(i64::MAX)
 }
 
-/// Take the event-log write lock for the rest of `transaction`.
-///
-/// Sequences allocate in insert order, not commit order; holding this lock until commit keeps
-/// `seq > cursor` from skipping rows. Deadlock rule: transactions locking `notifications` rows take
-/// it first ([`begin_with_events`]) and lock `FOR NO KEY UPDATE`; others take it at the append.
-/// Its two-integer keyspace never collides with leader election. One global writer lock: fine at
-/// hundreds of writes/s; beyond that, read up to the `pg_snapshot_xmin` watermark instead.
-pub(crate) async fn lock_event_log(transaction: &mut Transaction<'_, Postgres>) -> PortResult<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-        .bind(EVENT_LOG_LOCK.0)
-        .bind(EVENT_LOG_LOCK.1)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| fail("event", error))?;
-    Ok(())
-}
-
-/// Open a transaction that will append to the event log, with the lock already held.
-pub(crate) async fn begin_with_events(
-    pool: &sqlx::PgPool,
-    what: &'static str,
-) -> PortResult<Transaction<'static, Postgres>> {
-    let mut transaction = pool.begin().await.map_err(|error| fail(what, error))?;
-    lock_event_log(&mut transaction).await?;
-    Ok(transaction)
-}
-
-/// The key [`lock_event_log`] takes; the head read takes it shared to wait out in-flight writers.
-pub(crate) const EVENT_LOG_LOCK: (i32, i32) = (0x0057_4e4b, 1);
-
 /// Append one event row in the caller's transaction and return its cursor (ADR-0012).
 /// The only place in this crate that allocates a cursor.
+///
+/// The seq derives from the transaction id (`events_next_seq()`, ADR-0028), so readers stopping at
+/// `events_watermark()` never pass a row still to commit; no lock. Per notification, the order is
+/// the row-lock order only if `FOR NO KEY UPDATE` is the transaction's first write.
 pub(crate) async fn append_event(
     transaction: &mut Transaction<'_, Postgres>,
     audience: &Audience,
     payload: &EventPayload,
     at: OffsetDateTime,
 ) -> PortResult<Cursor> {
-    lock_event_log(transaction).await?;
-
     let (audience_kind, channel_id, user_id) = match audience {
         Audience::Channel { id } => ("channel", Some(id.to_string()), None),
         Audience::User { id } => ("user", None, Some(id.to_string())),
@@ -153,6 +125,9 @@ pub(crate) async fn append_event(
 
     Ok(cursor(sequence))
 }
+
+/// Events one transaction may append: the seq keeps 16 bits for them below the txid (ADR-0028).
+pub(crate) const EVENTS_PER_TRANSACTION: u32 = 65_536;
 
 /// Append an "expired unseen" row: it keeps the cursor order unbroken but is never replayed,
 /// only counted (design §7.2bis, T9).

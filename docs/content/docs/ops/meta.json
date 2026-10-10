@@ -5,6 +5,9 @@
     "high-availability",
     "observability",
     "hardening",
+    "runbooks",
+    "backup",
+    "retention",
     "---Advisories---",
     "state-advisory-2026-08-10"
   ]

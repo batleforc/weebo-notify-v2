@@ -17,6 +17,7 @@ includes:
   desktop: ./.tasks/desktop.yaml
   helm: ./.tasks/helm.yaml
   android: ./.tasks/android.yaml
+  ops: ./.tasks/ops.yaml
 
 tasks:
   init:

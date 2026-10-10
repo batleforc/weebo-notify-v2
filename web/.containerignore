@@ -1,3 +1,8 @@
+# Docker BuildKit reads `.dockerignore` and never this file (podman/buildah read
+# both), so `.dockerignore` beside it is an identical copy — a copy rather than a
+# symlink because not every builder follows one. `task lint:ignore-files` (part
+# of `lint:check`, so CI) fails the moment the two drift.
+#
 # The web image builds with `web/` as its context, so the repository-root
 # `.containerignore` does not apply here — this file is not a duplicate of it.
 #
@@ -15,3 +20,7 @@ coverage/
 # Neither build reads them, and both invalidate the install layer when touched.
 *.md
 biome.jsonc
+
+# The desktop shell: nothing the web bundle builds from, and its `target/` alone
+# is tens of gigabytes the build would otherwise copy into its context.
+src-tauri/

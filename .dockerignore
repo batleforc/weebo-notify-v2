@@ -1,0 +1,42 @@
+# Docker BuildKit reads `.dockerignore` and never this file (podman/buildah read
+# both), so `.dockerignore` beside it is an identical copy — a copy rather than a
+# symlink because not every builder follows one. `task lint:ignore-files` (part
+# of `lint:check`, so CI) fails the moment the two drift.
+#
+# What never belongs in a build context (design §14.4, D17).
+#
+# The first block is the one that matters: `dev/secrets/` holds the VAPID and
+# federation private keys a developer minted for their own machine (§12.5). They are
+# gitignored, so they are invisible to a `git archive` — and a container build reads
+# the working tree, not the index. Without this line a `podman build` on a developer
+# machine bakes their signing keys into an image layer, where `docker history` finds
+# them long after the file was deleted.
+dev/secrets/
+dev/.env.local
+dev/dex/config.local.yaml
+dev/dex/env.local
+web/.env.local
+config/local.toml
+
+# Build outputs. Copying a host `target/` into the context does not just cost
+# minutes — it lands artefacts built against another glibc next to the ones the
+# builder makes.
+target/
+web/dist/
+web/coverage/
+docs/.next/
+docs/out/
+**/node_modules/
+
+# Version control and tooling state.
+.git/
+.github/
+.forgejo/
+.task/
+**/.DS_Store
+
+# Documentation and local scaffolding: none of it is read by either build, and all
+# of it invalidates layer caches when it changes.
+docs/
+*.md
+!README.md

@@ -1,0 +1,160 @@
+---
+title: ADR-0028 — The event log orders by transaction, and readers stop at the watermark
+description: events.seq is derived from the writing transaction's id, readers serve nothing past the oldest transaction still running, and the global advisory lock that serialised every event-producing write is gone.
+---
+
+Status: **accepted** (2026-10-10) · Supersedes: the lock in [ADR-0012](/docs/adr/0012-single-events-table-as-the-cursor)'s consequences · Superseded by: —
+
+## Context
+
+[ADR-0012](/docs/adr/0012-single-events-table-as-the-cursor) makes `events.seq` the
+cursor and promises zero gaps. A sequence hands numbers out in *insert* order, not
+commit order: a slow transaction holding seq 10 can commit after one holding 11,
+once a reader has already moved its cursor to 11 — and 10 is never delivered. One
+transaction-scoped advisory lock, taken before the insert and held to the commit,
+made the two orders the same. It also serialised every event-producing write of the
+deployment, across all replicas: measured below, it caps out at a few hundred
+transactions per second whatever the hardware.
+
+What the lock actually provided, read off the code that took it:
+
+1. **Ordering.** A row's seq is visible only once every lower seq is — the one
+   property readers (`GET /sync`, the stream's catch-up, `Last-Event-ID`) rely on.
+2. **The head.** `head()` waited on the lock in shared mode, so "start from now"
+   was never a cursor past a row still in flight.
+3. **Deadlock avoidance**, but only of cycles the lock itself created (a receipt
+   holding a `KEY SHARE` and waiting on the lock against a publish holding the lock
+   and waiting on the row). Without the lock there is no such cycle.
+4. **Per-notification exclusion** — *not* the lock's: revisions, deletes, expiry
+   and closure already lock the notification row `FOR NO KEY UPDATE` and re-check
+   under it. The lock only narrowed one race: `close_stale` and `claim_expired`
+   re-check "recent interaction" and "somebody saw it" under their row lock, and an
+   interaction or receipt that had *appended* before they started was waited out.
+   One still between its insert and its append was not.
+5. Nothing else: idempotency claims, revision numbering (`last_seq` under the row
+   lock), the fan-out outbox (keyed by cursor, leased) and the inbox order do not
+   depend on it.
+
+The suggested replacement, "store the transaction id per row and serve rows whose
+id is below `pg_snapshot_xmin`", is **not enough on its own** with a seq cursor. A
+transaction gets its id at its first write and its seq at the event insert, so the
+two orders can disagree: B writes something (id 100), A starts (id 300), appends
+(seq 10) and stays open; B appends (seq 11) and commits. 100 is below xmin (300),
+so 11 is served and the cursor passes 10. Systems that do this page by
+`(xid, seq)`; ours is a single opaque integer on the wire, in clients, and in
+stored device cursors.
+
+## Decision
+
+**Make the seq order *be* the transaction order.** The column default becomes
+
+```text
+seq = events_seq_base() + xid × 65 536 + n        n = 0, 1, … within the transaction
+```
+
+with `xid` the writing transaction's id (`pg_current_xact_id()`). Every row of a
+transaction sorts after every row of any transaction with a lower id, so
+`pg_snapshot_xmin` — every transaction below it has finished — becomes a bound on
+seq:
+
+```text
+events_watermark() = events_seq_base() + xmin × 65 536 − 1
+```
+
+Nothing at or below it can still appear, and every transaction still running or yet
+to start writes above it.
+
+- **Readers stop at the watermark.** The sync page (and so the stream, which reads
+  through it) adds `seq <= events_watermark()`, evaluated on the statement's own
+  snapshot. A committed row past it is held back until the older transactions end;
+  a cursor that never passes the watermark never steps over a row that commits
+  later.
+- **Readers wait, briefly.** Before the page, a read takes the newest committed seq
+  and waits (up to 5 s, polling from 1 ms) for the watermark to reach it. Writes
+  normally overlap by milliseconds, so a reader is not handed less than what was
+  just written. Past 5 s it serves the safe prefix.
+- **The head is the watermark.** No lock, no wait, never past a row in flight; it
+  is derived from transaction ids rather than rows, so pruning cannot move it back.
+- **A watcher re-pokes.** A held-back row's own poke was spent on the read that gave
+  up, and the transaction holding it back may write no event and poke nobody. Every
+  replica reads the watermark each second, exports `event_watermark_lag_seconds`,
+  and publishes one `Resync` when a hold that outlived a tick is released.
+- **The lock is gone**, with `begin_with_events` and `lock_event_log`. Writers run
+  side by side.
+- **Per-notification exclusion stays on the row.** Interactions and receipts now
+  read their notification `FOR SHARE` first, so `close_stale` and `claim_expired`
+  (`FOR NO KEY UPDATE … SKIP LOCKED`) skip a notification with one in flight — a
+  strictly smaller race than before. Because the row lock is each path's *first*
+  write, a writer queued behind it gets a higher transaction id than the holder,
+  so the events of one notification still sort in the order its writers held the
+  row — which compaction (keep the last revision) depends on.
+
+Migration `20261010700000_event_watermark` is expand-only: it locks `events` against
+writes for its duration, sets the base above every seq the old sequence handed out
+(so held cursors and the head stay valid), and swaps the column default. A
+pre-0028 binary inserting through the default gets a new-scheme seq.
+`events_rebase()`, run by every `migrate`, puts the base back above the log if the
+transaction counter ever goes backwards — which a `pg_dump` restored into a fresh
+cluster does; physical backups, replicas and `pg_upgrade` do not.
+
+### Why it is correct
+
+1. A row with seq `s` was written by transaction `x = ⌊(s − base) / 65 536⌋`.
+2. A reader's bound `w = base + xmin × 65 536 − 1` is computed from the snapshot
+   the rows are read with. Every row it serves has `x < xmin`, and every transaction
+   below xmin had finished when that snapshot was taken: the rows it committed are
+   all visible, those it aborted never will be.
+3. Any row that becomes visible later belongs to a transaction with `x ≥ xmin`, so
+   its seq is above `w` — above every cursor this read can hand out (`next` and the
+   events' own cursors are all `≤ w`).
+4. xmin never decreases, so neither does `w`; a client cannot be handed a head
+   below a cursor another read already gave it.
+
+Read-only transactions — a `pg_dump`, an analytics query — have no transaction id
+and do **not** hold xmin back (checked against PostgreSQL 17).
+
+## Consequences
+
+**Positive**
+
+- Event-producing writes no longer queue behind each other. Measured on the dev
+  stack (PostgreSQL 17, one event and a 1 ms statement per transaction,
+  `bench_event_append_throughput`):
+
+  | Writers | With the lock | Watermark |
+  | --- | --- | --- |
+  | 1 | 198 tx/s | 182 tx/s |
+  | 4 | 252 tx/s | 661 tx/s |
+  | 16 | 131 tx/s | 2 874 tx/s |
+  | 32 | 261 tx/s | 5 376 tx/s |
+
+- `head()` no longer waits on writers.
+
+**Negative**
+
+- **A long-running write transaction on the primary delays every event committed
+  after it began** — by however long it runs, for every reader. A migration, a bulk
+  `UPDATE`, a session left `idle in transaction`, a prepared transaction: anything
+  holding a transaction id, in *any* database of the cluster. Nothing is lost; it
+  is late. `event_watermark_lag_seconds` measures it and the
+  [runbook](/docs/ops/runbooks#events-held-back-by-a-long-transaction) finds the
+  culprit.
+- Reads may wait up to 5 s for writers older than the newest row; a stream or
+  `/sync` that hits the limit serves less and catches up on the watcher's `Resync`.
+- Seqs are large and sparse (the transaction id times 65 536). The cursor was
+  already opaque; it now leaks the transaction rate rather than the event rate.
+- 65 536 events per transaction at most — the largest batch appends 1 000.
+- **Upgrading from a pre-0028 build:** while old and new replicas serve together,
+  an old replica's reader does not stop at the watermark and could pass a row two
+  new writers commit out of order; an old replica's head reads the retired sequence
+  and replays everything since the migration to a client starting "from now". The
+  window is the rollout. Where it matters, roll with old replicas out of the
+  Service before new ones take writes (`Recreate`, or scale down first).
+- One query per second per replica for the watcher, and a `Resync` per replica
+  when a long hold ends.
+
+**Accepted debt**
+
+- Preference events read the user's state before appending, so two concurrent
+  changes for one user can each announce a state missing the other's. The lock did
+  not prevent this either (it was taken at the append, after the read).

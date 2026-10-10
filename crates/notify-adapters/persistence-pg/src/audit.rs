@@ -1,10 +1,12 @@
-//! The audit log (design §13): append-only (no `UPDATE`/`DELETE` here), with its own sequence
-//! rather than `events.seq` so admin acts never reach client backlogs.
+//! The audit log (design §13): append-only — a trigger (ADR-0026) and no `UPDATE`/`DELETE` here;
+//! the one deletion is `wnk_audit_purge` (ADR-0027). Its own sequence rather than `events.seq`
+//! so admin acts never reach client backlogs.
 
 use notify_domain::ChannelId;
 use notify_ports::{AuditActor, AuditEntry, AuditLog, AuditQuery, Page, PortResult};
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
+use time::OffsetDateTime;
 
 use crate::PgStore;
 use crate::mapping::{cursor, fail, from_json, parse, sequence, to_json};
@@ -67,6 +69,20 @@ impl AuditLog for PgStore {
         .map_err(|error| fail("audit", error))?;
 
         page_of(rows, limit)
+    }
+
+    async fn purge_older_than(&self, cutoff: OffsetDateTime, batch: u32) -> PortResult<u64> {
+        // The function is the whole decision — the floor, the batch, the
+        // `audit.purged` entry — so a caller here cannot get any of it wrong.
+        // `tests/audit_is_append_only.rs` holds this to being its only caller.
+        let purged: i64 = sqlx::query_scalar("SELECT wnk_audit_purge($1, $2)")
+            .bind(cutoff)
+            .bind(i32::try_from(batch).unwrap_or(i32::MAX))
+            .fetch_one(self.pool())
+            .await
+            .map_err(|error| fail("audit", error))?;
+
+        Ok(u64::try_from(purged).unwrap_or(0))
     }
 }
 

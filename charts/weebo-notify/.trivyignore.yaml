@@ -19,9 +19,13 @@ misconfigurations:
   # ConfigMap holds none — the finding fires on the shape of a template that exists
   # to be empty. Removing the keys is not an option: the config schema requires them
   # to be present for the env override to have something to override.
+  #
+  # The migration hook's ConfigMap is the same rendered data (it is a copy, since
+  # hooks run before the release's own ConfigMap exists), so the same reasoning.
   - id: KSV-01010
     paths:
       - "templates/server-configmap.yaml"
+      - "templates/server-migrate-job.yaml"
 
   # KSV-0125: "uses an image from an untrusted registry". The registry is ghcr.io,
   # which is where this project publishes (release.yaml). Trivy's default trusted
@@ -30,6 +34,7 @@ misconfigurations:
   - id: KSV-0125
     paths:
       - "templates/server-deployment.yaml"
+      - "templates/server-migrate-job.yaml"
       - "templates/web-deployment.yaml"
 
   # KSV-0011: "should set resources.limits.cpu". Deliberately absent, and the one

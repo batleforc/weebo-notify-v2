@@ -32,7 +32,8 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-const reply = ref("");
+/** Draft text per reply action, by position: two reply boxes must not share one. */
+const replies = ref<Record<number, string>>({});
 
 /** Whether this user has already acknowledged under a key (§2.3, T4). */
 const acked = computed(() => {
@@ -64,13 +65,13 @@ const DURATIONS = computed<{ label: string; value: string }[]>(() => [
   { label: t("notification.actionBar.silenceDurations.7d"), value: "7d" },
 ]);
 
-function send(): void {
-  const text = reply.value.trim();
+function send(position: number): void {
+  const text = (replies.value[position] ?? "").trim();
   if (!text) {
     return;
   }
   emit("act", { type: "reply", text }, "reply");
-  reply.value = "";
+  replies.value[position] = "";
 }
 </script>
 
@@ -130,16 +131,16 @@ function send(): void {
 
       <div v-else-if="action.type === 'reply'" class="flex w-full items-center gap-2">
         <Input
-          v-model="reply"
+          v-model="replies[position]"
           class="h-9 flex-1"
           :placeholder="action.placeholder ?? action.label"
           :disabled="acting !== null"
-          @keydown.enter.prevent="send"
+          @keydown.enter.prevent="send(position)"
         />
         <Button
           variant="outline"
-          :disabled="acting !== null || !reply.trim()"
-          @click="send"
+          :disabled="acting !== null || !replies[position]?.trim()"
+          @click="send(position)"
         >
           <Send />
           {{ action.label }}

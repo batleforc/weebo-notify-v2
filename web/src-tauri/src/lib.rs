@@ -277,6 +277,20 @@ pub fn run() {
         credential_session
     ]);
 
+    let context = tauri::generate_context!();
+
+    // The updater only when this build was given somewhere to update *from* and a
+    // key to check it with — `plugins.updater` in the config, injected at build
+    // time (README.md « Updates and signing »). Its `Config` has no default for
+    // `pubkey`, so registering it unconditionally would make every dev and
+    // unsigned build fail at startup rather than merely not update.
+    #[cfg(desktop)]
+    let builder = if context.config().plugins.0.contains_key("updater") {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        builder
+    };
+
     builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
@@ -287,6 +301,34 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Check once per launch, install in the background, apply at the next
+            // start: no forced restart under somebody mid-read, and no menu item
+            // yet (README.md's known gaps). The signature is verified against the
+            // configured `pubkey` before anything is installed — the plugin's job,
+            // and the reason it is not registered at all without one (above).
+            #[cfg(desktop)]
+            if app.config().plugins.0.contains_key("updater") {
+                let updater_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri_plugin_updater::UpdaterExt as _;
+                    let outcome = async {
+                        let Some(update) = updater_handle.updater()?.check().await? else {
+                            return Ok(None);
+                        };
+                        update.download_and_install(|_, _| {}, || {}).await?;
+                        Ok::<_, tauri_plugin_updater::Error>(Some(update.version))
+                    }
+                    .await;
+                    match outcome {
+                        Ok(Some(version)) => eprintln!(
+                            "weebo-notify: update {version} installed; it applies at the next launch"
+                        ),
+                        Ok(None) => {}
+                        Err(error) => eprintln!("weebo-notify: update check failed: {error}"),
+                    }
+                });
+            }
 
             // Every URL the OS hands over goes through the same parser, and
             // anything it does not recognise is dropped rather than routed: this
@@ -446,7 +488,10 @@ pub fn run() {
 
                 // The slot starts holding whatever `notify login` left on this
                 // machine, which may well be nothing — that is no longer a reason
-                // not to start the loops below.
+                // not to start the loops below. Only a token in the config file or
+                // `WNK_TOKEN`: `notify login` now prefers the OS vault, under the
+                // CLI's own entry (`crates/notify-cli/src/login.rs`), which this
+                // does not read — the window's own sign-in fills the slot anyway.
                 let credential = Credential::default();
                 // No name to go with it: a token from `notify login` says what to
                 // run as, never who. The header stays at the app name until the
@@ -500,7 +545,7 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("the shell failed to start");
 }
 

@@ -21,6 +21,8 @@ test-utils = []
 [dependencies]
 notify-domain = { workspace = true }
 notify-ports = { workspace = true }
+# The retry loop and policy every push transport shares, and the public-only resolver.
+notify-push-http = { workspace = true }
 
 async-trait = { workspace = true }
 base64 = { workspace = true }
@@ -32,8 +34,6 @@ jsonwebtoken = { workspace = true }
 # duplicated — but a future upgrade has to move the two together.
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 reqwest = { workspace = true }
-# `lookup_host`, for the resolver that refuses non-public addresses.
-tokio = { workspace = true, features = ["net"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

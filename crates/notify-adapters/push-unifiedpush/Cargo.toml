@@ -15,12 +15,12 @@ workspace = true
 [dependencies]
 notify-domain = { workspace = true }
 notify-ports = { workspace = true }
+# Shared retry loop and policy, and the public-only resolver.
+notify-push-http = { workspace = true }
 notify-sealed-box = { workspace = true }
 
 async-trait = { workspace = true }
 reqwest = { workspace = true }
-# `lookup_host`, for the resolver that refuses non-public addresses.
-tokio = { workspace = true, features = ["net"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -141,6 +141,7 @@ impl SetAvatar {
 /// signature per row, and no per-user profile lookup route.
 #[derive(Clone)]
 pub struct ReadAvatar {
+    users: Arc<dyn UserRepository>,
     attachments: Arc<dyn AttachmentStore>,
 }
 
@@ -152,16 +153,20 @@ impl core::fmt::Debug for ReadAvatar {
 
 impl ReadAvatar {
     #[must_use]
-    pub fn new(attachments: Arc<dyn AttachmentStore>) -> Self {
-        Self { attachments }
+    pub fn new(users: Arc<dyn UserRepository>, attachments: Arc<dyn AttachmentStore>) -> Self {
+        Self { users, attachments }
     }
 
     /// The bytes, for any authenticated caller: the unguessable id is the capability.
+    /// Only if `id` is an avatar — the store is shared, so anything else reads as absent.
     pub async fn execute(
         &self,
         _caller: &Caller,
         id: AttachmentId,
     ) -> Result<Option<StoredObject>, Failure> {
+        if !self.users.is_avatar(id).await? {
+            return Ok(None);
+        }
         Ok(self.attachments.get(id).await?)
     }
 }

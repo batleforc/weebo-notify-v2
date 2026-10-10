@@ -1,6 +1,7 @@
 //! APNs transport (design §6.2, §6.3, §10bis.5): token-based `.p8` auth, sealed-box payload.
 //! Untested against real Apple infrastructure. Uses `mutable-content` so the Notification Service
-//! Extension decrypts before display (`content-available` would not invoke it).
+//! Extension decrypts before display (`content-available` would not invoke it). [`body_for`]
+//! measures the real body against Apple's [`MAX_BODY`] and sends the poke when it is over.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -9,12 +10,13 @@ use notify_domain::{Device, DevicePublicKey, Priority};
 use notify_ports::{
     PortError, PortResult, PushMessage, PushOutcome, PushTransport, SEALED_ENVELOPE_VERSION,
 };
+use notify_push_http::send_retrying;
 use p256::pkcs8::DecodePrivateKey as _;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-/// Max plaintext: Apple caps the whole JSON at 4096 bytes; minus `aps` wrapper, base64 and sealing, with margin.
-const MAX_PAYLOAD: usize = 2_600;
+/// Apple's limit on the whole JSON body, `aps` and all.
+const MAX_BODY: usize = 4_096;
 
 /// `apns-expiration` window; same four hours as Web Push's `TTL`.
 const TTL: Duration = Duration::from_secs(4 * 3_600);
@@ -163,6 +165,24 @@ impl Apns {
 
         Ok(token)
     }
+
+    /// Drop the cached provider token, so the next call mints a fresh one.
+    fn forget_provider_token(&self) {
+        *self
+            .cached_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+/// Whether APNs refused the provider token itself rather than the push — the one
+/// failure a fresh token can fix.
+fn provider_token_refused(status: u16, reason: Option<&str>) -> bool {
+    status == 403
+        && matches!(
+            reason,
+            Some("ExpiredProviderToken" | "InvalidProviderToken")
+        )
 }
 
 /// Alert shown until the extension replaces it; non-empty since Apple forbids removing alert text.
@@ -217,8 +237,27 @@ impl Envelope {
                 mutable_content: 1,
             },
             v: SEALED_ENVELOPE_VERSION,
-            ciphertext_device: notify_sealed_box::seal_base64(key, &message.sealed_plaintext())?,
+            ciphertext_device: notify_sealed_box::seal_base64(
+                key,
+                SEALED_ENVELOPE_VERSION,
+                &message.sealed_plaintext(),
+            )?,
         })
+    }
+}
+
+/// The wire body for `message`, or for its poke when that is over [`MAX_BODY`].
+/// `None` for a key nothing can be sealed to, as [`Envelope::sealed_for`].
+fn body_for(key: &DevicePublicKey, message: &PushMessage) -> PortResult<Option<Vec<u8>>> {
+    let encode = |message: &PushMessage| {
+        Envelope::sealed_for(key, message)
+            .map(|envelope| serde_json::to_vec(&envelope))
+            .transpose()
+            .map_err(|error| PortError::corrupt("push.envelope", error))
+    };
+    match encode(message)? {
+        Some(body) if body.len() > MAX_BODY => encode(&message.as_poke()),
+        fitted => Ok(fitted),
     }
 }
 
@@ -229,7 +268,7 @@ impl PushTransport for Apns {
     }
 
     fn max_payload_bytes(&self) -> usize {
-        MAX_PAYLOAD
+        MAX_BODY
     }
 
     async fn deliver(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
@@ -249,13 +288,9 @@ impl PushTransport for Apns {
             ));
         };
 
-        let Some(envelope) = Envelope::sealed_for(&public_key, message) else {
+        let Some(body) = body_for(&public_key, message)? else {
             return Ok(PushOutcome::Expired);
         };
-
-        let body = serde_json::to_vec(&envelope)
-            .map_err(|error| PortError::corrupt("push.envelope", error))?;
-        let provider_token = self.provider_token()?;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -275,39 +310,48 @@ impl PushTransport for Apns {
             url
         };
 
-        let response = self
-            .http
-            .post(url)
-            .header("authorization", format!("bearer {provider_token}"))
-            .header("apns-topic", &self.topic)
-            .header("apns-push-type", "alert")
-            .header("apns-priority", apns_priority(message))
-            .header("apns-expiration", (now + TTL.as_secs()).to_string())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await;
+        // Rebuilt rather than cloned on the second pass: the point of it is a
+        // different `authorization` header.
+        let request = |provider_token: String| {
+            self.http
+                .post(url.clone())
+                .header("authorization", format!("bearer {provider_token}"))
+                .header("apns-topic", &self.topic)
+                .header("apns-push-type", "alert")
+                .header("apns-priority", apns_priority(message))
+                .header("apns-expiration", (now + TTL.as_secs()).to_string())
+                .header("content-type", "application/json")
+                .body(body.clone())
+        };
 
-        Ok(match response {
-            Ok(response) => {
-                let status = response.status().as_u16();
-                if (200..=299).contains(&status) {
-                    PushOutcome::Delivered
-                } else {
-                    // APNs folds distinct failures under one status; the body's `reason` tells them apart.
-                    let reason = response
-                        .json::<ApnsErrorBody>()
-                        .await
-                        .ok()
-                        .map(|body| body.reason);
-                    outcome(status, reason.as_deref())
-                }
-            }
+        let mut refreshed = false;
+        loop {
             // Unreachable is a metric, not an `Err`.
-            Err(_) => PushOutcome::Failed {
-                reason: "unreachable",
-            },
-        })
+            let Some(response) = send_retrying(request(self.provider_token()?)).await else {
+                return Ok(PushOutcome::Failed {
+                    reason: "unreachable",
+                });
+            };
+
+            let status = response.status().as_u16();
+            if (200..=299).contains(&status) {
+                return Ok(PushOutcome::Delivered);
+            }
+            // APNs folds distinct failures under one status; the body's `reason` tells them apart.
+            let reason = response
+                .json::<ApnsErrorBody>()
+                .await
+                .ok()
+                .map(|body| body.reason);
+
+            // A clock jump or a key rotated at Apple makes our cached token stale early: re-mint once.
+            if !refreshed && provider_token_refused(status, reason.as_deref()) {
+                self.forget_provider_token();
+                refreshed = true;
+                continue;
+            }
+            return Ok(outcome(status, reason.as_deref()));
+        }
     }
 }
 
@@ -492,6 +536,22 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_provider_token_is_forgotten_and_nothing_else_is() {
+        assert!(provider_token_refused(403, Some("ExpiredProviderToken")));
+        assert!(provider_token_refused(403, Some("InvalidProviderToken")));
+        assert!(!provider_token_refused(403, Some("BadCertificate")));
+        assert!(!provider_token_refused(400, Some("ExpiredProviderToken")));
+
+        let transport = Apns::new(&config()).unwrap();
+        transport.provider_token().unwrap();
+        transport.forget_provider_token();
+        assert!(
+            transport.cached_token.lock().unwrap().is_none(),
+            "the next push mints a fresh token rather than resending the refused one"
+        );
+    }
+
+    #[test]
     fn the_provider_token_names_the_team_and_the_key() {
         let transport = Apns::new(&config()).unwrap();
         let token = transport.provider_token().unwrap();
@@ -574,7 +634,7 @@ mod tests {
 
             assert_eq!(value["aps"]["mutable-content"], 1);
             assert_eq!(value["aps"]["alert"]["title"], " ");
-            assert_eq!(value["v"], 2);
+            assert_eq!(value["v"], 3);
             assert!(value["ciphertext_device"].is_string());
             assert_eq!(value.as_object().unwrap().len(), 3, "{rendered}");
             assert!(!rendered.contains("ci-infra"), "{rendered}");
@@ -656,6 +716,50 @@ mod tests {
                 }
             ),
             "a dropped connection is not this transport being unusable"
+        );
+    }
+
+    fn titled(len: usize) -> PushMessage {
+        PushMessage::Notification {
+            channel: ChannelId::parse("ci-infra").unwrap(),
+            notification_id: NotificationId::generate(),
+            priority: Priority::Default,
+            body: PushBody::Payload {
+                bytes: serde_json::to_vec(&serde_json::json!({ "title": "x".repeat(len) }))
+                    .unwrap(),
+                sealed: false,
+            },
+        }
+    }
+
+    #[test]
+    fn the_largest_content_that_fits_is_sent_whole_and_one_byte_more_is_a_poke() {
+        let key = device_key();
+        let full = |len: usize| {
+            serde_json::to_vec(&Envelope::sealed_for(&key, &titled(len)).unwrap())
+                .unwrap()
+                .len()
+        };
+        // The longest title whose whole body, `aps` included, is within Apple's
+        // ceiling — base64 grows in steps, so the line is found, not computed.
+        let fits = (0..MAX_BODY)
+            .rev()
+            .find(|&len| full(len) <= MAX_BODY)
+            .unwrap();
+
+        let at = body_for(&key, &titled(fits)).unwrap().unwrap();
+        assert_eq!(at.len(), full(fits), "sent with its content");
+        assert!(at.len() <= MAX_BODY);
+
+        let over = body_for(&key, &titled(fits + 1)).unwrap().unwrap();
+        assert!(full(fits + 1) > MAX_BODY);
+        let poke = titled(fits + 1).as_poke();
+        assert_eq!(
+            over.len(),
+            serde_json::to_vec(&Envelope::sealed_for(&key, &poke).unwrap())
+                .unwrap()
+                .len(),
+            "identifiers only; the extension fetches the rest over TLS"
         );
     }
 }

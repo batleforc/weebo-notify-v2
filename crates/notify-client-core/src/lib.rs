@@ -13,14 +13,14 @@ mod store;
 mod sync;
 mod tray;
 
-pub use config::{ConfigError, DEFAULT_PROFILE, Profile};
+pub use config::{ConfigError, DEFAULT_PROFILE, Profile, write_private};
 pub use deeplink::{DeepLink, SCHEME, parse_deep_link};
 pub use dnd::{DndPreset, now_utc, quiet_now};
 pub use election::{StreamLease, lock_path, try_hold_stream};
 pub use error::ClientError;
 pub use session::{Revision, Session};
 pub use signal::{StreamSignal, StreamWatch, signal_path};
-pub use store::{CacheEntry, CachedNotification, Store, store_path};
+pub use store::{CacheEntry, CachedNotification, Store, store_path, try_store_path};
 pub use sync::SyncOutcome;
 pub use tray::{Link, Tray, TrayIcon, tray};
 

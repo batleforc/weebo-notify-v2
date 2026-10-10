@@ -74,17 +74,27 @@ impl User {
     /// (it runs on every request, so callers only write on `true`). An absent claim
     /// changes nothing: wiping an email would silently revoke `email` bindings (§11, T29).
     ///
+    /// # An unverified claim is an erasure
+    ///
+    /// `email_unverified` says the token carried an address the verifier dropped.
+    /// That is the provider declining to vouch for any address, not a client
+    /// asking for less — so the stored one goes, or an email binding would keep
+    /// granting access on the strength of a verification that no longer holds.
+    ///
     /// # Errors
     ///
     /// Refuses claims that fail the hygiene rules, as `from_claims` does.
     pub fn sync_from_claims(
         &mut self,
         email: Option<&str>,
+        email_unverified: bool,
         display_name: Option<&str>,
     ) -> Result<bool> {
         let mut changed = false;
 
-        if email.is_some() {
+        if email_unverified && email.is_none() {
+            changed |= self.email.take().is_some();
+        } else if email.is_some() {
             let email = optional_text(email, TextKind::SingleLine, MAX_TITLE_CHARS, "user.email")?;
             if email != self.email {
                 self.email = email;
@@ -504,5 +514,27 @@ mod tests {
 
         // An IdP is trusted to authenticate, not to be well-behaved.
         assert!(User::from_claims(UserId::generate(), "\u{1b}[2J", None, None, now()).is_err());
+    }
+
+    #[test]
+    fn an_absent_email_keeps_the_stored_one_and_an_unverified_one_clears_it() {
+        let mut user = User::from_claims(
+            UserId::generate(),
+            "ak-user-42",
+            Some("alice@weebo.poc"),
+            None,
+            now(),
+        )
+        .unwrap();
+
+        assert!(!user.sync_from_claims(None, false, None).unwrap());
+        assert_eq!(user.email.as_deref(), Some("alice@weebo.poc"));
+
+        assert!(user.sync_from_claims(None, true, None).unwrap());
+        assert_eq!(user.email, None);
+        assert!(
+            !user.sync_from_claims(None, true, None).unwrap(),
+            "clearing what is already clear is not a change worth a write"
+        );
     }
 }

@@ -110,10 +110,13 @@ fn write_private(path: &Path, lines: &[String]) -> std::io::Result<()> {
     file.flush()
 }
 
-/// `…/<profile>/history`, beside the store.
+/// `…/<profile>/history`, beside the store — or `None` with no data directory,
+/// rather than a history file dropped in the current directory.
 #[must_use]
-pub(crate) fn history_path(profile: &str) -> PathBuf {
-    notify_client_core::store_path(profile).with_file_name("history")
+pub(crate) fn history_path(profile: &str) -> Option<PathBuf> {
+    notify_client_core::try_store_path(profile)
+        .ok()
+        .map(|store| store.with_file_name("history"))
 }
 
 #[cfg(test)]
@@ -225,7 +228,8 @@ mod tests {
 
     #[test]
     fn the_history_sits_beside_the_store_rather_than_inside_it() {
-        let path = history_path("work");
+        // Not in the SQLite: the store may be wiped to force a re-sync (§9.3bis).
+        let path = history_path("work").unwrap();
 
         assert_eq!(path.file_name().unwrap(), "history");
         assert_eq!(

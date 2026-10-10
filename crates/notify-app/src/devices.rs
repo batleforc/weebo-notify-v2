@@ -8,12 +8,29 @@ use notify_ports::{AuditEntry, AuditLog, Clock, DeviceRepository, Failure, actio
 
 use crate::authz::{Caller, Grant};
 
+/// Whether `caller` may enrol, see or revoke a device on `transport`.
+///
+/// A session reaches every device. Anything else — the CLI's personal key, a CI
+/// token — reaches only `stream` ones: those deliver nothing on their own, the
+/// stream they carry is scoped by the credential that opens it, and they are all
+/// the CLI enrols (`notify device enrol`). A push transport is the one that matters:
+/// one enrolled from a leaked key would receive everything its owner does, and
+/// listing them hands out the owner's push endpoints.
+fn reaches(caller: &Caller, transport: &PushTransport) -> bool {
+    caller.ensure_session().is_ok() || matches!(transport, PushTransport::Stream)
+}
+
+/// The active devices one owner may hold unless `[devices] max_per_user` says
+/// otherwise.
+pub const DEFAULT_MAX_DEVICES_PER_USER: u32 = 20;
+
 /// `POST /api/v1/devices` (design §8).
 #[derive(Clone)]
 pub struct EnrolDevice {
     devices: Arc<dyn DeviceRepository>,
     audit: Arc<dyn AuditLog>,
     clock: Arc<dyn Clock>,
+    max_per_user: u32,
 }
 
 impl core::fmt::Debug for EnrolDevice {
@@ -33,10 +50,19 @@ impl EnrolDevice {
             devices,
             audit,
             clock,
+            max_per_user: DEFAULT_MAX_DEVICES_PER_USER,
         }
     }
 
+    /// Cap each owner at `max` active devices (`[devices] max_per_user`).
+    #[must_use]
+    pub const fn with_max_per_user(mut self, max: u32) -> Self {
+        self.max_per_user = max;
+        self
+    }
+
     /// Enrol a device for the calling principal; the owner always comes from the caller.
+    /// Only a session enrols a push device (see [`reaches`]).
     pub async fn execute(
         &self,
         caller: &Caller,
@@ -44,6 +70,10 @@ impl EnrolDevice {
         transport: PushTransport,
         public_key: Option<DevicePublicKey>,
     ) -> Result<Device, Failure> {
+        if !reaches(caller, &transport) {
+            return Err(notify_domain::DomainError::SessionRequired.into());
+        }
+
         let now = self.clock.now();
         let device = Device::enrol(
             DeviceId::generate(),
@@ -54,7 +84,18 @@ impl EnrolDevice {
             now,
         )?;
 
-        self.devices.upsert(&device).await?;
+        // Every active device counts, push and stream alike: a cap on push alone would
+        // let a leaked key enrol stream devices without end.
+        if !self
+            .devices
+            .enrol_capped(&device, self.max_per_user)
+            .await?
+        {
+            return Err(notify_domain::DomainError::DeviceLimitReached {
+                max: self.max_per_user,
+            }
+            .into());
+        }
         // Record the owner's groups so group-only bindings reach this device offline (§11).
         // Membership only: a key's empty groups would erase the snapshot.
         if caller.grant == Grant::Membership {
@@ -95,9 +136,12 @@ impl ListDevices {
         Self { devices }
     }
 
-    /// The caller's own devices, revoked ones included.
+    /// The caller's own devices, revoked ones included; only `stream` ones for a key
+    /// (see [`reaches`]).
     pub async fn execute(&self, caller: &Caller) -> Result<Vec<Device>, Failure> {
-        Ok(self.devices.list_for(&caller.principal).await?)
+        let mut devices = self.devices.list_for(&caller.principal).await?;
+        devices.retain(|device| reaches(caller, &device.transport));
+        Ok(devices)
     }
 }
 
@@ -137,6 +181,11 @@ impl RevokeDevice {
         if device.owner != caller.principal {
             // Same answer as "no such device".
             return Ok(false);
+        }
+        if !reaches(caller, &device.transport) {
+            // After the ownership check, so this says nothing about anybody else's
+            // devices: the caller owns it and should learn why.
+            return Err(notify_domain::DomainError::SessionRequired.into());
         }
 
         let now = self.clock.now();
@@ -206,6 +255,47 @@ mod tests {
             p256dh: "BPk".to_owned(),
             auth: "k9".to_owned(),
         }
+    }
+
+    #[tokio::test]
+    async fn enrolment_past_the_per_user_cap_is_refused_until_one_is_revoked() {
+        let fixture = fixture();
+        let enrol = fixture.enrol.clone().with_max_per_user(2);
+        let caller = Caller::member(fixture.alice.clone());
+
+        let first = enrol
+            .execute(&caller, "laptop", PushTransport::Stream, None)
+            .await
+            .unwrap();
+        enrol
+            .execute(&caller, "phone", webpush(), None)
+            .await
+            .unwrap();
+
+        let refused = enrol
+            .execute(&caller, "tablet", PushTransport::Stream, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&refused, Failure::Domain(error) if error.code() == "device.limit_reached"),
+            "a limit with a stable code, not an outage: {refused:?}"
+        );
+
+        // Somebody else's devices are not this owner's count.
+        let bob = Caller::member(Principal::User {
+            id: UserId::generate(),
+        });
+        enrol
+            .execute(&bob, "laptop", PushTransport::Stream, None)
+            .await
+            .unwrap();
+
+        // A revoked device frees its slot.
+        fixture.revoke.execute(&caller, first.id).await.unwrap();
+        enrol
+            .execute(&caller, "tablet", PushTransport::Stream, None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

@@ -62,12 +62,13 @@ async fn administers_key(
     caller: &Caller,
     key: &ApiKey,
 ) -> Result<bool, Failure> {
-    if key.principal() == caller.principal {
-        return Ok(true);
-    }
-    // Administration needs a person's session, not another credential.
+    // Administration needs a person's session, not another credential — even over
+    // keys acting as the same principal. A key revoking itself never reaches here.
     if caller.grant != Grant::Membership {
         return Ok(false);
+    }
+    if key.principal() == caller.principal {
+        return Ok(true);
     }
     match &key.owner {
         ApiKeyOwner::User { .. } => Ok(false),
@@ -277,7 +278,11 @@ impl ListApiKeys {
 
     /// The caller's own keys, those of the service accounts it administers, and
     /// those of the channels it manages.
+    ///
+    /// A session only: a key listing its owner's keys is the first step of using
+    /// one leaked credential to find and switch off the others.
     pub async fn execute(&self, caller: &Caller) -> Result<Vec<ApiKey>, Failure> {
+        caller.ensure_session()?;
         let mut keys = self.keys.list_for(&caller.principal).await?;
         for channel in self.authorizer.managed_channels(caller).await? {
             keys.extend(self.keys.list_for_channel(&channel).await?);
@@ -331,13 +336,20 @@ impl RevokeApiKey {
         }
     }
 
-    /// Revoke a key the caller owns or administers. Whoever it acts as may always kill
-    /// it (the "this leaked" path), as may the owning channel's or account's admins.
+    /// Revoke a key the caller owns or administers. Whoever it acts as may kill it from
+    /// a session, and the key may revoke itself (the "this leaked" path); the owning
+    /// channel's or account's admins may too.
     pub async fn execute(&self, caller: &Caller, id: ApiKeyId) -> Result<bool, Failure> {
+        let itself = matches!(&caller.grant, Grant::ApiKey { id: own, .. } if *own == id);
+        if !itself {
+            caller.ensure_session()?;
+        }
         let Some(key) = self.keys.get(id).await? else {
             return Ok(false);
         };
-        if !administers_key(&self.authorizer, self.accounts.as_ref(), caller, &key).await? {
+        if !itself
+            && !administers_key(&self.authorizer, self.accounts.as_ref(), caller, &key).await?
+        {
             // Same answer as "no such key", so ids cannot be probed.
             return Ok(false);
         }
@@ -914,7 +926,10 @@ mod tests {
         let stranger = Caller::member(Principal::User {
             id: UserId::generate(),
         });
-        assert!(fixture.list.execute(&stranger).await.unwrap().is_empty());
+        assert_eq!(
+            fixture.list.execute(&stranger).await.unwrap(),
+            [] as [notify_domain::ApiKey; 0]
+        );
     }
 
     #[tokio::test]

@@ -25,8 +25,12 @@ http = { workspace = true }
 rust-s3 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
+# `time::sleep` for the retry backoff.
+tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+# The e2e suite plays the publisher: a PUT to a presigned URL, as a client would.
+reqwest = { workspace = true }
 tokio = { workspace = true }

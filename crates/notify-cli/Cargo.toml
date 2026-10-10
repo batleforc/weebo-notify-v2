@@ -37,3 +37,8 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 open = "5.4.1"
+# Where `notify login` keeps the token (Secret Service, Keychain, Credential
+# Manager), the same crate and version the desktop shell already uses
+# (`web/src-tauri`). On Linux it is the zbus Secret Service backend — pure Rust,
+# the same zbus `notify-rust` above already pulls in, so still nothing to link.
+keyring = "4.1.6"

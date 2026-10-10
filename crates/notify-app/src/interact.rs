@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use notify_domain::{
     Author, DomainError, Interaction, InteractionLog, InteractionRecord, NotificationId, Principal,
-    Readership, Receipt, ReceiptId, ReceiptKind, Recorded, Silence, SilenceScope, SilenceTarget,
+    PushTransport, Readership, Receipt, ReceiptId, ReceiptKind, Recorded, Silence, SilenceScope,
+    SilenceTarget,
 };
 use notify_ports::{
     ChannelRepository, Clock, DeviceRepository, Failure, InteractionRepository, PortError,
@@ -166,8 +167,6 @@ impl SilenceNotification {
         scope: SilenceScope,
         duration: Option<notify_domain::HumanDuration>,
     ) -> Result<Silence, Failure> {
-        let notification = self.get.execute(caller, notification_id).await?;
-
         // Silences are per user; a service account has no attention to protect.
         let Principal::User { id } = caller.principal else {
             return Err(DomainError::Malformed {
@@ -176,6 +175,11 @@ impl SilenceNotification {
             }
             .into());
         };
+        // A session, like do-not-disturb: a leaked publish-only key that could
+        // also silence its owner would let whoever holds it mute their alerts.
+        caller.ensure_person()?;
+
+        let notification = self.get.execute(caller, notification_id).await?;
 
         let target: SilenceTarget = notify_domain::silence::target_for(
             scope,
@@ -245,13 +249,18 @@ impl PostReceipt {
                 .devices
                 .get(device_id)
                 .await?
-                .is_some_and(|found| found.owner == caller.principal);
-            if !owned {
+                .filter(|found| found.owner == caller.principal);
+            let Some(owned) = owned else {
                 return Err(DomainError::Malformed {
                     field: "receipt.device",
                     reason: "is not a device of the authenticated principal",
                 }
                 .into());
+            };
+            // The device policy (`devices::reaches`): a key manages only `stream`
+            // devices, so it does not get to speak for its owner's phone either.
+            if !matches!(owned.transport, PushTransport::Stream) {
+                caller.ensure_session()?;
             }
         }
 

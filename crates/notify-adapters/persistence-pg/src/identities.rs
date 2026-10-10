@@ -6,7 +6,8 @@ use notify_domain::{
     Profile, ProfileField, Scope, ServiceAccount, ServiceAccountId, User, UserId,
 };
 use notify_ports::{
-    ApiKeyRepository, PortResult, ServiceAccountRepository, StoredApiKey, UserRepository,
+    ApiKeyRepository, EmailMatch, PortResult, ServiceAccountRepository, StoredApiKey,
+    UserRepository,
 };
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
@@ -28,9 +29,32 @@ impl UserRepository for PgStore {
         self.one_user("WHERE oidc_subject = $1", subject).await
     }
 
-    async fn find_by_email(&self, email: &str) -> PortResult<Option<User>> {
+    async fn find_by_email(&self, email: &str) -> PortResult<EmailMatch> {
         // Case-insensitive, so an IdP changing capitalisation does not orphan a binding.
-        self.one_user("WHERE lower(email) = lower($1)", email).await
+        // `LIMIT 2`: the column is not unique, and two already means ambiguous.
+        let rows = sqlx::query(
+            "SELECT id, oidc_subject, email, display_name, timezone, locale, \
+             overridden_fields, avatar, created_at FROM users \
+             WHERE lower(email) = lower($1) LIMIT 2",
+        )
+        .bind(email)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("user", error))?;
+
+        Ok(match rows.as_slice() {
+            [] => EmailMatch::Nobody,
+            [row] => EmailMatch::One(Box::new(hydrate_user(row)?)),
+            _ => EmailMatch::Ambiguous,
+        })
+    }
+
+    async fn is_avatar(&self, avatar: AttachmentId) -> PortResult<bool> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE avatar = $1)")
+            .bind(avatar.to_string())
+            .fetch_one(self.pool())
+            .await
+            .map_err(|error| fail("user", error))
     }
 
     async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>> {
@@ -94,7 +118,7 @@ impl UserRepository for PgStore {
 }
 
 impl PgStore {
-    /// The three user lookups differ only in their one-text-argument `WHERE`.
+    /// The unique-key user lookups differ only in their one-text-argument `WHERE`; email is not unique.
     async fn one_user(&self, filter: &'static str, argument: &str) -> PortResult<Option<User>> {
         let sql = [
             "SELECT id, oidc_subject, email, display_name, timezone, locale, \

@@ -1,0 +1,27 @@
+{{/*
+One dashboard over the families observability.mdx documents, shipped as a
+ConfigMap for the Grafana sidecar (kube-prometheus-stack's default label is
+`grafana_dashboard: "1"`). The JSON lives in dashboards/ so it can be edited in
+Grafana, exported and dropped back in without templating getting in the way.
+*/}}
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "dashboard") }}
+  {{- with .Values.grafanaDashboard.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "dashboard") | nindent 4 }}
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  weebo-notify.json: |-
+    {{- .Files.Get "dashboards/weebo-notify.json" | nindent 4 }}
+{{- end }}

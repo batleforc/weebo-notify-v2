@@ -145,6 +145,64 @@ impl ResponseError for ApiError {
     }
 }
 
+/// The largest JSON body any route reads.
+///
+/// Four payload ceilings: a publish carries at most [`MAX_PAYLOAD_BYTES`] of
+/// content, and JSON escaping can grow that several-fold before the domain measures
+/// it. Anything bigger is refused before it is buffered, rather than at actix's 2 MiB
+/// default.
+///
+/// [`MAX_PAYLOAD_BYTES`]: notify_domain::limits::MAX_PAYLOAD_BYTES
+pub(crate) const MAX_JSON_BODY_BYTES: usize = 4 * notify_domain::limits::MAX_PAYLOAD_BYTES;
+
+/// Actix's own extractor refusals, in the same `problem+json` as every other one.
+///
+/// Its defaults answer `text/plain` quoting serde's description of our types. A
+/// client that matches on `code` would get nothing to match, and the detail —
+/// logged here at debug — is ours rather than the caller's.
+fn extractor_refusal(field: &'static str, error: &dyn core::fmt::Display) -> actix_web::Error {
+    tracing::debug!(%error, field, "request refused by an extractor");
+    ApiError::from(notify_domain::DomainError::Malformed {
+        field,
+        reason: "could not be read for this route",
+    })
+    .into()
+}
+
+/// [`actix_web::web::JsonConfig`] with an explicit ceiling and a `problem+json` refusal.
+pub(crate) fn json_config() -> actix_web::web::JsonConfig {
+    use actix_web::error::JsonPayloadError;
+
+    actix_web::web::JsonConfig::default()
+        .limit(MAX_JSON_BODY_BYTES)
+        .error_handler(|error, _| match &error {
+            JsonPayloadError::Overflow { .. } | JsonPayloadError::OverflowKnownLength { .. } => {
+                ApiError::from(notify_domain::DomainError::TooLarge {
+                    what: "body",
+                    max: MAX_JSON_BODY_BYTES,
+                    actual: match error {
+                        JsonPayloadError::OverflowKnownLength { length, .. } => length,
+                        _ => 0,
+                    },
+                })
+                .into()
+            }
+            _ => extractor_refusal("body", &error),
+        })
+}
+
+/// [`actix_web::web::QueryConfig`] with a `problem+json` refusal.
+pub(crate) fn query_config() -> actix_web::web::QueryConfig {
+    actix_web::web::QueryConfig::default()
+        .error_handler(|error, _| extractor_refusal("query", &error))
+}
+
+/// [`actix_web::web::PathConfig`] with a `problem+json` refusal.
+pub(crate) fn path_config() -> actix_web::web::PathConfig {
+    actix_web::web::PathConfig::default()
+        .error_handler(|error, _| extractor_refusal("path", &error))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
@@ -235,6 +293,50 @@ mod tests {
             "42",
             "a 429 without Retry-After turns a polite client into a busy loop"
         );
+    }
+
+    #[actix_web::test]
+    async fn a_body_actix_cannot_read_is_a_problem_not_plain_text() {
+        use actix_web::{App, test, web};
+
+        #[derive(serde::Deserialize)]
+        struct Body {
+            #[allow(dead_code, reason = "only its absence matters")]
+            title: String,
+        }
+
+        let app = test::init_service(
+            App::new()
+                .app_data(json_config())
+                .route("/", web::post().to(|_: web::Json<Body>| async { "ok" })),
+        )
+        .await;
+
+        for body in [
+            "{\"titel\": 1}".to_owned(),
+            format!("{{\"title\": \"{}\"}}", "x".repeat(MAX_JSON_BODY_BYTES)),
+        ] {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/")
+                    .insert_header((header::CONTENT_TYPE, "application/json"))
+                    .set_payload(body)
+                    .to_request(),
+            )
+            .await;
+
+            assert!(response.status().is_client_error());
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "application/problem+json"
+            );
+            let text = test::read_body(response).await;
+            assert!(
+                !String::from_utf8_lossy(&text).contains("titel"),
+                "serde's detail reached the caller"
+            );
+        }
     }
 
     #[test]

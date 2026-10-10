@@ -40,6 +40,9 @@ impl Finding {
     }
 }
 
+/// `[sinks] fingerprint_key` in `config/dev.toml` — public by being committed.
+const DEV_FINGERPRINT_KEY: &str = "dev-only-sink-fingerprint-key-never-deploy-this";
+
 /// The development stack's defaults this config still runs on.
 fn development_defaults(config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -58,7 +61,14 @@ fn development_defaults(config: &Config) -> Vec<Finding> {
             "set [oidc] issuer (WNK_OIDC__ISSUER) to your identity provider",
         ));
     }
-    if config.database.url.contains("weebo:weebo@") {
+    if config.sinks.fingerprint_key.expose() == DEV_FINGERPRINT_KEY {
+        findings.push(Finding::warn(
+            "[sinks] fingerprint_key is the development key from config/dev.toml: anybody \
+             can recompute webhook sink ids under it and brute-force the urls back",
+            "set WNK_SINKS__FINGERPRINT_KEY from a Secret (server.sinks.fingerprintKey.existingSecret)",
+        ));
+    }
+    if config.database.url.expose().contains("weebo:weebo@") {
         findings.push(Finding::warn(
             "[database] url carries the development stack's credentials",
             "set WNK_DATABASE__URL from a Secret (server.database.existingSecret)",
@@ -101,7 +111,7 @@ pub(crate) fn review(config: &Config) -> Vec<Finding> {
     // ── Attachments ──────────────────────────────────────────────────────────
     match &config.attachments {
         Some(attachments) if attachments.kind == AttachmentsBackend::Filesystem => {
-            let secret = attachments.token_secret.trim();
+            let secret = attachments.token_secret.expose().trim();
             if secret.is_empty() {
                 // Refused at startup; listed so `doctor` explains why.
                 findings.push(Finding::warn(
@@ -160,8 +170,9 @@ pub(crate) fn review(config: &Config) -> Vec<Finding> {
     // ── What only a probe can answer ─────────────────────────────────────────
     findings.push(Finding::note(
         "not checkable from here: TLS in front of this process, whether the ingress publishes \
-         /metrics, /healthz or /readyz, whether the bundle is served with frame-ancestors and \
-         HSTS, and whether per-address rate limits are applied",
+         /metrics, /healthz or /readyz, whether the bundle is served with frame-ancestors, \
+         whether the ingress adds Strict-Transport-Security to the API and the bundle (this \
+         process sends none — ADR-0023), and whether per-address rate limits are applied",
         "walk the checklist in docs/content/docs/ops/hardening.mdx — these are the items it \
          exists for",
     ));
@@ -239,13 +250,15 @@ pub(crate) fn report(config: &Config) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
+
     use super::*;
 
     /// The defaults, with the two that are the development stack replaced.
     fn config() -> Config {
         let mut config = Config::default();
         config.oidc.issuer = "https://id.weebo.example".to_owned();
-        config.database.url = "postgres://notify@db.internal/weebo_notify".to_owned();
+        config.database.url = "postgres://notify@db.internal/weebo_notify".into();
         config
     }
 
@@ -266,6 +279,23 @@ mod tests {
     fn the_development_defaults_refuse_to_boot_unless_declared() {
         let mut config = Config::default();
         assert!(refuse_development_defaults(&config).is_err());
+
+        config.server.dev = true;
+        assert!(refuse_development_defaults(&config).is_ok());
+    }
+
+    #[test]
+    fn the_development_fingerprint_key_refuses_to_boot_outside_dev() {
+        // The value checked is the one the dev file actually ships, so the two
+        // cannot drift apart and quietly disarm the check.
+        assert!(include_str!("../../../config/dev.toml").contains(DEV_FINGERPRINT_KEY));
+
+        let mut config = config();
+        config.sinks.fingerprint_key = DEV_FINGERPRINT_KEY.into();
+        let refused = refuse_development_defaults(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("[sinks] fingerprint_key"), "{refused}");
 
         config.server.dev = true;
         assert!(refuse_development_defaults(&config).is_ok());

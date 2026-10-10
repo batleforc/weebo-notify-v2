@@ -30,7 +30,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use notify_client_core::{DEFAULT_PROFILE, store_path};
+use notify_client_core::{DEFAULT_PROFILE, try_store_path, write_private};
 
 /// What the secret is filed under in the vault.
 ///
@@ -41,51 +41,41 @@ const SERVICE: &str = "weebo-notify";
 
 /// The `0600` file used when there is no vault, next to that profile's store.
 ///
-/// `store_path` and not a path spelled out again here: the profile directory is
+/// `try_store_path` and not a path spelled out again here: the profile directory is
 /// its answer to give, and two spellings of it would disagree the day either moves.
-fn fallback_path(profile: &str) -> PathBuf {
-    store_path(profile).with_file_name("credential")
+/// The fallible one, because with no data directory the lenient `store_path` answers
+/// the current directory — and a secret written to, or read from, wherever the shell
+/// was started is anybody's (on Windows, where `HOME` is usually unset, that is the
+/// common case rather than a corner).
+fn fallback_path(profile: &str) -> io::Result<PathBuf> {
+    try_store_path(profile)
+        .map(|store| store.with_file_name("credential"))
+        .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))
 }
 
 fn vault(profile: &str) -> Result<keyring::Entry, keyring::Error> {
     keyring::Entry::new(SERVICE, profile)
 }
 
-/// Write the fallback file, creating the profile directory and locking the mode
-/// down *before* the secret reaches the disk.
+/// Write the fallback file: atomically, and `0600` before the secret reaches the
+/// disk, re-narrowing whatever an older file had been left at.
 ///
-/// The order matters: `write` then `set_permissions` leaves a window in which the
-/// secret is on disk and world-readable, which on a shared host is the whole
-/// exposure this is trying to avoid.
+/// `notify_client_core::write_private` rather than a copy here: the CLI's config
+/// file is the same kind of credential file, and the two had already drifted —
+/// this one truncated in place, so a crash mid-write left an empty credential and a
+/// file from before this mode was enforced kept its old one. On Windows and macOS
+/// this is reached only when their own vault is unavailable, which is not a normal
+/// state on either; the file inherits the directory's ACL there.
 fn write_fallback(profile: &str, secret: &str) -> io::Result<()> {
-    let path = fallback_path(profile);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(secret.as_bytes())
-    }
-
-    // Windows and macOS reach this only when their own vault is unavailable, which
-    // is not a normal state on either. The file inherits the directory's ACL rather
-    // than a mode this platform does not have.
-    #[cfg(not(unix))]
-    fs::write(&path, secret)
+    write_private(&fallback_path(profile)?, secret.as_bytes())
 }
 
 fn clear_fallback(profile: &str) -> io::Result<()> {
-    match fs::remove_file(fallback_path(profile)) {
+    // No data directory means no file was ever written: nothing to clear.
+    let Ok(path) = fallback_path(profile) else {
+        return Ok(());
+    };
+    match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -135,7 +125,10 @@ pub fn credential_load() -> Result<Option<String>, String> {
 }
 
 fn read_fallback(profile: &str) -> Result<Option<String>, String> {
-    match fs::read_to_string(fallback_path(profile)) {
+    let Ok(path) = fallback_path(profile) else {
+        return Ok(None);
+    };
+    match fs::read_to_string(path) {
         Ok(secret) => Ok(Some(secret)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
@@ -176,10 +169,10 @@ mod tests {
         let _env = ENV
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let path = fallback_path("work");
+        let path = fallback_path("work").unwrap();
         assert_eq!(path.file_name().unwrap(), "credential");
-        assert_eq!(path.parent(), store_path("work").parent());
-        assert_ne!(path, fallback_path("default"));
+        assert_eq!(path.parent(), try_store_path("work").unwrap().parent());
+        assert_ne!(path, fallback_path("default").unwrap());
     }
 
     /// `0600` is the point of the fallback, not a detail of it: the whole reason
@@ -195,12 +188,12 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: `ENV` keeps every test that touches the environment serial, and
-        // the variable is what `store_path` reads.
+        // the variable is what `try_store_path` reads.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
 
         write_fallback("test-profile", "s3cr3t").unwrap();
 
-        let path = fallback_path("test-profile");
+        let path = fallback_path("test-profile").unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
         assert_eq!(fs::read_to_string(&path).unwrap(), "s3cr3t");

@@ -11,6 +11,9 @@ use crate::config::OidcConfig;
 /// The dependency name this adapter reports on `/readyz` and in metrics.
 pub(crate) const DEPENDENCY: &str = "jwks";
 
+/// Most we read of a discovery document or key set, so a hostile issuer cannot make us buffer without end.
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
 /// Where signing keys come from; a seam so unit tests hold a real keypair without an IdP.
 #[async_trait::async_trait]
 pub trait JwksSource: Send + Sync + core::fmt::Debug {
@@ -30,6 +33,8 @@ pub(crate) enum DiscoveryError {
     },
     /// We hold no usable key, and asking again is not due yet.
     Cold,
+    /// The body ran past [`MAX_BODY_BYTES`].
+    TooLarge(&'static str),
 }
 
 impl core::fmt::Display for DiscoveryError {
@@ -47,6 +52,12 @@ impl core::fmt::Display for DiscoveryError {
                 f,
                 "no usable signing key, and the refresh interval has not elapsed"
             ),
+            Self::TooLarge(what) => {
+                write!(
+                    f,
+                    "the issuer's {what} is larger than {MAX_BODY_BYTES} bytes"
+                )
+            }
         }
     }
 }
@@ -116,10 +127,7 @@ impl HttpJwksSource {
             ));
         }
 
-        let document: Discovery = response
-            .json()
-            .await
-            .map_err(|error| PortError::unavailable(DEPENDENCY, error))?;
+        let document: Discovery = capped_json(response, "discovery document").await?;
 
         // The document must name the configured issuer.
         if document.issuer.trim_end_matches('/') != self.issuer.as_str().trim_end_matches('/') {
@@ -135,6 +143,29 @@ impl HttpJwksSource {
         *self.jwks_uri.write().await = Some(document.jwks_uri.clone());
         Ok(document.jwks_uri)
     }
+}
+
+/// `response.json()`, reading at most [`MAX_BODY_BYTES`] — chunk by chunk, so a
+/// lying or absent `Content-Length` changes nothing.
+async fn capped_json<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+    what: &'static str,
+) -> PortResult<T> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| PortError::unavailable(DEPENDENCY, error))?
+    {
+        if body.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(PortError::unavailable(
+                DEPENDENCY,
+                DiscoveryError::TooLarge(what),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|error| PortError::unavailable(DEPENDENCY, error))
 }
 
 #[async_trait::async_trait]
@@ -158,10 +189,7 @@ impl JwksSource for HttpJwksSource {
                 ));
             }
 
-            response
-                .json::<JwkSet>()
-                .await
-                .map_err(|error| PortError::unavailable(DEPENDENCY, error))
+            capped_json::<JwkSet>(response, "key set").await
         };
 
         match attempt.await {
@@ -210,6 +238,40 @@ mod tests {
             source.discovery_url().unwrap().as_str(),
             "https://idp.example/.well-known/openid-configuration"
         );
+    }
+
+    #[actix_web::test]
+    async fn an_oversized_discovery_document_is_refused_rather_than_buffered() {
+        use actix_web::{App, HttpResponse, HttpServer, web};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let server = HttpServer::new(|| {
+            App::new().route(
+                "/.well-known/openid-configuration",
+                web::get().to(|| async {
+                    // Valid JSON, just far too much of it.
+                    let padding = " ".repeat(MAX_BODY_BYTES + 1);
+                    HttpResponse::Ok().body(format!(
+                        "{{\"issuer\":\"x\",{padding}\"jwks_uri\":\"http://x\"}}"
+                    ))
+                }),
+            )
+        })
+        .workers(1)
+        .listen(listener)
+        .unwrap()
+        .run();
+        actix_web::rt::spawn(server);
+
+        let error = HttpJwksSource::new(&config(&issuer))
+            .unwrap()
+            .fetch()
+            .await
+            .unwrap_err();
+
+        let rendered = core::error::Error::source(&error).unwrap().to_string();
+        assert!(rendered.contains("larger than"), "{rendered}");
     }
 
     #[test]

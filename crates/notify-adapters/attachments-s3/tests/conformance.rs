@@ -110,4 +110,44 @@ mod e2e {
         );
         assert!(signed.expires_at > time::OffsetDateTime::now_utc());
     }
+
+    #[tokio::test]
+    async fn e2e_a_presigned_upload_url_works_once() {
+        // The signed `If-None-Match: *` is what makes the URL single-use: without
+        // it, whoever holds the URL could replace the bytes until it expires. This
+        // is the store's half of that promise, so it is asked of the store.
+        let store = store!();
+        let bytes = b"\x89PNG\r\n\x1a\n once".to_vec();
+        let signed = store
+            .presign_upload(&UploadRequest {
+                content_type: "image/png".to_owned(),
+                content_length: u64::try_from(bytes.len()).unwrap(),
+            })
+            .await
+            .unwrap();
+
+        let put = || {
+            let mut request = reqwest::Client::new().put(signed.url.clone());
+            for (name, value) in &signed.headers {
+                request = request.header(name, value);
+            }
+            request.body(bytes.clone()).send()
+        };
+
+        let first = put().await.unwrap();
+        assert!(
+            first.status().is_success(),
+            "first upload: {}",
+            first.status()
+        );
+
+        let second = put().await.unwrap();
+        assert_eq!(
+            second.status().as_u16(),
+            412,
+            "the same URL must not overwrite the object"
+        );
+
+        store.delete(signed.id).await.unwrap();
+    }
 }

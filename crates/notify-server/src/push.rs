@@ -49,7 +49,8 @@ impl TransportRegistry {
         self.transports.keys().copied().collect()
     }
 
-    /// The largest payload any configured transport will carry (zero with none); past it, send a poke.
+    /// The largest content any transport could carry (zero with none): the fan-out's first cut.
+    /// Each transport still measures its own wire body against its own limit and pokes when over.
     pub(crate) fn max_payload_bytes(&self) -> usize {
         self.transports
             .values()
@@ -169,7 +170,7 @@ mod tests {
     fn an_instance_with_no_transports_carries_no_payload() {
         let registry = TransportRegistry::empty();
 
-        assert!(registry.names().is_empty());
+        assert_eq!(registry.names(), [] as [&str; 0]);
         assert_eq!(
             registry.max_payload_bytes(),
             0,

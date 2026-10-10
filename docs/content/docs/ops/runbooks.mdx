@@ -1,0 +1,301 @@
+---
+title: Runbooks
+description: What to do when an alert fires or a change goes wrong — leader lock, migrations, Postgres and poolers, key rotation, dead letters, retention, restores.
+---
+
+Each section is linked from the `runbook_url` of the alert that sends you here (the
+chart's `PrometheusRule`, see [observability](/docs/ops/observability)). Commands
+assume the Helm chart with release `notify` in namespace `notify`; adjust both.
+
+```bash
+kubectl -n notify logs deploy/notify-weebo-notify-server --all-containers --since=30m
+```
+
+## Leader lock lost or stuck
+
+**Alerts:** `WeeboNotifyNoLeader`, `WeeboNotifyBackgroundJobStale`,
+`WeeboNotifyBackgroundJobFailing`.
+
+The purge, stale closure, digests, sink drain and reconciliation each run under
+their own Postgres advisory lock on whichever replica takes it
+([high availability](/docs/ops/high-availability)). An advisory lock belongs to a
+**session**: it is released when that connection closes, never by a timeout.
+
+1. **Which job, and is anyone leading?** `max by (task)
+   (background_job_last_success_timestamp_seconds)` shows when each last
+   completed. All of them stale at once means no leader; one of them stale means
+   that job is failing — read its `WARN` lines (`purge pass failed`, `sink drain
+   failed`, …).
+2. **Who holds the locks?**
+
+   ```sql
+   SELECT l.objid, a.pid, a.client_addr, a.application_name, a.state,
+          now() - a.state_change AS idle_for, a.query
+   FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+   WHERE l.locktype = 'advisory' AND l.granted;
+   ```
+3. **A holder that is not a live replica** (a pod that was killed but whose TCP
+   session Postgres has not noticed yet, a connection stuck behind a network
+   partition) keeps the lock until the socket dies. Terminate it:
+   `SELECT pg_terminate_backend(<pid>);` — the next tick on a live replica takes
+   the lock. Lower `tcp_keepalives_idle` on the server if this recurs.
+4. **A live replica holding it but making no progress** — restart that pod. Its
+   session ends and another replica takes over within one interval (5 s for the sink
+   drain, 60 s for the rest).
+5. **Nobody holds it and nothing runs** — every replica failing to reach Postgres
+   is the usual cause; go to [Postgres failover](#postgres-failover-and-pooler-breakage).
+
+<Callout type="warn">
+  A **transaction-mode pooler** in front of `[database] url` breaks advisory locks as
+  well as `LISTEN`: the session that took the lock is not the one that releases it.
+  Symptoms are two leaders, or a lock nobody can release.
+</Callout>
+
+## Failed migration and rollback
+
+### The rule: expand, then contract
+
+The previous version keeps running against the new schema — during the rolling
+update, and before it while the Helm migration Job runs. So a release may only
+**expand**: add tables, add nullable columns or columns with a default, add
+indexes (`CONCURRENTLY` on big tables), add constraints `NOT VALID` then validate.
+**Contracting** — `DROP COLUMN`, `DROP TABLE`, `RENAME`, changing a column's type —
+happens in a **later** release, once no running version reads the object.
+
+`task lint:migrations` (part of `lint:check`, so CI) refuses a migration containing
+one of those statements unless the file carries
+`-- allow-destructive: <why no deployed version still reads this>`. The marker is a
+review prompt, not a bypass: the reason must name the release that stopped using
+the object.
+
+### When the migration Job fails
+
+`helm upgrade` fails at the `pre-upgrade` hook, and **nothing has rolled**: the old
+pods are still serving on the old schema.
+
+1. Read the failed Job's log — it is kept on failure:
+   `kubectl -n notify logs job/notify-weebo-notify-migrate`.
+2. sqlx runs each migration in a transaction, so a failed one left no partial
+   change and is **not** recorded. Check:
+   `SELECT version, description, success FROM _sqlx_migrations ORDER BY version DESC LIMIT 5;`
+3. Fix the cause (a lock timeout behind a long transaction, data violating a new
+   constraint, a missing extension or privilege) and re-run `helm upgrade`. The Job
+   is recreated (`before-hook-creation`).
+4. A migration that **cannot** run in a transaction (`CREATE INDEX CONCURRENTLY`)
+   may leave an `INVALID` index behind: `DROP INDEX CONCURRENTLY` it before retrying.
+
+### Indexes that lock `revisions` while they build
+
+Two migrations build indexes on `revisions` with a **plain** `CREATE INDEX`, not
+`CONCURRENTLY`: `20261010000000_revision_image_ref_index` and
+`20261010000100_revision_received_index`. sqlx serialises migrators with an advisory
+lock, and a `CONCURRENTLY` build waits out every open snapshot — including the one
+of a replica blocked on that same lock — so replicas booting together would
+deadlock, and a failed concurrent build would leave an `INVALID` index that
+`IF NOT EXISTS` then skips for ever.
+
+The price: **while each build runs, every publish, revision and purge on the
+instance waits** (`SHARE` lock on `revisions`). Seconds on a small instance; on one
+holding a year of history, minutes. Before upgrading such an instance, build them
+by hand, outside the upgrade — the migrations then find them and do nothing:
+
+```sql
+-- One at a time, outside a transaction (psql runs each statement on its own).
+SET statement_timeout = 0;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS revisions_image_ref_idx
+    ON revisions ((content->'image'->>'ref'))
+    WHERE content->'image'->>'kind' = 'attachment';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS revisions_received_idx
+    ON revisions (notification_id, received_at);
+
+-- Both must be valid; an INVALID one (a build that failed) is skipped by the
+-- migration's IF NOT EXISTS and never used by the planner.
+SELECT c.relname, i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+ WHERE c.relname IN ('revisions_image_ref_idx', 'revisions_received_idx');
+```
+
+If one comes back `indisvalid = false`, `DROP INDEX CONCURRENTLY` it and build it
+again before running the upgrade.
+
+### Rolling back a release
+
+- **Image only (the usual case).** Because migrations only expand, version N runs
+  on N+1's schema: `helm rollback notify <revision>`. A rollback fires
+  `pre-rollback` hooks, not `pre-upgrade`, so the migration Job does **not** run,
+  and the old pods start with `WNK_DATABASE__MIGRATE_ON_START=false` — they never
+  try to migrate.
+- **Do not roll back by `helm upgrade` to an older chart**, and do not run an older
+  build with `migrate_on_start = true`: its migrator finds versions applied in the
+  database that it does not know, and sqlx refuses (`VersionMissing`) — the Job, or
+  the boot, fails. `helm rollback` is the supported path.
+- **Schema too.** There are no down-migrations. Undoing a schema change means
+  restoring the database to before it ([restore](#restoring-from-backup)) — which is
+  why contraction waits a release: by the time a destructive migration ships, the
+  version that needed the object is one nobody wants to roll back to.
+- **Never** delete a row from `_sqlx_migrations` to "un-apply" a migration; the
+  next migrate re-runs it against a schema that already has it.
+
+## Postgres failover and pooler breakage
+
+**Alerts:** `WeeboNotifyDown`, `WeeboNotifyReadinessFlapping`, `WeeboNotifyHttp5xx`.
+
+`/readyz` checks Postgres, so a database problem shows up as replicas leaving the
+Service; `/healthz` does not, so they are not restarted for it.
+
+**Failover (CloudNativePG, Patroni).** Point `[database] url` at the read-write
+service, never at a pod. During the switch requests fail and replicas flap
+readiness for a few seconds; the pool reconnects on its own, the dedicated `LISTEN`
+connection reconnects and every open stream re-reads the log from its cursor, so
+no notification is lost — only delayed. Background jobs resume when their locks are
+re-taken on the new primary. Nothing to do unless it does not settle within a
+minute; then restart the server pods.
+
+**A pooler (PgBouncer, Pgpool) in transaction mode** breaks two things quietly:
+
+- **`LISTEN/NOTIFY`** — real-time delivery stops. Writes still succeed, `/readyz`
+  stays green, clients see new notifications only when they reconnect or sync.
+- **Advisory locks** — see [leader lock](#leader-lock-lost-or-stuck).
+
+The `LISTEN` connection is opened from the same `[database] url` as the pool, so the
+only fixes are a **session-mode** pool, or pointing `[database] url` straight at
+Postgres. Diagnose: publish a notification and watch an open SSE stream; if it
+arrives only after a reconnect, the bus is broken.
+
+**Connection exhaustion** (`too many connections` in the logs): each replica uses
+`[database] max_connections` (16) plus one `LISTEN` connection; the
+[sizing section](/docs/ops/high-availability) has the arithmetic. Lower
+`server.database.maxConnections` or raise Postgres's `max_connections` — remember a
+rolling update briefly runs old and new pods together.
+
+## Key rotation
+
+**Alert:** `WeeboNotifyPushFailureRatio` (a relay refusing a rotated or expired key
+looks exactly like this). [Hardening](/docs/ops/hardening#key-rotation) explains
+what each key protects; this is the procedure. Every key lives in a Secret
+referenced by the chart; rotation is "update the Secret, restart the server"
+(`kubectl rollout restart deploy/notify-weebo-notify-server`) unless noted.
+
+| Key | Procedure | What breaks if you get it wrong |
+| --- | --- | --- |
+| **VAPID** (`push.webpush`) | Replace `vapid.pem`, restart. | Every existing Web Push subscription is bound to the old public key and **stops working** until that browser subscribes again — each user re-enables push. Rotate only on compromise, and announce it. |
+| **Federation signing key** | Replace `federation.pem`, restart. | CI tokens signed with the old key fail verification immediately; jobs exchange again on their next run. Short-lived by design, so the window is one token lifetime. |
+| **APNs `.p8`** | Create the new key in the Apple portal, update `apns.p8` and `keyId`, restart, *then* revoke the old key. | Revoking first fails every iOS push until the restart. |
+| **OIDC client secret** | The API validates tokens against JWKS and holds no client secret; the web app is a public PKCE client. Rotate at the IdP; nothing here changes. Issuer **signing keys** rotate through JWKS: the verifier re-fetches the key set when a token names a key it does not hold, at most once per refresh interval. | Retiring the old signing key at the IdP before tokens signed with it expire rejects those tokens. |
+| **Webhook HMAC secrets** | Per sink. Add the new secret on the receiver, accepting both; update the sink; drop the old one once deliveries verify with the new. | A receiver that accepts only the new secret rejects every in-flight retry signed with the old. |
+| **Database password** | Create the new role password, update the `database-url` Secret, restart, then expire the old password. | — |
+| **S3 access key** | Same pattern: new key, update the Secret, restart, revoke the old. | Presigned URLs already handed out die with the old key — they are short-lived. |
+| **Sink fingerprint key** (`[sinks] fingerprint_key`) | See below: the old key goes into `previous_fingerprint_keys` for one rollout. | Queued deliveries and dead letters keep ids under the old key, match no sink, and dead-letter after the 24 h retry window. |
+
+### Rotating the sink fingerprint key
+
+Every webhook's sink id is an HMAC of its url under `[sinks] fingerprint_key`, and
+that id is what queue rows and dead letters are stored under. A new key therefore
+gives every webhook a new id. The server re-keys stored rows **at boot**, from every
+key it is told about, so:
+
+1. Generate the new key: `openssl rand -base64 48`.
+2. Put the **old** key in `[sinks] previous_fingerprint_keys` — with the chart, via
+   `server.extraEnv`:
+   `WNK_SINKS__PREVIOUS_FINGERPRINT_KEYS='["<old key>"]'` (from a Secret) — and the
+   new one in the `server.sinks.fingerprintKey` Secret.
+3. Roll out. Each booting replica moves queue rows and dead letters from the old ids
+   to the new ones (idempotent; the log line reports how many). The key is read only
+   at boot — `SIGHUP` does not change it, and says so.
+4. Once every replica has restarted, remove `previous_fingerprint_keys` on the next
+   rollout.
+
+Expect one "changed" audit entry per managed channel with a webhook on the first
+reconcile: its stored declaration snapshot carries the fingerprint, and the
+fingerprint moved. Rotate on suspicion that the key leaked together with a database
+copy — a fingerprint is only guessable by someone who holds both.
+
+Skipping step 2 loses nothing permanently either: deliveries under the old ids are
+kept, then dead-lettered after their retry window, and can be requeued only once
+re-keyed — so prefer rotating with an empty queue if you skip it.
+
+## Sink dead-letter triage
+
+**Alerts:** `WeeboNotifySinkDeadLetters`, `WeeboNotifySinkDeadLettersGrowing`.
+
+A delivery is buried after its retries are exhausted. `sink_dlq_depth{channel}` is
+published by the leader only — read the max across replicas.
+
+1. **Which sink and why?** `GET /api/v1/admin/dlq?channel=<id>` (platform admin)
+   lists the dead letters with the last error each was buried with. A uniform
+   `401/403` is a rotated HMAC secret or receiver credential; `404/410` a receiver
+   that moved; timeouts or `5xx` a receiver that is down; DNS or connection errors,
+   with egress policy on, a destination `networkPolicy.egress` does not allow.
+2. **Fix the receiver first.** Dead letters are not retried automatically — that is
+   what makes them dead — so fixing the cause stops growth but does not drain them.
+3. **Requeue** each one worth delivering:
+   `POST /api/v1/admin/dlq/{id}/requeue`. Requeueing into a still-broken receiver
+   just buries it again.
+4. Dead letters older than `[sinks] dead_letter_retention` (30 days by default) are
+   pruned by the leader's sink drain, so a backlog nobody looks at does go away —
+   with the deliveries it held.
+
+## Retention backlog
+
+**Alert:** `WeeboNotifyRetentionBacklog`.
+
+`retention_backlog_rows{kind}` counts rows the next purge pass would take —
+`expire` (notifications whose TTL ran out), `purge` (tombstones due for deletion),
+`events` (event-log rows past 30 days) — capped at 100 000 per kind.
+`retention_oldest_event_age_seconds` shows how far behind the event log is.
+[Retention](/docs/ops/retention) has what each stage removes and when.
+
+1. **Is the purge running?** `background_job_last_success_timestamp_seconds{task="purge"}`
+   — if stale, it is a [leader](#leader-lock-lost-or-stuck) problem.
+2. **Running but losing.** One pass a minute, bounded by `[retention] batch_size`
+   and `pass_budget`; an import or a publishing storm can outpace it. If the
+   backlog grows pass after pass, raise `batch_size` (or `pass_budget`, staying
+   under a minute) and watch the gauge fall.
+3. **Running and not shrinking.** Long transactions or a replication slot can hold
+   back `VACUUM`, and the deletes get slower as dead tuples pile up:
+
+   ```sql
+   SELECT pid, now() - xact_start AS age, state, query
+   FROM pg_stat_activity WHERE xact_start IS NOT NULL ORDER BY age DESC LIMIT 5;
+   SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+   FROM pg_replication_slots;
+   ```
+
+   End the offender, drop an abandoned slot, and let autovacuum run.
+4. A backlog is a disk and privacy problem, not a correctness one: expired
+   notifications are already hidden from every read.
+
+## Fan-out outbox: pushes falling behind or dead
+
+**Signals:** `fanout_outbox_oldest_age_seconds` in minutes, or
+`fanout_outbox_rows{kind="dead"}` above zero; the leader logs
+`fan-out outbox falling behind` / `fan-out rows dead-lettered` (ADR-0025).
+
+A row is retired as dead after ten claims that did not finish, when it cannot be
+decoded, or once it has waited an hour (a push that late is noise; the inbox holds
+the notification). Dead rows are never retried on their own — read why, then delete:
+
+```sql
+SELECT cursor_seq, notification->>'id' AS notification, attempts, last_error, queued_at
+  FROM fanout_outbox WHERE dead_at IS NOT NULL ORDER BY cursor_seq;
+DELETE FROM fanout_outbox WHERE dead_at IS NOT NULL;
+```
+
+To retry one instead: `UPDATE fanout_outbox SET dead_at = NULL, attempts = 0,
+leased_until = NULL WHERE cursor_seq = …` (it will push the notification's
+*current* state, or nothing if it has been deleted since).
+
+## Restoring from backup
+
+The full procedure, and why the database goes first, is in
+[backup and restore](/docs/ops/backup#restore). In short:
+
+1. Scale the server to zero
+   (`kubectl scale deploy/notify-weebo-notify-server --replicas=0`; with the HPA,
+   suspend it first) so nothing writes during the restore.
+2. Restore Postgres to the chosen point in time, **then** the bucket to the same
+   point or later.
+3. `helm upgrade` (or the Job alone) runs `notify-server migrate`: the restored
+   schema must be one this build accepts.
+4. Scale back up. Anything published after the restore point is gone; clients
+   holding a cursor from after it are ahead of the server, so tell users to expect
+   a full resync (or sign out and in) rather than a silent gap.

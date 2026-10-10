@@ -74,8 +74,12 @@ genuinely theirs is entitled to know why it stopped working.
 2. **Check quotas** — both of them, before any work.
 3. **Claim the idempotency key**, if the caller sent one.
 4. **Build the revision** — the domain validates, sanitises and clamps.
-5. **Write** — the row and its event line, one transaction, returning the cursor.
-6. **Fan out** — best effort, after the write.
+5. **Write** — the row, its event line, and everything the publish owes, one
+   transaction, returning the cursor: the sink deliveries, the idempotent response,
+   and a fan-out outbox row for the device push and the thumbnail
+   ([ADR-0025](/docs/adr/0025-a-publish-commits-what-it-owes)).
+6. **Poke and return** — poke the bus and wake the outbox worker. A request dropped
+   from here on loses nothing: a retry with the same key replays the response.
 
 ### Quotas
 
@@ -107,14 +111,18 @@ had a millisecond later.
 
 ### Fan-out is best effort
 
-Poke the bus first — every replica holds its own stream connections, so every replica
-has to learn about the write, and the poke carries an id and a cursor rather than a
-payload. Then push to the devices that are not listening, filtered by the recipient's
-own silence state.
+Poke the bus first, in the request — every replica holds its own stream connections,
+so every replica has to learn about the write, and the poke carries an id and a
+cursor rather than a payload. Then `DrainFanout`, on whichever replica claims the
+outbox row, pushes to the devices that are not listening — filtered by the
+recipient's own silence and do-not-disturb, sixteen devices at a time — and derives
+the thumbnail. Each transport measures its own wire body against its own limit and
+sends a poke (identifiers only) when the content does not fit.
 
-Neither may fail the publish that caused it. A failed poke costs latency and the
-cursor catches up; a failed push is recorded and retried by the transport. A CI job
-must not see a `500` because somebody's phone is unreachable.
+None of it may fail the publish that caused it. A failed poke costs latency and the
+cursor catches up; a failed push is recorded and retried by the transport; a worker
+that dies mid-row leaves it to be claimed again. A CI job must not see a `500`
+because somebody's phone is unreachable.
 
 ## Reading, and the empty case
 

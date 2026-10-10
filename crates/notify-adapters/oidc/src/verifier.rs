@@ -10,7 +10,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use notify_domain::FederatedClaims;
 use notify_ports::{Clock, PortError, PortResult, TokenRejection, TokenVerifier, VerifiedClaims};
 use time::OffsetDateTime;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, MutexGuard, RwLock};
 
 use crate::claims::{RawClaims, RawFederatedClaims};
 use crate::config::OidcConfig;
@@ -30,6 +30,9 @@ struct Cache {
     keys: HashMap<String, VerifyingKey>,
     /// The last time a fetch was attempted: throttling on attempts keeps a down IdP from being hammered.
     last_attempt: Option<OffsetDateTime>,
+    /// When `keys` was last replaced by a successful fetch: what
+    /// [`OidcConfig::key_max_age`] and [`OidcConfig::stale_key_grace`] count from.
+    last_success: Option<OffsetDateTime>,
 }
 
 /// Validates OIDC access tokens against the issuer's published keys.
@@ -79,8 +82,16 @@ impl OidcVerifier {
 
     /// Fetch the key set, unless we asked too recently.
     async fn refresh_if_due(&self, now: OffsetDateTime) -> PortResult<()> {
-        let _guard = self.refreshing.lock().await;
+        let guard = self.refreshing.lock().await;
+        self.refresh_holding(now, guard).await
+    }
 
+    /// [`Self::refresh_if_due`], for a caller that already holds the guard.
+    async fn refresh_holding(
+        &self,
+        now: OffsetDateTime,
+        _guard: MutexGuard<'_, ()>,
+    ) -> PortResult<()> {
         // Re-read under the guard: whoever we queued behind may have just done it.
         if let Some(last) = self.cache.read().await.last_attempt
             && now - last < self.config.min_refresh_interval
@@ -92,10 +103,31 @@ impl OidcVerifier {
         let mut cache = self.cache.write().await;
         cache.last_attempt = Some(now);
 
-        let set = fetched?;
+        let set = match fetched {
+            Ok(set) => set,
+            Err(error) => {
+                // Past the grace a withdrawn key must stop verifying, outage or
+                // not: refusing logins is the lesser failure next to accepting a
+                // key the issuer took back.
+                if cache.last_success.is_some_and(|at| {
+                    now - at >= self.config.key_max_age + self.config.stale_key_grace
+                }) && !cache.keys.is_empty()
+                {
+                    tracing::error!(%error, "the issuer key set is past its grace; dropping it");
+                    cache.keys.clear();
+                }
+                return Err(error);
+            }
+        };
         cache.keys = usable_keys(&set);
+        cache.last_success = Some(now);
         tracing::debug!(keys = cache.keys.len(), "refreshed the issuer key set");
         Ok(())
+    }
+
+    /// How long ago the cached set was fetched, if it ever was.
+    async fn keys_age(&self, now: OffsetDateTime) -> Option<time::Duration> {
+        self.cache.read().await.last_success.map(|at| now - at)
     }
 
     /// Whether `nbf` is still ahead of the injected clock, past the leeway.
@@ -117,12 +149,37 @@ impl OidcVerifier {
             return Ok(Err(TokenRejection::Malformed));
         };
 
+        let now = self.clock.now();
+        if let Some(age) = self.keys_age(now).await
+            && age >= self.config.key_max_age
+        {
+            // Stale-while-revalidate. Whoever takes the guard refreshes; everyone
+            // else carries on with the set they have instead of queueing behind a
+            // fetch that can take the whole `http_timeout` — which, on a slow IdP,
+            // stalled every authenticated request once an hour.
+            //
+            // Not past the grace, though: a set that old is only still here
+            // because nobody has tried to replace it yet, and serving it while
+            // the attempt is in flight would stretch the withdrawn-key window.
+            let refreshed = match self.refreshing.try_lock() {
+                Ok(guard) => Some(self.refresh_holding(now, guard).await),
+                Err(_) if age < self.config.key_max_age + self.config.stale_key_grace => None,
+                Err(_) => Some(self.refresh_if_due(now).await),
+            };
+            if let Some(Err(error)) = refreshed {
+                // Still throttled by `min_refresh_interval`, so an outage costs the
+                // issuer one request per interval. The stale set keeps serving until
+                // the refresh drops it at the end of its grace.
+                tracing::warn!(%error, "could not refresh an expired issuer key set");
+            }
+        }
+
         if let Some(known) = self.key(&kid).await {
             return Ok(Ok(known));
         }
 
         // Unknown `kid`: rotation or forgery; one refresh per interval serves the first only.
-        self.refresh_if_due(self.clock.now()).await?;
+        self.refresh_if_due(now).await?;
         Ok(self.key(&kid).await.ok_or(TokenRejection::BadSignature))
     }
 
@@ -148,7 +205,7 @@ impl OidcVerifier {
         validation.required_spec_claims =
             HashSet::from(["exp".to_owned(), "iss".to_owned(), "aud".to_owned()]);
 
-        let claims = match decode::<RawFederatedClaims>(token, &key.decoding, &validation) {
+        let mut claims = match decode::<RawFederatedClaims>(token, &key.decoding, &validation) {
             Ok(data) if self.not_yet_valid(data.claims.nbf) => {
                 return Ok(Err(TokenRejection::NotYetValid));
             }
@@ -159,7 +216,12 @@ impl OidcVerifier {
             Err(error) => return Ok(Err(rejection_for(error.kind()))),
         };
 
-        if claims.expires_at + self.config.leeway < self.clock.now() {
+        // Reported with the leeway included, because that is how long this check
+        // keeps passing — and so how long the replay guard must remember the `jti`.
+        // Remembering it only until `exp` let the same token be exchanged again for
+        // the length of the leeway once the purge had swept the id.
+        claims.accepted_until += self.config.leeway;
+        if claims.accepted_until < self.clock.now() {
             return Ok(Err(TokenRejection::Expired));
         }
         Ok(Ok(claims))
@@ -198,7 +260,10 @@ impl TokenVerifier for OidcVerifier {
             Ok(data) if self.not_yet_valid(data.claims.nbf) => {
                 return Ok(Err(TokenRejection::NotYetValid));
             }
-            Ok(data) => match data.claims.into_verified(&self.config.groups_claim) {
+            Ok(data) => match data.claims.into_verified(
+                &self.config.groups_claim,
+                self.config.trust_unverified_email,
+            ) {
                 Ok(claims) => claims,
                 Err(rejection) => return Ok(Err(rejection)),
             },
@@ -490,6 +555,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_withdrawn_key_stops_verifying_once_the_set_outlives_its_max_age() {
+        let fixture = Fixture::new();
+        fixture
+            .verifier
+            .verify(&fixture.token(&fixture.valid_claims()))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The compromise response: the issuer publishes a set without key-1.
+        fixture
+            .source
+            .rotate_to(jwk_set(&[&Signer::generate("key-2")]));
+        fixture.clock.advance(Duration::minutes(61));
+
+        let refused = fixture
+            .verifier
+            .verify(&fixture.token(&fixture.valid_claims()))
+            .await
+            .unwrap();
+        assert_eq!(refused.unwrap_err(), TokenRejection::BadSignature);
+        assert_eq!(
+            fixture.source.fetches(),
+            2,
+            "expiry alone triggered a fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_set_serves_through_an_outage_for_its_grace_and_no_longer() {
+        let fixture = Fixture::new();
+        fixture
+            .verifier
+            .verify(&fixture.token(&fixture.valid_claims()))
+            .await
+            .unwrap()
+            .unwrap();
+        fixture.source.fails.store(true, Ordering::SeqCst);
+
+        fixture.clock.advance(Duration::minutes(61));
+        assert!(
+            fixture
+                .verifier
+                .verify(&fixture.token(&fixture.valid_claims()))
+                .await
+                .unwrap()
+                .is_ok(),
+            "an IdP blip must not log everybody out"
+        );
+
+        fixture.clock.advance(Duration::hours(7));
+        assert!(
+            !matches!(
+                fixture
+                    .verifier
+                    .verify(&fixture.token(&fixture.valid_claims()))
+                    .await,
+                Ok(Ok(_))
+            ),
+            "past the grace the stale set is dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_set_keeps_serving_while_somebody_else_refreshes_it() {
+        let fixture = Fixture::new();
+        fixture
+            .verifier
+            .verify(&fixture.token(&fixture.valid_claims()))
+            .await
+            .unwrap()
+            .unwrap();
+        fixture.clock.advance(Duration::minutes(61));
+
+        // A refresh in flight on a slow IdP: the guard is taken and not released.
+        let in_flight = fixture.verifier.refreshing.lock().await;
+        let token = fixture.token(&fixture.valid_claims());
+        let served = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            fixture.verifier.verify(&token),
+        )
+        .await;
+        assert!(
+            matches!(served, Ok(Ok(Ok(_)))),
+            "a request queued behind somebody else's fetch instead of using the stale set"
+        );
+
+        // Past the grace the stale set is not served while the fetch decides its
+        // fate: the request waits for the outcome.
+        fixture.clock.advance(Duration::hours(2));
+        let token = fixture.token(&fixture.valid_claims());
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            fixture.verifier.verify(&token),
+        )
+        .await;
+        assert!(
+            waited.is_err(),
+            "a set past its grace served without a refresh"
+        );
+        drop(in_flight);
+    }
+
+    #[tokio::test]
+    async fn a_zero_grace_drops_an_expired_set_on_the_first_failed_refresh() {
+        let mut fixture = Fixture::new();
+        fixture.verifier.config.stale_key_grace = Duration::ZERO;
+        fixture
+            .verifier
+            .verify(&fixture.token(&fixture.valid_claims()))
+            .await
+            .unwrap()
+            .unwrap();
+        fixture.source.fails.store(true, Ordering::SeqCst);
+
+        fixture.clock.advance(Duration::minutes(61));
+        let token = fixture.token(&fixture.valid_claims());
+        assert!(!matches!(fixture.verifier.verify(&token).await, Ok(Ok(_))));
+    }
+
+    #[tokio::test]
     async fn a_flood_of_unknown_kids_costs_the_issuer_one_request_per_interval() {
         let fixture = Fixture::new();
         let stranger = Signer::generate("forged");
@@ -549,6 +735,43 @@ mod tests {
         assert!(
             accepted.is_ok(),
             "a token from a host half a minute behind ours is a fact of deployment life"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_federated_token_is_remembered_for_as_long_as_the_leeway_accepts_it() {
+        let fixture = Fixture::new();
+        let mut claims = fixture.valid_claims();
+        let exp = fixture.clock.now() + Duration::minutes(5);
+        claims["exp"] = json!(exp.unix_timestamp());
+        claims["jti"] = json!("job-1");
+        let token = fixture.token(&claims);
+
+        let verified = fixture
+            .verifier
+            .verify_federated(&token)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            verified.accepted_until,
+            exp + fixture.verifier.config.leeway,
+            "the replay guard forgets the jti at this instant, so it must be the last \
+             one at which the token still verifies"
+        );
+
+        // Past `exp`, inside the leeway: still accepted, which is exactly why the
+        // id must still be remembered.
+        fixture
+            .clock
+            .advance(Duration::minutes(5) + Duration::seconds(30));
+        assert!(
+            fixture
+                .verifier
+                .verify_federated(&token)
+                .await
+                .unwrap()
+                .is_ok()
         );
     }
 

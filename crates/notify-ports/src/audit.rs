@@ -159,6 +159,16 @@ pub mod actions {
     pub const MANAGED_ACCOUNT_CHANGED: AuditAction = AuditAction("managed.service_account.changed");
     /// A managed service account left the configuration and was disabled with its keys.
     pub const MANAGED_ACCOUNT_REMOVED: AuditAction = AuditAction("managed.service_account.removed");
+
+    /// Secrets were redacted from entries already in this log (ADR-0026). Written
+    /// by a migration, never by code: its `detail` says how many rows and why, so
+    /// the one sanctioned edit to the log is itself in the log.
+    pub const AUDIT_REDACTED: AuditAction = AuditAction("audit.redacted");
+
+    /// Entries past `[retention] audit` were deleted (ADR-0027). Written by the
+    /// purge function itself, in the same transaction as the delete, with how many
+    /// and the cutoff — so a call nobody configured still leaves its mark.
+    pub const AUDIT_PURGED: AuditAction = AuditAction("audit.purged");
 }
 
 /// The closed vocabulary: every value [`AuditAction::parse`] accepts.
@@ -187,7 +197,17 @@ pub const AUDIT_ACTIONS: &[AuditAction] = &[
     actions::MANAGED_ACCOUNT_ADDED,
     actions::MANAGED_ACCOUNT_CHANGED,
     actions::MANAGED_ACCOUNT_REMOVED,
+    actions::AUDIT_REDACTED,
+    actions::AUDIT_PURGED,
 ];
+
+/// The youngest an audit entry may be and still be purged (ADR-0027).
+///
+/// Mirrors the floor hard-coded in `wnk_audit_purge` and in the table's trigger:
+/// configuration refuses anything shorter so an operator hears it at boot rather
+/// than from a purge that fails every pass. Changing it here changes nothing in
+/// the database, which is the point — the SQL floor is what an attacker meets.
+pub const AUDIT_RETENTION_FLOOR: time::Duration = time::Duration::days(90);
 
 #[cfg(test)]
 mod action_tests {
@@ -282,4 +302,13 @@ pub trait AuditLog: Send + Sync {
 
     /// Browse the log — platform role only, enforced by the use case (design §5.4).
     async fn query(&self, query: &AuditQuery) -> PortResult<Page<AuditEntry>>;
+
+    /// Delete up to `batch` entries recorded before `cutoff`, and say how many went
+    /// (ADR-0027, `[retention] audit`).
+    ///
+    /// The one deletion this log allows. A batch that deleted anything records an
+    /// `audit.purged` entry itself; a `cutoff` younger than
+    /// [`AUDIT_RETENTION_FLOOR`] is refused rather than clamped, because a caller
+    /// asking for that is a bug or an attack and neither should succeed quietly.
+    async fn purge_older_than(&self, cutoff: OffsetDateTime, batch: u32) -> PortResult<u64>;
 }

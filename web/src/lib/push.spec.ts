@@ -155,4 +155,21 @@ describe("enabling push", () => {
     expect(revokeDevice).toHaveBeenCalledWith({ path: { id: "dev_01J" } });
     expect(enrolledDeviceId()).toBeNull();
   });
+
+  it("does not hand one person's device to the next one signing in", async () => {
+    pushManager.getSubscription.mockResolvedValue(subscription);
+    const { enable, claimFor, enrolledDeviceId } = await import("@/lib/push");
+    await claimFor("alice");
+    await enable();
+
+    await claimFor("alice");
+    expect(subscription.unsubscribe).not.toHaveBeenCalled();
+    expect(enrolledDeviceId()).toBe("dev_01J");
+
+    await claimFor("bob");
+    // Alice's device cannot be revoked with Bob's token; the dropped subscription
+    // makes the push service answer `410`, and fan-out revokes it from there.
+    expect(subscription.unsubscribe).toHaveBeenCalled();
+    expect(enrolledDeviceId()).toBeNull();
+  });
 });

@@ -66,6 +66,7 @@ impl Session {
     ) -> Result<SyncOutcome, ClientError> {
         let mut outcome = SyncOutcome::default();
         let mut cursor = store.cursor()?;
+        let mut first_page = true;
 
         loop {
             let page = self.fetch_page(cursor.as_deref(), channels, device).await?;
@@ -113,12 +114,18 @@ impl Session {
                 store.set_cursor(last)?;
             }
 
-            outcome.compacted += page.compacted;
-            outcome.expired.extend(
-                page.expired
+            // Both are counted over the whole window from the cursor the page was
+            // asked with, so the first page already holds the catch-up's total and
+            // every later one a subset of it: summing pages would over-count.
+            if first_page {
+                outcome.compacted = page.compacted;
+                outcome.expired = page
+                    .expired
                     .into_iter()
-                    .map(|entry| (entry.channel, entry.count)),
-            );
+                    .map(|entry| (entry.channel, entry.count))
+                    .collect();
+                first_page = false;
+            }
 
             // Followed until `next` is null, never until a page looks short (§8).
             match page.next {

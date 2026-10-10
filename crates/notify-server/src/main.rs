@@ -54,6 +54,13 @@ enum Command {
     /// Review this deployment's configuration against the hardening checklist, print what it finds,
     /// and exit non-zero on anything that looks wrong. Connects to nothing; safe to paste into an issue.
     Doctor,
+
+    /// Apply the database migrations and exit.
+    ///
+    /// For deployments that set `[database] migrate_on_start = false` and run the
+    /// schema change once, as a Job or an init container, rather than from every
+    /// replica as it boots. Exits 0 once the schema is current.
+    Migrate,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -62,6 +69,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Command::DumpOpenapi { output }) => dump_openapi(output.as_deref()),
         Some(Command::Doctor) => doctor_report(&cli.config),
+        Some(Command::Migrate) => migrate(&cli.config),
         None => run(&cli.config),
     }
 }
@@ -75,6 +83,56 @@ fn doctor_report(config_path: &std::path::Path) -> anyhow::Result<()> {
         // Non-zero, so it can gate a deployment pipeline.
         std::process::exit(1);
     }
+}
+
+/// `notify-server migrate`.
+#[actix_web::main]
+async fn migrate(config_path: &std::path::Path) -> anyhow::Result<()> {
+    let config = config::Config::load(config_path)?;
+    let traces = telemetry::install(config.telemetry.as_ref())?;
+
+    let store = notify_persistence_pg::PgStore::connect_with(
+        config.database.url.expose(),
+        &config.database.pool(),
+    )
+    .await?;
+    let outcome = store.migrate().await;
+    // Closed while the runtime is alive, for the reason `run` gives at shutdown.
+    store.pool().close().await;
+    outcome?;
+
+    tracing::info!("the database schema is current");
+    traces.shutdown();
+    Ok(())
+}
+
+/// Migrate at boot, or check that somebody already did (`[database]
+/// migrate_on_start`).
+///
+/// Refusing is the point of the second half: a replica serving against a schema
+/// older than its code fails in ways that look like data bugs — a missing column
+/// read as an empty one — and the one clear moment to say so is before it binds.
+async fn prepare_schema(
+    store: &notify_persistence_pg::PgStore,
+    database: &config::Database,
+) -> anyhow::Result<()> {
+    if database.migrate_on_start {
+        // Migrations before anything is served: a replica that answers requests
+        // against a schema it has not finished applying is worse than one that is
+        // slow to start.
+        store.migrate().await?;
+        return Ok(());
+    }
+
+    let pending = store.pending_migrations().await?;
+    anyhow::ensure!(
+        pending.is_empty(),
+        "the database schema is behind this build ({} migration(s) not applied, first {:?}) \
+         and [database] migrate_on_start = false; run `notify-server migrate` first",
+        pending.len(),
+        pending.first()
+    );
+    Ok(())
 }
 
 fn dump_openapi(output: Option<&std::path::Path>) -> anyhow::Result<()> {
@@ -109,11 +167,31 @@ const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6
 /// How often the leader looks for due sink deliveries (design §7.1bis): this is first-attempt latency.
 const SINK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How often the fan-out outbox worker looks without being woken (ADR-0025).
+///
+/// A publish on this replica wakes it at once; the tick is for everything else —
+/// rows another replica committed and did not get to, and rows whose worker died
+/// and whose lease has run out.
+const FANOUT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[actix_web::main]
 async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
+    // First: SIGHUP's default action kills the process, so a reload during a slow boot would.
+    // The stream queues the signal until the reconcile loop reads it.
+    let hangups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup());
+
     // Read before the subscriber exists, since `[telemetry]` shapes it; failures go to stderr.
     let config = config::Config::load(config_path)?;
     let traces = telemetry::install(config.telemetry.as_ref())?;
+
+    // Without a SIGHUP handler we keep running, but report it.
+    let hangups = match hangups {
+        Ok(stream) => Some(stream),
+        Err(error) => {
+            tracing::warn!(?error, "cannot listen for SIGHUP; reload will not work");
+            None
+        }
+    };
 
     for pending in config.unhonoured() {
         // Parsed but not acted on: say so at startup.
@@ -125,35 +203,24 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     doctor::refuse_development_defaults(&config)?;
 
     let application = wiring::Application::build(&config).await?;
+    prepare_schema(&application.store, &config.database).await?;
 
-    // Migrate before serving.
-    application.store.migrate().await?;
+    // Before the drain claims anything, so no row waits under an old sink id. Idempotent.
+    let rekeyed = sinks::rekey_stored(&config, &application.routes, &application.store).await?;
+    if rekeyed > 0 {
+        tracing::info!(
+            rows = rekeyed,
+            "stored sink ids moved to the current fingerprint key"
+        );
+    }
 
-    // Under the reconcile lock, so replicas booting together do not deadlock.
+    // Under the reconcile lock, so replicas booting together do not deadlock. The boot pass runs
+    // in the reconcile loop after the listener binds (a lock wait must not trip liveness);
+    // `/readyz` reports `startup` until it has run.
     let election: std::sync::Arc<dyn notify_ports::LeaderElection> = std::sync::Arc::new(
         notify_persistence_pg::PgLeaderElection::new(application.store.pool().clone()),
     );
-    let reconcile_owed = if let Some(guard) = lead_reconciliation(election.as_ref(), true).await {
-        let outcome = application.reconciler.execute(&config).await;
-        guard.release().await;
-        let report = outcome?;
-        application
-            .reconciliation_log
-            .record(report.as_pass(OffsetDateTime::now_utc(), notify_app::Trigger::Boot));
-        tracing::info!(
-            channels = report.channels,
-            accounts = report.accounts,
-            removed = report.removed,
-            "applied the declarative configuration"
-        );
-        for pending in &report.pending {
-            tracing::warn!(%pending, "access binding is waiting on a first login");
-        }
-        false
-    } else {
-        tracing::warn!("could not take the reconcile lock at boot; the timer will apply the file");
-        true
-    };
+    let started = health::Started::default();
 
     if application.routes.len() > 0 {
         // Counts and kinds only: URLs key the sink secrets.
@@ -169,9 +236,12 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let serve_docs = config.server.docs;
     let state = actix_web::web::Data::new(application.state);
     let streams = std::sync::Arc::clone(&state.streams);
+    let bus = state.bus.clone();
     let readiness = actix_web::web::Data::new(health::Dependencies::new(
         application.store.clone(),
         application.transports.names(),
+        application.bus.clone(),
+        started.clone(),
     ));
     // One registry shared with the HTTP layer and drain loop, which `/metrics` renders.
     let exporter = actix_web::web::Data::new(application.metrics.clone());
@@ -230,6 +300,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         application.close_stale,
         application.digests,
         application.drain,
+        application.fanout_drain,
         application.metrics.clone(),
         Reconciling {
             reconciler: application.reconciler,
@@ -238,9 +309,15 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             path: config_path.to_path_buf(),
             policies: application.policies,
             election,
-            owed: reconcile_owed,
+            owed: true,
+            routes: application.routes,
+            fleet: application.fleet,
+            started,
+            metrics: application.metrics.clone(),
         },
+        hangups,
         store.clone(),
+        bus,
     ));
     let leases = actix_web::rt::spawn(renew_leases(streams));
 
@@ -287,11 +364,19 @@ struct Reconciling {
     election: std::sync::Arc<dyn notify_ports::LeaderElection>,
     /// Set when this replica read its file but has not applied it yet, so the next timer pass is full.
     owed: bool,
+    /// The sink routing table and its adapters, swapped on `SIGHUP`.
+    routes: sinks::SinkRoutes,
+    fleet: sinks::SinkFleet,
+    /// Set once the configuration has been applied (or found already applied by
+    /// someone else), which is when `/readyz` stops reporting `startup`.
+    started: health::Started,
+    /// Where each pass's outcome is counted.
+    metrics: std::sync::Arc<dyn notify_ports::Metrics>,
 }
 
 impl Reconciling {
     /// Re-read the file and apply it, as §11 asks of `SIGHUP`.
-    async fn on_hangup(&mut self) {
+    async fn on_hangup(&mut self) -> bool {
         match config::Config::load(&self.path) {
             Ok(file) => {
                 // Named before anything is applied, so the operator learns it was ignored.
@@ -310,6 +395,30 @@ impl Reconciling {
                     ),
                 }
 
+                // The sinks, on the same terms: all of them or none, and a sink
+                // that does not build (a `secret_ref` nobody mounted) keeps the
+                // running set rather than dropping a working webhook over it. The
+                // adapters go first, so no new route ever resolves to a kind with
+                // no adapter behind it.
+                match sinks::SinkRoutes::build(&self.config).and_then(|routes| {
+                    let fleet = wiring::sink_fleet(&self.config, &routes)?;
+                    Ok((routes, fleet))
+                }) {
+                    Ok((routes, fleet)) => {
+                        self.fleet.adopt(&fleet);
+                        self.routes.adopt(&routes);
+                        tracing::info!(
+                            sinks = self.routes.len(),
+                            kinds = ?self.routes.kinds(),
+                            "SIGHUP: sinks re-read"
+                        );
+                    }
+                    Err(error) => tracing::warn!(
+                        ?error,
+                        "SIGHUP: the sinks did not build; keeping the running set"
+                    ),
+                }
+
                 tracing::info!("configuration re-read on SIGHUP");
             }
             // The last good configuration keeps running: a typo must not take a replica down.
@@ -320,18 +429,28 @@ impl Reconciling {
         }
 
         self.owed = true;
-        self.pass(notify_app::Trigger::Sighup).await;
+        self.pass(notify_app::Trigger::Sighup).await
     }
 
     /// One reconciliation pass, recorded for the console (§10.4bis).
     /// A file is applied when read (boot, `SIGHUP`); timer passes only re-apply what the database
     /// last recorded, and a replica whose copy differs stands aside so stale pods cannot undo new ones.
-    async fn pass(&mut self, trigger: notify_app::Trigger) {
+    /// Returns whether nothing failed (standing aside is not a failure), for the job metrics.
+    async fn pass(&mut self, trigger: notify_app::Trigger) -> bool {
         let full = self.owed || trigger != notify_app::Trigger::Timer;
 
         // One pass at a time across the deployment.
         let Some(guard) = lead_reconciliation(self.election.as_ref(), full).await else {
-            return;
+            if trigger == notify_app::Trigger::Boot {
+                // Somebody else held it for the whole wait — a long pass on another
+                // replica. Serving is still right: the database is in whatever
+                // state that pass leaves, and the timer applies this file next.
+                tracing::warn!(
+                    "could not take the reconcile lock at boot; the timer will apply the file"
+                );
+                self.started.finish();
+            }
+            return true;
         };
 
         if !full {
@@ -342,19 +461,20 @@ impl Reconciling {
                         "another replica applied a different configuration; standing aside"
                     );
                     guard.release().await;
-                    return;
+                    return true;
                 }
                 Err(error) => {
                     tracing::warn!(?error, "could not compare the configuration; skipping");
                     guard.release().await;
-                    return;
+                    return false;
                 }
             }
         }
 
-        match self.reconciler.execute(&self.config).await {
+        let ok = match self.reconciler.execute(&self.config).await {
             Ok(report) => {
                 self.owed = false;
+                self.started.finish();
                 // Recorded only on success, keeping the last good pass on the console.
                 self.log
                     .record(report.as_pass(OffsetDateTime::now_utc(), trigger));
@@ -362,6 +482,7 @@ impl Reconciling {
                     channels = report.channels,
                     accounts = report.accounts,
                     removed = report.removed,
+                    refused = report.refused,
                     journalled = report.journalled,
                     ?trigger,
                     "reconcile pass complete"
@@ -369,10 +490,18 @@ impl Reconciling {
                 for pending in &report.pending {
                     tracing::warn!(%pending, "access binding is waiting on a first login");
                 }
+                true
             }
-            Err(error) => tracing::warn!(?error, ?trigger, "reconcile pass failed"),
-        }
+            // At boot this keeps `/readyz` reporting `startup`: a file that does
+            // not apply is a replica that should not take traffic, and the timer
+            // retries it in full (`owed` is still set).
+            Err(error) => {
+                tracing::error!(?error, ?trigger, "reconcile pass failed");
+                false
+            }
+        };
         guard.release().await;
+        ok
     }
 }
 
@@ -406,110 +535,122 @@ fn every(period: std::time::Duration) -> actix_web::rt::time::Interval {
     interval
 }
 
-/// The leader-tolerant background loops: TTL purge, stale closure, DND digests, sink delivery and
-/// reconciliation. Separate concurrent loops, so a slow job never delays another's tick.
+/// The leader-tolerant background loops: TTL purge, stale closure, DND digests, sink delivery, the
+/// fan-out outbox and reconciliation. Separate concurrent loops, so a slow job never delays another's
+/// tick, each [`supervise`]d so an error or panic is counted and retried rather than ending it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one per job, and each is a different type; a struct would only rename them"
+)]
 async fn background(
     purge: notify_app::PurgeExpired,
     close_stale: notify_app::CloseStale,
     digests: notify_app::SendDndDigests,
     drain: notify_app::DrainSinks,
+    fanout_drain: notify_app::DrainFanout,
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     reconciling: Reconciling,
+    hangups: Option<tokio::signal::unix::Signal>,
     store: notify_persistence_pg::PgStore,
+    bus: std::sync::Arc<dyn notify_ports::EventBus>,
 ) {
-    let purging = async {
-        let mut tick = every(JOB_INTERVAL);
-        // The first tick fires immediately; every job just ran at boot.
-        tick.tick().await;
-        loop {
-            tick.tick().await;
-            match purge.execute().await {
-                Ok(report) if report.led => {
-                    tracing::info!(
-                        expired = report.expired,
-                        purged = report.purged,
-                        events_pruned = report.events_pruned,
-                        "purge pass complete"
-                    );
-                    // Rides on the purge's leadership.
-                    if let Err(error) = store.prune_rate_limits(OffsetDateTime::now_utc()).await {
-                        tracing::warn!(?error, "could not prune rate-limit counters");
-                    }
-                }
-                // Not leading is normal on all but one replica.
-                Ok(_) => {}
-                Err(error) => tracing::warn!(?error, "purge pass failed; retrying next tick"),
+    let credential_window = reconciling
+        .config
+        .retention
+        .revoked_credentials
+        .as_duration();
+    let (purge, close_stale, digests, drain, store) =
+        (&purge, &close_stale, &digests, &drain, &store);
+    let metrics = metrics.as_ref();
+
+    let purging = supervise("purge", JOB_INTERVAL, metrics, move || async move {
+        let report = purge.execute().await?;
+        // Not leading is the normal answer on all but one replica.
+        if report.led {
+            tracing::info!(
+                expired = report.expired,
+                purged = report.purged,
+                events_pruned = report.events_pruned,
+                audit_purged = report.audit_purged,
+                "purge pass complete"
+            );
+            // Rides on the purge's leadership.
+            if let Err(error) = store.prune_rate_limits(OffsetDateTime::now_utc()).await {
+                tracing::warn!(?error, "could not prune rate-limit counters");
             }
+            housekeep(store, metrics, credential_window).await;
         }
-    };
+        Ok::<_, notify_ports::Failure>(())
+    });
 
     // Independent of the purge (separate lock); what this closes the next purge can expire (§7.2bis).
-    let closing = async {
-        let mut tick = every(JOB_INTERVAL);
-        tick.tick().await;
-        loop {
-            tick.tick().await;
-            match close_stale.execute().await {
-                Ok(report) if report.led => tracing::info!(
-                    closed = report.closed,
-                    channels_watched = report.channels_watched,
-                    "stale-closure pass complete"
-                ),
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(?error, "stale-closure pass failed; retrying next tick");
-                }
-            }
+    let closing = supervise("close-stale", JOB_INTERVAL, metrics, move || async move {
+        let report = close_stale.execute().await?;
+        if report.led {
+            tracing::info!(
+                closed = report.closed,
+                channels_watched = report.channels_watched,
+                "stale-closure pass complete"
+            );
         }
-    };
+        Ok::<_, notify_ports::Failure>(())
+    });
 
     // A quiet period ending is the absence of an event, so poll (§7.4).
-    let digesting = async {
-        let mut tick = every(JOB_INTERVAL);
-        tick.tick().await;
-        loop {
-            tick.tick().await;
-            match digests.execute().await {
-                Ok(report) if report.sent > 0 => tracing::info!(
-                    sent = report.sent,
-                    still_quiet = report.still_quiet,
-                    "do-not-disturb digests sent"
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(?error, "digest pass failed; retrying next tick"),
-            }
+    let digesting = supervise("dnd-digest", JOB_INTERVAL, metrics, move || async move {
+        let report = digests.execute().await?;
+        if report.sent > 0 {
+            tracing::info!(
+                sent = report.sent,
+                still_quiet = report.still_quiet,
+                "do-not-disturb digests sent"
+            );
         }
-    };
+        Ok::<_, notify_ports::Failure>(())
+    });
 
     // The sinks of §7.1bis; logged only when something moved.
-    let draining = async {
-        let mut tick = every(SINK_INTERVAL);
-        tick.tick().await;
-        loop {
-            tick.tick().await;
-            match drain.execute().await {
-                Ok(report) => {
-                    if report.delivered + report.retried + report.buried + report.orphaned > 0 {
-                        tracing::info!(
-                            delivered = report.delivered,
-                            retried = report.retried,
-                            buried = report.buried,
-                            orphaned = report.orphaned,
-                            "sink drain pass complete"
-                        );
-                    }
+    let draining = supervise("sink-drain", SINK_INTERVAL, metrics, move || async move {
+        let report = drain.execute().await?;
+        if report.delivered + report.retried + report.buried + report.orphaned + report.pruned > 0 {
+            tracing::info!(
+                delivered = report.delivered,
+                retried = report.retried,
+                buried = report.buried,
+                orphaned = report.orphaned,
+                pruned = report.pruned,
+                "sink drain pass complete"
+            );
+        }
 
-                    // Leader-only (§13): followers leave the series absent rather than claim zero.
-                    if report.led {
-                        match drain.dead_letter_depth().await {
-                            Ok(depths) => metrics.dlq_depth(&depths),
-                            Err(error) => {
-                                tracing::warn!(?error, "could not read the dead-letter depth");
-                            }
-                        }
-                    }
-                }
-                Err(error) => tracing::warn!(?error, "sink drain failed; retrying next tick"),
+        // Leader-only (§13): followers leave the series absent rather than claim zero.
+        if report.led {
+            match drain.dead_letter_depth().await {
+                Ok(depths) => metrics.dlq_depth(&depths),
+                Err(error) => tracing::warn!(?error, "could not read the dead-letter depth"),
+            }
+        }
+        Ok::<_, notify_ports::Failure>(())
+    });
+
+    // Device pushes and thumbnails of committed publishes (ADR-0025), on every replica (rows are
+    // leased, not led). Woken by a local publish, so its own loop rather than `supervise`'s tick.
+    let fanning_out = async {
+        let mut tick = every(FANOUT_INTERVAL);
+        let mut failures = 0_u32;
+        loop {
+            let ok = guarded("fan-out", async {
+                fanout_drain.execute().await.map(|_| ())
+            })
+            .await;
+            metrics.job_finished("fan-out", ok);
+            failures = if ok { 0 } else { failures.saturating_add(1) };
+            if failures > 0 {
+                actix_web::rt::time::sleep(backoff(failures)).await;
+            }
+            tokio::select! {
+                _ = tick.tick() => {}
+                () = fanout_drain.woken() => {}
             }
         }
     };
@@ -519,7 +660,11 @@ async fn background(
         closing,
         digesting,
         draining,
-        reconcile_loop(reconciling)
+        fanning_out,
+        // Every replica, like the fan-out: it wakes this replica's own streams
+        // when a long transaction stops holding events back (ADR-0028).
+        crate::bus::watch_watermark(store, bus.as_ref(), metrics),
+        reconcile_loop(reconciling, hangups)
     );
 }
 
@@ -535,31 +680,169 @@ async fn renew_leases(streams: std::sync::Arc<notify_http_actix::StreamSlots>) {
     }
 }
 
-/// Reconciliation on the timer and on `SIGHUP`, in one loop so passes never interleave.
-async fn reconcile_loop(mut reconciling: Reconciling) {
+/// Run `pass` every `period` for ever, surviving errors and panics, with [`backoff`] after failures.
+/// Panics are caught in place, not in a spawned child, which would outlive the shutdown abort.
+/// Every outcome is counted on `metrics`.
+async fn supervise<F, Fut, E>(
+    job: &'static str,
+    period: std::time::Duration,
+    metrics: &dyn notify_ports::Metrics,
+    mut pass: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: core::fmt::Debug,
+{
+    let mut tick = every(period);
+    // The first tick fires immediately; skip it so jobs do not race the boot.
+    tick.tick().await;
+    let mut failures = 0_u32;
+
+    loop {
+        tick.tick().await;
+        let ok = guarded(job, pass()).await;
+        metrics.job_finished(job, ok);
+
+        if ok {
+            failures = 0;
+        } else {
+            failures = failures.saturating_add(1);
+            actix_web::rt::time::sleep(backoff(failures)).await;
+        }
+    }
+}
+
+/// One pass, its error or panic logged and turned into `false`.
+async fn guarded<Fut, E>(job: &'static str, pass: Fut) -> bool
+where
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: core::fmt::Debug,
+{
+    use futures::FutureExt as _;
+
+    match std::panic::AssertUnwindSafe(pass).catch_unwind().await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            tracing::warn!(job, ?error, "background pass failed; retrying");
+            false
+        }
+        Err(panic) => {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            tracing::error!(job, %message, "background pass panicked; restarting the loop");
+            false
+        }
+    }
+}
+
+/// The extra wait after `failures` consecutive failed passes: 5 s doubling, capped
+/// at five minutes.
+fn backoff(failures: u32) -> std::time::Duration {
+    let doublings = failures.saturating_sub(1).min(6);
+    std::time::Duration::from_secs(5 << doublings).min(std::time::Duration::from_secs(300))
+}
+
+/// The age past which a fan-out row still owed is logged as a drain falling behind.
+const FANOUT_STALE_AFTER_SECONDS: u64 = 5 * 60;
+
+/// Bookkeeping on the purge's leadership (design §7.2bis, §13): spent federation token ids,
+/// long-revoked credentials, and backlog gauges. Each step logs and carries on.
+async fn housekeep(
+    store: &notify_persistence_pg::PgStore,
+    metrics: &dyn notify_ports::Metrics,
+    credential_window: std::time::Duration,
+) {
+    let now = OffsetDateTime::now_utc();
+
+    // An id past its token's expiry guards nothing.
+    match notify_ports::ReplayGuard::prune(store, now).await {
+        Ok(0) => {}
+        Ok(pruned) => tracing::info!(pruned, "spent federation token ids pruned"),
+        Err(error) => tracing::warn!(?error, "could not prune federation replay ids"),
+    }
+
+    let before = now - credential_window;
+    match store.prune_revoked_credentials(before).await {
+        Ok((0, 0)) => {}
+        Ok((devices, keys)) => {
+            tracing::info!(devices, keys, "long-revoked credentials deleted");
+        }
+        Err(error) => tracing::warn!(?error, "could not prune revoked credentials"),
+    }
+
+    match store
+        .retention_backlog(
+            now,
+            now - notify_app::EVENT_RETENTION,
+            now - notify_app::TOMBSTONE_GRACE,
+        )
+        .await
+    {
+        Ok(backlog) => metrics.retention_backlog(&backlog),
+        Err(error) => tracing::warn!(?error, "could not measure the retention backlog"),
+    }
+
+    match store.fanout_backlog(now).await {
+        Ok(backlog) => {
+            metrics.fanout_backlog(&backlog);
+            // Rows past an hour are retired as dead, so this old means the drain is behind or down.
+            if backlog.oldest_pending_age_seconds > FANOUT_STALE_AFTER_SECONDS {
+                tracing::warn!(
+                    pending = backlog.pending,
+                    age_seconds = backlog.oldest_pending_age_seconds,
+                    "fan-out outbox falling behind"
+                );
+            }
+            if backlog.dead > 0 {
+                tracing::warn!(dead = backlog.dead, "fan-out rows dead-lettered");
+            }
+        }
+        Err(error) => tracing::warn!(?error, "could not measure the fan-out outbox"),
+    }
+}
+
+/// Reconciliation at boot, on the timer and on `SIGHUP`, in one loop so passes never interleave;
+/// each pass is [`guarded`], so a panic does not end reloads.
+async fn reconcile_loop(
+    mut reconciling: Reconciling,
+    mut hangups: Option<tokio::signal::unix::Signal>,
+) {
+    use futures::FutureExt as _;
+
+    // The boot pass; `/readyz` holds traffic back until it has run.
+    let boot = std::panic::AssertUnwindSafe(reconciling.pass(notify_app::Trigger::Boot))
+        .catch_unwind()
+        .await
+        .unwrap_or(false);
+    reconciling.metrics.job_finished("reconcile", boot);
+
     let mut tick = every(RECONCILE_INTERVAL);
     tick.tick().await;
 
-    // Without a SIGHUP handler we keep running, but report it.
-    let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
-        Ok(stream) => Some(stream),
-        Err(error) => {
-            tracing::warn!(?error, "cannot listen for SIGHUP; reload will not work");
-            None
-        }
-    };
-
     loop {
-        tokio::select! {
+        let metrics = std::sync::Arc::clone(&reconciling.metrics);
+        let ok = tokio::select! {
             // Disabled outright, or `None` would make this branch spin.
             Some(()) = async {
                 match hangups.as_mut() {
                     Some(stream) => stream.recv().await,
                     None => std::future::pending().await,
                 }
-            } => reconciling.on_hangup().await,
-            _ = tick.tick() => reconciling.pass(notify_app::Trigger::Timer).await,
-        }
+            } => std::panic::AssertUnwindSafe(reconciling.on_hangup()).catch_unwind().await,
+            _ = tick.tick() => {
+                std::panic::AssertUnwindSafe(reconciling.pass(notify_app::Trigger::Timer))
+                    .catch_unwind()
+                    .await
+            }
+        };
+        let ok = ok.unwrap_or_else(|_| {
+            tracing::error!("reconcile pass panicked; the loop carries on");
+            false
+        });
+        metrics.job_finished("reconcile", ok);
     }
 }
 

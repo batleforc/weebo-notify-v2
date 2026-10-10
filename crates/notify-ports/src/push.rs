@@ -59,6 +59,26 @@ impl PushMessage {
         }
     }
 
+    /// The same push with its content dropped: identifiers only (§6.3). Each transport
+    /// measures its own wire body, so content Web Push carries may still be a poke over APNs.
+    #[must_use]
+    pub fn as_poke(&self) -> Self {
+        match self {
+            Self::Notification {
+                channel,
+                notification_id,
+                priority,
+                ..
+            } => Self::Notification {
+                channel: channel.clone(),
+                notification_id: *notification_id,
+                priority: *priority,
+                body: PushBody::Poke,
+            },
+            Self::Digest { .. } => self.clone(),
+        }
+    }
+
     /// What a relayed transport seals to the device key (envelope v2, §6.3): every
     /// identifier rides inside the box so the relay learns nothing.
     #[must_use]
@@ -92,8 +112,16 @@ impl PushMessage {
 }
 
 /// The envelope version relayed transports put in the clear (design §6.3): `2` is
-/// "everything but the ciphertext is sealed", see [`PushMessage::sealed_plaintext`].
-pub const SEALED_ENVELOPE_VERSION: u8 = 2;
+/// "everything but the ciphertext is sealed", see [`PushMessage::sealed_plaintext`];
+/// `3` is the same envelope with the box's key bound to both public keys
+/// (`notify-sealed-box`, HKDF label `v2`) and this number bound as the AEAD's
+/// associated data. A device that only knows `2` must refuse a `3` rather than try —
+/// it would fail the AEAD tag anyway, but with no way to say why.
+///
+/// Still `3` after the associated data joined: `3` was never released (the last
+/// published build sends `2`), so no device or stored push speaks the
+/// unauthenticated `3` that would need telling apart.
+pub const SEALED_ENVELOPE_VERSION: u8 = 3;
 
 /// How a delivery went.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +143,9 @@ pub trait PushTransport: Send + Sync {
     /// The `transport` label used in metrics and logs (design §13).
     fn name(&self) -> &'static str;
 
-    /// The largest payload this transport will carry; past it, send [`PushBody::Poke`].
+    /// Upper bound on content this transport can carry; past it, send [`PushBody::Poke`].
+    /// Only a bound: [`Self::deliver`] measures its real wire body and falls back to
+    /// [`PushMessage::as_poke`] itself.
     fn max_payload_bytes(&self) -> usize;
 
     /// Deliver to one device. A relay refusal is `Ok(PushOutcome::Failed { .. })`;

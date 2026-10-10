@@ -108,6 +108,37 @@ The server does not: an unknown prefix and a wrong secret give the same `401`, a
 the cost of checking a wrong secret is bounded on purpose, because anyone who has
 read a prefix off a screenshot can send guesses against it.
 
+## A webhook's fingerprint is keyed
+
+A webhook sink is identified as `webhook:<origin>#<fingerprint>`, where the
+fingerprint is the first 16 hex digits (64 bits) of **HMAC-SHA256 under
+`[sinks] fingerprint_key`** over the full url. That id is in the dead-letter API,
+the audit log, the queue tables, every backup of them and the server logs, so the
+url's path and query never are.
+
+Keyed means a reader of any of those — or of a stolen dump — cannot test candidate
+paths offline: without the key the fingerprint says nothing about the url, however
+short the token in it. The key lives only in the server's configuration (a Secret,
+`WNK_SINKS__FINGERPRINT_KEY`), at least 32 bytes; the server refuses to start with a
+webhook configured and no key, and refuses the key committed in `config/dev.toml`
+outside a `[server] dev` instance. Treat the key like any other server secret: whoever
+holds it *and* a database copy is back to guessing urls offline.
+
+Rows that predate the key — a full url stored by an older build — are re-keyed when
+the server boots; one whose url is no longer configured becomes
+`webhook:<origin>#unrouted`. Audit entries redacted by
+[ADR-0026](/docs/adr/0026-a-one-time-redaction-of-secrets-in-the-audit-log) carry
+`<origin>#redacted`, with no fingerprint at all. Rotating the key is a runbook
+([Rotating the sink fingerprint key](/docs/ops/runbooks#rotating-the-sink-fingerprint-key)).
+
+Still, for a webhook:
+
+- **prefer `secret_ref`** — every delivery is then signed in `X-Weebo-Signature`
+  (HMAC-SHA256 over timestamp and body), the consumer verifies that, and the url
+  can be as public as its origin;
+- **keep long, random secrets in urls** that authenticate by url: the url still
+  reaches the consumer's logs and anything between you and it.
+
 ## Rate limiting belongs at your ingress
 
 The application limits per principal, after authentication — that is the right place
@@ -331,16 +362,28 @@ and the content all ride **inside** the box, pokes included — a relay cannot m
 who follows what. The only thing left observable is timing and the APNs priority
 header.
 
-For app authors, the wire format (envelope v2):
+For app authors, the wire format (envelope v3):
 
 ```json
-{ "v": 2, "ciphertext_device": "<base64url, no padding>" }
+{ "v": 3, "ciphertext_device": "<base64url, no padding>" }
 ```
 
 APNs adds `"aps": {"alert": {"title": " ", "body": " "}, "mutable-content": 1}` so
 the Notification Service Extension runs. The box is
 `ephemeral_public(32) ‖ nonce(24) ‖ XChaCha20-Poly1305(ciphertext ‖ tag)`, key =
-HKDF-SHA256(X25519 shared secret, info `weebo-notify sealed-box v1`). It opens to
+HKDF-SHA256(X25519 shared secret, no salt, info `weebo-notify sealed-box v2` ‖
+ephemeral_public(32) ‖ recipient_public(32)) — both keys bound, as HPKE's DHKEM does.
+The AEAD's associated data is the envelope's `v` as one byte (`03`), so a relay
+that rewrites the clear `v` breaks the tag instead of steering the device into
+another format's parser. Envelope `v: 2` used info `weebo-notify sealed-box v1`
+with no keys and no associated data; a device must refuse a `v` it does not know
+rather than try to open it. Known-answer vector (all hex): recipient secret `11`×32
+(public `7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13`),
+ephemeral secret `22`×32, nonce `33`×24, associated data `03`, plaintext
+`etcd degraded` →
+`0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20`
+`333333333333333333333333333333333333333333333333`
+`99ba07a2f75b5cc4827ccc147bb97d305acc43b245287c3e52e747fc6b`. It opens to
 one of:
 
 ```json
@@ -356,10 +399,44 @@ field is reading a v1 push.
 ## What else the server enforces on its own
 
 - **Attachment uploads are capped and single-use.** The S3 presign signs
-  `content-length`, so the bucket refuses anything but the declared size; the
+  `content-length`, so the bucket refuses anything but the declared size, and
+  `If-None-Match: *`, so a second `PUT` to the same URL cannot replace the bytes —
+  on a store that implements conditional writes (see below); the
   filesystem backend streams the body against 25 MiB and claims the id atomically,
   so a second upload to it — concurrent or not — is refused. The avatar route streams against 512 KiB. Nothing is buffered
   before the credential checks out.
+- **Which S3 stores make the upload URL single-use.** The guarantee is the store's:
+  one that ignores `If-None-Match` lets the URL's holder overwrite the object until
+  the five-minute expiry, and nothing on the server notices. Checked, by a second
+  `PUT` answered `412`:
+
+  | Store | Conditional `PUT` (`If-None-Match: *`) | How we know |
+  | --- | --- | --- |
+  | RustFS 1.0.0-beta.3 (the dev stack) | Enforced | `e2e_a_presigned_upload_url_works_once` |
+  | AWS S3 | Enforced | AWS documents it (conditional writes, since 2024) |
+  | Anything else (MinIO, Garage, Ceph RGW, …) | Unverified | Run the test below against it |
+
+  Before trusting another store, point the conformance suite at it:
+  `WNK_TEST_S3_ENDPOINT=… WNK_TEST_S3_BUCKET=… WNK_TEST_S3_ACCESS_KEY=… WNK_TEST_S3_SECRET_KEY=… cargo nextest run -p notify-attachments-s3 -E 'test(/^e2e::/)'`.
+  If `e2e_a_presigned_upload_url_works_once` fails, the store does not enforce it
+  and the expiry is all that bounds the window.
+- **The audit log refuses edits, and no longer holds webhook urls.** A trigger
+  refuses `UPDATE`, `DELETE` and `TRUNCATE` on `audit_entries`; the one sanctioned
+  exception, [ADR-0026](/docs/adr/0026-a-one-time-redaction-of-secrets-in-the-audit-log),
+  redacted the webhook urls older managed-channel entries carried, and logged that
+  it did. Backups, archives and log shipping from before that upgrade still hold
+  them: **rotate any webhook whose url carries its credential** (Slack, Discord,
+  Teams) if those copies could have been read.
+- **Audit retention is opt-in and has a floor (SEC-P2-37, resolved by
+  [ADR-0027](/docs/adr/0027-audit-retention-through-one-sanctioned-purge)).**
+  Unset, nothing deletes an audit entry. With `[retention] audit` set (90 days at
+  least), the leader deletes older entries only through `wnk_audit_purge`. That
+  function refuses any cutoff inside 90 days and records an `audit.purged` entry
+  for every batch it deletes, and it is the only `DELETE` the trigger lets through.
+  Credentials that can call it can only erase what is older than 90 days, and the
+  call is logged. A database owner can still disable the trigger, so for evidence
+  that must survive a compromised database, ship the `audit = true` log mirror to
+  append-only (WORM) storage.
 - **Live streams end with their credential.** An SSE or WebSocket connection
   closes the instant its token or key expires, and re-checks the credential every
   five minutes: a revoked key or a removed membership ends it within that window

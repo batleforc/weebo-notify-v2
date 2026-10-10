@@ -6,14 +6,14 @@ use std::sync::Arc;
 use notify_app::{
     Attribution, Authenticate, Authorizer, BrowseAudit, ChannelInventory, CloseStale, CountUnread,
     CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
-    DeleteNotification, DrainSinks, EnrolDevice, ExchangeToken, Fanout, GetNotification,
-    ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox, ListInteractions,
-    ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers, OsRngKeyGenerator,
-    PostReceipt, PresignAttachment, PublishNotification, PurgeExpired, ReadAvatar, ReadChannel,
-    ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation, ReconciliationLog, RecordInteraction,
-    RequeueDeadLetter, ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications,
-    SelfJoin, SendDndDigests, SetApiKeyLimit, SetAvatar, SetDnd, SilenceNotification, SyncBacklog,
-    UpdateChannel, UpdateProfile, UpsertNotification,
+    DeleteNotification, DrainFanout, DrainSinks, EnrolDevice, ExchangeToken, Fanout,
+    GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices, ListInbox,
+    ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies, ManageMembers,
+    OsRngKeyGenerator, PostReceipt, PresignAttachment, PublishNotification, PurgeExpired,
+    ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
+    ReconciliationLog, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
+    RevokeDevice, SearchNotifications, SelfJoin, SendDndDigests, SetApiKeyLimit, SetAvatar, SetDnd,
+    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_fs::{FsAttachments, FsConfig};
 use notify_attachments_s3::{S3Attachments, S3Config};
@@ -26,9 +26,7 @@ use notify_oidc::{
     Argon2SecretHasher, FederationTokens, GuardedSecretHasher, OidcConfig, OidcVerifier,
 };
 use notify_persistence_pg::{PgLeaderElection, PgStore};
-use notify_ports::{
-    AttachmentStore, AttachmentThumbnailer, EventBus, SinkRegistry as _, SystemClock,
-};
+use notify_ports::{AttachmentStore, AttachmentThumbnailer, EventBus, SystemClock};
 use notify_push_apns::{Apns, ApnsConfig};
 use notify_push_unifiedpush::UnifiedPush;
 use notify_push_webpush::{WebPush, WebPushConfig};
@@ -57,8 +55,14 @@ pub(crate) struct Application {
     pub digests: SendDndDigests,
     /// The outbound sink drain (§7.1bis), on the same terms again.
     pub drain: DrainSinks,
-    /// What `[[channels.managed.sinks]]` configured, for the startup log.
+    /// The fan-out outbox worker (ADR-0025): on every replica, not just the leader.
+    pub fanout_drain: DrainFanout,
+    /// What `[[channels.managed.sinks]]` configured; shared with the fan-out and drain, swapped on `SIGHUP`.
     pub routes: SinkRoutes,
+    /// The adapters behind those routes, swapped alongside them.
+    pub fleet: SinkFleet,
+    /// Whether the `LISTEN` pump is subscribed, for `/readyz`.
+    pub bus: crate::bus::BusHealth,
     /// GitOps reconciliation.
     pub reconciler: Reconciler,
     /// The trust policies the token exchange consults, swappable on `SIGHUP` (§5.3, §11).
@@ -88,10 +92,12 @@ impl Application {
                   each one was handed, which is the only thing this function says"
     )]
     pub(crate) async fn build(config: &Config) -> anyhow::Result<Self> {
-        let store = PgStore::connect(&config.database.url, config.database.max_connections).await?;
+        let store =
+            PgStore::connect_with(config.database.url.expose(), &config.database.pool()).await?;
         // One LISTEN per replica, fanned out in process (see `bus`).
         let (shared, pump) =
             SharedBus::start(Arc::new(PgEventBus::new(store.pool().clone()))).await?;
+        let bus_health = shared.health();
         let bus: Arc<dyn EventBus> = Arc::new(shared);
 
         let clock = Arc::new(SystemClock);
@@ -101,6 +107,8 @@ impl Application {
         let mut oidc = OidcConfig::new(config.oidc.issuer.parse()?, config.oidc.client_id.clone());
         oidc.audiences.extend(config.oidc.audiences.iter().cloned());
         oidc.groups_claim.clone_from(&config.oidc.groups_claim);
+        oidc.trust_unverified_email = config.oidc.trust_unverified_email;
+        oidc.stale_key_grace = config.oidc.jwks_stale_grace.as_duration().try_into()?;
         let verifier = Arc::new(OidcVerifier::new(oidc, clock.clone())?);
         // Argon2id behind memoisation and admission control (`notify_oidc::guard`).
         let hasher = Arc::new(GuardedSecretHasher::new(Argon2SecretHasher));
@@ -122,14 +130,14 @@ impl Application {
                     endpoint: settings.endpoint.parse()?,
                     bucket: settings.bucket.clone(),
                     region: settings.region.clone(),
-                    access_key: settings.access_key.clone(),
-                    secret_key: settings.secret_key.clone(),
+                    access_key: settings.access_key.expose().to_owned(),
+                    secret_key: settings.secret_key.expose().to_owned(),
                 })?),
                 AttachmentsBackend::Filesystem => {
                     let store = Arc::new(FsAttachments::connect(&FsConfig {
                         root: settings.path.clone().into(),
                         public_base_url: settings.public_base_url.parse()?,
-                        token_secret: settings.token_secret.clone(),
+                        token_secret: settings.token_secret.expose().to_owned(),
                     })?);
                     attachments_fs = Some(store.clone());
                     store
@@ -153,17 +161,19 @@ impl Application {
             repository.clone(),
             repository.clone(),
             clock.clone(),
-            // What the configured transports actually carry; none means every message is a poke.
+            // Upper bound over the configured transports; each still checks its own limit and pokes
+            // when over. None means every message is a poke.
             transports.max_payload_bytes(),
         );
 
-        let fanout = if routes.is_empty() {
-            fanout
-        } else {
-            fanout.with_sinks(Arc::new(routes.clone()), repository.clone())
-        };
+        // Always handed the table, even empty: it is swapped on `SIGHUP`, so a reload can add a sink.
+        let fanout = fanout.with_sinks(Arc::new(routes.clone()));
         // Unconditional: with no store, `NoAttachments::get` answers `None`, so nothing is derived.
         let fanout = fanout.with_thumbnails(attachments.clone(), thumbnailer.clone());
+        // Pushes and thumbnails for committed publishes (ADR-0025). The same
+        // `fanout` the publish use cases get, so a publish wakes this replica's
+        // worker at once.
+        let fanout_drain = DrainFanout::new(repository.clone(), repository.clone(), fanout.clone());
 
         // Shared by everything that has to answer "is this notification still
         // there, and may this caller see it".
@@ -215,7 +225,8 @@ impl Application {
                     clock.clone(),
                 )
                 // GitOps only (§5.4); empty means no platform admins.
-                .with_platform_admins(config.admin.oidc_groups.clone());
+                .with_platform_admins(config.admin.oidc_groups.clone())
+                .with_group_snapshot_ttl(config.auth.group_snapshot_ttl.as_duration().try_into()?);
 
                 match federation.clone() {
                     Some(tokens) => base.with_federation(tokens),
@@ -390,14 +401,15 @@ impl Application {
                 clock.clone(),
             ),
 
-            enrol_device: EnrolDevice::new(repository.clone(), repository.clone(), clock.clone()),
+            enrol_device: EnrolDevice::new(repository.clone(), repository.clone(), clock.clone())
+                .with_max_per_user(config.devices.max_per_user),
             devices: ListDevices::new(repository.clone()),
             revoke_device: RevokeDevice::new(repository.clone(), repository.clone(), clock.clone()),
 
             profile: ReadProfile::new(repository.clone()),
             update_profile: UpdateProfile::new(repository.clone()),
             set_avatar: SetAvatar::new(repository.clone(), avatars, attachments.clone()),
-            avatar: ReadAvatar::new(attachments.clone()),
+            avatar: ReadAvatar::new(repository.clone(), attachments.clone()),
 
             dnd: ReadDnd::new(repository.clone()),
             set_dnd: SetDnd::new(repository.clone(), clock.clone(), fanout.clone()),
@@ -434,7 +446,16 @@ impl Application {
             Arc::new(PgLeaderElection::new(store.pool().clone())),
             bus.clone(),
             clock.clone(),
-        );
+        )
+        .with_limits(notify_app::PurgeLimits {
+            batch: config.retention.batch_size,
+            budget: config.retention.pass_budget.as_duration(),
+        });
+        // Opt-in (ADR-0027): without `[retention] audit` the log keeps everything.
+        let purge = match config.retention.audit {
+            Some(keep) => purge.with_audit_retention(repository.clone(), keep.as_duration()),
+            None => purge,
+        };
 
         // Its own leader lock, so a slow purge cannot stall closures (see `CloseStale::JOB`).
         let close_stale = CloseStale::new(
@@ -459,9 +480,13 @@ impl Application {
         let drain = DrainSinks::new(
             repository.clone(),
             Arc::new(routes.clone()),
-            Arc::new(sinks),
+            Arc::new(sinks.clone()),
             Arc::new(PgLeaderElection::new(store.pool().clone())),
             clock.clone(),
+        )
+        .with_dead_letter_retention(
+            time::Duration::try_from(config.sinks.dead_letter_retention.as_duration())
+                .unwrap_or(time::Duration::MAX),
         );
 
         let reconciler = Reconciler::new(
@@ -472,7 +497,8 @@ impl Application {
             repository.clone(),
             repository.clone(),
             repository,
-        );
+        )
+        .with_metrics(metrics.clone());
 
         Ok(Self {
             state,
@@ -482,7 +508,10 @@ impl Application {
             close_stale,
             digests,
             drain,
+            fanout_drain,
             routes,
+            fleet: sinks,
+            bus: bus_health,
             reconciler,
             policies,
             reconciliation_log,
@@ -493,7 +522,7 @@ impl Application {
 }
 
 /// The sink adapters the channels actually declare; misconfiguration fails at startup.
-fn sink_fleet(config: &Config, routes: &SinkRoutes) -> anyhow::Result<SinkFleet> {
+pub(crate) fn sink_fleet(config: &Config, routes: &SinkRoutes) -> anyhow::Result<SinkFleet> {
     let mut fleet = SinkFleet::empty();
     let kinds = routes.kinds();
 
@@ -803,7 +832,7 @@ mod tests {
     fn a_deployment_with_no_push_section_gets_the_empty_registry() {
         let (registry, key) = push_transports(&Config::default()).unwrap();
 
-        assert!(registry.names().is_empty());
+        assert_eq!(registry.names(), [] as [&str; 0]);
         assert_eq!(
             registry.max_payload_bytes(),
             0,

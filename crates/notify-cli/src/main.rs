@@ -4,7 +4,7 @@
 use std::process::ExitCode;
 
 use clap::{CommandFactory as _, Parser, Subcommand};
-use notify_client_core::{ClientError, ConfigError, Profile, Session};
+use notify_client_core::{ClientError, ConfigError, Session};
 
 mod login;
 mod manage;
@@ -180,7 +180,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         None => tui::run(&cli.profile, false).map(|()| String::new()),
         // Only server commands start tokio; `completions` shouldn't.
         Some(command) => on_runtime(|| async move {
-            let session = Session::open(&Profile::load(&cli.profile)?)?;
+            let session = Session::open(&login::load_profile(&cli.profile)?)?;
 
             execute(&session, &cli.profile, cli.output, command).await
         }),

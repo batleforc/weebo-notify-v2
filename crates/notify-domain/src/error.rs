@@ -87,6 +87,14 @@ pub enum DomainError {
         max: u32,
     },
 
+    /// The owner already holds `[devices] max_per_user` active devices; one must be
+    /// revoked first, so a leaked session cannot enrol endpoints without end.
+    #[error("{max} devices are already enrolled — revoke one first")]
+    DeviceLimitReached {
+        /// The configured ceiling.
+        max: u32,
+    },
+
     /// `ttl = 0` (keep forever) needs the channel's explicit opt-in (§7.2bis).
     #[error("infinite retention is not enabled on this channel")]
     InfiniteTtlNotAllowed,
@@ -202,6 +210,7 @@ impl DomainError {
             Self::TooMany { .. } => "collection.too_many",
             Self::TooLarge { .. } => "payload.too_large",
             Self::RevisionLimitReached { .. } => "notification.revision_limit_reached",
+            Self::DeviceLimitReached { .. } => "device.limit_reached",
             Self::InfiniteTtlNotAllowed => "ttl.infinite_not_allowed",
             Self::DuplicateActionKey { .. } => "action.duplicate_key",
             Self::UnknownActionKey { .. } => "action.unknown_key",
@@ -240,6 +249,7 @@ impl DomainError {
             | Self::SilenceGroupNeedsDuration => ErrorKind::Validation,
             Self::TooMany { .. }
             | Self::RevisionLimitReached { .. }
+            | Self::DeviceLimitReached { .. }
             | Self::InfiniteTtlNotAllowed => ErrorKind::LimitExceeded,
             Self::TooLarge { .. } => ErrorKind::TooLarge,
             Self::NotificationGone | Self::DeadLetterGone | Self::ManagedByConfig { .. } => {
@@ -290,6 +300,7 @@ mod tests {
                 actual: 2,
             },
             DomainError::RevisionLimitReached { max: 1_000 },
+            DomainError::DeviceLimitReached { max: 20 },
             DomainError::InfiniteTtlNotAllowed,
             DomainError::DuplicateActionKey {
                 key: "ack".to_owned(),
@@ -336,6 +347,7 @@ mod tests {
                 "collection.too_many",
                 "payload.too_large",
                 "notification.revision_limit_reached",
+                "device.limit_reached",
                 "ttl.infinite_not_allowed",
                 "action.duplicate_key",
                 "action.unknown_key",
@@ -370,6 +382,7 @@ mod tests {
             let expected = match error.code() {
                 "collection.too_many"
                 | "notification.revision_limit_reached"
+                | "device.limit_reached"
                 | "ttl.infinite_not_allowed" => ErrorKind::LimitExceeded,
                 "payload.too_large" => ErrorKind::TooLarge,
                 "notification.gone" | "origin.managed" => ErrorKind::Conflict,

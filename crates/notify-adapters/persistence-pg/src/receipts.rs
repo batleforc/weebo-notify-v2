@@ -21,9 +21,10 @@ impl ReceiptRepository for PgStore {
             .await
             .map_err(|error| fail("receipt", error))?;
 
-        // Also settles whether the notification still exists.
+        // Also settles whether the notification still exists. `FOR SHARE` first, so the expiry
+        // sweep (`SKIP LOCKED`) waits for an in-flight receipt instead of counting it unseen.
         let channel: Option<String> =
-            sqlx::query_scalar("SELECT channel_id FROM notifications WHERE id = $1")
+            sqlx::query_scalar("SELECT channel_id FROM notifications WHERE id = $1 FOR SHARE")
                 .bind(receipt.notification_id.to_string())
                 .fetch_optional(&mut *transaction)
                 .await

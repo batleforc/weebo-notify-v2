@@ -126,7 +126,7 @@ impl ExchangeToken {
 
         // Only after the policy matched, so a non-matching token cannot burn a real job's id.
         let jti = claims.jti.as_deref().unwrap_or_default();
-        if !self.replay.remember(jti, claims.expires_at).await? {
+        if !self.replay.remember(jti, claims.accepted_until).await? {
             tracing::info!(subject = %claims.subject, "ci token replayed");
             return Err(DomainError::InvalidCredential.into());
         }
@@ -184,7 +184,7 @@ mod tests {
             subject: "repo:weebo/infra:ref:refs/heads/main".to_owned(),
             audiences: vec![US.to_owned()],
             jti: Some(jti.to_owned()),
-            expires_at: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
+            accepted_until: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
         }
     }
 

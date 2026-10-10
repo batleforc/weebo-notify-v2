@@ -7,12 +7,16 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use notify_domain::{ChannelId, Device, NotificationId, Priority};
-use notify_ports::{PortError, PortResult, PushBody, PushMessage, PushOutcome, PushTransport};
+use notify_ports::{
+    PortError, PortResult, PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport,
+};
+use notify_push_http::{PublicOnly, send_retrying};
 use p256::pkcs8::DecodePrivateKey as _;
 use serde::Serialize;
 
-/// Max plaintext: RFC 8291's 4096 encrypted octets minus 87 of `aes128gcm` framing, rounded down.
-const MAX_PAYLOAD: usize = 4_000;
+/// Max plaintext of the whole serialised [`Envelope`]: RFC 8291's 4096 encrypted octets
+/// minus `aes128gcm`'s 86-octet header and 17-octet record overhead. Exact; a test encrypts at the line.
+const MAX_PLAINTEXT: usize = 3_993;
 
 /// Queue lifetime at the push service; older than this, the inbox shows it on next open anyway.
 const TTL: Duration = Duration::from_secs(4 * 3_600);
@@ -55,6 +59,20 @@ pub enum Envelope {
         /// How many of those closed on a failure.
         failures: u32,
     },
+}
+
+/// What gets encrypted: the envelope, or its poke when the envelope is over
+/// [`MAX_PLAINTEXT`] — the service worker fetches over TLS (design §6.3).
+fn plaintext(message: &PushMessage) -> PortResult<Vec<u8>> {
+    let encode = |message: &PushMessage| {
+        serde_json::to_vec(&Envelope::of(message))
+            .map_err(|error| PortError::corrupt("push.envelope", error))
+    };
+    let full = encode(message)?;
+    if full.len() <= MAX_PLAINTEXT {
+        return Ok(full);
+    }
+    encode(&message.as_poke())
 }
 
 impl Envelope {
@@ -135,6 +153,10 @@ impl WebPush {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
+                // A proxy would resolve the name itself, and `PublicOnly` would
+                // never be asked: `HTTPS_PROXY` in the environment must not be a
+                // way around it.
+                .no_proxy()
                 .dns_resolver(PublicOnly)
                 .build()
                 .map_err(WebPushSetup::Client)?,
@@ -186,7 +208,7 @@ impl PushTransport for WebPush {
     }
 
     fn max_payload_bytes(&self) -> usize {
-        MAX_PAYLOAD
+        MAX_PLAINTEXT
     }
 
     async fn deliver(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
@@ -213,8 +235,7 @@ impl PushTransport for WebPush {
             return Ok(PushOutcome::Expired);
         };
 
-        let plaintext = serde_json::to_vec(&Envelope::of(message))
-            .map_err(|error| PortError::corrupt("push.envelope", error))?;
+        let plaintext = plaintext(message)?;
         let encrypted = web_push_native::encrypt(plaintext, &subscriber, &secret)
             .map_err(|error| PortError::unavailable("push.webpush", error))?;
 
@@ -223,43 +244,33 @@ impl PushTransport for WebPush {
             .map_err(|error| PortError::unavailable("push.webpush", error))?
             .as_secs();
 
-        let response = self
-            .http
-            .post(endpoint.clone())
-            .header("TTL", TTL.as_secs())
-            .header("Content-Encoding", "aes128gcm")
-            .header("Content-Type", "application/octet-stream")
-            .header("Urgency", urgency(message))
-            .header("Authorization", self.authorization(endpoint, now)?)
-            .body(encrypted)
-            .send()
-            .await;
+        let response = send_retrying(
+            self.http
+                .post(endpoint.clone())
+                .header("TTL", TTL.as_secs())
+                .header("Content-Encoding", "aes128gcm")
+                .header("Content-Type", "application/octet-stream")
+                .header("Urgency", urgency(message))
+                .header("Authorization", self.authorization(endpoint, now)?)
+                .body(encrypted),
+        )
+        .await;
 
         Ok(match response {
-            Ok(response) => outcome(response.status().as_u16()),
+            Some(response) => outcome(response.status().as_u16()),
             // Unreachable relay is a metric, not an `Err` (which means the transport is unusable).
-            Err(_) => PushOutcome::Failed {
+            None => PushOutcome::Failed {
                 reason: "unreachable",
             },
         })
     }
 }
 
-/// A resolver that only ever hands back public addresses (duplicated in `notify-push-unifiedpush`).
-struct PublicOnly;
-
-impl reqwest::dns::Resolve for PublicOnly {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        Box::pin(async move {
-            let addrs: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
-                .filter(|addr| notify_domain::is_public_address(addr.ip()))
-                .collect();
-            if addrs.is_empty() {
-                return Err("the push endpoint resolves to no public address".into());
-            }
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
+/// Web Push as a dispatcher, so tests reach it through the fan-out's trait.
+#[async_trait::async_trait]
+impl PushDispatcher for WebPush {
+    async fn dispatch(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
+        self.deliver(device, message).await
     }
 }
 
@@ -553,17 +564,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_name_resolving_inside_the_network_is_never_dialled() {
-        use reqwest::dns::Resolve as _;
-
-        let resolved = PublicOnly.resolve("localhost".parse().unwrap()).await;
-        assert!(
-            resolved.is_err_and(|error| error.to_string().contains("no public address")),
-            "localhost is not a push service"
-        );
-    }
-
     #[test]
     fn urgency_maps_every_priority_the_domain_has() {
         for (priority, expected) in [
@@ -589,6 +589,56 @@ mod tests {
             }),
             "normal",
             "what waited eight hours by request must not then sound like an alarm"
+        );
+    }
+
+    /// A notification whose serialised envelope is exactly `len` octets.
+    fn enveloped_at(len: usize) -> PushMessage {
+        let with_title = |title: String| PushMessage::Notification {
+            channel: ChannelId::parse("ci-infra").unwrap(),
+            notification_id: NotificationId::generate(),
+            priority: Priority::Default,
+            body: PushBody::Payload {
+                bytes: serde_json::to_vec(&serde_json::json!({ "title": title })).unwrap(),
+                sealed: false,
+            },
+        };
+        let overhead = serde_json::to_vec(&Envelope::of(&with_title(String::new())))
+            .unwrap()
+            .len();
+        with_title("x".repeat(len - overhead))
+    }
+
+    #[test]
+    fn the_plaintext_ceiling_encrypts_to_exactly_what_rfc_8291_guarantees() {
+        let subscriber = decode_key(&subscriber_key()).unwrap();
+        let secret = decode_auth(AUTH).unwrap();
+
+        let encrypted =
+            web_push_native::encrypt(vec![b'x'; MAX_PLAINTEXT], &subscriber, &secret).unwrap();
+
+        assert_eq!(
+            encrypted.len(),
+            4_096,
+            "header, delimiter and tag all counted"
+        );
+    }
+
+    #[test]
+    fn an_envelope_at_the_ceiling_keeps_its_content_and_one_past_it_is_a_poke() {
+        let at = plaintext(&enveloped_at(MAX_PLAINTEXT)).unwrap();
+        assert_eq!(at.len(), MAX_PLAINTEXT);
+        assert!(serde_json::from_slice::<serde_json::Value>(&at).unwrap()["content"].is_object());
+
+        let over = plaintext(&enveloped_at(MAX_PLAINTEXT + 1)).unwrap();
+        let over: serde_json::Value = serde_json::from_slice(&over).unwrap();
+        assert!(
+            over.get("content").is_none(),
+            "the worker fetches over TLS instead"
+        );
+        assert_eq!(
+            over["channel"], "ci-infra",
+            "a poke still says where to look"
         );
     }
 }

@@ -28,6 +28,17 @@ rules living outside this repository, so a rename here breaks somebody else's pa
 | `sync_backlog_size` | histogram | — | How far behind clients are when they reconnect |
 | `realtime_connections` | gauge | `transport` (`sse`, `ws`) | Streams this replica is holding |
 | `sink_dlq_depth` | gauge | `channel` | Sink deliveries given up on |
+| `background_job_last_success_timestamp_seconds` | gauge | `task` | When each background loop last completed a pass without error |
+| `background_job_failures_total` | counter | `task` | Passes that failed **or panicked** |
+| `reconcile_removals_refused_total` | counter | — | Reconcile passes whose removals the `[reconcile] max_removals` guard refused |
+| `fanout_outbox_rows` | gauge | `kind` (`pending`, `dead`) | Device pushes still owed, and those given up on (ADR-0025) — leader only |
+| `fanout_outbox_oldest_age_seconds` | gauge | — | Age of the oldest push still owed; minutes means the drain is not keeping up |
+
+Every background loop is supervised: a pass that errors or panics is logged, counted
+in `background_job_failures_total`, backed off (5 s doubling to 5 min) and retried —
+it never stops its loop or the others. A loop that stopped *working* therefore shows
+as a timestamp that no longer moves, which is what `WeeboNotifyBackgroundJobStale`
+alerts on. Leader-only tasks only move the timestamp on the replica that leads.
 
 `reason` is a closed set — `expired`, `failed`, `unusable` — because a free-form one
 would make an alert match nothing the day a transport words its error differently. A
@@ -84,6 +95,37 @@ This is the metrics client's model rather than a choice made here, and it is wor
 knowing before writing the rule rather than after: reach for `absent()`, an `or
 vector(0)`, or a `for:` window long enough to cover a quiet period.
 
+## Alerts and dashboard shipped with the chart
+
+`prometheusRule.enabled` in the Helm chart installs a `PrometheusRule` built on the
+families above, each alert linking its [runbook](/docs/ops/runbooks) section:
+
+| Alert | Expression, in short | Runbook |
+| --- | --- | --- |
+| `WeeboNotifyNoLeader` | `sink-drain` (the leader's 5 s loop) last succeeded > 2 min ago, or never | leader lock |
+| `WeeboNotifyBackgroundJobStale` | `time() - max by (task) (background_job_last_success_timestamp_seconds)` > `jobStaleSeconds` | leader lock |
+| `WeeboNotifyBackgroundJobFailing` | `increase(background_job_failures_total[15m]) > 3` | leader lock |
+| `WeeboNotifySinkDeadLetters` / `…Growing` | `max by (channel) (sink_dlq_depth)` above `dlqDepth`, or rising for 30 min | dead letters |
+| `WeeboNotifyPushFailureRatio` | `push_failures_total` / `push_delivery_duration_seconds_count` > `pushFailureRatio` | key rotation |
+| `WeeboNotifyRetentionBacklog` | `max by (kind) (retention_backlog_rows)` > `retentionBacklogRows` for 1 h | retention |
+| `WeeboNotifyDown` | no `up == 1` for the server Service | Postgres |
+| `WeeboNotifyReadinessFlapping` | `kube_pod_status_ready` (kube-state-metrics) changing > 4× in 15 min | Postgres |
+| `WeeboNotifyHttp5xx` | ingress-nginx `nginx_ingress_controller_requests` 5xx ratio > 5 % | Postgres |
+
+Two gaps are deliberate rather than overlooked: the server publishes **no request
+counter** (the 5xx rule reads ingress-nginx, and is off on other controllers via
+`prometheusRule.http5xxFromIngressNginx`) and **no connection-pool gauge** — `/readyz`
+checks Postgres, so readiness flapping is the pool/connectivity signal.
+
+The job families label the job `task` (`purge`, `close-stale`, `dnd-digest`,
+`sink-drain`, `fan-out`, `reconcile`) rather than `job`, which Prometheus already
+attaches to every scraped series — a server-side `job` would be renamed
+`exported_job` and every selector written against it would match nothing.
+
+`grafanaDashboard.enabled` adds one dashboard (connections, publish rate, push
+latency and failures, job freshness, dead letters, retention and sync backlog) as a
+ConfigMap labelled for the Grafana sidecar.
+
 ## Traces
 
 Off unless you ask for them. Name a collector and the server exports spans over
@@ -94,7 +136,8 @@ span processor and no extra thread.
 [telemetry]
 otlp_endpoint = "http://collector:4318"  # /v1/traces is appended for you
 service_name = "weebo-notify"            # one name per deployment, not per replica
-sample_ratio = 1.0                       # 0.0–1.0, parent-based
+sample_ratio = 1.0                       # 0.0–1.0
+trust_inbound_trace_context = false      # continue a caller's traceparent
 ```
 
 Every key is environment-overridable like the rest of the configuration, so one file
@@ -108,7 +151,8 @@ body, a user or a push endpoint: the rule the logs follow applies to spans too.
 
 ### Sending your own trace in
 
-A caller may pass a W3C `traceparent`, and the request continues that trace instead of
+With `trust_inbound_trace_context = true` (`WNK_TELEMETRY__TRUST_INBOUND_TRACE_CONTEXT`)
+a caller may pass a W3C `traceparent`, and the request continues that trace instead of
 starting one — which is how a CI pipeline links its own trace to the notification it
 publishes:
 
@@ -118,14 +162,16 @@ curl -X POST https://notify.example/api/v1/notifications \
   ...
 ```
 
-The header is trusted, deliberately. It is a correlation id and not a credential: a
-forged one attaches a request to a trace it does not belong to, in a system the
-sender can already write to. Refusing it would cost the feature and buy nothing.
+It is **off by default**, because the header comes from whoever calls the API: with it
+off, every request starts its own root trace and the header is ignored. Turn it on
+where the callers are your own pipelines and services.
 
 <Callout>
-  Sampling is **parent-based**: a request that arrives with a sampled `traceparent` is
-  recorded whatever `sample_ratio` says, and children always follow their root. A
-  trace with holes in the middle is harder to read than no trace.
+  Even when trusted, a caller's `sampled` flag does **not** force recording: a remote
+  parent is sampled by `sample_ratio` like a fresh root, so a client that marks every
+  request sampled cannot turn a 1 % ratio into 100 % of traces exported. Spans created
+  inside the process always follow their local root — a trace with holes in the middle
+  is harder to read than no trace.
 </Callout>
 
 Spans are flushed on `SIGTERM` before the process exits — otherwise the batch

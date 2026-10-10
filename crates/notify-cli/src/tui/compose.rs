@@ -411,7 +411,7 @@ mod tests {
 
         form.push_char('x');
 
-        assert!(form.title.is_empty());
+        assert_eq!(form.title, "");
     }
 
     #[test]
@@ -483,7 +483,7 @@ mod tests {
             form.action_draft, "explode:Boom:now",
             "the draft survives a rejection"
         );
-        assert!(form.actions.is_empty());
+        assert_eq!(form.actions, [] as [std::string::String; 0]);
     }
 
     #[test]

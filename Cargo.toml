@@ -18,6 +18,7 @@ members = [
     "crates/notify-adapters/metrics-prometheus",
     "crates/notify-adapters/push-unifiedpush",
     "crates/notify-adapters/push-apns",
+    "crates/notify-adapters/push-http",
     "crates/notify-server",
     "crates/notify-client-api",
     "crates/notify-client-core",
@@ -61,6 +62,7 @@ notify-sinks-email = { path = "crates/notify-adapters/sinks-email" }
 notify-metrics-prometheus = { path = "crates/notify-adapters/metrics-prometheus" }
 notify-push-unifiedpush = { path = "crates/notify-adapters/push-unifiedpush" }
 notify-push-apns = { path = "crates/notify-adapters/push-apns" }
+notify-push-http = { path = "crates/notify-adapters/push-http" }
 notify-client-api = { path = "crates/notify-client-api" }
 notify-client-core = { path = "crates/notify-client-core" }
 
@@ -196,6 +198,10 @@ panic = "deny"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# `#[async_trait]` expands every trait method into a `#[must_use]` fn returning a
+# boxed future, which is `#[must_use]` already; clippy 1.99 flags the pair on code
+# the macro wrote, not this repo.
+double_must_use = "allow"
 
 [profile.release]
 lto = "thin"

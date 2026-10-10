@@ -12,6 +12,9 @@ use notify_ports::{
     SinkOutcome, SinkTarget,
 };
 
+/// One SMTP exchange, connect to `QUIT`; well inside the drain's lease so a hung relay is a retry.
+pub const SMTP_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(20);
+
 /// Everything the mail sink needs that is not per-delivery (design §11, `[sinks.smtp]`).
 #[derive(Debug, Clone)]
 pub struct SmtpSettings {
@@ -59,6 +62,11 @@ impl EmailSink {
                 settings.password.clone().unwrap_or_default(),
             ));
         }
+
+        // Explicit rather than lettre's default: the drain budgets its pass around
+        // the slowest attempt it can make, and a relay that accepts the connection
+        // and then says nothing must not hold a delivery slot for longer than that.
+        builder = builder.timeout(Some(SMTP_TIMEOUT));
 
         Ok(Self {
             transport: builder.build(),
@@ -148,7 +156,17 @@ impl SinkDispatcher for EmailSink {
             return Ok(SinkOutcome::Delivered);
         };
 
-        let message = self.compose(address, delivery, revision)?;
+        // A message that cannot be built — the address is not a mailbox — will not
+        // build tomorrow either. Rejected, so it reaches the dead-letter queue now
+        // rather than after a day of retrying the same parse.
+        let message = match self.compose(address, delivery, revision) {
+            Ok(message) => message,
+            Err(error) => {
+                return Ok(SinkOutcome::Rejected {
+                    reason: error.to_string(),
+                });
+            }
+        };
 
         Ok(match self.transport.send(message).await {
             Ok(_) => SinkOutcome::Delivered,
@@ -298,5 +316,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(outcome, SinkOutcome::Delivered);
+    }
+
+    #[tokio::test]
+    async fn an_address_that_is_not_a_mailbox_is_rejected_rather_than_retried() {
+        let sink = EmailSink::new(&settings()).unwrap();
+        let revision = revision();
+        let delivery = delivery(EventPayload::Revision(Box::new(revision)));
+
+        let outcome = sink
+            .deliver(
+                &delivery,
+                &SinkTarget::Email {
+                    address: "not a mailbox".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(outcome, SinkOutcome::Rejected { .. }),
+            "a parse that fails today fails tomorrow: {outcome:?}"
+        );
     }
 }

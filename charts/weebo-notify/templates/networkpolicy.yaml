@@ -1,8 +1,9 @@
-{{- /* Ingress-direction only: this chart knows the two flows it creates
-   (web -> server, ingress-controller -> both), but not where Postgres, the
-   object store, Redis or the OIDC issuer actually live, so it does not attempt
-   an egress policy — a wrong guess there fails closed against a real
-   dependency, which is worse than no policy at all. */}}
+{{- /* Ingress always; egress only when networkPolicy.egress.enabled. This
+   chart knows the flows it creates (web -> server, ingress-controller -> both)
+   but not where Postgres, the object store or the OIDC issuer live, so egress
+   is opt-in and its destinations come from values — a guessed one fails
+   closed against a real dependency, which is worse than no policy at all. */}}
+{{- $egress := .Values.networkPolicy.egress }}
 {{- if .Values.networkPolicy.enabled }}
 {{- if not .Values.networkPolicy.ingressFrom }}
 {{- fail "networkPolicy.enabled needs networkPolicy.ingressFrom: the server policy admits only web pods otherwise, so its Ingress and the ServiceMonitor would be cut off (see examples/values-production.yaml)" }}
@@ -19,6 +20,9 @@ spec:
       {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
   policyTypes:
     - Ingress
+    {{- if $egress.enabled }}
+    - Egress
+    {{- end }}
   ingress:
     - from:
         - podSelector:
@@ -30,6 +34,44 @@ spec:
       ports:
         - port: http
           protocol: TCP
+  {{- if $egress.enabled }}
+  egress:
+    {{- with $egress.dns }}
+    - to:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- with $egress.to }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $egress.allowPublicHttps }}
+    # Push relays and webhook sinks: arbitrary public hosts, never private or
+    # link-local ones (169.254.0.0/16 holds the cloud metadata endpoint).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fc00::/7
+              - fe80::/10
+              - ::1/128
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+  {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -43,6 +85,9 @@ spec:
       {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
   policyTypes:
     - Ingress
+    {{- if $egress.enabled }}
+    - Egress
+    {{- end }}
   ingress:
     - from:
         {{- with .Values.networkPolicy.ingressFrom }}
@@ -53,4 +98,8 @@ spec:
       ports:
         - port: http
           protocol: TCP
+  {{- if $egress.enabled }}
+  # Static nginx with no upstream: nothing to reach, so nothing is allowed.
+  egress: []
+  {{- end }}
 {{- end }}

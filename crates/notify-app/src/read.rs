@@ -540,7 +540,10 @@ mod tests {
         mark_seen(&fixture, only.id, &fixture.alice).await;
 
         // "No badge" has one representation: no entry.
-        assert!(fixture.unread.execute(&caller).await.unwrap().is_empty());
+        assert_eq!(
+            fixture.unread.execute(&caller).await.unwrap(),
+            [] as [notify_ports::UnreadCount; 0]
+        );
     }
 
     #[tokio::test]
@@ -555,13 +558,13 @@ mod tests {
         seed(&fixture, "cluster-ovh-1", "not for alice").await;
 
         // A channel alice is not in cannot reach the count.
-        assert!(
+        assert_eq!(
             fixture
                 .unread
                 .execute(&Caller::member(fixture.alice.clone()))
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [notify_ports::UnreadCount; 0]
         );
     }
 

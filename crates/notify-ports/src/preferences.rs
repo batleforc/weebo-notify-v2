@@ -1,7 +1,7 @@
 //! Do-not-disturb, stored per user (§7.4). Writes append a `preference` event
 //! carrying both the DND and active silences (§8.1, ADR-0012).
 
-use notify_domain::{Cursor, Dnd, Status, UserId};
+use notify_domain::{Cursor, Dnd, NotificationId, Status, UserId};
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
@@ -29,8 +29,15 @@ pub trait PreferenceRepository: Send + Sync {
     async fn set_dnd(&self, dnd: &Dnd, now: OffsetDateTime) -> PortResult<Cursor>;
 
     /// Count one more push held back for this user (§7.4). A no-op for users with
-    /// no stored preference.
-    async fn defer(&self, user: UserId, status: Status) -> PortResult<()>;
+    /// no stored preference. Idempotent per `(user, notification, seq)`: the fan-out
+    /// is at least once and per device, so a revision must not be counted twice.
+    async fn defer(
+        &self,
+        user: UserId,
+        notification: NotificationId,
+        seq: u32,
+        status: Status,
+    ) -> PortResult<()>;
 
     /// Everyone with something held back, quiet period over or not, ordered by user
     /// and paged by `after` so callers can walk past users who are still quiet.

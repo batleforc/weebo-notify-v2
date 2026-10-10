@@ -59,6 +59,9 @@ on:
     # Nightly, so a provider's own update cannot break us silently.
     - cron: "0 3 * * *"
   workflow_dispatch:
+  # release.yaml replays this on the tagged commit: an identity provider that
+  # stopped interoperating is a release blocker, not a nightly curiosity.
+  workflow_call:
 
 concurrency:
   group: oidc-compat-${{ github.ref }}

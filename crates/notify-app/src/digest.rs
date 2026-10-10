@@ -129,7 +129,8 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
     use notify_domain::{
-        Channel, ChannelId, Device, DeviceId, Dnd, Membership, Scope, Status, UserId,
+        Channel, ChannelId, Device, DeviceId, Dnd, Membership, NotificationId, Scope, Status,
+        UserId,
     };
     use notify_ports::test_utils::{InMemory, TestClock, TestLeaderElection};
 
@@ -205,9 +206,15 @@ mod tests {
             } else {
                 Status::Info
             };
-            PreferenceRepository::defer(&fixture.store, fixture.alice, status)
-                .await
-                .unwrap();
+            PreferenceRepository::defer(
+                &fixture.store,
+                fixture.alice,
+                NotificationId::generate(),
+                1,
+                status,
+            )
+            .await
+            .unwrap();
         }
     }
 
@@ -299,9 +306,15 @@ mod tests {
             )
             .await
             .unwrap();
-            PreferenceRepository::defer(&fixture.store, *user, Status::Info)
-                .await
-                .unwrap();
+            PreferenceRepository::defer(
+                &fixture.store,
+                *user,
+                NotificationId::generate(),
+                1,
+                Status::Info,
+            )
+            .await
+            .unwrap();
         }
         // Sorts after every one of them, and their quiet period is over.
         PreferenceRepository::set_dnd(
@@ -314,9 +327,15 @@ mod tests {
         )
         .await
         .unwrap();
-        PreferenceRepository::defer(&fixture.store, *late, Status::Info)
-            .await
-            .unwrap();
+        PreferenceRepository::defer(
+            &fixture.store,
+            *late,
+            NotificationId::generate(),
+            1,
+            Status::Info,
+        )
+        .await
+        .unwrap();
 
         let report = fixture.job.execute().await.unwrap();
 
@@ -362,7 +381,10 @@ mod tests {
         quiet_until(&fixture, -1).await;
 
         assert_eq!(fixture.job.execute().await.unwrap().sent, 0);
-        assert!(fixture.store.pushes().is_empty());
+        assert_eq!(
+            fixture.store.pushes(),
+            [] as [(notify_domain::DeviceId, notify_ports::PushMessage); 0]
+        );
     }
 
     #[tokio::test]
@@ -390,7 +412,10 @@ mod tests {
         let report = idle.execute().await.unwrap();
 
         assert!(!report.led, "not leading is a normal answer, not a failure");
-        assert!(fixture.store.pushes().is_empty());
+        assert_eq!(
+            fixture.store.pushes(),
+            [] as [(notify_domain::DeviceId, notify_ports::PushMessage); 0]
+        );
     }
 
     #[tokio::test]
@@ -422,7 +447,7 @@ mod tests {
         )
         .await
         .unwrap();
-        PreferenceRepository::defer(&store, alice, Status::Info)
+        PreferenceRepository::defer(&store, alice, NotificationId::generate(), 1, Status::Info)
             .await
             .unwrap();
 
@@ -444,6 +469,9 @@ mod tests {
 
         job.execute().await.unwrap();
 
-        assert!(store.pushes().is_empty());
+        assert_eq!(
+            store.pushes(),
+            [] as [(notify_domain::DeviceId, notify_ports::PushMessage); 0]
+        );
     }
 }

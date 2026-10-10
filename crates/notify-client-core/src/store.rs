@@ -91,7 +91,7 @@ impl Store {
     /// Fails if the directory cannot be created, the file cannot be opened, or it
     /// was written by a schema this build does not know.
     pub fn open(profile: &str) -> Result<Self, ClientError> {
-        Self::open_at(&store_path(profile))
+        Self::open_at(&try_store_path(profile)?)
     }
 
     /// The same, at an explicit path — what the tests use.
@@ -441,11 +441,31 @@ impl Store {
 }
 
 /// `<data dir>/weebo-notify/<profile>/store.db`: data, not config, so losing it costs a re-sync.
+/// Falls back to the current directory without a home; anything that writes uses [`try_store_path`].
 #[must_use]
 pub fn store_path(profile: &str) -> PathBuf {
+    try_store_path(profile).unwrap_or_else(|_| {
+        PathBuf::from(".")
+            .join("weebo-notify")
+            .join(profile)
+            .join("store.db")
+    })
+}
+
+/// [`store_path`], refusing rather than falling back to the current directory, where
+/// somebody else could read or have planted the file.
+///
+/// # Errors
+///
+/// When there is no home directory to resolve a data directory from.
+pub fn try_store_path(profile: &str) -> Result<PathBuf, ClientError> {
     crate::config::app_dir(|dirs| dirs.data_dir())
-        .join(profile)
-        .join("store.db")
+        .map(|dir| dir.join(profile).join("store.db"))
+        .ok_or_else(|| ClientError::Store {
+            detail: "no home directory, so there is no data directory to keep the local \
+                     store in"
+                .to_owned(),
+        })
 }
 
 /// Read a stored RFC 3339 timestamp; empty (schema 1) or unparseable means none, not a guess.

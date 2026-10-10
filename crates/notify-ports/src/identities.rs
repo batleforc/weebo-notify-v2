@@ -2,12 +2,23 @@
 //! three different writers. Secret hashes stay in [`StoredApiKey`], never in a DTO.
 
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyPrefix, ChannelId, Principal, ServiceAccount, ServiceAccountId, User,
-    UserId,
+    ApiKey, ApiKeyId, ApiKeyPrefix, AttachmentId, ChannelId, Principal, ServiceAccount,
+    ServiceAccountId, User, UserId,
 };
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
+
+/// What looking a user up by email found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailMatch {
+    /// Nobody has that address — yet; they may not have logged in.
+    Nobody,
+    /// Exactly one user.
+    One(Box<User>),
+    /// More than one user has that address, so it identifies nobody.
+    Ambiguous,
+}
 
 /// Users.
 #[async_trait::async_trait]
@@ -18,8 +29,13 @@ pub trait UserRepository: Send + Sync {
     /// Fetch by OIDC subject — the lookup every authenticated request makes.
     async fn find_by_subject(&self, subject: &str) -> PortResult<Option<User>>;
 
-    /// Fetch by email, for individual `email` bindings in channel config (§11).
-    async fn find_by_email(&self, email: &str) -> PortResult<Option<User>>;
+    /// Fetch by email (case-insensitive), for individual `email` bindings in channel
+    /// config (§11). `users.email` is not unique: several matches are [`EmailMatch::Ambiguous`].
+    async fn find_by_email(&self, email: &str) -> PortResult<EmailMatch>;
+
+    /// Whether `avatar` is some user's current avatar, so `GET /avatars/{id}` cannot
+    /// read any other object in the shared store (§2.4).
+    async fn is_avatar(&self, avatar: AttachmentId) -> PortResult<bool>;
 
     /// Create on first login, or refresh the claims of an existing user. Protecting
     /// locally edited fields is the use case's job (§2.4).

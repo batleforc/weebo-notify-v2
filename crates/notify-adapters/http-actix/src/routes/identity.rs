@@ -90,7 +90,8 @@ pub struct MintedKey {
     responses(
         (status = 201, description = "Enrolled", body = Device),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 422, description = "A relayed transport with no key, or the reverse", body = Problem),
+        (status = 403, description = "A push transport, from a credential that is not a session", body = Problem),
+        (status = 422, description = "A relayed transport with no key, or the reverse; or `device.limit_reached`, the owner's `[devices] max_per_user` active devices already enrolled", body = Problem),
     ),
     security(("bearer" = []))
 )]
@@ -116,7 +117,7 @@ pub(crate) async fn enrol_device(
     path = "/devices",
     tag = "devices",
     responses(
-        (status = 200, description = "Devices, newest first", body = Vec<Device>),
+        (status = 200, description = "Devices, newest first — `stream` ones only for an API key or a CI token", body = Vec<Device>),
         (status = 401, description = "No usable credential", body = Problem),
     ),
     security(("bearer" = []))
@@ -138,7 +139,7 @@ pub(crate) async fn list_devices(
     responses(
         (status = 204, description = "Revoked, or was not there"),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 403, description = "Not the caller's device", body = Problem),
+        (status = 403, description = "A push device, from a credential that is not a session", body = Problem),
     ),
     security(("bearer" = []))
 )]
@@ -202,6 +203,7 @@ pub(crate) async fn create_key(
     responses(
         (status = 200, description = "Keys, with prefix, scopes and last use", body = Vec<ApiKey>),
         (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "Not a session — a key cannot list keys", body = Problem),
     ),
     security(("bearer" = []))
 )]
@@ -222,7 +224,7 @@ pub(crate) async fn list_keys(
     responses(
         (status = 204, description = "Revoked, or was not there"),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 403, description = "Not the caller's key", body = Problem),
+        (status = 403, description = "Not a session — a key may revoke only itself", body = Problem),
     ),
     security(("bearer" = []))
 )]

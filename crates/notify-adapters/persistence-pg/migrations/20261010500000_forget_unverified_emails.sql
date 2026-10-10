@@ -1,0 +1,14 @@
+-- Forget every stored email, so only verified ones come back.
+--
+-- `users.email` is what `[[channels.managed.access]] email = …` bindings resolve
+-- on (§11). Older builds stored whatever the token said, and a later login with
+-- no `email` claim keeps what is stored — so an address an identity provider
+-- never verified could outlive the fix that stopped accepting it, and grant the
+-- channel of whoever really owns that address to whoever typed it in first.
+--
+-- There is no telling, from the row, which addresses were verified. So all of
+-- them go, and each repopulates on that user's next login if — and only if — the
+-- token carries it verified (or `[oidc] trust_unverified_email` is on). Until
+-- then an email binding reports the user as pending, which is the same state as
+-- "has not logged in yet": access lags by one login, rather than being wrong.
+UPDATE users SET email = NULL WHERE email IS NOT NULL;

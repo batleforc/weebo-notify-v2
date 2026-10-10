@@ -1,0 +1,75 @@
+# Sourced — NOT executed — by nginx's own entrypoint, which is what the `.envsh`
+# suffix asks for: `docker-entrypoint.sh` `.`-sources every executable
+# `docker-entrypoint.d/*.envsh` into its own shell, and runs `*.sh` in a subshell
+# whose exports die with it (a non-executable file of either kind is skipped with
+# an "Ignoring" log line, which is how this once silently never ran). Sourced is
+# the only way `WNK_CSP_HEADER` is still around when `20-envsubst-on-templates.sh`
+# renders `default.conf.template` right after it (design §11, ADR-0021).
+#
+# Two renders, one env, and a hash that is not a deployment's to set:
+#
+#   * `env.js` — what the SPA reads at startup (`src/config.ts`).
+#   * `WNK_CSP_HEADER` — the Content-Security-Policy nginx sends as one header
+#     (`default.conf.template`). `csp-template.txt` was written at build time by
+#     `web/vite.config.ts`, and already carries the one thing a deployment must
+#     NOT override: the hash of this exact build's inline script. Everything else
+#     in it is a `${WNK_*}` placeholder, unresolved until this line runs `envsubst`
+#     on it a second time — `20-envsubst-on-templates.sh` never re-scans a value
+#     it has already substituted in, so nesting the raw template straight into
+#     `default.conf.template` would leave these placeholders as literal text in
+#     the header nginx ships.
+
+# No `set -u` here, and no `set -e` of our own: this runs inside nginx's own
+# entrypoint shell (that is the whole point of being sourced), and changing its
+# options would change how the rest of ITS script behaves, not just this file's
+# few lines. Each step below checks and exits explicitly instead — deliberately: a
+# container that starts with a stale, empty or injected CSP header is a worse
+# failure than one that refuses to start at all.
+#
+# How `exit` stops the container: the entrypoint sources this file from inside a
+# `find | sort | while read` pipeline, so `exit 1` ends that pipeline's subshell
+# with status 1, and the entrypoint's own `set -e` then aborts before it ever
+# reaches `exec nginx`. `task build:web:image:smoke` asserts exactly that.
+
+# Every value below is pasted raw into a JS string literal (`env.js`) and into a
+# quoted nginx directive (the CSP and `Reporting-Endpoints` headers), and neither
+# render escapes anything — so a `"`, `;`, `'`, space or newline in one is script
+# or config injection, not a typo. Hence an allowlist of the characters a URL or a
+# client id actually needs, not a denylist of the ones known to hurt.
+wnk_url_re='https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?'
+wnk_nl='
+'
+
+# wnk_check NAME REGEX required|optional — reads the variable named NAME.
+wnk_check() {
+  eval "wnk_v=\${$1:-}"
+  if [ -z "$wnk_v" ]; then
+    [ "$3" = optional ] && return 0
+    echo "05-runtime-config: $1 is required but empty or unset" >&2
+    exit 1
+  fi
+  # `grep -x` matches line by line: a value with a newline in it could pass on
+  # its first line alone, so newlines are refused before the regex ever runs.
+  case "$wnk_v" in *"$wnk_nl"*) wnk_v_ok=false ;; *) wnk_v_ok=true ;; esac
+  if ! $wnk_v_ok || ! printf '%s' "$wnk_v" | grep -Eqx "$2"; then
+    echo "05-runtime-config: $1 has characters outside [$2]; refusing to render it into env.js and the CSP" >&2
+    exit 1
+  fi
+}
+
+wnk_check WNK_API_BASE_URL "$wnk_url_re" required
+wnk_check WNK_OIDC_ISSUER "$wnk_url_re" required
+wnk_check WNK_OIDC_CLIENT_ID '[A-Za-z0-9._:-]+' required
+wnk_check WNK_ATTACHMENT_ORIGIN "$wnk_url_re" optional
+# The image defaults this to the same-origin `/csp-report`, so a bare path is fine.
+wnk_check WNK_CSP_REPORT_URL "($wnk_url_re|/[A-Za-z0-9._~/-]*)" required
+unset -f wnk_check
+unset wnk_url_re wnk_nl wnk_v wnk_v_ok
+
+WNK_CSP_HEADER="$(envsubst '${WNK_API_BASE_URL} ${WNK_OIDC_ISSUER} ${WNK_ATTACHMENT_ORIGIN}' \
+  < /etc/nginx/wnk-templates/csp-template.txt)" || exit 1
+export WNK_CSP_HEADER
+
+envsubst '${WNK_API_BASE_URL} ${WNK_OIDC_ISSUER} ${WNK_OIDC_CLIENT_ID}' \
+  < /etc/nginx/wnk-templates/env.js.template \
+  > /usr/share/nginx/html/env.js || exit 1

@@ -40,6 +40,7 @@ Log in as `alice`, `bob` or `carol`, password `weebo-dev`.
 | `web/` | Vue 3 frontend (from M1) |
 | `docs/` | The documentation site (Fumadocs) |
 | `dev/` | The development stack: Compose, seeds, test identities |
+| `charts/weebo-notify` | The Helm chart — published as `oci://ghcr.io/batleforc/charts/weebo-notify` |
 
 ## Documentation
 
@@ -51,6 +52,8 @@ task dev:docs    # http://localhost:3000
 - [Architecture](docs/content/docs/architecture/index.mdx) — hexagonal layers and the rules that hold them apart
 - [Configuration](docs/content/docs/ops/configuration.mdx) — layered TOML and `WNK_` environment
 - [Hardening](docs/content/docs/ops/hardening.mdx) — what the deployment must provide, because the application deliberately does not
+- [Runbooks](docs/content/docs/ops/runbooks.mdx) and [Backup & restore](docs/content/docs/ops/backup.mdx) — what to do when an alert fires, and how to get the data back
+- [Security policy](SECURITY.md) — reporting, verifying a release, and the gates still open before 1.0
 - [Decisions](docs/content/docs/adr/index.mdx) — why it is built this way, including the debts taken on knowingly
 
 The full design specification lives in

@@ -57,6 +57,13 @@ bucket = "weebo-notify-attachments"
 access_key = "weebo-dev"
 secret_key = "weebo-dev-secret"
 
+[sinks]
+# DEV ONLY. The HMAC key webhook sink ids are fingerprinted under. It is public —
+# it is in this file — so `notify-server doctor` flags it, and a non-dev instance
+# refuses to boot on it. Production: `openssl rand -base64 48` into a Secret,
+# served as WNK_SINKS__FINGERPRINT_KEY.
+fingerprint_key = "dev-only-sink-fingerprint-key-never-deploy-this"
+
 # The relay every `email` sink hands its mail to (§7.1bis). Mailpit, which
 # `task dev:sinks` starts and whose inbox is on http://localhost:8025 — nothing
 # leaves the machine, which is what makes it safe to point a real sink at it.

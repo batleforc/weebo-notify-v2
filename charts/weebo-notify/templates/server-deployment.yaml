@@ -91,41 +91,13 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            {{- if .Values.server.database.existingSecret }}
-            - name: WNK_DATABASE__URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.server.database.existingSecret }}
-                  key: {{ .Values.server.database.secretKey }}
-            {{- end }}
-            {{- if and (eq .Values.server.attachments.kind "s3") .Values.server.attachments.existingSecret }}
-            - name: WNK_ATTACHMENTS__ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.server.attachments.existingSecret }}
-                  key: {{ .Values.server.attachments.accessKeyKey }}
-            - name: WNK_ATTACHMENTS__SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.server.attachments.existingSecret }}
-                  key: {{ .Values.server.attachments.secretKeyKey }}
-            {{- end }}
-            {{- if and $fsBackend .Values.server.attachments.existingSecret }}
-            - name: WNK_ATTACHMENTS__TOKEN_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.server.attachments.existingSecret }}
-                  key: {{ .Values.server.attachments.tokenSecretKey }}
-            {{- end }}
-            {{- if and .Values.server.sinks.smtp.enabled .Values.server.sinks.smtp.existingSecret }}
-            - name: {{ .Values.server.sinks.smtp.passwordEnvName }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.server.sinks.smtp.existingSecret }}
-                  key: {{ .Values.server.sinks.smtp.passwordKey }}
-            {{- end }}
-            {{- with .Values.server.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            {{- include "weebo-notify.serverEnv" . | trim | nindent 12 }}
+            {{- if .Values.migrations.job.enabled }}
+            # The pre-install/pre-upgrade Job (server-migrate-job.yaml) already
+            # applied them; a replica racing it for the migration lock would only
+            # add a boot-time wait, never a schema.
+            - name: WNK_DATABASE__MIGRATE_ON_START
+              value: "false"
             {{- end }}
           {{- with .Values.server.extraEnvFrom }}
           envFrom:
@@ -136,13 +108,12 @@ spec:
           # replica just because Postgres is briefly unreachable (health.rs's
           # own reasoning for keeping the two separate).
           # Migrations and the boot reconcile (up to 60 s waiting on the lock)
-          # run before the listener binds: give them 5 min before liveness counts.
+          # run before the listener binds: give them time before liveness counts.
           startupProbe:
             httpGet:
               path: /healthz
               port: http
-            periodSeconds: 5
-            failureThreshold: 60
+            {{- toYaml .Values.server.startupProbe | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -152,7 +123,6 @@ spec:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
@@ -160,21 +130,7 @@ spec:
             - name: config
               mountPath: /etc/weebo-notify
               readOnly: true
-            {{- if .Values.server.push.webpush.enabled }}
-            - name: webpush-secret
-              mountPath: /etc/weebo-notify/secrets/webpush
-              readOnly: true
-            {{- end }}
-            {{- if .Values.server.push.apns.enabled }}
-            - name: apns-secret
-              mountPath: /etc/weebo-notify/secrets/apns
-              readOnly: true
-            {{- end }}
-            {{- if .Values.server.federation.enabled }}
-            - name: federation-secret
-              mountPath: /etc/weebo-notify/secrets/federation
-              readOnly: true
-            {{- end }}
+            {{- include "weebo-notify.serverSecretMounts" . | trim | nindent 12 }}
             {{- if $fsBackend }}
             - name: attachments
               mountPath: {{ .Values.server.attachments.persistence.path }}
@@ -186,21 +142,7 @@ spec:
         - name: config
           configMap:
             name: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
-        {{- if .Values.server.push.webpush.enabled }}
-        - name: webpush-secret
-          secret:
-            secretName: {{ required "server.push.webpush.existingSecret is required when server.push.webpush.enabled" .Values.server.push.webpush.existingSecret }}
-        {{- end }}
-        {{- if .Values.server.push.apns.enabled }}
-        - name: apns-secret
-          secret:
-            secretName: {{ required "server.push.apns.existingSecret is required when server.push.apns.enabled" .Values.server.push.apns.existingSecret }}
-        {{- end }}
-        {{- if .Values.server.federation.enabled }}
-        - name: federation-secret
-          secret:
-            secretName: {{ required "server.federation.existingSecret is required when server.federation.enabled" .Values.server.federation.existingSecret }}
-        {{- end }}
+        {{- include "weebo-notify.serverSecretVolumes" . | trim | nindent 8 }}
         {{- if $chartVolume }}
         - name: attachments
           persistentVolumeClaim:

@@ -17,8 +17,9 @@ use crate::authz::{Caller, Grant};
 const LAST_USED_GRANULARITY: time::Duration = time::Duration::minutes(1);
 
 /// How old an owner's remembered groups may be and still widen what a personal key
-/// reaches; past it, the key keeps only its owner's direct memberships.
-const GROUP_SNAPSHOT_TTL: time::Duration = time::Duration::days(7);
+/// reaches, unless `[auth] group_snapshot_ttl` says otherwise; past it, the key keeps
+/// only its owner's direct memberships.
+pub const DEFAULT_GROUP_SNAPSHOT_TTL: time::Duration = time::Duration::days(7);
 
 /// What arrived on the request.
 #[derive(Debug, Clone)]
@@ -37,6 +38,8 @@ pub struct Authenticate {
     federation: Option<Arc<dyn FederationVerifier>>,
     /// The identity-provider groups that carry the platform role (§5.4).
     platform_admins: Vec<String>,
+    /// See [`DEFAULT_GROUP_SNAPSHOT_TTL`].
+    group_snapshot_ttl: time::Duration,
     users: Arc<dyn UserRepository>,
     accounts: Arc<dyn ServiceAccountRepository>,
     keys: Arc<dyn ApiKeyRepository>,
@@ -66,6 +69,7 @@ impl Authenticate {
             tokens,
             federation: None,
             platform_admins: Vec::new(),
+            group_snapshot_ttl: DEFAULT_GROUP_SNAPSHOT_TTL,
             users,
             accounts,
             keys,
@@ -80,6 +84,14 @@ impl Authenticate {
     #[must_use]
     pub fn with_platform_admins(mut self, groups: Vec<String>) -> Self {
         self.platform_admins = groups;
+        self
+    }
+
+    /// How old remembered groups may be and still widen a personal key's reach
+    /// (`[auth] group_snapshot_ttl`).
+    #[must_use]
+    pub fn with_group_snapshot_ttl(mut self, ttl: time::Duration) -> Self {
+        self.group_snapshot_ttl = ttl;
         self
     }
 
@@ -128,8 +140,11 @@ impl Authenticate {
         let existing = self.users.find_by_subject(&claims.subject).await?;
         let (user, changed) = match existing {
             Some(mut found) => {
-                let changed = found
-                    .sync_from_claims(claims.email.as_deref(), claims.display_name.as_deref())?;
+                let changed = found.sync_from_claims(
+                    claims.email.as_deref(),
+                    claims.email_unverified,
+                    claims.display_name.as_deref(),
+                )?;
                 (found, changed)
             }
             None => (
@@ -235,11 +250,11 @@ impl Authenticate {
         }
 
         // A key carries no token, so the owner's groups come from their last login, and
-        // only a recent one (`GROUP_SNAPSHOT_TTL`).
+        // only a recent one (`group_snapshot_ttl`).
         let owner_groups = match &principal {
             Principal::User { .. } => {
                 self.devices
-                    .remembered_groups(&principal, now - GROUP_SNAPSHOT_TTL)
+                    .remembered_groups(&principal, now - self.group_snapshot_ttl)
                     .await?
             }
             _ => Vec::new(),
@@ -336,12 +351,22 @@ mod tests {
             self.inner.find_by_subject(subject).await
         }
 
-        async fn find_by_email(&self, email: &str) -> notify_ports::PortResult<Option<User>> {
+        async fn find_by_email(
+            &self,
+            email: &str,
+        ) -> notify_ports::PortResult<notify_ports::EmailMatch> {
             self.inner.find_by_email(email).await
         }
 
         async fn lookup(&self, text: &str, limit: u32) -> notify_ports::PortResult<Vec<User>> {
             self.inner.lookup(text, limit).await
+        }
+
+        async fn is_avatar(
+            &self,
+            avatar: notify_domain::AttachmentId,
+        ) -> notify_ports::PortResult<bool> {
+            self.inner.is_avatar(avatar).await
         }
 
         async fn upsert(&self, user: &User) -> notify_ports::PortResult<()> {
@@ -356,6 +381,7 @@ mod tests {
             issuer: Url::parse("https://auth.weebo.poc").unwrap(),
             subject: subject.to_owned(),
             email: Some("alice@weebo.poc".to_owned()),
+            email_unverified: false,
             display_name: Some("Alice".to_owned()),
             groups: vec!["dev-team".to_owned()],
             expires_at,
@@ -501,6 +527,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_email_the_provider_stops_verifying_is_forgotten() {
+        // Unlike an absent claim, an unverified one is the provider saying it no
+        // longer vouches for the address — keeping it would keep an email
+        // binding (§11) pointed at somebody the provider will not stand behind.
+        let fixture = fixture();
+        fixture.verifier.register(
+            "verified",
+            claims("ak-user-42", fixture.clock.now() + Duration::hours(1)),
+        );
+        fixture.verifier.register(
+            "unverified",
+            VerifiedClaims {
+                email: None,
+                email_unverified: true,
+                ..claims("ak-user-42", fixture.clock.now() + Duration::hours(1))
+            },
+        );
+
+        for token in ["verified", "unverified"] {
+            fixture
+                .auth
+                .execute(Credential::Bearer(token.to_owned()))
+                .await
+                .unwrap();
+        }
+
+        let stored = UserRepository::find_by_subject(&fixture.store, "ak-user-42")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.email, None);
+    }
+
+    #[tokio::test]
     async fn critical_t13_a_second_login_reuses_the_same_account() {
         let fixture = fixture();
         fixture.verifier.register(
@@ -617,9 +677,41 @@ mod tests {
 
         fixture
             .clock
-            .advance(GROUP_SNAPSHOT_TTL + Duration::seconds(1));
+            .advance(DEFAULT_GROUP_SNAPSHOT_TTL + Duration::seconds(1));
         let stale = fixture.auth.execute(key()).await.unwrap();
-        assert!(owner_groups(stale).is_empty());
+        assert_eq!(owner_groups(stale), [] as [std::string::String; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_configured_group_snapshot_ttl_replaces_the_week() {
+        let mut fixture = fixture();
+        fixture.auth = fixture
+            .auth
+            .clone()
+            .with_group_snapshot_ttl(Duration::hours(1));
+        let alice = UserId::generate();
+        seed_key(&fixture, ApiKeyOwner::User { id: alice }, None);
+        let principal = Principal::User { id: alice };
+        fixture
+            .store
+            .remember_groups(
+                &principal,
+                &["infra-admins".to_owned()],
+                fixture.clock.now(),
+            )
+            .await
+            .unwrap();
+
+        fixture.clock.advance(Duration::hours(2));
+        let caller = fixture
+            .auth
+            .execute(Credential::ApiKey("wnk_ci4xa9k2_s3cr3t".to_owned()))
+            .await
+            .unwrap();
+        let Grant::ApiKey { owner_groups, .. } = caller.grant else {
+            unreachable!("a key authenticates as a key");
+        };
+        assert!(owner_groups.is_empty(), "two hours is past a one-hour TTL");
     }
 
     #[tokio::test]
@@ -702,7 +794,7 @@ mod tests {
         .unwrap();
         // The principal above carries a different key id, so the list is empty —
         // what matters is that `touch` did not fail the request.
-        assert!(keys.is_empty());
+        assert_eq!(keys, [] as [notify_domain::ApiKey; 0]);
     }
 
     // --- T25 · Service accounts -------------------------------------------
@@ -834,6 +926,7 @@ mod tests {
                 issuer: Url::parse("https://idp.example").unwrap(),
                 subject: "alice".to_owned(),
                 email: None,
+                email_unverified: false,
                 display_name: None,
                 groups: vec![],
                 expires_at: fixture.clock.now() + Duration::hours(1),

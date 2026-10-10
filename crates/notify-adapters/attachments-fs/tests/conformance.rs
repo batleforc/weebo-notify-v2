@@ -51,6 +51,27 @@ async fn bytes_written_by_the_server_come_back_unchanged() {
 }
 
 #[tokio::test]
+async fn a_write_leaves_only_whole_files_behind() {
+    // Written to a temporary sibling and renamed into place, so `exists` never
+    // answers yes to half an upload — and nothing temporary is left to collect.
+    let (store, dir) = store();
+    let id = AttachmentId::generate();
+    store.put(id, "image/png", b"first".to_vec()).await.unwrap();
+    store
+        .put(id, "image/png", b"second".to_vec())
+        .await
+        .unwrap();
+
+    let mut names: Vec<String> = std::fs::read_dir(dir.path().join(id.to_string()))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["object", "object.type"]);
+    assert_eq!(store.get(id).await.unwrap().unwrap().bytes, b"second");
+}
+
+#[tokio::test]
 async fn a_missing_object_is_an_answer_rather_than_an_error() {
     let (store, _dir) = store();
     let never_written = AttachmentId::generate();
@@ -118,6 +139,7 @@ async fn a_presigned_upload_names_the_object_carries_a_verifiable_token_and_expi
         .verify(
             Purpose::Upload {
                 content_type: "image/png",
+                content_length: 1024,
             },
             signed.id,
             &token,
@@ -128,7 +150,8 @@ async fn a_presigned_upload_names_the_object_carries_a_verifiable_token_and_expi
         store
             .verify(
                 Purpose::Upload {
-                    content_type: "text/html"
+                    content_type: "text/html",
+                    content_length: 1024,
                 },
                 signed.id,
                 &token
@@ -152,7 +175,8 @@ async fn a_download_token_does_not_verify_as_an_upload() {
         store
             .verify(
                 Purpose::Upload {
-                    content_type: "image/png"
+                    content_type: "image/png",
+                    content_length: 1024,
                 },
                 id,
                 &token

@@ -27,8 +27,22 @@ const BACKPRESSURE: u32 = 64;
 /// expiry is handled separately at `expires_at`.
 const REAUTHENTICATE: Duration = Duration::from_secs(300);
 
+/// How long one write may wait on a client that stopped reading; past it the client is
+/// dropped, so it cannot hold a slot (or a revoked credential) by not reading.
+const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Silence (not even a pong) after which a WebSocket peer is presumed gone: two pings plus slack.
+const PONG_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A write that completed within [`SEND_TIMEOUT`]; `false` ends the connection either way.
+async fn sent<T, E>(write: impl core::future::Future<Output = Result<T, E>>) -> bool {
+    matches!(tokio::time::timeout(SEND_TIMEOUT, write).await, Ok(Ok(_)))
+}
+
 /// Holds a §8.2 connection slot and `realtime_connections{transport}` (design §13) for
-/// as long as it lives; released on drop so every exit path decrements.
+/// as long as it lives; released on drop so every exit path decrements. Eventually
+/// accurate: SSE notices a departure within ~2 [`KEEP_ALIVE`]s, WebSocket on close or after
+/// [`PONG_TIMEOUT`], and both drop a client that stops reading after [`SEND_TIMEOUT`].
 struct Connected {
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     transport: notify_ports::StreamKind,
@@ -328,7 +342,7 @@ pub(crate) async fn stream(
                         continue;
                     };
                     // Send failure: the client left, the ordinary end of a stream.
-                    if sender.send(data.into()).await.is_err() {
+                    if !sent(sender.send(data.into())).await {
                         return;
                     }
                 }
@@ -420,10 +434,22 @@ pub(crate) async fn websocket(
         let connected = connected;
         let mut reauthenticate = tokio::time::interval(REAUTHENTICATE);
         reauthenticate.tick().await;
+        // SSE has its keep-alive comment; a socket has pings. They also find a peer
+        // that vanished without a word, which reading alone never would.
+        let mut heartbeat = tokio::time::interval(KEEP_ALIVE);
+        heartbeat.tick().await;
+        let mut last_heard = tokio::time::Instant::now();
 
         // Same order as SSE: backlog first, then live, one page at a time.
         let mut more = true;
         'live: loop {
+            // Nothing reads the socket while a backlog drains, so a pong that
+            // arrives meanwhile waits unread — and a drain longer than
+            // `PONG_TIMEOUT` would have a healthy client dropped by the first
+            // heartbeat after it. The drain is our silence, not theirs: it does
+            // not count. (Each write is still bounded by `SEND_TIMEOUT`, so a
+            // peer that is truly gone is not kept alive by this.)
+            let draining = tokio::time::Instant::now();
             while more {
                 let events;
                 (events, more) = match connection.page().await {
@@ -439,23 +465,30 @@ pub(crate) async fn websocket(
                         tracing::error!(cursor = %event.cursor, "an event that will not serialise");
                         continue;
                     };
-                    if session.text(frame).await.is_err() {
+                    if !sent(session.text(frame)).await {
                         return;
                     }
                 }
             }
+            last_heard += draining.elapsed();
 
             tokio::select! {
                 // Read incoming frames to learn the client left.
                 message = incoming.next() => match message {
                     Some(Ok(actix_ws::Message::Ping(bytes))) => {
-                        if session.pong(&bytes).await.is_err() {
+                        last_heard = tokio::time::Instant::now();
+                        if !sent(session.pong(&bytes)).await {
                             return;
                         }
                     }
                     Some(Ok(actix_ws::Message::Close(_)) | Err(_)) | None => break,
-                    Some(Ok(_)) => {}
+                    Some(Ok(_)) => last_heard = tokio::time::Instant::now(),
                 },
+                _ = heartbeat.tick() => {
+                    if last_heard.elapsed() > PONG_TIMEOUT || !sent(session.ping(b"")).await {
+                        break;
+                    }
+                }
                 () = connection.expired(&state) => break,
                 () = connected.slot.kicked() => break,
                 _ = reauthenticate.tick() => {
@@ -472,7 +505,8 @@ pub(crate) async fn websocket(
             }
         }
 
-        let _ = session.close(None).await;
+        // Bounded too: a peer that stopped reading would hold the close as well.
+        let _ = tokio::time::timeout(SEND_TIMEOUT, session.close(None)).await;
     });
 
     Ok(response)

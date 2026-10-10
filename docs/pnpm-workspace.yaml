@@ -24,7 +24,7 @@ overrides:
   postcss: ^8.5.18
   # GHSA-f88m-g3jw-g9cj — inherited libvips vulnerabilities;
   # GHSA-rgj7-g3m4-5g8c — inherited libheif vulnerabilities, fixed in 0.35.4;
-  # a later libvips advisory is fixed in 0.35.5.
+  # GHSA-wq5f-xc86-pv6w, fixed in 0.35.5.
   sharp: ^0.35.5
   # GHSA-2v37-7h3g-55p8 — nanoid's custom alphabet generator can loop forever
   # when size is 0, fixed in 3.3.17. Reaches us through postcss above, same as
@@ -33,13 +33,13 @@ overrides:
   # GHSA fast-uri 3.x < 3.1.6 (four advisories, high). Reaches us only through
   # `serve` > ajv, the static preview server; fixed upstream in 3.1.6.
   fast-uri: ^3.1.6
-  # compression <1.8.2 (high). Reaches us only through `serve`, the static preview
-  # server; fixed upstream in 1.8.2.
+  # GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p — brace-expansion
+  # 1.x < 1.1.21 (unbounded expansion). Through `serve` > serve-handler > minimatch;
+  # the 1.x line carries the fix, so this stays on the major minimatch 3 expects.
+  "brace-expansion@<1.1.21": ^1.1.21
+  # GHSA-vc2v-76pw-4v95 — compression < 1.8.2, through `serve`.
   compression: ^1.8.2
-  # brace-expansion 1.x <1.1.21 (high/moderate, ReDoS). Through `serve` > minimatch 3,
-  # the static preview server; the 1.x line has the fix, so no major jump.
-  "brace-expansion@1": ^1.1.21
-  # source-map-js <1.2.2 (high). Through @tailwindcss/postcss at build time.
+  # GHSA-68fv-2mgg-jv7q — source-map-js < 1.2.2, through @tailwindcss/node.
   source-map-js: ^1.2.2
 
 # Same supply-chain gate CI's pnpm enforces: never resolve a version published less

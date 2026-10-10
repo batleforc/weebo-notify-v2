@@ -36,8 +36,12 @@ impl InteractionRepository for PgStore {
             .await
             .map_err(|error| fail("interaction", error))?;
 
+        // `FOR SHARE`, first, for the reason `receipts::record` gives: `close_stale`
+        // re-checks recent interactions under `FOR NO KEY UPDATE SKIP LOCKED`, and
+        // an interaction in flight must make it skip the row rather than close
+        // something somebody is attending to.
         let channel: Option<String> =
-            sqlx::query_scalar("SELECT channel_id FROM notifications WHERE id = $1")
+            sqlx::query_scalar("SELECT channel_id FROM notifications WHERE id = $1 FOR SHARE")
                 .bind(record.notification_id.to_string())
                 .fetch_optional(&mut *transaction)
                 .await

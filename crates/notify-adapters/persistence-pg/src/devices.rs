@@ -42,12 +42,9 @@ impl DeviceRepository for PgStore {
     }
 
     async fn upsert(&self, device: &Device) -> PortResult<()> {
-        sqlx::query(
-            "INSERT INTO devices
-                 (id, owner_ref, owner, label, transport, public_key, cursor_seq, enrolled_at,
-                  last_seen_at, revoked_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             ON CONFLICT (id) DO UPDATE
+        insert(
+            device,
+            "ON CONFLICT (id) DO UPDATE
                SET owner_ref    = EXCLUDED.owner_ref,
                    owner        = EXCLUDED.owner,
                    label        = EXCLUDED.label,
@@ -56,26 +53,40 @@ impl DeviceRepository for PgStore {
                    cursor_seq   = EXCLUDED.cursor_seq,
                    last_seen_at = EXCLUDED.last_seen_at,
                    revoked_at   = EXCLUDED.revoked_at",
-        )
-        .bind(device.id.to_string())
-        .bind(device.owner.reference())
-        .bind(to_json("device.owner", &device.owner)?)
-        .bind(&device.label)
-        .bind(to_json("device.transport", &device.transport)?)
-        .bind(
-            device
-                .public_key
-                .as_ref()
-                .map(|key| key.as_bytes().to_vec()),
-        )
-        .bind(device.cursor.map(sequence))
-        .bind(device.enrolled_at)
-        .bind(device.last_seen_at)
-        .bind(device.revoked_at)
+        )?
         .execute(self.pool())
         .await
         .map_err(|error| fail("device", error))
         .map(|_| ())
+    }
+
+    async fn enrol_capped(&self, device: &Device, max: u32) -> PortResult<bool> {
+        // An advisory lock per owner, held to the end of the transaction, so the
+        // count and the insert are one step: two enrolments racing at the cap would
+        // otherwise both count room and both insert. Per owner, so nobody else's
+        // enrolment waits on it.
+        let mut transaction = self.pool().begin().await.map_err(|e| fail("device", e))?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('device-cap:' || $1))")
+            .bind(device.owner.reference())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| fail("device", error))?;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM devices WHERE owner_ref = $1 AND revoked_at IS NULL",
+        )
+        .bind(device.owner.reference())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| fail("device", error))?;
+        if active >= i64::from(max) {
+            return Ok(false);
+        }
+        insert(device, "")?
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| fail("device", error))?;
+        transaction.commit().await.map_err(|e| fail("device", e))?;
+        Ok(true)
     }
 
     async fn revoke(&self, id: DeviceId, at: OffsetDateTime) -> PortResult<bool> {
@@ -187,6 +198,38 @@ impl DeviceRepository for PgStore {
         .map_err(|error| fail("device", error))?;
         Ok(groups.unwrap_or_default())
     }
+}
+
+/// `INSERT INTO devices` with every column bound, followed by `conflict` — shared
+/// by the plain upsert and the capped enrolment.
+fn insert(
+    device: &Device,
+    conflict: &str,
+) -> PortResult<sqlx::query::Query<'static, sqlx::Postgres, sqlx::postgres::PgArguments>> {
+    let sql = [
+        "INSERT INTO devices
+             (id, owner_ref, owner, label, transport, public_key, cursor_seq, enrolled_at,
+              last_seen_at, revoked_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ",
+        conflict,
+    ]
+    .concat();
+    Ok(sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(device.id.to_string())
+        .bind(device.owner.reference())
+        .bind(to_json("device.owner", &device.owner)?)
+        .bind(device.label.clone())
+        .bind(to_json("device.transport", &device.transport)?)
+        .bind(
+            device
+                .public_key
+                .as_ref()
+                .map(|key| key.as_bytes().to_vec()),
+        )
+        .bind(device.cursor.map(sequence))
+        .bind(device.enrolled_at)
+        .bind(device.last_seen_at)
+        .bind(device.revoked_at))
 }
 
 fn hydrate(row: &PgRow) -> PortResult<Device> {

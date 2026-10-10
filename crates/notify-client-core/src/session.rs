@@ -18,6 +18,39 @@ pub struct Session {
     /// The generated client's HTTP client, for the one call it can't make (`sync`).
     http: reqwest::Client,
     base: String,
+    deadlines: Deadlines,
+}
+
+/// How long one whole request may take, on top of the connect and idle-read bounds.
+///
+/// The idle-read bound alone does not end a request that is never *silent*: a server
+/// or proxy trickling a byte every few seconds keeps `notify publish` — and the
+/// tray's poll — hanging indefinitely.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Deadlines {
+    /// Every ordinary JSON exchange.
+    pub(crate) json: std::time::Duration,
+    /// An upload's allowance before its size is counted ([`Self::upload`]).
+    pub(crate) upload_floor: std::time::Duration,
+}
+
+impl Deadlines {
+    const DEFAULT: Self = Self {
+        json: std::time::Duration::from_secs(60),
+        upload_floor: std::time::Duration::from_secs(30),
+    };
+
+    /// The slowest rate an upload is allowed to crawl at — a bad mobile uplink.
+    const UPLOAD_RATE: u64 = 64 * 1024;
+    /// Past this a "slow upload" is a stuck one, whatever its size.
+    const UPLOAD_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+    /// The total bound for uploading `len` bytes: scaled to size, so a large file
+    /// on a slow link is not cut off the way a stalled one is.
+    fn upload(self, len: usize) -> std::time::Duration {
+        let transfer = u64::try_from(len).unwrap_or(u64::MAX) / Self::UPLOAD_RATE;
+        (self.upload_floor + std::time::Duration::from_secs(transfer)).min(Self::UPLOAD_CAP)
+    }
 }
 
 /// A revision as a front end describes it; fields left `None` keep their current value on update.
@@ -71,6 +104,11 @@ impl Revision {
 impl Session {
     /// Open one against a profile.
     pub fn open(profile: &Profile) -> Result<Self, ClientError> {
+        Self::open_with(profile, Deadlines::DEFAULT)
+    }
+
+    /// [`Self::open`] with other deadlines — for tests that cannot wait a minute.
+    pub(crate) fn open_with(profile: &Profile, deadlines: Deadlines) -> Result<Self, ClientError> {
         let mut headers = reqwest::header::HeaderMap::new();
 
         if let Some(token) = &profile.token {
@@ -86,6 +124,15 @@ impl Session {
             // No pooled keep-alive: an idle TUI's first click would hit a socket the server
             // (5 s keep-alive) already closed, failing with `IncompleteMessage` instead of reconnecting.
             .pool_max_idle_per_host(0)
+            // Without these an unreachable or wedged server hangs `notify publish`
+            // (and the tray's poll) forever. The idle bounds catch *silence*; the
+            // total one catches a server that never goes quiet and never finishes.
+            // `upload_attachment` overrides the total per request, scaled to size.
+            // Nothing here consumes `/stream` (SSE) today; whatever does must
+            // override it too, or every stream is cut after a minute.
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .read_timeout(std::time::Duration::from_secs(60))
+            .timeout(deadlines.json)
             .build()
             .map_err(ClientError::Transport)?;
 
@@ -95,6 +142,7 @@ impl Session {
             api: Client::new_with_client(&base, http.clone()),
             http,
             base,
+            deadlines,
         })
     }
 
@@ -343,6 +391,7 @@ impl Session {
         }
 
         let response = request
+            .timeout(self.deadlines.upload(bytes.len()))
             .body(bytes)
             .send()
             .await
@@ -382,5 +431,128 @@ impl Session {
     /// The authenticated HTTP client, for the one call the generated one can't make (`sync`).
     pub(crate) fn http(&self) -> &reqwest::Client {
         &self.http
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a failing assertion is a failing test"
+    )]
+
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// Long enough to tell "the deadline fired" from "a 60 s idle bound fired".
+    const WITHIN: Duration = Duration::from_secs(5);
+
+    fn session(listener: &TcpListener, deadlines: Deadlines) -> Session {
+        let port = listener.local_addr().unwrap().port();
+        let profile = Profile {
+            url: format!("http://127.0.0.1:{port}").parse().unwrap(),
+            token: None,
+        };
+        Session::open_with(&profile, deadlines).unwrap()
+    }
+
+    /// Read one request, body included, so the client sees it as sent.
+    fn read_request(stream: &TcpStream) {
+        let mut reader = BufReader::new(stream);
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+    }
+
+    /// Accept, read, and never answer: held open so it is a stall, not a reset.
+    fn stall(listener: &TcpListener) {
+        let (stream, _) = listener.accept().unwrap();
+        read_request(&stream);
+        std::thread::sleep(WITHIN * 2);
+        drop(stream);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_json_request_that_never_answers_gives_up_at_its_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let session = session(
+            &listener,
+            Deadlines {
+                json: Duration::from_millis(200),
+                ..Deadlines::DEFAULT
+            },
+        );
+        std::thread::spawn(move || stall(&listener));
+
+        let started = Instant::now();
+        let outcome = session.unread().await;
+
+        assert!(
+            matches!(&outcome, Err(ClientError::Transport(e)) if e.is_timeout()),
+            "{outcome:?}"
+        );
+        assert!(started.elapsed() < WITHIN, "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stalled_upload_gives_up_at_its_own_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The JSON deadline stays long: only the upload's may end this test.
+        let session = session(
+            &listener,
+            Deadlines {
+                json: Duration::from_secs(60),
+                upload_floor: Duration::from_millis(200),
+            },
+        );
+        std::thread::spawn(move || {
+            let (mut presign, _) = listener.accept().unwrap();
+            read_request(&presign);
+            let body = format!(
+                r#"{{"id":"att_01","url":"http://127.0.0.1:{port}/put","headers":{{}},"expires_at":"2099-01-01T00:00:00Z"}}"#
+            );
+            write!(
+                presign,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            drop(presign);
+            stall(&listener);
+        });
+
+        let started = Instant::now();
+        let outcome = session
+            .upload_attachment("ci", "text/plain", b"hello".to_vec())
+            .await;
+
+        assert!(
+            matches!(&outcome, Err(ClientError::Transport(e)) if e.is_timeout()),
+            "{outcome:?}"
+        );
+        assert!(started.elapsed() < WITHIN, "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn the_upload_deadline_scales_with_size_up_to_a_cap() {
+        let deadlines = Deadlines::DEFAULT;
+        assert_eq!(deadlines.upload(0), Duration::from_secs(30));
+        assert_eq!(deadlines.upload(64 * 1024 * 60), Duration::from_secs(90));
+        assert_eq!(deadlines.upload(usize::MAX), Deadlines::UPLOAD_CAP);
     }
 }

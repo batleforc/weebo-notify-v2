@@ -17,7 +17,7 @@ use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use notify_client_core::{Profile, Session, Store, StreamSignal, StreamWatch};
+use notify_client_core::{Session, Store, StreamSignal, StreamWatch};
 
 use crate::CliError;
 pub(crate) use app::{ActionItem, App, Message, Pane};
@@ -33,7 +33,7 @@ pub(crate) fn run(profile_name: &str, notify_send: bool) -> Result<(), CliError>
         ));
     }
 
-    let profile = Profile::load(profile_name)?;
+    let profile = crate::login::load_profile(profile_name)?;
     let session = Session::open(&profile)?;
     let store = Store::open(profile_name)?;
 

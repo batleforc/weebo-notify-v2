@@ -288,4 +288,59 @@ impl SinkQueue for PgStore {
             })
             .collect()
     }
+
+    async fn prune_dead_letters(&self, older_than: OffsetDateTime, limit: u32) -> PortResult<u64> {
+        // Bounded like every other leader-side delete, so one pass after a long
+        // outage does not hold a lock over the whole table.
+        let pruned = sqlx::query(
+            "DELETE FROM sink_dead_letters
+              WHERE delivery_id IN (
+                    SELECT delivery_id FROM sink_dead_letters
+                     WHERE dead_at < $1
+                     ORDER BY dead_at
+                     LIMIT $2
+              )",
+        )
+        .bind(older_than)
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("sink.dlq", error))?;
+
+        Ok(pruned.rows_affected())
+    }
+
+    async fn rekey_sinks(
+        &self,
+        rekey: &(dyn for<'s> Fn(&'s str) -> Option<SinkId> + Sync),
+    ) -> PortResult<u64> {
+        // The distinct ids rather than the rows: a boot after a long outage may have
+        // thousands of deliveries owed to a handful of sinks.
+        let stored: Vec<String> = sqlx::query_scalar(
+            "SELECT sink FROM sink_queue UNION SELECT sink FROM sink_dead_letters",
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("sink.queue", error))?;
+
+        let mut moved = 0_u64;
+        for old in stored {
+            let Some(new) = rekey(&old).filter(|new| new.as_str() != old) else {
+                continue;
+            };
+            for statement in [
+                "UPDATE sink_queue SET sink = $2 WHERE sink = $1",
+                "UPDATE sink_dead_letters SET sink = $2 WHERE sink = $1",
+            ] {
+                moved += sqlx::query(statement)
+                    .bind(&old)
+                    .bind(new.as_str())
+                    .execute(self.pool())
+                    .await
+                    .map_err(|error| fail("sink.queue", error))?
+                    .rows_affected();
+            }
+        }
+        Ok(moved)
+    }
 }

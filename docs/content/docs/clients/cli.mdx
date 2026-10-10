@@ -26,6 +26,16 @@ Any authenticated caller can fetch it, a person or a service account, no extra
 scope. Linux only for now — see [configuration](/docs/ops/configuration#cli-download)
 for the operator side of this, and what an unconfigured deployment answers instead.
 
+<Callout type="warn">
+  **The binary matches the replica's CPU, not yours.** The endpoint serves the file
+  baked into the server image, and the release images are multi-arch: a request
+  answered by an arm64 node returns an **aarch64** `notify`, one answered by an amd64
+  node an **x86-64** one. On a cluster mixing both, two downloads can differ. Check
+  before running it — `file notify` — and on a mismatch build from source or fetch
+  again; `uname -m` on your side is the architecture you need. There is no `?arch=`
+  parameter today.
+</Callout>
+
 ## The commands
 
 | Command | What it does |

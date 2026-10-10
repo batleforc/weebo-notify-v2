@@ -9,11 +9,16 @@ use sha2::Sha256;
 use time::OffsetDateTime;
 
 /// What a token authorises; bound into the signature so an upload token cannot be a download.
-/// `Upload` pins the content type so approval for `image/png` cannot store `text/html`.
+/// `Upload` pins the content type and length (as `SigV4` signs them), so approval for a 1 KiB
+/// `image/png` cannot store 25 MiB of `text/html`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose<'a> {
-    /// Store bytes of exactly this (normalised) content type, and no other.
-    Upload { content_type: &'a str },
+    /// Store exactly `content_length` bytes of exactly this (normalised) content
+    /// type, and nothing else.
+    Upload {
+        content_type: &'a str,
+        content_length: u64,
+    },
     /// Hand back whatever was stored.
     Download,
 }
@@ -23,14 +28,6 @@ impl Purpose<'_> {
         match self {
             Self::Upload { .. } => "upload",
             Self::Download => "download",
-        }
-    }
-
-    /// The caller-declared material this purpose pins, if any.
-    const fn bound(&self) -> Option<&str> {
-        match self {
-            Self::Upload { content_type } => Some(content_type),
-            Self::Download => None,
         }
     }
 }
@@ -117,10 +114,17 @@ fn digest(secret: &[u8], purpose: Purpose<'_>, id: AttachmentId, expires_unix: i
     mac.update(b".");
     mac.update(expires_unix.to_string().as_bytes());
 
-    // Appended last: no earlier field can contain `.`, and the content type is already normalised.
-    if let Some(bound) = purpose.bound() {
+    // Appended last: no earlier field can contain `.`, the content type is already
+    // normalised, and the length is digits, so the last `.` separates the two.
+    if let Purpose::Upload {
+        content_type,
+        content_length,
+    } = purpose
+    {
         mac.update(b".");
-        mac.update(bound.as_bytes());
+        mac.update(content_type.as_bytes());
+        mac.update(b".");
+        mac.update(content_length.to_string().as_bytes());
     }
 
     mac.finalize().into_bytes().to_vec()
@@ -141,6 +145,7 @@ mod tests {
     /// The one an honest client is approved for, throughout.
     const PNG: Purpose<'static> = Purpose::Upload {
         content_type: "image/png",
+        content_length: 1_024,
     };
 
     fn ttl(now: OffsetDateTime) -> OffsetDateTime {
@@ -180,7 +185,8 @@ mod tests {
                 verify(
                     SECRET,
                     Purpose::Upload {
-                        content_type: impostor
+                        content_type: impostor,
+                        content_length: 1_024,
                     },
                     id,
                     &token,
@@ -193,17 +199,47 @@ mod tests {
     }
 
     #[test]
-    fn the_content_type_cannot_be_slid_into_the_expiry_field() {
-        // Field concatenation must be unambiguous: `""` signed vs `.image/png` presented.
+    fn a_token_approved_for_one_length_does_not_verify_for_a_larger_body() {
         let now = OffsetDateTime::now_utc();
         let id = AttachmentId::generate();
-        let token = sign(SECRET, Purpose::Upload { content_type: "" }, id, ttl(now));
+        let token = sign(SECRET, PNG, id, ttl(now));
 
         assert_eq!(
             verify(
                 SECRET,
                 Purpose::Upload {
-                    content_type: ".image/png"
+                    content_type: "image/png",
+                    content_length: 25 * 1024 * 1024,
+                },
+                id,
+                &token,
+                now
+            ),
+            Err(TokenError::Mismatch)
+        );
+    }
+
+    #[test]
+    fn the_content_type_cannot_be_slid_into_the_expiry_field() {
+        // Field concatenation must be unambiguous: `""` signed vs `.image/png` presented.
+        let now = OffsetDateTime::now_utc();
+        let id = AttachmentId::generate();
+        let token = sign(
+            SECRET,
+            Purpose::Upload {
+                content_type: "",
+                content_length: 1_024,
+            },
+            id,
+            ttl(now),
+        );
+
+        assert_eq!(
+            verify(
+                SECRET,
+                Purpose::Upload {
+                    content_type: ".image/png",
+                    content_length: 1_024,
                 },
                 id,
                 &token,

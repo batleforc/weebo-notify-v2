@@ -88,15 +88,18 @@ tasks:
       - cmd: |
           {{.NEED_STACK}}
           # Keep default features (the tray). `custom-protocol` makes the binary load `web/dist` instead
-          # of `build.devUrl`. `TAURI_CONFIG` pins the CSP to `web/public/env.js`'s origins.
+          # of `build.devUrl`. `TAURI_CONFIG` pins the CSP to `web/public/env.js`'s origins;
+          # `--updater` adds `plugins.updater` when WNK_UPDATER_ENDPOINT/_PUBKEY are set, and fails
+          # on an endpoint with no key.
           set -eu
-          csp="$(node web/scripts/tauri-csp.ts)"
+          csp="$(node web/scripts/tauri-csp.ts --updater)"
           cd web/src-tauri && TAURI_CONFIG="$csp" cargo build --release --features custom-protocol
 
   bundle:
-    desc: "Package the desktop shell as a .deb and an AppImage (§10bis.3)."
-    # `cargo tauri build` with the bundlers; targets come from `tauri.conf.json`. Unsigned (normal
-    # on Linux); updater/provenance signing is §3.2bis's job, not this task's.
+    desc: "Package the desktop shell as a .deb and an AppImage (§10bis.3, M5)"
+    # `cargo tauri build` with the bundlers; targets come from `tauri.conf.json`. Signing is env-driven
+    # (README « Updates and signing »): TAURI_SIGNING_PRIVATE_KEY signs the artefacts, WNK_UPDATER_ENDPOINT
+    # + WNK_UPDATER_PUBKEY compile the updater in. Without them: unsigned, never-updating bundle.
     cmds:
       - cmd: |
           # `set -e`: otherwise a failed bundler yields a green task and a stale "Bundles:" line.
@@ -108,8 +111,14 @@ tasks:
             echo "Nothing was built."
             exit 0
           fi
-          # The CSP pinned to `web/public/env.js`'s origins — see `build` above.
-          csp="$(node web/scripts/tauri-csp.ts)"
+          # A bundle is installed elsewhere and talks to whatever its env.js names,
+          # for good — so it must never ship `web/public/env.js`'s localhost. These
+          # are written into `dist/env.js` by `vite.config.ts` (`desktopEnv`) during
+          # the `pnpm build` tauri runs, and pin the CSP below to the same origins.
+          : "${WNK_API_BASE_URL:?set WNK_API_BASE_URL (and WNK_OIDC_ISSUER) to the deployment this bundle talks to}"
+          : "${WNK_OIDC_ISSUER:?set WNK_OIDC_ISSUER to the deployment's identity provider}"
+          export WNK_API_BASE_URL WNK_OIDC_ISSUER
+          csp="$(node web/scripts/tauri-csp.ts --updater)"
           cd web/src-tauri && cargo tauri build --config "$csp" {{.CLI_ARGS}}
           echo
           echo "Bundles: web/src-tauri/target/release/bundle/"

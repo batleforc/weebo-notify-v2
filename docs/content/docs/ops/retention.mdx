@@ -1,0 +1,119 @@
+---
+title: Retention
+description: What the purge removes, how fast it can go, how to see it falling behind, and how to archive and bound the audit log.
+---
+
+One leader-only pass a minute (see [high availability](/docs/ops/high-availability))
+removes everything that has outlived its purpose. It loops in batches until each
+queue is drained or its time budget is spent, re-checking leadership before every
+batch.
+
+| What | When it goes |
+| --- | --- |
+| Notification (expiry) | its TTL ran out — becomes a tombstone |
+| Notification row (purge) | 7 days after the tombstone, attachments first |
+| Event log rows | 30 days after they were recorded |
+| Unreferenced presigned upload | 1 day after signing, object first |
+| Presign registry row of a referenced upload | as soon as a revision names it |
+| Spent federation token ids | once the token they guard has expired |
+| Revoked device, revoked or expired API key | `[retention] revoked_credentials` after it stopped working |
+| Audit entries | **never** by default; `[retention] audit` (≥ 90 days) when set — see below |
+
+## Tuning
+
+```toml
+[retention]
+batch_size = 1000          # rows per statement
+pass_budget = "20s"        # how long one pass may loop; keep it under a minute
+revoked_credentials = "90d"
+# audit = "400d"           # unset by default: the audit log keeps everything
+```
+
+Every stage takes at least one batch per pass whatever the budget says, so one huge
+backlog cannot starve the others.
+
+## Seeing it fall behind
+
+The leader exports, after every pass:
+
+- `retention_backlog_rows{kind="events"|"expire"|"purge"}` — rows the next pass
+  would take (counted up to 100 000);
+- `retention_oldest_event_age_seconds` — compare with the 30-day event retention.
+
+A backlog that grows pass after pass means the purge is slower than the instance
+publishes: raise `batch_size` or `pass_budget`.
+
+## The audit log
+
+`audit_entries` is append-only (advisory SEC-P2-37). A trigger refuses `UPDATE`,
+`DELETE` and `TRUNCATE`
+([ADR-0026](/docs/adr/0026-a-one-time-redaction-of-secrets-in-the-audit-log)), and
+`tests/audit_is_append_only.rs` keeps destructive SQL out of the code. **By default
+nothing deletes from it.**
+
+Retention is opt-in
+([ADR-0027](/docs/adr/0027-audit-retention-through-one-sanctioned-purge)):
+
+```toml
+[retention]
+audit = "400d"   # WNK_RETENTION__AUDIT — refused under 90d
+```
+
+With it set, the purge pass deletes entries older than that, in `batch_size`
+batches, as its last stage. The only way it can delete is
+`wnk_audit_purge(cutoff, batch)`, a database function that:
+
+- refuses any cutoff younger than 90 days, whatever the caller asks for;
+- lets the trigger pass for its own `DELETE` only;
+- writes an `audit.purged` entry (`purged_entries`, `cutoff`) for every batch that
+  deleted something.
+
+`UPDATE` and `TRUNCATE` stay refused. The pass logs `audit_purged` with its other
+counts.
+
+<Callout type="warn">
+Nothing in the instance archives what the purge deletes. If you need the old
+entries (for compliance, or for an investigation that might start late), **archive
+them before you enable `audit`**, and again before each window you are about to
+lose.
+</Callout>
+
+### Archiving before it goes
+
+As any role that can read the table:
+
+```sql
+-- Everything the first pass with audit = "400d" will delete. Keep the file
+-- somewhere this instance cannot write.
+\copy (SELECT * FROM audit_entries WHERE at < now() - interval '400 days' ORDER BY seq) TO 'audit-archive.csv' WITH CSV HEADER
+```
+
+or the whole table in one restorable file:
+
+```bash
+pg_dump --data-only --table=audit_entries "$DATABASE_URL" > audit-archive.sql
+```
+
+Then set `[retention] audit` and restart. The trigger never has to be disabled,
+and you should not disable it: a `DISABLE TRIGGER audit_entries_append_only` in
+the server log now means somebody went around the sanctioned path.
+
+### Separate roles
+
+When the application connects as a role other than the one that runs migrations
+(`migrate_on_start = false`), grant it the purge and nothing more:
+
+```sql
+GRANT EXECUTE ON FUNCTION wnk_audit_purge(timestamptz, integer) TO weebo_app;
+```
+
+Without that grant an enabled `audit` fails its stage every pass with a
+permission error. The other stages run first and are not affected.
+
+### What the floor does not stop
+
+Somebody holding the application's credentials can call the function too. They
+can reach only entries more than 90 days old, and the call leaves an
+`audit.purged` entry behind. A database **owner** can still disable the trigger.
+Evidence that has to survive that belongs outside the database: ship the
+`audit = true` structured-log mirror to append-only (WORM) storage.

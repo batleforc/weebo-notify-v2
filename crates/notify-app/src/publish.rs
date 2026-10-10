@@ -1,6 +1,7 @@
 //! Writing notifications: `POST` creates (idempotent via `Idempotency-Key`), `PUT`
 //! upserts by external id (§8.3). Every publisher wraps one of these two, so quotas,
-//! hygiene and attribution are enforced in one place.
+//! hygiene and attribution are enforced in one place. A `POST`'s replay commits in
+//! the publish's own transaction (ADR-0025), so a dropped request never publishes twice.
 
 use std::sync::Arc;
 
@@ -9,8 +10,8 @@ use notify_domain::{
     TtlResolution,
 };
 use notify_ports::{
-    Allowance, Claim, Clock, Failure, IdempotencyStore, NotificationRepository, PortError, Quota,
-    RateLimiter,
+    Allowance, Claim, Clock, Failure, IdempotencyStore, IdempotentReply, NotificationRepository,
+    PortError, Quota, RateLimiter,
 };
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
@@ -106,6 +107,9 @@ impl Writer {
     }
 
     /// Record a first revision, then fan it out.
+    ///
+    /// `claimed` is the `Idempotency-Key` this answers, as `(principal_ref, key)`
+    /// claimed at `now`: its replay commits with the write.
     async fn create(
         &self,
         caller: &Caller,
@@ -113,6 +117,7 @@ impl Writer {
         external_id: Option<ExternalId>,
         draft: RevisionDraft,
         now: OffsetDateTime,
+        claimed: Option<(String, String)>,
     ) -> Result<Published, Failure> {
         let author = self.attribution.author(&caller.principal).await;
         let (notification, written) = Notification::create(
@@ -125,12 +130,35 @@ impl Writer {
             &channel.policy,
         )?;
 
+        let mut after = self.fanout.after_write(&notification, &written.revision);
+        after.reply = claimed.map(|(principal_ref, key)| {
+            let (notification, revision, retention) = (
+                notification.clone(),
+                written.revision.clone(),
+                written.retention,
+            );
+            IdempotentReply {
+                principal_ref,
+                key,
+                claimed_at: now,
+                expires_at: now + IDEMPOTENCY_WINDOW,
+                encode: Box::new(move |cursor| {
+                    serde_json::to_string(&Published {
+                        notification: notification.clone(),
+                        revision: revision.clone(),
+                        retention,
+                        cursor,
+                        replayed: false,
+                    })
+                    .map_err(|error| PortError::corrupt("idempotency.response", error))
+                }),
+            }
+        });
         let cursor = self
             .notifications
-            .insert(&notification, &written.revision)
+            .insert_with(&notification, &written.revision, &after)
             .await?;
-        self.after_write(&notification, &written.revision, cursor)
-            .await;
+        self.after_commit(&notification, cursor).await;
 
         Ok(Published {
             notification,
@@ -153,12 +181,12 @@ impl Writer {
         let author = self.attribution.author(&caller.principal).await;
         let written = notification.revise(draft, author, now, &channel.policy)?;
 
+        let after = self.fanout.after_write(&notification, &written.revision);
         let cursor = self
             .notifications
-            .append_revision(&notification, &written.revision)
+            .append_revision_with(&notification, &written.revision, &after)
             .await?;
-        self.after_write(&notification, &written.revision, cursor)
-            .await;
+        self.after_commit(&notification, cursor).await;
 
         Ok(Published {
             notification,
@@ -169,19 +197,12 @@ impl Writer {
         })
     }
 
-    async fn after_write(
-        &self,
-        notification: &Notification,
-        revision: &notify_domain::Revision,
-        cursor: Cursor,
-    ) {
+    /// Everything else was committed with the write (ADR-0025); what is left is
+    /// telling the streams and waking the outbox worker. Dropping the request
+    /// here loses only latency: the cursor and the worker's tick catch up.
+    async fn after_commit(&self, notification: &Notification, cursor: Cursor) {
+        self.fanout.wake();
         self.fanout.poke_channel(notification, cursor).await;
-        self.fanout.push(notification).await;
-        self.fanout
-            .queue_sinks(notification, revision, cursor)
-            .await;
-        // Last: real-time delivery must not wait on a thumbnail nobody asked for yet.
-        self.fanout.derive_thumbnail(revision).await;
     }
 }
 
@@ -245,7 +266,7 @@ impl PublishNotification {
             self.writer.check_quotas(caller, &channel, now).await?;
             return self
                 .writer
-                .create(caller, &channel, None, request.draft, now)
+                .create(caller, &channel, None, request.draft, now, None)
                 .await;
         };
 
@@ -269,51 +290,32 @@ impl PublishNotification {
             })),
             Claim::Fresh => {
                 // Quota is charged only for real work, so a retried success replays instead of 429.
+                // The replay commits with the notification (ADR-0025).
                 let published = match self.writer.check_quotas(caller, &channel, now).await {
                     Ok(()) => {
                         self.writer
-                            .create(caller, &channel, None, request.draft, now)
+                            .create(
+                                caller,
+                                &channel,
+                                None,
+                                request.draft,
+                                now,
+                                Some((principal_ref.clone(), key.clone())),
+                            )
                             .await
                     }
                     Err(failure) => Err(failure),
                 };
-                let published = match published {
-                    Ok(published) => published,
-                    Err(failure) => {
-                        // Otherwise the client's retry gets `InFlight` until the claim lapses.
-                        let _ = self
-                            .writer
-                            .idempotency
-                            .release(&principal_ref, &key, now)
-                            .await;
-                        return Err(failure);
-                    }
-                };
-
-                // The notification exists now: failing here would make the client retry (and,
-                // once the claim lapses, publish twice). Only the replay is lost.
-                match serde_json::to_string(&published) {
-                    Ok(encoded) => {
-                        if let Err(error) = self
-                            .writer
-                            .idempotency
-                            .complete(
-                                &principal_ref,
-                                &key,
-                                now,
-                                &encoded,
-                                now + IDEMPOTENCY_WINDOW,
-                            )
-                            .await
-                        {
-                            tracing::warn!(%error, "published, but could not store the idempotent replay");
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "published, but could not encode the idempotent replay");
-                    }
+                if published.is_err() {
+                    // Nothing was written; otherwise the client's retry gets `InFlight`
+                    // until the claim lapses.
+                    let _ = self
+                        .writer
+                        .idempotency
+                        .release(&principal_ref, &key, now)
+                        .await;
                 }
-                Ok(published)
+                published
             }
         }
     }
@@ -404,6 +406,7 @@ impl UpsertNotification {
                             Some(request.external_id.clone()),
                             request.draft.clone(),
                             now,
+                            None,
                         )
                         .await
                 }
@@ -433,9 +436,11 @@ mod tests {
     use notify_ports::test_utils::{InMemory, InMemoryAttachments, TestClock, TestRateLimiter};
 
     use super::*;
+    use crate::fanout::DrainFanout;
 
     /// Resolves or refuses every thumbnail the same way, standing in for the
-    /// `notify-avatars` adapter so the wiring can be tested without a decoder.
+    /// `notify-avatars` adapter so the wiring in [`Fanout::derive_thumbnail`] can be
+    /// tested without a decoder.
     #[derive(Debug, Clone, Default)]
     struct StubThumbnailer {
         refuse: bool,
@@ -465,6 +470,8 @@ mod tests {
         limiter: TestRateLimiter,
         publish: PublishNotification,
         upsert: UpsertNotification,
+        /// The outbox worker: pushes and thumbnails happen when it runs.
+        drain: DrainFanout,
         alice: Principal,
         attachments: InMemoryAttachments,
     }
@@ -515,6 +522,11 @@ mod tests {
         .with_thumbnails(Arc::new(attachments.clone()), thumbnailer);
 
         Fixture {
+            drain: DrainFanout::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                fanout.clone(),
+            ),
             publish: PublishNotification::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -1054,6 +1066,8 @@ mod tests {
             .execute(&caller, request_with_attachment(reference))
             .await
             .unwrap();
+        // Derived by the outbox worker, not in the request (ADR-0025).
+        assert_eq!(fixture.drain.execute().await.unwrap(), 1);
 
         let thumbnail =
             notify_ports::AttachmentStore::get_thumbnail(&fixture.attachments, reference)
@@ -1128,5 +1142,139 @@ mod tests {
             .unwrap();
 
         // The property is that the call above did not error on a missing image.
+    }
+
+    // --- ADR-0025: what a publish owes commits with it ---------------------
+
+    /// A bus that never answers: the request future is still pending after the
+    /// commit, which is where a client giving up or a shutdown drop catches it.
+    struct HangingBus;
+
+    #[async_trait::async_trait]
+    impl notify_ports::EventBus for HangingBus {
+        async fn publish(&self, _: &notify_ports::Poke) -> notify_ports::PortResult<()> {
+            std::future::pending().await
+        }
+
+        async fn subscribe(
+            &self,
+        ) -> notify_ports::PortResult<futures::stream::BoxStream<'static, notify_ports::Poke>>
+        {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
+    #[tokio::test]
+    async fn critical_t16_a_publish_dropped_after_its_commit_loses_nothing_and_replays() {
+        // Falsify by moving the sink queueing or the reply back after the commit,
+        // into the request: the dropped future then takes them with it, and the
+        // retry below is answered `InFlight`, then publishes a second time.
+        let clock = TestClock::new();
+        let store = InMemory::with_clock(clock.clone());
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        let mut channel = Channel::dynamic(channel_id(), None).unwrap();
+        channel.upsert_member(
+            Membership::new(alice.clone(), vec![Scope::Publish, Scope::Subscribe]).unwrap(),
+        );
+        store.seed_channel(channel);
+        store.seed_device(
+            notify_domain::Device::enrol(
+                notify_domain::DeviceId::generate(),
+                alice.clone(),
+                "phone",
+                notify_domain::PushTransport::WebPush {
+                    endpoint: url::Url::parse("https://push.example/abc").unwrap(),
+                    p256dh: "BPk".to_owned(),
+                    auth: "k9".to_owned(),
+                },
+                None,
+                clock.now(),
+            )
+            .unwrap(),
+        );
+        let registry = notify_ports::test_utils::StaticSinkRegistry::empty().route(
+            channel_id(),
+            notify_ports::SinkTarget::Email {
+                address: "oncall@weebo.poc".to_owned(),
+            },
+        );
+        let fanout = |bus: Arc<dyn notify_ports::EventBus>| {
+            Fanout::new(
+                bus,
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(clock.clone()),
+                4_096,
+            )
+            .with_sinks(Arc::new(registry.clone()))
+        };
+        let publish = |fanout: Fanout| {
+            PublishNotification::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(TestRateLimiter::new()),
+                Arc::new(clock.clone()),
+                Authorizer::new(Arc::new(store.clone())),
+                fanout,
+                Attribution::new(Arc::new(store.clone()), Arc::new(store.clone())),
+            )
+        };
+        let caller = Caller::member(alice.clone());
+
+        // The request commits, then hangs; the caller gives up on it.
+        let hanging = publish(fanout(Arc::new(HangingBus)));
+        let dropped = tokio::time::timeout(
+            core::time::Duration::from_millis(50),
+            hanging.execute(&caller, request(Some("deploy-1"))),
+        )
+        .await;
+        assert!(dropped.is_err(), "the request never finished");
+
+        // The sink delivery was committed with the write.
+        let queued = notify_ports::SinkQueue::claim_due(
+            &store,
+            clock.now(),
+            10,
+            clock.now() + Duration::minutes(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued.len(), 1, "the sink delivery survived the drop");
+
+        // The retry is the original answer, not a second notification.
+        let healthy = fanout(Arc::new(store.clone()));
+        let replayed = publish(healthy.clone())
+            .execute(&caller, request(Some("deploy-1")))
+            .await
+            .unwrap();
+        assert!(replayed.replayed);
+        assert_eq!(replayed.cursor, queued[0].event.cursor);
+        assert_eq!(
+            store
+                .events()
+                .iter()
+                .filter(|event| matches!(event.payload, notify_ports::EventPayload::Revision(_)))
+                .count(),
+            1,
+            "one publish, however many requests"
+        );
+
+        // And the push the request never reached is the worker's to make.
+        assert_eq!(
+            store.pushes(),
+            [] as [(notify_domain::DeviceId, notify_ports::PushMessage); 0]
+        );
+        assert_eq!(
+            DrainFanout::new(Arc::new(store.clone()), Arc::new(store.clone()), healthy)
+                .execute()
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.pushes().len(), 1);
     }
 }

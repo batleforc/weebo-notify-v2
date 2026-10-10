@@ -12,8 +12,21 @@ name: release
 #   * Every job is idempotent. Re-running a failed run resumes without duplicating
 #     or corrupting what was already published.
 #
-# SCOPE: this file implements the gate, both images, their signatures and the
-# release object. The full artefact matrix — desktop packages, CLI archives, the
+# GATES: a tag never exempts anything from what a pull request had to pass, so
+# the publish job needs every gate below green ON THE TAGGED COMMIT — not on the
+# pull request that merged it, whose base may since have moved. `gate` is the
+# fast replay (lint, contract, critical suite against a real Postgres); `check`,
+# `e2e`, `audit` and `oidc-compat` are the very workflows a pull request runs,
+# called here through `workflow_call` so there is one definition of each.
+# `check` carries `helm:check`.
+#
+# ORDER: nothing gets a public tag before it is scanned. Images are pushed BY
+# DIGEST ONLY (untagged, reachable by nobody who was not handed the digest),
+# scanned, signed, given an SBOM attestation, and only then tagged `vX.Y.Z` —
+# and `latest`. A failed scan leaves an orphan digest in the registry and no tag.
+#
+# SCOPE: this file implements the gate, both images, the Helm chart (OCI, signed),
+# their signatures and the release object. The full artefact matrix — desktop packages, CLI archives, the
 # signed updater manifest, the Android APK — lands with milestone M5, when there is
 # something to package. Until then a release carries the two images, their digests
 # and their SBOMs, which is the set a deployment actually consumes.
@@ -57,16 +70,51 @@ env:
   # deploys it may publish to neither of them.
   IMAGE_REGISTRY: ghcr.io
   IMAGE_NAME: ghcr.io/batleforc/weebo-notify
+  # The Helm chart, as an OCI artifact beside the images (`helm install
+  # oci://ghcr.io/batleforc/charts/weebo-notify --version X.Y.Z`).
+  CHART_REPO: oci://ghcr.io/batleforc/charts
 
 # Least privilege; a job that needs more says so itself.
 permissions:
   contents: read
 
 jobs:
+  # The pull-request workflows, replayed on the tag (see GATES above).
+  check:
+    uses: ./.github/workflows/check.yaml
+  e2e:
+    uses: ./.github/workflows/e2e.yaml
+  audit:
+    uses: ./.github/workflows/audit.yaml
+  oidc-compat:
+    uses: ./.github/workflows/oidc-compat.yaml
+
   gate:
     # A tag never exempts anything from the gates a pull request had to pass.
     name: Replay the pull-request gates
     runs-on: ubuntu-latest
+
+    # The critical suite includes Postgres-backed scenarios (T24 and the
+    # conformance cases tagged `critical`). Without a database they used to SKIP
+    # here, so this gate went green having run none of them. With the service and
+    # WNK_TEST_REQUIRE_DB they run, and a missing database fails them.
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: weebo
+          POSTGRES_PASSWORD: weebo
+          POSTGRES_DB: weebo_notify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U weebo -d weebo_notify"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      WNK_TEST_DATABASE_URL: postgres://weebo:weebo@localhost:5432/weebo_notify
+      WNK_TEST_REQUIRE_DB: "1"
 
     steps:
       - name: Checkout
@@ -125,7 +173,7 @@ jobs:
 
   publish:
     name: Build and publish
-    needs: gate
+    needs: [gate, check, e2e, audit, oidc-compat]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -227,12 +275,12 @@ jobs:
           context: .
           file: ./Containerfile
           platforms: linux/amd64,linux/arm64
-          push: true
           provenance: mode=max
           sbom: true
-          # `:latest` is not pushed here: it moves only after the scan and the
-          # signature below, so a vulnerable build never becomes what `latest` pulls.
-          tags: ${{ env.IMAGE_NAME }}:${{ steps.kind.outputs.tag }}
+          # By digest only — no tag at all. Neither `vX.Y.Z` nor `:latest` exists
+          # until the scan and the signature below pass ("Tag the images"), so a
+          # vulnerable build never becomes something a tag pulls.
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Build and push the web image
         # No build args since ADR-0021 superseded ADR-0019: one image now serves
@@ -244,19 +292,24 @@ jobs:
           context: ./web
           file: ./web/Containerfile
           platforms: linux/amd64,linux/arm64
-          push: true
           provenance: mode=max
           sbom: true
-          tags: ${{ env.IMAGE_NAME }}-web:${{ steps.kind.outputs.tag }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }}-web,push-by-digest=true,name-canonical=true,push=true
 
-      - name: Scan the published images
-        # After the push and not before it: what is scanned has to be what was
-        # published, and a scan of a locally-tagged image proves something about a
-        # layer stack that may not be the one that left the runner.
+      - name: Scan the pushed digests
+        # The digest, not a tag: what is scanned is byte-for-byte what gets
+        # signed and tagged below. Before any tag exists, so a finding here leaves
+        # nothing pullable by name. trivy picks the runner's platform (amd64) out
+        # of the index; arm64 shares every package list but the architecture.
+        env:
+          SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
         run: |
+          set -euo pipefail
+          test -n "$SERVER_DIGEST" && test -n "$WEB_DIGEST"
           mise exec -- task audit:image \
-            IMAGE_REPO="${{ env.IMAGE_NAME }}" \
-            IMAGE_TAG="${{ steps.kind.outputs.tag }}"
+            SERVER_REF="${{ env.IMAGE_NAME }}@${SERVER_DIGEST}" \
+            WEB_REF="${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
 
       - name: Sign the images
         # cosign keyless: the identity is the workflow itself, and the signature
@@ -283,17 +336,73 @@ jobs:
           cosign sign --yes "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}"
           cosign sign --yes "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
 
-      - name: Promote to latest
-        # Scanned and signed by now; `imagetools create` re-points the tag at the
-        # exact digests above without rebuilding or re-pulling anything.
-        if: steps.kind.outputs.prerelease == 'false'
+      - name: Extract and attest the SBOMs
+        # buildx `sbom: true` stores the SBOM as an in-toto attestation inside the
+        # image index — which `cosign download sbom` (the legacy `.sbom` tag) never
+        # finds, so this step used to publish nothing behind a `|| warning`. Read
+        # it back with buildx itself, one SPDX document per platform, and FAIL if
+        # one is missing: a release whose notes promise an SBOM must carry one.
+        #
+        # Then `cosign attest` each: the buildx attestation is unsigned, this one
+        # is bound to this workflow's identity like the image signature.
         env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.kind.outputs.tag }}
           SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
           WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
         run: |
           set -euo pipefail
-          docker buildx imagetools create -t "${{ env.IMAGE_NAME }}:latest" "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}"
-          docker buildx imagetools create -t "${{ env.IMAGE_NAME }}-web:latest" "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
+          extract() { # <image@digest> <asset-prefix>
+            docker buildx imagetools inspect "$1" --format '{{ json .SBOM }}' > "$2.sbom.json"
+            for platform in linux/amd64 linux/arm64; do
+              out="$2-${platform#linux/}.spdx.json"
+              jq -e --arg p "$platform" '.[$p].SPDX' "$2.sbom.json" > "$out" \
+                || { echo "::error::no SPDX SBOM for $platform in $1"; exit 1; }
+              cosign attest --yes --type spdxjson --predicate "$out" "$1"
+            done
+          }
+          extract "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}" "weebo-notify-${TAG}-server"
+          extract "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}" "weebo-notify-${TAG}-web"
+
+      - name: Tag the images
+        # Scanned, signed and attested by now; `imagetools create` points the
+        # public tags at the exact digests above without rebuilding or re-pulling
+        # anything. `latest` moves for a final release only.
+        env:
+          TAG: ${{ steps.kind.outputs.tag }}
+          PRERELEASE: ${{ steps.kind.outputs.prerelease }}
+          SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for suffix in "$TAG" $([ "$PRERELEASE" = false ] && echo latest); do
+            docker buildx imagetools create -t "${{ env.IMAGE_NAME }}:${suffix}" "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}"
+            docker buildx imagetools create -t "${{ env.IMAGE_NAME }}-web:${suffix}" "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}"
+          done
+
+      - name: Package, push and sign the Helm chart
+        # Same version as everything else (sync-version.sh writes Chart.yaml at
+        # bump time) — checked rather than assumed, because a chart whose version
+        # disagrees with the tag would deploy images of another release.
+        # Signed by digest for the same reason the images are.
+        id: chart
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.kind.outputs.tag }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          chart_version="$(grep '^version:' charts/weebo-notify/Chart.yaml | awk '{print $2}')"
+          [ "$chart_version" = "$version" ] || {
+            echo "::error::Chart.yaml version $chart_version does not match tag $TAG"; exit 1; }
+          mise exec -- helm package charts/weebo-notify --destination target/helm
+          echo "$REGISTRY_TOKEN" | mise exec -- helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          mise exec -- helm push "target/helm/weebo-notify-${version}.tgz" "${{ env.CHART_REPO }}" 2>&1 | tee helm-push.log
+          digest="$(grep -o 'sha256:[0-9a-f]\{64\}' helm-push.log | head -1)"
+          test -n "$digest"
+          cosign sign --yes "${CHART_REPO#oci://}/weebo-notify@${digest}"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Publish the release
         # Created as a draft, filled with artefacts and the changelog notes, then
@@ -318,6 +427,7 @@ jobs:
           PRERELEASE: ${{ steps.kind.outputs.prerelease }}
           SERVER_DIGEST: ${{ steps.server_image.outputs.digest }}
           WEB_DIGEST: ${{ steps.web_image.outputs.digest }}
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
         run: |
           set -euo pipefail
 
@@ -340,6 +450,8 @@ jobs:
             printf '| Image | Digest |\n| --- | --- |\n'
             printf '| `%s:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$SERVER_DIGEST"
             printf '| `%s-web:%s` | `%s` |\n' "${{ env.IMAGE_NAME }}" "$TAG" "$WEB_DIGEST"
+            printf '| `%s/weebo-notify:%s` (Helm chart) | `%s` |\n' "${{ env.CHART_REPO }}" "${TAG#v}" "$CHART_DIGEST"
+            printf '\nPin them in the chart with `image.server.digest` / `image.web.digest`.\n'
             printf '\n## Files\n\n'
             printf 'Every file below is published with a `.sig` and a `.pem` beside it,\n'
             printf 'signed by this workflow with no key involved. To check one:\n\n'
@@ -351,15 +463,6 @@ jobs:
             printf '  --certificate-oidc-issuer https://token.actions.githubusercontent.com\n'
             printf '```\n'
           } > release-notes.md
-
-          # The SBOM buildx attached to each image, pulled back out so it is
-          # downloadable without a registry client.
-          cosign download sbom "${{ env.IMAGE_NAME }}@${SERVER_DIGEST}" \
-            > "weebo-notify-${TAG}-server.sbom.json" 2>/dev/null || \
-            echo "::warning::no SBOM attached to the server image"
-          cosign download sbom "${{ env.IMAGE_NAME }}-web@${WEB_DIGEST}" \
-            > "weebo-notify-${TAG}-web.sbom.json" 2>/dev/null || \
-            echo "::warning::no SBOM attached to the web image"
 
           # Idempotent, because every job in this file has to be: a re-run of a
           # failed release edits the draft it already made rather than failing on a
@@ -388,8 +491,10 @@ jobs:
           # an APK still has to be signed with the Android keystore or no device will
           # install it, and the updater bundles still need their minisign key. Those
           # are different questions with different verifiers; this one is provenance.
-          for asset in "weebo-notify-${TAG}-server.sbom.json" "weebo-notify-${TAG}-web.sbom.json"; do
-            [ -s "$asset" ] || continue
+          # The SBOMs were extracted (and required) by "Extract and attest the
+          # SBOMs" above — a missing one fails here rather than being skipped.
+          for asset in weebo-notify-"${TAG}"-*.spdx.json; do
+            test -s "$asset"
             cosign sign-blob --yes \
               --output-signature "${asset}.sig" \
               --output-certificate "${asset}.pem" \

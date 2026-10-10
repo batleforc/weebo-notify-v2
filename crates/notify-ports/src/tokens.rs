@@ -19,6 +19,14 @@ pub struct VerifiedClaims {
     /// The `email` claim, when the IdP releases one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// The token *did* carry an `email`, and it was dropped as unverified.
+    ///
+    /// Not the same as no claim at all: absent means "this client asked for
+    /// fewer scopes" and leaves the stored address alone, while this means the
+    /// provider now vouches for no address, so the stored one — which email
+    /// bindings grant access by (§11) — has to go.
+    #[serde(default)]
+    pub email_unverified: bool,
     /// The `name` claim, when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -153,7 +161,7 @@ pub struct MintedClaims {
 #[async_trait::async_trait]
 pub trait ReplayGuard: Send + Sync {
     /// Atomically record a token id; `false` means already seen and must be refused.
-    /// `until` is the incoming token's own expiry.
+    /// `until` is the incoming token's expiry plus the verifier's leeway.
     async fn remember(&self, jti: &str, until: OffsetDateTime) -> PortResult<bool>;
 
     /// Drop entries past their expiry. Leader-only (design §11).

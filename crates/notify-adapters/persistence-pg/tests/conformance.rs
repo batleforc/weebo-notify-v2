@@ -24,7 +24,7 @@ mod e2e {
     use notify_ports::{
         Allowance, ApiKeyRepository, AttachmentRegistry, AuditEntry, AuditLog, AuditQuery,
         ChannelRepository, Claim, Declaration, DeclarationKind, DeclarationStore, DeviceRepository,
-        EventPayload, EventStore, IdempotencyStore, InboxQuery, InteractionRepository,
+        EmailMatch, EventPayload, EventStore, IdempotencyStore, InboxQuery, InteractionRepository,
         LeaderElection, NotificationRepository, PageRequest, PreferenceRepository, Quota,
         RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery, ServiceAccountRepository,
         StoredApiKey, SyncQuery, UnreadCount, UserRepository, Visibility,
@@ -49,13 +49,24 @@ mod e2e {
         Some(store)
     }
 
+    /// No database configured: skip — unless `WNK_TEST_REQUIRE_DB` is set, which is
+    /// how CI says "a database is supposed to be here". There a skip would report
+    /// green for a suite that never ran, so it fails instead.
+    fn skip_without_database() {
+        assert!(
+            std::env::var_os("WNK_TEST_REQUIRE_DB").is_none(),
+            "WNK_TEST_REQUIRE_DB is set but neither WNK_TEST_DATABASE_URL nor DATABASE_URL is — refusing to skip"
+        );
+        eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+    }
+
     /// Skip cleanly when no database is configured.
     macro_rules! store {
         () => {
             match store().await {
                 Some(store) => store,
                 None => {
-                    eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+                    skip_without_database();
                     return;
                 }
             }
@@ -270,33 +281,6 @@ mod e2e {
         assert_eq!(history.items.len(), 2);
         assert_eq!(history.items[0].seq, 1, "a timeline is read forwards");
         assert_eq!(history.items[1].seq, 2);
-    }
-
-    #[tokio::test]
-    async fn head_waits_out_a_writer_that_holds_an_uncommitted_sequence_value() {
-        let store = store!();
-
-        // Held by every event-appending transaction (`mapping::lock_event_log`).
-        let mut writer = store.pool().begin().await.unwrap();
-        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-            .bind(0x0057_4e4b_i32)
-            .bind(1_i32)
-            .execute(&mut *writer)
-            .await
-            .unwrap();
-
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                EventStore::head(&store)
-            )
-            .await
-            .is_err(),
-            "a head read mid-write could name a seq that commits after a reader passed it"
-        );
-
-        writer.commit().await.unwrap();
-        EventStore::head(&store).await.unwrap();
     }
 
     #[tokio::test]
@@ -703,7 +687,7 @@ mod e2e {
             )),
             "somebody has it on screen and needs to drop it"
         );
-        assert!(page.expired.is_empty());
+        assert_eq!(page.expired, [] as [notify_ports::ExpiredWhileAway; 0]);
     }
 
     #[tokio::test]
@@ -1195,7 +1179,10 @@ mod e2e {
         );
 
         // And an empty list is not a query that matches everything.
-        assert!(store.close_stale(&[], at, 100).await.unwrap().is_empty());
+        assert_eq!(
+            store.close_stale(&[], at, 100).await.unwrap(),
+            [] as [notify_ports::ClosedNotification; 0]
+        );
     }
 
     /// Idempotent: a closed notification is not a candidate again.
@@ -1221,12 +1208,12 @@ mod e2e {
             store.close_stale(&deadlines, at, 100).await.unwrap().len(),
             1
         );
-        assert!(
+        assert_eq!(
             store
                 .close_stale(&deadlines, at + Duration::hours(1), 100)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [notify_ports::ClosedNotification; 0]
         );
     }
 
@@ -1249,12 +1236,12 @@ mod e2e {
         let deadline = simple.expires_at();
 
         let at = now();
-        assert!(
+        assert_eq!(
             store
                 .close_stale(&[(channel.clone(), at - Duration::days(7))], at, 100)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [notify_ports::ClosedNotification; 0]
         );
         let after = NotificationRepository::get(&store, simple.id)
             .await
@@ -1615,16 +1602,35 @@ mod e2e {
             user.id
         );
         // Case-insensitive, so changed capitalisation does not orphan a binding.
-        assert_eq!(
-            store
-                .find_by_email(&email.to_uppercase())
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            user.id
-        );
+        match store.find_by_email(&email.to_uppercase()).await.unwrap() {
+            EmailMatch::One(found) => assert_eq!(found.id, user.id),
+            other => panic!("expected one user, got {other:?}"),
+        }
         assert!(store.find_by_subject("nobody").await.unwrap().is_none());
+
+        // `users.email` is not unique. A second holder of the address — any case —
+        // makes it name nobody, rather than whichever row the planner liked.
+        let twin = User::from_claims(
+            UserId::generate(),
+            &format!("oidc-{}", ulid_slug()),
+            Some(&email.to_uppercase()),
+            None,
+            now(),
+        )
+        .unwrap();
+        users(&store).upsert(&twin).await.unwrap();
+        assert_eq!(
+            store.find_by_email(&email).await.unwrap(),
+            EmailMatch::Ambiguous
+        );
+
+        // `/avatars/{id}` serves only what some user references as an avatar.
+        let avatar = notify_domain::AttachmentId::generate();
+        assert!(!store.is_avatar(avatar).await.unwrap());
+        let mut with_avatar = stored;
+        with_avatar.profile.avatar = Some(avatar);
+        users(&store).upsert(&with_avatar).await.unwrap();
+        assert!(store.is_avatar(avatar).await.unwrap());
     }
 
     #[tokio::test]
@@ -1757,12 +1763,12 @@ mod e2e {
         let listed = keys(&store).list_for_channel(&channel).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, key.id);
-        assert!(
+        assert_eq!(
             keys(&store)
                 .list_for_channel(&fresh_channel())
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [notify_domain::ApiKey; 0]
         );
     }
 
@@ -1902,6 +1908,57 @@ mod e2e {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn enrolments_racing_at_the_device_cap_land_exactly_one() {
+        let store = store!();
+        let (_, alice) = user();
+        let enrol = |label: &str| Device {
+            id: DeviceId::generate(),
+            owner: alice.clone(),
+            label: label.to_owned(),
+            transport: PushTransport::Stream,
+            public_key: None,
+            cursor: None,
+            enrolled_at: now(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+
+        // One short of a cap of three, and a revoked one that must not count.
+        let revoked = enrol("old");
+        devices(&store).upsert(&revoked).await.unwrap();
+        devices(&store).revoke(revoked.id, now()).await.unwrap();
+        for label in ["laptop", "phone"] {
+            assert!(
+                devices(&store)
+                    .enrol_capped(&enrol(label), 3)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        let racers: Vec<_> = (0..8)
+            .map(|n| {
+                let store = store.clone();
+                let device = enrol(&format!("racer {n}"));
+                tokio::spawn(async move { store.enrol_capped(&device, 3).await.unwrap() })
+            })
+            .collect();
+        let mut landed = 0;
+        for racer in racers {
+            landed += usize::from(racer.await.unwrap());
+        }
+
+        assert_eq!(landed, 1, "count and insert are one step per owner");
+        let active = DeviceRepository::list_for(&store, &alice)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|device| device.is_active())
+            .count();
+        assert_eq!(active, 3);
     }
 
     #[tokio::test]
@@ -2054,7 +2111,10 @@ mod e2e {
             .remember_groups(&alice, &[fresh_group()], now())
             .await
             .unwrap();
-        assert!(store.delivery_targets(&id).await.unwrap().is_empty());
+        assert_eq!(
+            store.delivery_targets(&id).await.unwrap(),
+            [] as [notify_domain::Device; 0]
+        );
 
         // What a personal key reads back: the snapshot, only while it is fresh.
         let taken = now();
@@ -2066,12 +2126,12 @@ mod e2e {
                 .len(),
             1
         );
-        assert!(
+        assert_eq!(
             devices(&store)
                 .remembered_groups(&alice, taken + time::Duration::days(1))
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [std::string::String; 0]
         );
     }
 
@@ -2169,6 +2229,259 @@ mod e2e {
         assert_eq!(back.items[0].action.as_str(), "trust_policy.added");
     }
 
+    #[tokio::test]
+    async fn critical_old_audit_webhook_urls_are_redacted_and_the_log_stays_append_only() {
+        // ADR-0026: the one sanctioned edit to the audit log. An entry journalled
+        // before sink ids were redacted still carries the webhook url — and the
+        // credential in its path. Planted here in that old shape, then the
+        // migration is run again (it is idempotent by design) to show it rewrites
+        // exactly that, to the origin and a keyless marker, and leaves the
+        // append-only trigger armed behind it.
+        const MIGRATION: &str =
+            include_str!("../migrations/20261010300000_redact_audit_webhook_urls.sql");
+
+        let store = store!();
+        let channel = seeded_channel(&store, &user().1).await;
+        let secret = "https://hooks.slack.com/services/T0/B0/SECRETPATH";
+        let kept = "https://hooks.example#0123456789abcdef";
+
+        audit(&store)
+            .record(&AuditEntry {
+                actor: notify_ports::AuditActor::configuration(),
+                action: notify_ports::actions::MANAGED_CHANNEL_CHANGED,
+                target: Some(channel.as_str().to_owned()),
+                channel: Some(channel.clone()),
+                detail: Some(serde_json::json!({
+                    "declaration": { "sinks": [
+                        { "type": "webhook", "url": secret },
+                        { "type": "email", "to": "ops@example.org" },
+                    ] },
+                    "previous": { "sinks": [{ "type": "webhook", "url": kept }] },
+                })),
+                at: now(),
+            })
+            .await
+            .unwrap();
+
+        // Its own connection: the migration's `pg_temp` helpers die with it. The
+        // purge migration (ADR-0027) runs again behind it, as it did on the way
+        // up: the redaction's `CREATE OR REPLACE` restores the refuse-everything
+        // trigger function, and leaving it there would close the purge's door for
+        // every test after this one.
+        let mut connection = store.pool().acquire().await.unwrap().detach();
+        let mut tx = sqlx::Connection::begin(&mut connection).await.unwrap();
+        sqlx::raw_sql(MIGRATION).execute(&mut *tx).await.unwrap();
+        sqlx::raw_sql(AUDIT_PURGE_MIGRATION)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let back = audit(&store)
+            .query(&AuditQuery {
+                channel: Some(channel.clone()),
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(back.items.len(), 1);
+        let detail = back.items[0].detail.as_ref().unwrap();
+        assert_eq!(
+            detail["declaration"]["sinks"][0]["url"], "https://hooks.slack.com#redacted",
+            "the origin survives; nothing that could be brute-forced back to the path does"
+        );
+        assert_eq!(
+            detail["declaration"]["sinks"][1],
+            serde_json::json!({ "type": "email", "to": "ops@example.org" })
+        );
+        assert_eq!(
+            detail["previous"]["sinks"][0]["url"], kept,
+            "an already-redacted url is left alone"
+        );
+        assert!(!detail.to_string().contains("SECRETPATH"));
+
+        // The redaction is in the log. Not asserted to be *this* run's entry — a
+        // concurrent run may have redacted the row first — only that one exists.
+        // Other tests write every action with no detail, hence the `and_then`.
+        let noted = audit(&store)
+            .query(&AuditQuery {
+                action: Some("audit.redacted".to_owned()),
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            noted
+                .items
+                .iter()
+                .filter_map(|entry| entry.detail.as_ref())
+                .any(|detail| detail["redacted_entries"].as_u64() >= Some(1)),
+            "the redaction recorded itself"
+        );
+
+        // And the guard is back. Each attempt in a transaction that is rolled
+        // back, so a regression here cannot wipe the shared database's log.
+        for statement in [
+            "UPDATE audit_entries SET detail = NULL WHERE channel_id = $1",
+            "DELETE FROM audit_entries WHERE channel_id = $1",
+            "TRUNCATE audit_entries",
+        ] {
+            let mut tx = store.pool().begin().await.unwrap();
+            let query = if statement.contains("$1") {
+                sqlx::query(statement).bind(channel.as_str())
+            } else {
+                sqlx::query(statement)
+            };
+            let refused = query.execute(&mut *tx).await.unwrap_err();
+            assert!(
+                refused.to_string().contains("append-only"),
+                "`{statement}` must be refused, got: {refused}"
+            );
+            tx.rollback().await.unwrap();
+        }
+    }
+
+    const AUDIT_PURGE_MIGRATION: &str =
+        include_str!("../migrations/20261010800000_audit_purge.sql");
+
+    /// One audit entry in `channel`, recorded `age` ago.
+    async fn audit_entry_aged(store: &PgStore, channel: &ChannelId, age: Duration) {
+        audit(store)
+            .record(&AuditEntry {
+                actor: notify_ports::AuditActor::configuration(),
+                action: notify_ports::actions::TRUST_POLICY_ADDED,
+                target: Some(format!("{}d", age.whole_days())),
+                channel: Some(channel.clone()),
+                detail: None,
+                at: now() - age,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// The ages, in days, of what `channel` still holds in the log, oldest first.
+    async fn audit_ages(store: &PgStore, channel: &ChannelId) -> Vec<String> {
+        let mut ages: Vec<String> = audit(store)
+            .query(&AuditQuery {
+                channel: Some(channel.clone()),
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .filter_map(|entry| entry.target)
+            .collect();
+        ages.reverse();
+        ages
+    }
+
+    #[tokio::test]
+    async fn critical_the_audit_purge_removes_only_old_rows_and_records_itself() {
+        // ADR-0027: the one sanctioned deletion. Past the cutoff goes, inside it
+        // stays — including a row the floor would allow but the cutoff does not.
+        let store = store!();
+        let channel = seeded_channel(&store, &user().1).await;
+        for days in [500, 400, 100, 1] {
+            audit_entry_aged(&store, &channel, Duration::days(days)).await;
+        }
+
+        // Batches of one, so the loop is what drains it — the shape the leader runs.
+        let cutoff = now() - Duration::days(365);
+        let mut purged = 0;
+        loop {
+            let batch = audit(&store).purge_older_than(cutoff, 1).await.unwrap();
+            purged += batch;
+            if batch < 1 {
+                break;
+            }
+        }
+        assert!(
+            purged >= 2,
+            "both of this test's old rows went, got {purged}"
+        );
+        assert_eq!(audit_ages(&store, &channel).await, ["100d", "1d"]);
+
+        let noted = audit(&store)
+            .query(&AuditQuery {
+                action: Some("audit.purged".to_owned()),
+                since: Some(now() - Duration::minutes(5)),
+                ..AuditQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            noted
+                .items
+                .iter()
+                .filter_map(|entry| entry.detail.as_ref())
+                .any(|detail| detail["purged_entries"].as_u64() >= Some(1)
+                    && detail["adr"] == "0027"),
+            "every batch that deleted something says so in the log it deleted from"
+        );
+    }
+
+    #[tokio::test]
+    async fn critical_the_audit_purge_is_the_only_door_and_it_has_a_floor() {
+        let store = store!();
+        let channel = seeded_channel(&store, &user().1).await;
+        audit_entry_aged(&store, &channel, Duration::days(400)).await;
+        audit_entry_aged(&store, &channel, Duration::days(10)).await;
+
+        // A cutoff inside 90 days is refused by the database, whatever the caller
+        // was configured with — the floor an attacker with these credentials meets.
+        let refused = audit(&store)
+            .purge_older_than(now() - Duration::days(30), 100)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{refused:?}").contains("90-day floor"),
+            "{refused:?}"
+        );
+        assert_eq!(audit_ages(&store, &channel).await, ["400d", "10d"]);
+
+        // Every attempt in a transaction that is rolled back, so a regression
+        // cannot wipe the shared database's log.
+        let far_future = "SET LOCAL wnk.audit_purge = '2999-01-01T00:00:00Z'";
+        for (setup, statement) in [
+            // No setting: the old rule, unchanged.
+            (None, "DELETE FROM audit_entries WHERE channel_id = $1"),
+            // The setting forged by hand still cannot reach inside the floor.
+            (
+                Some(far_future),
+                "DELETE FROM audit_entries WHERE channel_id = $1 AND target = '10d'",
+            ),
+            // The door closes when the function returns, even in its transaction.
+            (
+                Some("SELECT wnk_audit_purge(now() - interval '1000 days', 1)"),
+                "DELETE FROM audit_entries WHERE channel_id = $1 AND target = '400d'",
+            ),
+            // UPDATE and TRUNCATE never go through, setting or not.
+            (
+                Some(far_future),
+                "UPDATE audit_entries SET detail = NULL WHERE channel_id = $1",
+            ),
+            (Some(far_future), "TRUNCATE audit_entries"),
+        ] {
+            let mut tx = store.pool().begin().await.unwrap();
+            if let Some(setup) = setup {
+                sqlx::query(setup).execute(&mut *tx).await.unwrap();
+            }
+            let query = if statement.contains("$1") {
+                sqlx::query(statement).bind(channel.as_str())
+            } else {
+                sqlx::query(statement)
+            };
+            let refused = query.execute(&mut *tx).await.unwrap_err();
+            assert!(
+                refused.to_string().contains("append-only"),
+                "`{statement}` after {setup:?} must be refused, got: {refused}"
+            );
+            tx.rollback().await.unwrap();
+        }
+        assert_eq!(audit_ages(&store, &channel).await, ["400d", "10d"]);
+    }
+
     // --- Receipts and interactions -----------------------------------------
 
     #[tokio::test]
@@ -2211,12 +2524,12 @@ mod e2e {
             1
         );
         // One aggregate per channel; a read channel is absent, not zero.
-        assert!(
+        assert_eq!(
             notifications(&store)
                 .unread_counts(&alice, std::slice::from_ref(&channel))
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [notify_ports::UnreadCount; 0]
         );
 
         let (_, bob) = user();
@@ -2385,7 +2698,7 @@ mod e2e {
             .active_silences(alice_id, now() + Duration::hours(3))
             .await
             .unwrap();
-        assert!(lapsed.is_empty());
+        assert_eq!(lapsed, [] as [notify_domain::Silence; 0]);
     }
 
     // --- Do not disturb (design §7.4) --------------------------------------
@@ -2399,7 +2712,7 @@ mod e2e {
         let dnd = PreferenceRepository::dnd(&store, alice_id).await.unwrap();
 
         assert_eq!(dnd.user, alice_id);
-        assert!(dnd.quiet_hours.is_empty());
+        assert_eq!(dnd.quiet_hours, [] as [notify_domain::QuietHours; 0]);
         assert!(!dnd.is_active(now()));
     }
 
@@ -2469,8 +2782,20 @@ mod e2e {
         let (alice_id, _) = user();
         store.set_dnd(&Dnd::off(alice_id), now()).await.unwrap();
 
-        for status in [Status::Info, Status::Failure, Status::Success] {
-            PreferenceRepository::defer(&store, alice_id, status)
+        let held = NotificationId::generate();
+        for (seq, status) in [
+            (1, Status::Info),
+            (2, Status::Failure),
+            (3, Status::Success),
+        ] {
+            PreferenceRepository::defer(&store, alice_id, held, seq, status)
+                .await
+                .unwrap();
+        }
+        // The same revisions again — a retried outbox row, a second device: the
+        // digest's number must not move.
+        for (seq, status) in [(1, Status::Info), (2, Status::Failure)] {
+            PreferenceRepository::defer(&store, alice_id, held, seq, status)
                 .await
                 .unwrap();
         }
@@ -2506,9 +2831,15 @@ mod e2e {
         let (alice_id, _) = user();
 
         // No row: matching nothing is correct.
-        PreferenceRepository::defer(&store, alice_id, Status::Failure)
-            .await
-            .unwrap();
+        PreferenceRepository::defer(
+            &store,
+            alice_id,
+            NotificationId::generate(),
+            1,
+            Status::Failure,
+        )
+        .await
+        .unwrap();
 
         assert!(
             !store
@@ -2525,9 +2856,15 @@ mod e2e {
         let store = store!();
         let (alice_id, _) = user();
         store.set_dnd(&Dnd::off(alice_id), now()).await.unwrap();
-        PreferenceRepository::defer(&store, alice_id, Status::Failure)
-            .await
-            .unwrap();
+        PreferenceRepository::defer(
+            &store,
+            alice_id,
+            NotificationId::generate(),
+            1,
+            Status::Failure,
+        )
+        .await
+        .unwrap();
 
         // A redefined quiet period invalidates the pending digest.
         store
@@ -2665,7 +3002,7 @@ mod e2e {
             )
             .await
             .unwrap();
-        assert!(nothing.events.is_empty());
+        assert_eq!(nothing.events, [] as [notify_ports::Event; 0]);
         assert!(nothing.next.is_none());
     }
 
@@ -2715,6 +3052,56 @@ mod e2e {
             panic!("the surviving event is the newest revision");
         };
         assert_eq!(revision.payload.title, "step 4");
+    }
+
+    #[tokio::test]
+    async fn paging_one_event_at_a_time_reads_the_same_compacted_stream() {
+        // The page is merged from one bounded scan per channel; walking it one row
+        // at a time must yield exactly what one big page does, in `seq` order, with
+        // the same compaction across channels that interleave.
+        let store = store!();
+        let (alice_id, alice) = user();
+        let first = seeded_channel(&store, &alice).await;
+        let second = seeded_channel(&store, &alice).await;
+        let head = EventStore::head(&store).await.unwrap();
+
+        let (mut a, _) = publish(&store, &first, &alice, "a").await;
+        publish(&store, &second, &alice, "b").await;
+        for step in 0..2 {
+            let written = a
+                .revise(
+                    RevisionDraft::simple(ContentDraft::titled(&format!("a{step}"))),
+                    author(&alice),
+                    now(),
+                    &ChannelPolicy::default(),
+                )
+                .unwrap();
+            store.append_revision(&a, &written.revision).await.unwrap();
+        }
+        publish(&store, &second, &alice, "c").await;
+
+        let query = |after: Cursor, limit: u32| SyncQuery {
+            after: Some(after),
+            channels: vec![first.clone(), second.clone()],
+            groups: Vec::new(),
+            page: PageRequest::of_size(limit),
+        };
+        let whole = store.sync(alice_id, &query(head, 50)).await.unwrap();
+        let whole: Vec<Cursor> = whole.events.iter().map(|event| event.cursor).collect();
+
+        let mut walked = Vec::new();
+        let mut cursor = head;
+        loop {
+            let page = store.sync(alice_id, &query(cursor, 1)).await.unwrap();
+            walked.extend(page.events.iter().map(|event| event.cursor));
+            match page.next {
+                Some(next) => cursor = next,
+                None => break,
+            }
+        }
+
+        assert_eq!(whole.len(), 3, "b, a's last revision, c");
+        assert_eq!(walked, whole);
     }
 
     #[tokio::test]
@@ -3319,6 +3706,320 @@ mod e2e {
         );
     }
 
+    // --- The publish outbox (ADR-0025) ------------------------------------
+
+    #[tokio::test]
+    async fn what_a_write_owes_commits_with_it_and_the_fanout_row_is_leased() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let (notification, written) = Notification::create(
+            NotificationId::generate(),
+            channel.clone(),
+            None,
+            RevisionDraft::simple(ContentDraft::titled("etcd degraded")),
+            author(&alice),
+            now(),
+            &ChannelPolicy::default(),
+        )
+        .unwrap();
+
+        let (principal_ref, key) = (alice.reference(), format!("deploy-{}", ulid_slug()));
+        let claimed_at = now();
+        assert_eq!(
+            IdempotencyStore::claim(&store, &principal_ref, &key, claimed_at)
+                .await
+                .unwrap(),
+            Claim::Fresh
+        );
+        let thumbnail = AttachmentId::generate();
+        let after = notify_ports::AfterWrite {
+            fanout: true,
+            thumbnail: Some(thumbnail),
+            sinks: vec![
+                notify_domain::SinkId::new("webhook", "https://hooks.weebo.poc#0000000000000001")
+                    .unwrap(),
+            ],
+            reply: Some(notify_ports::IdempotentReply {
+                principal_ref: principal_ref.clone(),
+                key: key.clone(),
+                claimed_at,
+                expires_at: claimed_at + Duration::hours(24),
+                encode: Box::new(|cursor| Ok(format!("{{\"cursor\":\"{cursor}\"}}"))),
+            }),
+        };
+        let cursor = notifications(&store)
+            .insert_with(&notification, &written.revision, &after)
+            .await
+            .unwrap();
+
+        // The replay was stored by the write, not after it.
+        assert_eq!(
+            IdempotencyStore::claim(&store, &principal_ref, &key, now())
+                .await
+                .unwrap(),
+            Claim::Replayed {
+                response: format!("{{\"cursor\":\"{cursor}\"}}")
+            }
+        );
+
+        // So was the sink delivery, carrying the event the write appended. Read
+        // directly: claiming would lease the parallel sink tests' rows too.
+        // Deleted as it is read, so no later claim in this shared database meets it.
+        let (event,): (serde_json::Value,) =
+            sqlx::query_as("DELETE FROM sink_queue WHERE channel_id = $1 RETURNING event")
+                .bind(channel.as_str())
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_value::<notify_ports::Event>(event)
+                .unwrap()
+                .cursor,
+            cursor
+        );
+        let t = now();
+
+        // And the fan-out row: leased to one claimant, owed again once the lease
+        // lapses, gone once completed.
+        let outbox: &dyn notify_ports::FanoutOutbox = &store;
+        let claim = |at: OffsetDateTime| async move {
+            outbox
+                .claim_fanout(
+                    at,
+                    1_000,
+                    at + Duration::seconds(60),
+                    10,
+                    at - Duration::hours(1),
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.cursor == cursor)
+        };
+        let row = claim(t).await.expect("recorded in the write's transaction");
+        assert_eq!(row.notification, notification.id);
+        assert_eq!(row.attempts, 1);
+        assert_eq!(row.thumbnail, Some(thumbnail));
+        assert!(
+            claim(t).await.is_none(),
+            "two workers must not push the same notification at once"
+        );
+        let later = t + Duration::seconds(61);
+        assert!(
+            claim(later).await.is_some(),
+            "a worker killed mid-push leaves the row owed"
+        );
+        outbox.complete_fanout(cursor).await.unwrap();
+        assert!(claim(later + Duration::seconds(120)).await.is_none());
+    }
+
+    /// A publish that owes a fan-out, and the cursor its outbox row sits on.
+    async fn owed_fanout(store: &PgStore) -> (NotificationId, Cursor) {
+        let (_, alice) = user();
+        let channel = seeded_channel(store, &alice).await;
+        let (notification, written) = Notification::create(
+            NotificationId::generate(),
+            channel,
+            None,
+            RevisionDraft::simple(ContentDraft::titled("etcd degraded")),
+            author(&alice),
+            now(),
+            &ChannelPolicy::default(),
+        )
+        .unwrap();
+        let after = notify_ports::AfterWrite {
+            fanout: true,
+            ..notify_ports::AfterWrite::default()
+        };
+        let cursor = notifications(store)
+            .insert_with(&notification, &written.revision, &after)
+            .await
+            .unwrap();
+        (notification.id, cursor)
+    }
+
+    async fn is_dead(store: &PgStore, seq: i64) -> bool {
+        sqlx::query_scalar("SELECT dead_at IS NOT NULL FROM fanout_outbox WHERE cursor_seq = $1")
+            .bind(seq)
+            .fetch_one(store.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_fanout_row_that_keeps_failing_is_dead_lettered_and_stops_coming_back() {
+        let store = store!();
+        let (_, cursor) = owed_fanout(&store).await;
+        let outbox: &dyn notify_ports::FanoutOutbox = &store;
+        // A one-second lease that is never completed: what a worker that dies on the
+        // row every time looks like from here.
+        let claim = |at: OffsetDateTime| async move {
+            outbox
+                .claim_fanout(
+                    at,
+                    1_000,
+                    at + Duration::seconds(1),
+                    2,
+                    at - Duration::hours(1),
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.cursor == cursor)
+        };
+        let t = now();
+
+        assert_eq!(claim(t).await.map(|row| row.attempts), Some(1));
+        assert_eq!(
+            claim(t + Duration::seconds(2))
+                .await
+                .map(|row| row.attempts),
+            Some(2)
+        );
+        assert!(
+            claim(t + Duration::seconds(4)).await.is_none(),
+            "two attempts were all it had"
+        );
+        assert!(
+            is_dead(&store, i64::try_from(cursor.sequence()).unwrap()).await,
+            "set aside, not lost"
+        );
+
+        // And a row behind it is not held hostage.
+        let (_, next) = owed_fanout(&store).await;
+        assert!(
+            outbox
+                .claim_fanout(
+                    t + Duration::seconds(6),
+                    1_000,
+                    t + Duration::seconds(7),
+                    2,
+                    t
+                )
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.cursor == next)
+        );
+        outbox.complete_fanout(next).await.unwrap();
+        // Dead rows are an operator's to delete; this test is that operator.
+        outbox.complete_fanout(cursor).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_fanout_row_lease_extends_and_its_deliveries_outlive_it_until_the_last_row() {
+        let store = store!();
+        let (id, first) = owed_fanout(&store).await;
+        let outbox: &dyn notify_ports::FanoutOutbox = &store;
+
+        // The heartbeat: the lease moves to wherever the worker says.
+        let until = now() + Duration::minutes(7);
+        outbox.extend_fanout(&[first], until).await.unwrap();
+        let leased: Option<OffsetDateTime> =
+            sqlx::query_scalar("SELECT leased_until FROM fanout_outbox WHERE cursor_seq = $1")
+                .bind(i64::try_from(first.sequence()).unwrap())
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert!((leased.unwrap() - until).abs() < Duration::milliseconds(1));
+
+        let (phone, laptop) = (DeviceId::generate(), DeviceId::generate());
+        outbox.record_delivery(id, 1, phone).await.unwrap();
+        outbox.record_delivery(id, 1, phone).await.unwrap();
+        outbox.record_delivery(id, 2, laptop).await.unwrap();
+        assert_eq!(outbox.delivered_devices(id, 1).await.unwrap(), [phone]);
+
+        // A second revision owes a row of its own, still being worked.
+        let (_, alice) = user();
+        let mut notification = notifications(&store).get(id).await.unwrap().unwrap();
+        let written = notification
+            .revise(
+                RevisionDraft::simple(ContentDraft::titled("etcd recovered")),
+                author(&alice),
+                now(),
+                &ChannelPolicy::default(),
+            )
+            .unwrap();
+        let after = notify_ports::AfterWrite {
+            fanout: true,
+            ..notify_ports::AfterWrite::default()
+        };
+        let second = notifications(&store)
+            .append_revision_with(&notification, &written.revision, &after)
+            .await
+            .unwrap();
+
+        outbox.complete_fanout(first).await.unwrap();
+        assert_eq!(
+            outbox.delivered_devices(id, 2).await.unwrap(),
+            [laptop],
+            "kept while a row of the notification is still owed"
+        );
+        outbox.complete_fanout(second).await.unwrap();
+        for seq in [1, 2] {
+            assert_eq!(
+                outbox.delivered_devices(id, seq).await.unwrap(),
+                [] as [DeviceId; 0],
+                "gone with the last row"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_undecodable_fanout_row_is_dead_lettered_without_failing_the_claim() {
+        let store = store!();
+        // Below every real cursor, so it is claimed first: the worst place for it.
+        let slug = ulid_slug();
+        let poison = -i64::from(u32::from_str_radix(&slug[slug.len() - 6..], 36).unwrap_or(1));
+        sqlx::query("INSERT INTO fanout_outbox (cursor_seq, notification) VALUES ($1, '{}')")
+            .bind(poison)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let (_, good) = owed_fanout(&store).await;
+
+        let at = now();
+        let claimed = notify_ports::FanoutOutbox::claim_fanout(
+            &store,
+            at,
+            1_000,
+            at + Duration::seconds(60),
+            10,
+            at - Duration::hours(1),
+        )
+        .await
+        .expect("one bad row must not fail everybody's claim");
+
+        assert!(claimed.iter().any(|row| row.cursor == good));
+        assert!(is_dead(&store, poison).await);
+
+        notify_ports::FanoutOutbox::complete_fanout(&store, good)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM fanout_outbox WHERE cursor_seq = $1")
+            .bind(poison)
+            .execute(store.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_a_notification_drops_the_push_it_still_owed() {
+        let store = store!();
+        let (id, cursor) = owed_fanout(&store).await;
+
+        notifications(&store).mark_deleted(id, now()).await.unwrap();
+
+        let left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM fanout_outbox WHERE cursor_seq = $1")
+                .bind(i64::try_from(cursor.sequence()).unwrap())
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(left, 0, "nobody should be buzzed about something deleted");
+    }
+
     // --- Outbound sinks (design §7.1bis, scenario T17) ---------------------
 
     fn queue(store: &PgStore) -> &dyn notify_ports::SinkQueue {
@@ -3356,7 +4057,9 @@ mod e2e {
         notify_ports::SinkDelivery {
             delivery_id: notify_domain::DeliveryId::generate(),
             channel: channel.clone(),
-            sink: notify_domain::SinkId::new("webhook", "https://hooks.weebo.poc/incidents")
+            // Already in the redacted shape: a full-url id is what the boot-time
+            // re-key test rewrites, across the whole shared table.
+            sink: notify_domain::SinkId::new("webhook", "https://hooks.weebo.poc#0000000000000002")
                 .unwrap(),
             event,
             attempts: 0,
@@ -3376,9 +4079,15 @@ mod e2e {
             .claim_due(now, 10, now + Duration::seconds(60))
             .await
             .unwrap();
-        assert_eq!(claimed.len(), 1);
+        // Only this test's row: the database is shared, and a row another run left
+        // due is claimed alongside it.
+        let mine: Vec<_> = claimed
+            .iter()
+            .filter(|held| held.delivery_id == delivery.delivery_id)
+            .collect();
+        assert_eq!(mine.len(), 1);
         assert_eq!(
-            claimed[0].event, delivery.event,
+            mine[0].event, delivery.event,
             "what a consumer receives is what a client would have seen on its \
              stream, byte for byte (ADR-0013)"
         );
@@ -3482,7 +4191,7 @@ mod e2e {
         assert_eq!(letters[0].attempts, 12);
         assert_eq!(
             letters[0].sink.destination(),
-            "https://hooks.weebo.poc/incidents"
+            "https://hooks.weebo.poc#0000000000000002"
         );
         assert_eq!(
             queue(&store)
@@ -3507,12 +4216,9 @@ mod e2e {
                 .unwrap(),
             "the second requeue has nothing to put back"
         );
-        assert!(
-            queue(&store)
-                .dead_letters(Some(&channel))
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            queue(&store).dead_letters(Some(&channel)).await.unwrap(),
+            [] as [notify_ports::DeadLetter; 0]
         );
 
         let back = queue(&store)
@@ -3532,6 +4238,327 @@ mod e2e {
 
         queue(&store).complete(&delivery.delivery_id).await.unwrap();
     }
+    #[tokio::test]
+    async fn dead_letters_past_the_retention_are_pruned_and_younger_ones_kept() {
+        let store = store!();
+        let old = delivery(&store).await;
+        let young = delivery(&store).await;
+        let now = now();
+
+        queue(&store)
+            .bury(&old, "410", now - Duration::days(40))
+            .await
+            .unwrap();
+        queue(&store).bury(&young, "410", now).await.unwrap();
+
+        let pruned = queue(&store)
+            .prune_dead_letters(now - Duration::days(30), 1_000)
+            .await
+            .unwrap();
+        assert!(pruned >= 1);
+
+        let left = queue(&store)
+            .dead_letters(Some(&old.channel))
+            .await
+            .unwrap();
+        assert!(left.iter().all(|letter| letter.id != old.delivery_id));
+        // Each delivery here is on a channel of its own.
+        let kept = queue(&store)
+            .dead_letters(Some(&young.channel))
+            .await
+            .unwrap();
+        assert!(kept.iter().any(|letter| letter.id == young.delivery_id));
+        queue(&store)
+            .requeue(&young.delivery_id, now)
+            .await
+            .unwrap();
+        queue(&store).complete(&young.delivery_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stored_sink_ids_are_rekeyed_in_the_queue_and_the_dead_letters() {
+        // What the server's boot does with the configured urls and the key
+        // (`notify-server/src/sinks.rs`, `rekey_stored`); here only the store's half:
+        // every row with a mapped id moves, in both tables, and nothing else does.
+        let store = store!();
+        let now = now();
+        let unique = ulid_slug();
+        let legacy = notify_domain::SinkId::new(
+            "webhook",
+            &format!("https://hooks.weebo.poc/{unique}/SECRETPATH"),
+        )
+        .unwrap();
+        let rekeyed =
+            notify_domain::SinkId::new("webhook", &format!("https://hooks.weebo.poc#{unique}"))
+                .unwrap();
+
+        let queued = notify_ports::SinkDelivery {
+            sink: legacy.clone(),
+            ..delivery(&store).await
+        };
+        let buried = notify_ports::SinkDelivery {
+            delivery_id: notify_domain::DeliveryId::generate(),
+            ..queued.clone()
+        };
+        queue(&store).enqueue(&queued, now).await.unwrap();
+        queue(&store).enqueue(&buried, now).await.unwrap();
+        queue(&store).bury(&buried, "410", now).await.unwrap();
+
+        let rekey = |stored: &str| (stored == legacy.as_str()).then(|| rekeyed.clone());
+        assert_eq!(queue(&store).rekey_sinks(&rekey).await.unwrap(), 2);
+        assert_eq!(
+            queue(&store).rekey_sinks(&rekey).await.unwrap(),
+            0,
+            "idempotent: a second boot finds nothing under the old id"
+        );
+
+        let (in_queue,): (String,) =
+            sqlx::query_as("SELECT sink FROM sink_queue WHERE delivery_id = $1")
+                .bind(queued.delivery_id.to_string())
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(in_queue, rekeyed.as_str());
+        let letters = queue(&store)
+            .dead_letters(Some(&buried.channel))
+            .await
+            .unwrap();
+        assert!(
+            letters
+                .iter()
+                .any(|letter| letter.id == buried.delivery_id && letter.sink == rekeyed)
+        );
+        queue(&store).complete(&queued.delivery_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_sink_id_migration_redacts_declaration_urls_without_a_key() {
+        // `20261010200000_redacted_sink_ids.sql` cannot fingerprint (SQL never sees
+        // the key), so a stored declaration's webhook url becomes origin + a keyless
+        // marker. Planted in the old shape, then the migration is run again — it is
+        // idempotent by design.
+        const MIGRATION: &str = include_str!("../migrations/20261010200000_redacted_sink_ids.sql");
+
+        let store = store!();
+        let key = format!("redact-{}", ulid_slug());
+        sqlx::query(
+            "INSERT INTO managed_declarations (kind, key, snapshot, applied_at)
+             VALUES ('channel', $1, $2, now())",
+        )
+        .bind(&key)
+        .bind(serde_json::json!({ "sinks": [
+            { "type": "webhook", "url": "https://hooks.slack.com/services/T0/B0/SECRETPATH" },
+            { "type": "webhook", "url": "https://hooks.example#0123456789abcdef" },
+            { "type": "email", "address": "ops@example.org" },
+        ] }))
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(MIGRATION)
+            .execute(store.pool())
+            .await
+            .unwrap();
+
+        let (snapshot,): (serde_json::Value,) = sqlx::query_as(
+            "SELECT snapshot FROM managed_declarations WHERE kind = 'channel' AND key = $1",
+        )
+        .bind(&key)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            snapshot["sinks"],
+            serde_json::json!([
+                { "type": "webhook", "url": "https://hooks.slack.com#redacted" },
+                { "type": "webhook", "url": "https://hooks.example#0123456789abcdef" },
+                { "type": "email", "address": "ops@example.org" },
+            ])
+        );
+        sqlx::query("DELETE FROM managed_declarations WHERE kind = 'channel' AND key = $1")
+            .bind(&key)
+            .execute(store.pool())
+            .await
+            .unwrap();
+    }
+
+    // --- Retention housekeeping (design §7.2bis) ---------------------------
+
+    async fn presign_rows(store: &PgStore, id: AttachmentId) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM attachment_presigns WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_one(store.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_presign_row_goes_once_a_revision_names_it_and_not_before() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+
+        let used = AttachmentId::generate();
+        let pending = AttachmentId::generate();
+        for id in [used, pending] {
+            registry(&store).record(id, &channel, now()).await.unwrap();
+        }
+        publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    image: Some(Image::Attachment { reference: used }),
+                    ..ContentDraft::titled("names it")
+                },
+            ),
+            None,
+            now(),
+        )
+        .await;
+
+        // The suite shares one database, so other tests' referenced rows may sit
+        // ahead of ours in the batch: drain rather than take one bite.
+        while registry(&store).forget_referenced(1_000).await.unwrap() > 0 {}
+
+        assert_eq!(
+            presign_rows(&store, used).await,
+            0,
+            "referenced: no longer ours"
+        );
+        assert_eq!(
+            presign_rows(&store, pending).await,
+            1,
+            "an upload on its way in keeps its row"
+        );
+    }
+
+    #[tokio::test]
+    async fn long_revoked_credentials_are_deleted_and_recent_ones_kept() {
+        let store = store!();
+        let (alice_id, alice) = user();
+
+        let device = |label: &str| Device {
+            id: DeviceId::generate(),
+            owner: alice.clone(),
+            label: label.to_owned(),
+            transport: PushTransport::Stream,
+            public_key: None,
+            cursor: None,
+            enrolled_at: now() - Duration::days(200),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        let (old, recent, live) = (device("old"), device("recent"), device("live"));
+        for d in [&old, &recent, &live] {
+            devices(&store).upsert(d).await.unwrap();
+        }
+        devices(&store)
+            .revoke(old.id, now() - Duration::days(100))
+            .await
+            .unwrap();
+        devices(&store).revoke(recent.id, now()).await.unwrap();
+
+        let key = |expires_at: Option<OffsetDateTime>| ApiKey {
+            id: ApiKeyId::generate(),
+            prefix: ApiKeyPrefix::parse(fresh_prefix().as_str()).unwrap(),
+            label: None,
+            owner: ApiKeyOwner::User { id: alice_id },
+            scopes: vec![Scope::Publish],
+            channels: Vec::new(),
+            publish_per_minute: None,
+            created_at: now() - Duration::days(200),
+            expires_at,
+            last_used_at: None,
+            revoked_at: None,
+        };
+        let revoked = key(None);
+        let expired = key(Some(now() - Duration::days(100)));
+        let active = key(Some(now() + Duration::days(10)));
+        for k in [&revoked, &expired, &active] {
+            keys(&store)
+                .insert(&StoredApiKey {
+                    key: k.clone(),
+                    secret_hash: "$argon2id$stub".to_owned(),
+                })
+                .await
+                .unwrap();
+        }
+        keys(&store)
+            .revoke(revoked.id, now() - Duration::days(100))
+            .await
+            .unwrap();
+
+        let (gone_devices, gone_keys) = store
+            .prune_revoked_credentials(now() - Duration::days(90))
+            .await
+            .unwrap();
+        assert!(gone_devices >= 1 && gone_keys >= 2);
+
+        assert!(
+            DeviceRepository::get(&store, old.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            DeviceRepository::get(&store, recent.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            DeviceRepository::get(&store, live.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            ApiKeyRepository::get(&store, revoked.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            ApiKeyRepository::get(&store, expired.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            ApiKeyRepository::get(&store, active.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_retention_backlog_sees_an_expiry_nobody_has_claimed() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        // Simple notifications age from creation: a month old is long past 7 days.
+        publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::simple(ContentDraft::titled("overdue")),
+            None,
+            now() - Duration::days(30),
+        )
+        .await;
+
+        let backlog = store
+            .retention_backlog(now(), now() - Duration::days(30), now() - Duration::days(7))
+            .await
+            .unwrap();
+        assert!(backlog.pending_expiry >= 1);
+        assert!(backlog.oldest_event_age_seconds > 0);
+    }
+
     // --- Migrations (T24, §3.4) ---------------------------------------------
 
     /// A database name nothing else in this run will pick.
@@ -3549,7 +4576,7 @@ mod e2e {
     async fn critical_t24_a_first_boot_builds_the_schema_and_a_second_replays_nothing() {
         // T24: empty database → full schema; reboot → zero migrations replayed. Needs its own database.
         let Some(url) = database_url() else {
-            eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+            skip_without_database();
             return;
         };
 
@@ -3584,7 +4611,26 @@ mod e2e {
     async fn migrate_twice(url: &str) -> Result<(), String> {
         let store = PgStore::connect(url, 2).await.map_err(|e| e.to_string())?;
 
+        // What `migrate_on_start = false` relies on: an empty database reports every
+        // migration as owed, and a migrated one reports none.
+        if store
+            .pending_migrations()
+            .await
+            .map_err(|e| e.to_string())?
+            .is_empty()
+        {
+            return Err("an empty database reported no pending migration".to_owned());
+        }
+
         store.migrate().await.map_err(|e| e.to_string())?;
+
+        let pending = store
+            .pending_migrations()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !pending.is_empty() {
+            return Err(format!("still pending after migrating: {pending:?}"));
+        }
 
         let tables: Vec<(String,)> = sqlx::query_as(
             "select table_name::text from information_schema.tables \

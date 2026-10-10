@@ -610,7 +610,7 @@ export type DeadLetter = {
      */
     last_error: string;
     /**
-     * Which sink it was going to, endpoint included.
+     * Which sink it was going to: origin plus keyed fingerprint ([`redact_url`]).
      */
     sink: SinkId;
 };
@@ -2006,7 +2006,13 @@ export type Status = typeof Status[keyof typeof Status];
  */
 export type SyncPage = {
     /**
-     * How many revisions the compaction folded away.
+     * How many revisions the compaction folded away, over the whole window since
+     * `after` and not just this page — so the first page of a catch-up carries the
+     * total, and that is the one a client reads it from.
+     *
+     * Counted over at most the first ten thousand events of the window (in no
+     * particular order): past that it is a **lower bound**, "at least this many",
+     * rather than a count that could cost a long absence its catch-up.
      */
     compacted: number;
     /**
@@ -2420,6 +2426,10 @@ export type ListKeysErrors = {
      * No usable credential
      */
     401: Problem;
+    /**
+     * Not a session — a key cannot list keys
+     */
+    403: Problem;
 };
 
 export type ListKeysError = ListKeysErrors[keyof ListKeysErrors];
@@ -2480,7 +2490,7 @@ export type RevokeKeyErrors = {
      */
     401: Problem;
     /**
-     * Not the caller's key
+     * Not a session — a key may revoke only itself
      */
     403: Problem;
 };
@@ -2595,7 +2605,7 @@ export type FsUploadData = {
 
 export type FsUploadErrors = {
     /**
-     * The token is missing, expired, or for another id/purpose/content type
+     * The token is missing, expired, or for another id/purpose/content type/length
      */
     403: unknown;
     /**
@@ -3440,7 +3450,7 @@ export type ListDevicesError = ListDevicesErrors[keyof ListDevicesErrors];
 
 export type ListDevicesResponses = {
     /**
-     * Devices, newest first
+     * Devices, newest first — `stream` ones only for an API key or a CI token
      */
     200: Array<Device>;
 };
@@ -3460,7 +3470,11 @@ export type EnrolDeviceErrors = {
      */
     401: Problem;
     /**
-     * A relayed transport with no key, or the reverse
+     * A push transport, from a credential that is not a session
+     */
+    403: Problem;
+    /**
+     * A relayed transport with no key, or the reverse; or `device.limit_reached`, the owner's `[devices] max_per_user` active devices already enrolled
      */
     422: Problem;
 };
@@ -3494,7 +3508,7 @@ export type RevokeDeviceErrors = {
      */
     401: Problem;
     /**
-     * Not the caller's device
+     * A push device, from a credential that is not a session
      */
     403: Problem;
 };
@@ -3887,7 +3901,7 @@ export type SilenceErrors = {
      */
     401: Problem;
     /**
-     * Not a member of its channel
+     * Not a member of its channel, or a key or CI token rather than a session
      */
     403: Problem;
     /**
@@ -4011,7 +4025,7 @@ export type ReceiptErrors = {
      */
     401: Problem;
     /**
-     * Not a member of its channel
+     * Not a member of its channel, or a key naming a push device
      */
     403: Problem;
 };
@@ -4145,7 +4159,7 @@ export type DeactivateAccountErrors = {
      */
     401: Problem;
     /**
-     * Somebody else's, or a person is not asking
+     * Somebody else's, or not a person's own session
      */
     403: Problem;
     /**

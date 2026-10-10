@@ -1,0 +1,109 @@
+---
+title: Backup and restore
+description: What to back up, which tool to use, the order that keeps the database and the bucket consistent, and the drill that proves a backup restores.
+---
+
+Two stores hold everything: **Postgres** (notifications, revisions, the event log,
+channels, users, devices, keys' hashes, the audit trail) and the **object store**
+(attachment bytes). Replicas are stateless; the configuration file and the Secrets
+it references live in Git and in your secret manager, and are backed up there.
+
+## Postgres
+
+**Recommended: point-in-time recovery, not dumps.** Continuous WAL archiving plus
+periodic base backups lets you restore to any second — which is what you want after
+a bad migration or an accidental `DELETE`, where "last night's dump" loses a day.
+
+- **On Kubernetes, use CloudNativePG** with its Barman Cloud backups to an object
+  store (`spec.backup.barmanObjectStore`, plus a `ScheduledBackup`). It is the same
+  operator that gives you the failover [high availability](/docs/ops/high-availability)
+  leaves to you, so one tool covers both.
+- **Outside Kubernetes, use pgBackRest** (full + differential schedule, WAL
+  archiving, `repo1-retention-full`).
+- **`pg_dump` is a complement, not the strategy**: a logical, portable copy useful
+  for a major-version upgrade or a copy into staging, with no point-in-time
+  recovery and a restore time proportional to the data. `task ops:restore-drill`
+  uses it because it needs nothing but the dev stack.
+
+Keep at least the dead-letter retention (`[sinks] dead_letter_retention`, 30 days)
+and your longest channel TTL in mind when choosing how far back backups go — a
+restore can only bring back what the purge had not removed yet.
+
+## Object store
+
+Attachments are written once and never modified; an object is deleted only by the
+purge — with its notification, or a day after an upload nobody referenced
+([retention](/docs/ops/retention)).
+
+- **Enable bucket versioning** (S3, MinIO, RustFS, Garage all support it) with a
+  lifecycle rule expiring noncurrent versions after your backup window. A purge or
+  a mistaken delete is then recoverable in place.
+- **Replicate to a second location**: provider replication (S3 CRR, MinIO site
+  replication), or `rclone sync` on a schedule to a bucket in another failure
+  domain. Replication alone copies deletes too — versioning on the target is what
+  makes it a backup.
+
+## Consistency between the two
+
+A row in Postgres references objects by key. Back them up — and restore them — in
+this order: **database first, then bucket**, with the bucket's point in time equal
+to or *later* than the database's.
+
+- A bucket **newer** than the database holds objects no row references: harmless
+  to correctness, but nothing removes them on its own — the purge only deletes
+  objects it has a row for, and the presign registry rows that would have let it
+  sweep them were lost with the restore. Reclaim the space once, after the restore,
+  by deleting keys created after T that the restored database does not
+  reference — or leave them; they are unreachable.
+- A bucket **older** than the database is missing objects that rows reference:
+  those attachments 404, and nothing can bring them back. That is the failure the
+  order exists to prevent.
+
+So: take the database backup, then the bucket snapshot (or rely on versioning, which
+is continuous); on restore, restore the database to T, then the bucket to T or any
+time after.
+
+## Encryption
+
+The application performs no encryption at rest ([hardening](/docs/ops/hardening)):
+backups inherit that, so they must be encrypted where they land — server-side
+encryption with a KMS key on the backup bucket (CloudNativePG/Barman and pgBackRest
+both support it; pgBackRest can also encrypt client-side with
+`repo1-cipher-type`), and the same for the attachment replica. Backups hold
+everything the live database does, including audit logs and API-key hashes: give
+the backup bucket its own credentials, write-only from the cluster, and keep the
+read credential out of it.
+
+## Restore
+
+1. **Stop writes.** Scale the server to zero (suspend its HPA first). The web
+   Deployment can keep serving its static bundle.
+2. **Restore Postgres** to the chosen time T — a new CloudNativePG `Cluster` with
+   `bootstrap.recovery` and a `recoveryTarget`, or `pgbackrest restore
+   --type=time --target=…` — and point `[database] url` at it.
+3. **Restore the bucket** to T or later: roll back to object versions at T, or sync
+   back from the replica.
+4. **Migrate.** `helm upgrade` runs the migration Job (or `notify-server migrate`
+   by hand): the restored schema has to be one this build accepts. If the backup
+   predates migrations of the version you run, they apply now; if it is *newer*
+   than the build, see [rollback](/docs/ops/runbooks#failed-migration-and-rollback).
+5. **Scale back up** and check: `/readyz` green, a test publish arrives over a live
+   stream, an old attachment downloads.
+
+## Restore drill
+
+A backup nobody has restored is a hope. Do it on a schedule — quarterly, and after
+any change to the backup setup — into a **scratch** environment, never over
+production:
+
+1. Restore the latest backup (steps 2–4 above) into a throwaway database and bucket.
+2. Run `notify-server migrate` against it.
+3. Compare row counts of `channels`, `notifications` and `events` with production
+   at the backup's time, and download a few attachments.
+4. Write down how long it took. That is your real recovery time, not the one in the
+   plan.
+
+`task ops:restore-drill` rehearses the database half against the dev stack:
+`pg_dump` of `weebo_notify`, `pg_restore` into an empty scratch database,
+`notify-server migrate` on it, and a row-count comparison of the main tables. The
+scratch database is dropped afterwards; the dump is kept under `target/drill/`.

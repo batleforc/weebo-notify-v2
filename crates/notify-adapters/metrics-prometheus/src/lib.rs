@@ -1,5 +1,6 @@
 //! The registry behind `GET /metrics` (design §13). Family names are an external contract (alert rules).
-//! Only bounded labels (`channel`, `transport`, `reason`); never ids or endpoints.
+//! Only bounded labels (`channel`, `transport`, `reason`); never ids or endpoints. The published
+//! counter keeps its first [`MAX_CHANNEL_SERIES`] channels and folds the rest into `channel="other"`.
 //! `dlq_depth` is set by the leader only, so followers report it absent rather than zero.
 
 use std::sync::Mutex;
@@ -13,16 +14,43 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 
+/// How many distinct `channel` values `notifications_published_total` carries
+/// before the rest are counted as `other`.
+///
+/// First come, first kept, for the life of the process: a series that changed
+/// meaning mid-scrape would make every `rate()` over it wrong. 256 is past any
+/// instance whose channels a dashboard could still show one line each.
+pub const MAX_CHANNEL_SERIES: usize = 256;
+
+/// The label everything past [`MAX_CHANNEL_SERIES`] is counted under.
+const OTHER_CHANNEL: &str = "other";
+
 /// `{channel="ci-infra"}`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ChannelLabel {
     channel: String,
 }
 
+/// `{kind="events"}`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct KindLabel {
+    kind: &'static str,
+}
+
 /// `{transport="webpush"}`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct TransportLabel {
     transport: String,
+}
+
+/// `{task="sink-drain"}`.
+///
+/// `task` and not `job`: Prometheus attaches its own `job` label to every scraped
+/// series, and a series carrying one too gets renamed to `exported_job` — which
+/// every alert written against `job=` would then silently miss.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct JobLabel {
+    task: String,
 }
 
 /// `{transport="webpush",reason="expired"}`.
@@ -38,11 +66,21 @@ pub struct PrometheusMetrics {
     /// Locked because `dlq_depth` clears a family and rendering needs a consistent set.
     registry: Mutex<Registry>,
     published: Family<ChannelLabel, Counter>,
+    /// The channels `published` has a series for, to enforce the cap.
+    published_channels: Mutex<std::collections::HashSet<String>>,
+    retention_rows: Family<KindLabel, Gauge>,
+    retention_event_age: Gauge,
+    fanout_rows: Family<KindLabel, Gauge>,
+    fanout_age: Gauge,
+    watermark_lag: Gauge,
     push_duration: Family<TransportLabel, Histogram>,
     push_failures: Family<FailureLabel, Counter>,
     sync_backlog: Histogram,
     connections: Family<TransportLabel, Gauge>,
     dlq: Family<ChannelLabel, Gauge>,
+    job_success: Family<JobLabel, Gauge>,
+    job_failures: Family<JobLabel, Counter>,
+    reconcile_refused: Counter,
 }
 
 impl Default for PrometheusMetrics {
@@ -104,25 +142,137 @@ impl PrometheusMetrics {
             dlq.clone(),
         );
 
+        // Seconds since the epoch, so `time() - x > 300` is the whole alert: a loop
+        // that died stops moving this, which a failure counter alone cannot show.
+        let job_success = Family::<JobLabel, Gauge>::default();
+        registry.register(
+            "background_job_last_success_timestamp_seconds",
+            "When each background job last completed a pass without error",
+            job_success.clone(),
+        );
+        let job_failures = Family::<JobLabel, Counter>::default();
+        registry.register(
+            "background_job_failures",
+            "Background job passes that failed or panicked, by job",
+            job_failures.clone(),
+        );
+        let reconcile_refused = Counter::default();
+        registry.register(
+            "reconcile_removals_refused",
+            "Reconcile passes whose removals were refused by the [reconcile] max_removals guard",
+            reconcile_refused.clone(),
+        );
+
+        let retention_rows = Family::<KindLabel, Gauge>::default();
+        registry.register(
+            "retention_backlog_rows",
+            "Rows past retention not yet removed, by kind — reported by the leader only",
+            retention_rows.clone(),
+        );
+        let retention_event_age = Gauge::default();
+        registry.register_with_unit(
+            "retention_oldest_event_age",
+            "Age of the oldest event row — compare with the event retention",
+            prometheus_client::registry::Unit::Seconds,
+            retention_event_age.clone(),
+        );
+
+        let (fanout_rows, fanout_age) = register_fanout(&mut registry);
+        let watermark_lag = Gauge::default();
+        registry.register_with_unit(
+            "event_watermark_lag",
+            "How long the oldest committed event has been held back by a transaction still running",
+            prometheus_client::registry::Unit::Seconds,
+            watermark_lag.clone(),
+        );
+
         Self {
             registry: Mutex::new(registry),
             published,
+            published_channels: Mutex::new(std::collections::HashSet::new()),
+            retention_rows,
+            retention_event_age,
+            fanout_rows,
+            fanout_age,
+            watermark_lag,
             push_duration,
             push_failures,
             sync_backlog,
             connections,
             dlq,
+            job_success,
+            job_failures,
+            reconcile_refused,
         }
     }
 }
 
+/// The fan-out outbox gauges (ADR-0025), on their own so `new` stays readable.
+fn register_fanout(registry: &mut Registry) -> (Family<KindLabel, Gauge>, Gauge) {
+    let rows = Family::<KindLabel, Gauge>::default();
+    registry.register(
+        "fanout_outbox_rows",
+        "Fan-out outbox rows, pending or dead — reported by the leader only",
+        rows.clone(),
+    );
+    let age = Gauge::default();
+    registry.register_with_unit(
+        "fanout_outbox_oldest_age",
+        "Age of the oldest fan-out row still owed",
+        prometheus_client::registry::Unit::Seconds,
+        age.clone(),
+    );
+    (rows, age)
+}
+
 impl Metrics for PrometheusMetrics {
     fn published(&self, channel: &ChannelId) {
+        let channel = {
+            let mut seen = self
+                .published_channels
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if seen.contains(channel.as_str()) || seen.len() < MAX_CHANNEL_SERIES {
+                seen.insert(channel.to_string());
+                channel.to_string()
+            } else {
+                OTHER_CHANNEL.to_owned()
+            }
+        };
         self.published
-            .get_or_create(&ChannelLabel {
-                channel: channel.to_string(),
-            })
+            .get_or_create(&ChannelLabel { channel })
             .inc();
+    }
+
+    fn retention_backlog(&self, backlog: &notify_ports::RetentionBacklog) {
+        let gauge = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+        for (kind, rows) in [
+            ("events", backlog.events_prunable),
+            ("expire", backlog.pending_expiry),
+            ("purge", backlog.pending_purge),
+        ] {
+            self.retention_rows
+                .get_or_create(&KindLabel { kind })
+                .set(gauge(rows));
+        }
+        self.retention_event_age
+            .set(gauge(backlog.oldest_event_age_seconds));
+    }
+
+    fn fanout_backlog(&self, backlog: &notify_ports::FanoutBacklog) {
+        let gauge = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+        for (kind, rows) in [("pending", backlog.pending), ("dead", backlog.dead)] {
+            self.fanout_rows
+                .get_or_create(&KindLabel { kind })
+                .set(gauge(rows));
+        }
+        self.fanout_age
+            .set(gauge(backlog.oldest_pending_age_seconds));
+    }
+
+    fn event_watermark_lag(&self, seconds: u64) {
+        self.watermark_lag
+            .set(i64::try_from(seconds).unwrap_or(i64::MAX));
     }
 
     fn push_finished(&self, transport: &'static str, result: PushResult, seconds: f64) {
@@ -182,6 +332,26 @@ impl Metrics for PrometheusMetrics {
         }
     }
 
+    fn job_finished(&self, job: &'static str, ok: bool) {
+        let label = JobLabel {
+            task: job.to_owned(),
+        };
+        if ok {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            self.job_success
+                .get_or_create(&label)
+                .set(i64::try_from(now).unwrap_or(i64::MAX));
+        } else {
+            self.job_failures.get_or_create(&label).inc();
+        }
+    }
+
+    fn reconcile_removals_refused(&self) {
+        self.reconcile_refused.inc();
+    }
+
     fn render(&self) -> String {
         let mut out = String::new();
 
@@ -217,6 +387,60 @@ mod tests {
         let rendered = metrics.render();
         assert!(rendered.contains("notifications_published_total{channel=\"ci-infra\"} 2"));
         assert!(rendered.contains("notifications_published_total{channel=\"cluster-ovh-1\"} 1"));
+    }
+
+    #[test]
+    fn channels_past_the_cap_are_folded_into_other() {
+        let metrics = PrometheusMetrics::new();
+        for n in 0..MAX_CHANNEL_SERIES {
+            metrics.published(&channel(&format!("c-{n}")));
+        }
+        metrics.published(&channel("one-too-many"));
+        metrics.published(&channel("and-another"));
+        // A channel that already had its series keeps it.
+        metrics.published(&channel("c-0"));
+
+        let rendered = metrics.render();
+        assert!(rendered.contains("notifications_published_total{channel=\"other\"} 2"));
+        assert!(rendered.contains("notifications_published_total{channel=\"c-0\"} 2"));
+        assert!(!rendered.contains("one-too-many"));
+    }
+
+    #[test]
+    fn the_fanout_outbox_is_exported() {
+        let metrics = PrometheusMetrics::new();
+        metrics.fanout_backlog(&notify_ports::FanoutBacklog {
+            pending: 4,
+            dead: 1,
+            oldest_pending_age_seconds: 90,
+        });
+
+        let rendered = metrics.render();
+        assert!(rendered.contains("fanout_outbox_rows{kind=\"pending\"} 4"));
+        assert!(rendered.contains("fanout_outbox_rows{kind=\"dead\"} 1"));
+        assert!(rendered.contains("fanout_outbox_oldest_age_seconds 90"));
+    }
+
+    #[test]
+    fn the_watermark_lag_is_exported() {
+        let metrics = PrometheusMetrics::new();
+        metrics.event_watermark_lag(7);
+        assert!(metrics.render().contains("event_watermark_lag_seconds 7"));
+    }
+
+    #[test]
+    fn the_retention_backlog_is_exported() {
+        let metrics = PrometheusMetrics::new();
+        metrics.retention_backlog(&notify_ports::RetentionBacklog {
+            oldest_event_age_seconds: 42,
+            events_prunable: 3,
+            pending_expiry: 2,
+            pending_purge: 1,
+        });
+        let rendered = metrics.render();
+        assert!(rendered.contains("retention_backlog_rows{kind=\"events\"} 3"));
+        assert!(rendered.contains("retention_backlog_rows{kind=\"purge\"} 1"));
+        assert!(rendered.contains("retention_oldest_event_age_seconds 42"));
     }
 
     #[test]
@@ -291,6 +515,23 @@ mod tests {
             metrics.render().contains("# HELP notifications_published"),
             "and appears with its first series"
         );
+    }
+
+    #[test]
+    fn a_job_reports_when_it_last_worked_and_how_often_it_did_not() {
+        let metrics = PrometheusMetrics::new();
+        metrics.job_finished("purge", true);
+        metrics.job_finished("sink-drain", false);
+        metrics.job_finished("sink-drain", false);
+        metrics.reconcile_removals_refused();
+
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("background_job_last_success_timestamp_seconds{task=\"purge\"} 1"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("background_job_failures_total{task=\"sink-drain\"} 2"));
+        assert!(rendered.contains("reconcile_removals_refused_total 1"));
     }
 
     #[test]

@@ -23,10 +23,20 @@ costs latency, never correctness: the cursor catches up.
 
 TTL purge, stale closure, GitOps reconciliation, sink retries and DND digests run on
 a single replica, each under its own lock — a slow purge must not stop notifications
-from being closed. Leader election is either a Postgres advisory lock (default, no extra
-infrastructure) or the Kubernetes Lease API. When the lock is lost another replica
-takes over; non-leaders keep serving the API normally. The jobs are independent
+from being closed. Leader election is a Postgres advisory lock — no extra
+infrastructure. (`[ha] leader_election = "kubernetes"` — the Lease API — is named in
+the configuration schema but **not supported**: the server refuses to start with it
+rather than silently fall back.) When the lock is lost another replica takes over; non-leaders keep serving the API normally. The jobs are independent
 loops, so a slow reconcile pass or SMTP send never delays the five-second sink tick.
+Each loop is supervised — an error or a panic is counted
+(`background_job_failures_total{task}`), backed off and retried, and never stops the
+others — and `/readyz` reports `eventbus` unhealthy while this replica's `LISTEN` pump
+is not subscribed (it resubscribes by itself, with a backoff).
+
+The sink drain sends to up to eight sinks at once, one delivery at a time per sink;
+a sink whose endpoint fails has the rest of its batch put back for the next backoff
+rather than waited on. A pass stops starting attempts after 60 s, and its claims are
+leased for 5 minutes, so a lease never runs out under a drain still working on it.
 
 During a rolling update, or after a `SIGHUP` that reached only some pods, replicas
 hold **different copies** of the configuration file. A file is applied when it is
@@ -45,14 +55,32 @@ event-producing writes are serialised across the whole deployment — comfortabl
 hundreds per second. Past that, the upgrade path is to drop the lock and have readers
 stop at the `pg_snapshot_xmin` watermark.
 
-The `LISTEN` connection reconnects by itself. Pokes sent while it was down are lost,
+The `LISTEN` runs on a **dedicated connection** — a one-connection pool of its own,
+opened from the same `[database] url`, never borrowed from the request pool — so a
+pool exhausted by requests cannot starve the event bus, and the bus does not quietly
+make the pool one smaller. It reconnects by itself. Pokes sent while it was down are lost,
 so on reconnection every open stream re-reads the log from its own cursor instead of
 waiting for that channel's next publication.
 
 ## Rolling updates without a gap
 
-Migrations are **expand/contract**: version N must run against version N+1's schema,
-so the migration applies before the rollout. `/readyz` gates entry into the service.
+Migrations are **expand/contract**: version N must run against version N+1's schema
+([runbooks](/docs/ops/runbooks#failed-migration-and-rollback) has the rule, and
+`task lint:migrations` enforces it). With the Helm chart the migration applies
+**before** the rollout: a `pre-install`/`pre-upgrade` hook Job runs
+`notify-server migrate` and the Deployment's pods start with
+`WNK_DATABASE__MIGRATE_ON_START=false`. A failed migration fails `helm upgrade` and
+the old pods keep serving. Without the Job (`migrations.job.enabled: false`, or no
+Helm) every replica migrates on boot under an advisory lock — safe, but the first new
+pod carries the migration inside its startup probe's window. `/readyz` gates entry
+into the service.
+The HTTP listener is bound **before** the boot reconcile pass (which may wait up to a
+minute for another replica's lock): `/healthz` answers throughout, and `/readyz`
+reports `startup` unhealthy until that pass has run. `/readyz` answers within 2 s,
+never returns a raw database error (it is logged instead), and does not queue behind
+a saturated pool — a busy pool is reported healthy so a burst cannot take every
+replica out of the load balancer at once. A `SIGHUP` received during boot is queued,
+not fatal.
 On `SIGTERM` a replica **drains** — stops accepting connections, closes its streams
 cleanly so clients reconnect elsewhere, and finishes in-flight requests within the
 termination grace period.
@@ -67,12 +95,17 @@ Per replica:
 
 - `[database] max_connections`, **16** by default;
 - **one more** for this replica's dedicated `LISTEN` connection, which is not drawn from that pool;
-- the leader's background loops, on the same pool.
+- the leader's background loops, on the same pool — which is why
+  `max_connections` is refused below 9.
+
+Each connection carries `statement_timeout` (30 s) and
+`idle_in_transaction_session_timeout` (60 s), and a request waits at most
+`acquire_timeout` (5 s) for one; see [configuration](/docs/ops/configuration#database).
 
 So a deployment at the chart's `autoscaling.maxReplicas: 6` asks for roughly
 `6 × 17 ≈ 102` connections before anything else on the cluster connects. Size the
 server's `max_connections` above that with headroom, or lower
-`server.config.database.maxConnections` — and remember that a rolling update briefly
+`server.database.maxConnections` — and remember that a rolling update briefly
 runs old and new pods together.
 
 <Callout type="warn">
@@ -81,8 +114,10 @@ runs old and new pods together.
   `LISTEN`/`NOTIFY` — the connection that carries the event bus must either bypass
   the pooler or use **session** mode. The failure is quiet: writes keep working,
   `/readyz` stays green, and notifications simply stop arriving in real time until
-  something reconnects. If you put a pooler in front of this, route
-  `[database] url` through it and give the bus its own direct DSN.
+  something reconnects. The `LISTEN` connection is opened from the **same**
+  `[database] url` as the pool — there is no separate bus DSN — so a pooler in front
+  of this must run in **session** mode, or `[database] url` must point at Postgres
+  directly. See [runbooks](/docs/ops/runbooks#postgres-failover-and-pooler-breakage).
 </Callout>
 
 ## Remaining single points of failure

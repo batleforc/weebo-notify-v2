@@ -1,7 +1,7 @@
 {{/*
 `readOnlyRootFilesystem: true` (the default, values.yaml) is real work here, not
 a checkbox: nginx-unprivileged writes its rendered config into /etc/nginx/conf.d
-and, more awkwardly, `05-runtime-config.sh` writes env.js into the SAME directory
+and, more awkwardly, `05-runtime-config.envsh` writes env.js into the SAME directory
 the image bakes its static assets into (ADR-0021) — a directory a read-only root
 cannot also serve writes from. The init container below copies the baked
 `/usr/share/nginx/html` into a writable emptyDir once at pod start; the main
@@ -86,7 +86,8 @@ spec:
           env:
             # Rendered into /env.js at boot (ADR-0021) — bare origins, no path,
             # no trailing slash; a value with one breaks the CSP's origin match
-            # silently (same ADR's own accepted debt: nothing here validates it).
+            # silently. The container refuses to boot on characters a URL/client id
+            # never needs (`05-runtime-config.envsh`), but not on that shape.
             - name: WNK_API_BASE_URL
               value: {{ required "web.env.apiBaseUrl is required" .Values.web.env.apiBaseUrl | quote }}
             - name: WNK_OIDC_ISSUER

@@ -15,6 +15,10 @@ pub(crate) struct RawClaims {
     /// Checked by the verifier against its injected clock, like `exp`.
     pub(crate) nbf: Option<i64>,
     email: Option<String>,
+    /// Some issuers send it as the string `"true"`; anything else, absent included,
+    /// is unverified.
+    #[serde(default)]
+    email_verified: Option<Value>,
     name: Option<String>,
     preferred_username: Option<String>,
     #[serde(flatten)]
@@ -26,6 +30,7 @@ impl RawClaims {
     pub(crate) fn into_verified(
         self,
         groups_claim: &str,
+        trust_unverified_email: bool,
     ) -> Result<VerifiedClaims, TokenRejection> {
         let issuer = Url::parse(&self.iss).map_err(|_| TokenRejection::Malformed)?;
         let expires_at =
@@ -35,16 +40,25 @@ impl RawClaims {
             return Err(TokenRejection::Malformed);
         }
 
+        let verified = match &self.email_verified {
+            Some(Value::Bool(flag)) => *flag,
+            Some(Value::String(flag)) => flag == "true",
+            _ => false,
+        };
+
         let groups = self
             .extra
             .get(groups_claim)
             .map(normalise_groups)
             .unwrap_or_default();
 
+        let trusted = trust_unverified_email || verified;
         Ok(VerifiedClaims {
             issuer,
             subject: self.sub,
-            email: self.email,
+            email_unverified: self.email.is_some() && !trusted,
+            // An unverified address must not reach the users table: `email` bindings match on it.
+            email: self.email.filter(|_| trusted),
             // Fall back to `preferred_username`; neither is required.
             display_name: self.name.or(self.preferred_username),
             groups,
@@ -87,17 +101,66 @@ mod tests {
             "sub": "alice",
             "exp": 1_800_000_000_i64,
             "email": "alice@weebo.local",
+            "email_verified": true,
             "name": "Alice Martin",
             "groups": ["infra-admins", "platform-admins"],
             "acr": "urn:something we do not read",
         }))
-        .into_verified("groups")
+        .into_verified("groups", false)
         .unwrap();
 
         assert_eq!(verified.subject, "alice");
         assert_eq!(verified.email.as_deref(), Some("alice@weebo.local"));
         assert_eq!(verified.display_name.as_deref(), Some("Alice Martin"));
         assert_eq!(verified.groups, ["infra-admins", "platform-admins"]);
+    }
+
+    #[test]
+    fn an_unverified_email_is_dropped_unless_the_operator_trusts_it() {
+        let payload = |verified: serde_json::Value| {
+            claims(json!({
+                "iss": "https://idp.example",
+                "sub": "mallory",
+                "exp": 1_800_000_000_i64,
+                "email": "alice@weebo.local",
+                "email_verified": verified,
+            }))
+        };
+
+        for unverified in [json!(false), json!("false"), serde_json::Value::Null] {
+            let claims = payload(unverified).into_verified("groups", false).unwrap();
+            assert!(
+                claims.email.is_none(),
+                "an address nobody vouched for must not reach an email binding"
+            );
+            // ...and is reported, so the stored one is cleared rather than kept.
+            assert!(claims.email_unverified);
+        }
+        let absent = claims(json!({
+            "iss": "https://idp.example",
+            "sub": "mallory",
+            "exp": 1_800_000_000_i64,
+        }))
+        .into_verified("groups", false)
+        .unwrap();
+        assert!(
+            !absent.email_unverified,
+            "no claim at all is no news, and keeps the stored address"
+        );
+        assert!(
+            payload(json!("true"))
+                .into_verified("groups", false)
+                .unwrap()
+                .email
+                .is_some()
+        );
+        assert!(
+            payload(json!(false))
+                .into_verified("groups", true)
+                .unwrap()
+                .email
+                .is_some()
+        );
     }
 
     #[test]
@@ -108,10 +171,10 @@ mod tests {
             "sub": "carol",
             "exp": 1_800_000_000_i64,
         }))
-        .into_verified("groups")
+        .into_verified("groups", false)
         .unwrap();
 
-        assert!(verified.groups.is_empty());
+        assert_eq!(verified.groups, [] as [std::string::String; 0]);
         assert!(verified.email.is_none());
         assert!(verified.display_name.is_none());
     }
@@ -125,7 +188,7 @@ mod tests {
             "groups": ["ignored"],
             "weebo/roles": ["dev-team"],
         }))
-        .into_verified("weebo/roles")
+        .into_verified("weebo/roles", false)
         .unwrap();
 
         assert_eq!(verified.groups, ["dev-team"]);
@@ -139,7 +202,7 @@ mod tests {
             "exp": 1_800_000_000_i64,
             "preferred_username": "bob",
         }))
-        .into_verified("groups")
+        .into_verified("groups", false)
         .unwrap();
 
         assert_eq!(verified.display_name.as_deref(), Some("bob"));
@@ -163,25 +226,31 @@ mod tests {
 
     #[test]
     fn a_groups_claim_we_cannot_read_costs_the_groups_not_the_login() {
-        assert!(normalise_groups(&json!(42)).is_empty());
-        assert!(normalise_groups(&json!({ "nested": "object" })).is_empty());
-        assert!(normalise_groups(&json!(null)).is_empty());
+        assert_eq!(normalise_groups(&json!(42)), [] as [std::string::String; 0]);
+        assert_eq!(
+            normalise_groups(&json!({ "nested": "object" })),
+            [] as [std::string::String; 0]
+        );
+        assert_eq!(
+            normalise_groups(&json!(null)),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]
     fn an_unparseable_issuer_or_expiry_is_malformed() {
         let bad_issuer = claims(json!({ "iss": "not a url", "sub": "a", "exp": 1_i64 }))
-            .into_verified("groups")
+            .into_verified("groups", false)
             .unwrap_err();
         assert_eq!(bad_issuer, TokenRejection::Malformed);
 
         let bad_exp = claims(json!({ "iss": "https://x.example", "sub": "a", "exp": i64::MAX }))
-            .into_verified("groups")
+            .into_verified("groups", false)
             .unwrap_err();
         assert_eq!(bad_exp, TokenRejection::Malformed);
 
         let no_subject = claims(json!({ "iss": "https://x.example", "sub": "", "exp": 1_i64 }))
-            .into_verified("groups")
+            .into_verified("groups", false)
             .unwrap_err();
         assert_eq!(no_subject, TokenRejection::Malformed);
     }
@@ -226,7 +295,8 @@ impl RawFederatedClaims {
             },
             // Kept even when absent: refusing a missing id is the domain's rule (T11).
             jti: self.jti,
-            expires_at,
+            // The bare `exp`; the verifier adds its own leeway once it has checked it.
+            accepted_until: expires_at,
         })
     }
 }

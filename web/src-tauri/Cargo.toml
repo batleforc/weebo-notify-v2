@@ -79,5 +79,12 @@ tauri-plugin-single-instance = "2"
 # its polling loop cannot share Tauri's multi-thread one (see `run_daemon`'s doc).
 tokio = { version = "1", default-features = false, features = ["time", "rt"] }
 
+# Self-update (desktop only — there is no updater on Android/iOS, the store is).
+# Registered at runtime only when the build carries a `plugins.updater` config
+# with a `pubkey` (see `lib.rs::run` and README.md « Updates and signing »): the
+# plugin refuses to start without one, and an unsigned dev build must still run.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+
 [dev-dependencies]
 tempfile = "3.27.0"

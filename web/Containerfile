@@ -62,8 +62,13 @@ ENV WNK_CSP_REPORT_URL="/csp-report"
 
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=builder /build/dist /usr/share/nginx/html
+# The one file under the web root this container writes at boot: everything else
+# stays root-owned and read-only to uid 101. Re-copied over itself rather than
+# `chown`ed, because the base image already runs as 101 and there is no root here
+# to chown with.
+COPY --from=builder --chown=101:101 /build/dist/env.js /usr/share/nginx/html/env.js
 
-# The two templates `docker-entrypoint.d/05-runtime-config.sh` renders — kept
+# The two templates `docker-entrypoint.d/05-runtime-config.envsh` renders — kept
 # outside `/usr/share/nginx/html` deliberately, unlike `default.conf.template`
 # above, so neither the CSP shape nor the env.js template itself is ever a
 # fetchable asset (ADR-0021). `csp-template.txt` is the one build artefact this
@@ -71,11 +76,11 @@ COPY --from=builder /build/dist /usr/share/nginx/html
 COPY --from=builder /build/csp-template.txt /etc/nginx/wnk-templates/csp-template.txt
 COPY nginx/env.js.template /etc/nginx/wnk-templates/env.js.template
 
-# Sourced, not executed (see the file's own header comment) — `docker-entrypoint.sh`
-# decides which by the executable bit, and COPY does not reliably preserve one from
-# the build context, so this is asserted rather than assumed.
-COPY nginx/docker-entrypoint.d/05-runtime-config.sh /docker-entrypoint.d/05-runtime-config.sh
-RUN chmod 644 /docker-entrypoint.d/05-runtime-config.sh
+# Sourced, not executed: `docker-entrypoint.sh` `.`-sources `*.envsh` (and runs
+# `*.sh` in a subshell, whose exports would die with it) — but only when the file
+# is executable, and ignores it with a log line otherwise. `--chmod` asserts the
+# bit rather than trusting the build context to carry it.
+COPY --chmod=755 nginx/docker-entrypoint.d/05-runtime-config.envsh /docker-entrypoint.d/05-runtime-config.envsh
 
 EXPOSE 8080
 

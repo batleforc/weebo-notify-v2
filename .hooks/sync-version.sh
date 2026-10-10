@@ -47,4 +47,16 @@ for manifest in web/package.json docs/package.json web/src-tauri/tauri.conf.json
   updated+=("$manifest")
 done
 
+# The Helm chart: `version` and `appVersion` both follow the product, so a chart
+# pulled as 0.4.2 deploys the 0.4.2 images (_helpers.tpl adds the `v` the image
+# tags carry). Anchored to column 0 — a nested `version:` key can never match.
+chart=charts/weebo-notify/Chart.yaml
+if [[ -f "$chart" ]]; then
+  sed -i -E \
+    -e "s/^version: .*/version: $version/" \
+    -e "s/^appVersion: .*/appVersion: \"$version\"/" \
+    "$chart"
+  updated+=("$chart")
+fi
+
 printf 'synced version %s into: %s\n' "$version" "${updated[*]}"

@@ -11,6 +11,9 @@ import { ready } from "@/lib/service-worker";
 
 const DEVICE_KEY = "weebo-notify:device";
 
+/** Last signed-in `sub`: the device and subscription are the browser's, not a person's. */
+const OWNER_KEY = "weebo-notify:device-owner";
+
 export interface PushState {
   /** Whether this browser can do Web Push at all. */
   supported: boolean;
@@ -136,6 +139,29 @@ export async function disable(): Promise<void> {
   }
 }
 
+/**
+ * Local half of sign-out, no API: unsubscribe and drop the device id (the push
+ * service's `410` then revokes it). No-op where push is unsupported.
+ */
+export async function dropLocalPush(): Promise<void> {
+  localStorage.removeItem(DEVICE_KEY);
+  if (!supported()) {
+    return;
+  }
+  const registration = await ready();
+  const subscription = await registration?.pushManager.getSubscription();
+  await subscription?.unsubscribe();
+}
+
+/** Record who is signed in; drop push if it was someone else's. An unknown owner is adopted. */
+export async function claimFor(subject: string): Promise<void> {
+  const owner = localStorage.getItem(OWNER_KEY);
+  localStorage.setItem(OWNER_KEY, subject);
+  if (owner !== null && owner !== subject) {
+    await dropLocalPush();
+  }
+}
+
 /** Re-enrol after a subscription rotation, revoking the stale device. */
 export async function resubscribe(): Promise<void> {
   const registration = await ready();
@@ -163,10 +189,7 @@ async function enrol(
   const json = subscription.toJSON();
   const keys = json.keys ?? {};
   if (!json.endpoint || !keys.p256dh || !keys.auth) {
-    throw new PushRefused(
-      "failed",
-      "Le navigateur a rendu un abonnement incomplet.",
-    );
+    throw new PushRefused("failed", i18n.global.t("push.refused.incomplete"));
   }
 
   const answer = await enrolDevice({
@@ -196,7 +219,7 @@ function browserLabel(): string {
         ? "Chrome"
         : /Safari\/\d/.test(agent)
           ? "Safari"
-          : "Navigateur";
+          : i18n.global.t("push.label.browser");
 
   const platform = /Android/.test(agent)
     ? "Android"
@@ -210,7 +233,9 @@ function browserLabel(): string {
             ? "Linux"
             : null;
 
-  return platform ? `${browser} sur ${platform}` : browser;
+  return platform
+    ? i18n.global.t("push.label.onPlatform", { browser, platform })
+    : browser;
 }
 
 /** Unpadded base64url (RFC 8292) to bytes; `atob` needs standard padded base64. */

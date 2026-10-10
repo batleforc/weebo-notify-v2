@@ -18,10 +18,11 @@ pub struct FederatedClaims {
     pub subject: String,
     /// Who the token was minted for. Must name this instance.
     pub audiences: Vec<String>,
-    /// The token's own id, remembered until `expires_at` so it cannot be replayed.
+    /// The token's own id, remembered until `accepted_until` so it cannot be replayed.
     pub jti: Option<String>,
-    /// When the incoming token stops being valid, bounding how long the `jti` is remembered.
-    pub expires_at: OffsetDateTime,
+    /// The last instant the verifier accepts the token: `exp` plus its leeway. Bounds
+    /// how long the `jti` is remembered; the bare `exp` would reopen a replay window.
+    pub accepted_until: OffsetDateTime,
 }
 
 /// One `[[trust_policy]]` or `[[channels.managed.publishers]]` block (§11); the
@@ -259,7 +260,7 @@ mod tests {
             subject: subject.to_owned(),
             audiences: vec![US.to_owned()],
             jti: Some("tok-1".to_owned()),
-            expires_at: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
+            accepted_until: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
         }
     }
 

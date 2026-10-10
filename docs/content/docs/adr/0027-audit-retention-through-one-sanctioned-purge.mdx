@@ -1,0 +1,115 @@
+---
+title: ADR-0027 — Audit retention through one sanctioned purge
+description: An optional `[retention] audit` lets the leader delete audit entries past a cutoff of at least 90 days, through a single SECURITY DEFINER function that the trigger alone lets through and that records every batch it deletes.
+---
+
+Status: **accepted** (2026-10-10) · Supersedes: — · Superseded by: —
+
+## Context
+
+The audit log is append-only (advisory SEC-P2-37). Since
+[ADR-0026](/docs/adr/0026-a-one-time-redaction-of-secrets-in-the-audit-log) a
+trigger refuses `UPDATE`, `DELETE` and `TRUNCATE` on `audit_entries`, and
+`tests/audit_is_append_only.rs` refuses any destructive SQL against it in the
+persistence crate. The advisory said deletion would need an ADR. This is that ADR.
+
+The table grows for as long as the instance runs. Until now the only way to trim it
+was a manual procedure in [Retention](/docs/ops/retention): as the database owner,
+`ALTER TABLE … DISABLE TRIGGER`, `DELETE`, re-enable, and write the trim down
+somewhere else, because the log could not record its own truncation. That is the
+sort of procedure that gets skipped, or run with a typo in the interval. Operators
+under a data-retention policy (personal data in `actor`, `target` and `detail`)
+need a bounded log, and a bounded log should not depend on somebody remembering to
+disable a guard by hand.
+
+The risk runs the other way too. A timer that deletes audit history is exactly what
+somebody covering their tracks wants, so whatever we add must not hand that to
+whoever holds the application's credentials.
+
+## Decision
+
+**Optional retention, off by default, through one door.**
+
+- `[retention] audit` is a duration. **Unset (the default) keeps every entry for
+  ever**, as before. When it is set, configuration refuses anything **under 90
+  days** at boot.
+- The leader's purge pass (`notify_app::PurgeExpired`) deletes entries recorded
+  before `now - audit`, in batches of `[retention] batch_size`. It is the pass's
+  last stage, inside the same `pass_budget`, and checks leadership before every
+  batch, like the other stages.
+- The deletion happens **only** inside `wnk_audit_purge(cutoff, batch)`, a
+  `SECURITY DEFINER` function owned by the migration role, created by
+  `20261010800000_audit_purge.sql`, with `search_path` pinned and `EXECUTE` revoked
+  from `PUBLIC`. It:
+  - refuses a cutoff younger than **90 days**. That floor is hard-coded in SQL and
+    not read from configuration, because the caller is not trusted;
+  - deletes at most `batch` rows with `at < cutoff`, oldest first;
+  - opens the trigger for that one statement with a transaction-local setting,
+    `wnk.audit_purge = <cutoff>`, and clears it before returning;
+  - writes an **`audit.purged`** entry (actor `configuration`, `detail` with
+    `purged_entries`, `cutoff` and `adr`) in the same transaction whenever it
+    deleted anything.
+- The trigger function is replaced, not loosened in general: it lets a `DELETE`
+  through only while `wnk.audit_purge` is set, and only for a row older than **both**
+  that cutoff and `now() - 90 days`. That second test repeats the floor as defence
+  in depth. `UPDATE` and `TRUNCATE` are refused always.
+- In Rust, `AuditLog::purge_older_than(cutoff, batch)` is the port. The Postgres
+  adapter does nothing but call the function, and `tests/audit_is_append_only.rs`
+  now also holds the crate to calling it from exactly that one place.
+- **No archive hook in the application.** Operators who need the old entries
+  archive them with `\copy` or `pg_dump` (see [Retention](/docs/ops/retention))
+  **before** enabling the setting. An in-app exporter would have to choose a
+  format, a destination and credentials for it, and the instance is the wrong
+  place to keep a copy that is supposed to outlive it.
+
+## The threat, and what this does not buy
+
+An attacker with the application's database credentials can call
+`wnk_audit_purge` directly. What they get:
+
+- only entries **older than 90 days**. What they did this week, and everything
+  recent enough for an investigation to care about, is out of reach;
+- an `audit.purged` entry, with the cutoff they chose, at the top of the log;
+- setting `wnk.audit_purge` by hand and issuing a `DELETE` reaches the same rows
+  without that entry. The floor still holds, and that is all that holds. This is
+  accepted: an attacker with those credentials who is also the table's owner (the
+  default, where the application runs its own migrations) can disable the trigger
+  outright. ADR-0026 already says so.
+
+**A stronger guarantee needs the log to live somewhere these credentials cannot
+write.** The structured-log mirror (`audit = true`) shipped to an external
+append-only (WORM) sink is that guarantee. Shipping it is the deployment's job, and
+building it into the product is out of scope here.
+
+## Consequences
+
+**Positive**
+
+- A bounded audit log is a configuration key rather than a hand-run owner
+  procedure, and every batch it deletes is in the log.
+- The trigger stays armed. No role has to `DISABLE TRIGGER` for routine
+  retention, so a `DISABLE TRIGGER` in the server log is unusual again, and worth
+  a look.
+- A role split becomes useful: grant the application `EXECUTE` on the function and
+  nothing destructive on the table, and the 90-day floor becomes binding for it.
+
+**Negative**
+
+- The log is no longer complete from the first day of the instance. The
+  `audit.purged` entries say where it starts, and those entries age out with
+  everything else, so the oldest surviving one is the latest proof.
+- One `audit.purged` entry per batch: draining a large backlog writes one row per
+  `batch_size` deleted. That is noise worth having.
+- The conformance suite re-runs the redaction migration (ADR-0026), whose
+  `CREATE OR REPLACE` restores the refuse-everything trigger function. The test
+  re-runs this migration behind it. Any future re-run of that file has to do the
+  same.
+
+**Accepted debt**
+
+- The floor is 90 days in three places: SQL (binding), the trigger (binding) and
+  `notify_ports::AUDIT_RETENTION_FLOOR` (an early refusal at boot). Raising it means
+  a new migration and the constant together.
+- No WORM sink and no in-app archive. Revisit if an operator needs tamper evidence
+  that survives a compromised database owner, or retention that cannot be lowered
+  by changing a config file.

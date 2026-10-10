@@ -185,10 +185,11 @@ impl DeactivateServiceAccount {
     }
 
     /// Deactivate it and revoke its keys.
+    ///
+    /// A person's session only: deactivation revokes every key the account holds,
+    /// and a leaked key of its creator must not be a way to switch a pipeline off.
     pub async fn execute(&self, caller: &Caller, id: &ServiceAccountId) -> Result<(), Failure> {
-        let Principal::User { id: user } = caller.principal else {
-            return Err(Failure::Domain(DomainError::NotAPerson));
-        };
+        let user = caller.ensure_person()?;
 
         let Some(mut account) = self.accounts.get(id).await? else {
             // Already the desired state; "no such account" would enumerate names.
@@ -297,7 +298,10 @@ mod tests {
             refused,
             Err(Failure::Domain(DomainError::NotPlatformAdmin))
         ));
-        assert!(fixture.store.list().await.unwrap().is_empty());
+        assert_eq!(
+            fixture.store.list().await.unwrap(),
+            [] as [notify_domain::ServiceAccount; 0]
+        );
     }
 
     #[tokio::test]

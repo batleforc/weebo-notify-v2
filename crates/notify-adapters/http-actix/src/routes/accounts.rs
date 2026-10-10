@@ -138,7 +138,7 @@ pub(crate) async fn create_account(
     responses(
         (status = 204, description = "Deactivated, or already was"),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 403, description = "Somebody else's, or a person is not asking", body = Problem),
+        (status = 403, description = "Somebody else's, or not a person's own session", body = Problem),
         (status = 422, description = "Managed by GitOps — change it in config (design §11)", body = Problem),
     ),
     security(("bearer" = []))

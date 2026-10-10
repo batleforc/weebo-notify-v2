@@ -21,6 +21,7 @@ pub(crate) struct Config {
     pub server: Server,
     pub database: Database,
     pub oidc: Oidc,
+    pub auth: Auth,
     pub admin: Admin,
     pub retention: Retention,
     pub ha: Ha,
@@ -49,6 +50,100 @@ pub(crate) struct Config {
 
     /// `[cli]` — serving the `notify` CLI binary (design §9). Absent: `501`; unreadable path: startup failure.
     pub cli: Option<Cli>,
+
+    /// `[reconcile]` — how much a single pass may take away (§11).
+    pub reconcile: Reconcile,
+
+    /// `[devices]` — how many devices one owner may enrol.
+    pub devices: Devices,
+}
+
+/// `[devices]` — the ceiling on enrolment.
+///
+/// Every active device is a credential the owner's notifications go to and a push
+/// the fan-out pays for, so a leaked session must not be able to enrol them
+/// without end. Counts push and stream devices together; a revoked one frees its
+/// slot. Past it, `POST /devices` answers `422 device.limit_reached`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Devices {
+    /// The most active devices one owner may hold.
+    pub max_per_user: u32,
+}
+
+impl Default for Devices {
+    fn default() -> Self {
+        Self {
+            max_per_user: notify_app::DEFAULT_MAX_DEVICES_PER_USER,
+        }
+    }
+}
+
+/// A configuration value that must never be printed.
+///
+/// `Debug` says `[redacted]`, and there is no `Display`: a `{:?}` of the
+/// configuration is exactly the line that ends up in a startup log or a panic
+/// message, and a database password in it would outlive the incident it was
+/// printed for. Serialised as the plain string (`serde(transparent)`), because
+/// figment reads and layers the configuration through serde and the value has to
+/// survive that round trip; nothing serialises a whole `Config` anywhere a person
+/// reads it.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Secret(String);
+
+impl Secret {
+    /// The value, for the one call that needs it. Named so every use is a grep.
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+impl From<&str> for Secret {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+/// `[reconcile]` — the blast-radius guard on what a pass removes (§11).
+///
+/// A truncated or half-merged file looks exactly like an operator deleting most
+/// of their channels and accounts, and the reconciler cannot tell the two apart.
+/// So a pass that would archive, delete or disable more than `max_removals` things
+/// at once applies everything *else* in the file and refuses the removals, logs an
+/// error and counts `reconcile_removals_refused_total` — until the file is fixed, or
+/// the operator says this one is meant with `allow_mass_removal = true`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Reconcile {
+    /// The most removals one pass may make. Five covers renaming a handful of
+    /// channels; a typo that drops the whole `[[channels.managed]]` array does not
+    /// fit under it on any deployment large enough for the loss to hurt.
+    pub max_removals: u32,
+    /// Lift the guard. Meant to be set for the one deploy that removes a lot on
+    /// purpose, and unset after.
+    pub allow_mass_removal: bool,
+}
+
+impl Default for Reconcile {
+    fn default() -> Self {
+        Self {
+            max_removals: 5,
+            allow_mass_removal: false,
+        }
+    }
 }
 
 /// `[cli]` — where the built `notify` binary lives (design §9).
@@ -71,6 +166,16 @@ pub(crate) struct Telemetry {
 
     /// Fraction of root traces recorded, 0.0 to 1.0; children follow their root.
     pub sample_ratio: f64,
+
+    /// Continue the `traceparent` an incoming request carries.
+    ///
+    /// Off by default: the header is sent by whoever calls the API, and a caller
+    /// that marks every request sampled would otherwise force this process to
+    /// record — and export — 100% of its traces, whatever `sample_ratio` says.
+    /// Turn it on where the callers are your own CI and services and linking their
+    /// trace to the notification is worth it; even then, a remote "sampled" flag
+    /// only *asks*, and the ratio still decides (`telemetry::provider`).
+    pub trust_inbound_trace_context: bool,
 }
 
 impl Default for Telemetry {
@@ -80,6 +185,7 @@ impl Default for Telemetry {
             otlp_endpoint: String::new(),
             service_name: "weebo-notify".to_owned(),
             sample_ratio: 1.0,
+            trust_inbound_trace_context: false,
         }
     }
 }
@@ -112,16 +218,63 @@ impl Default for Server {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Database {
-    pub url: String,
+    /// Carries the password, so it is a [`Secret`].
+    pub url: Secret,
     /// Pool size; leave headroom, since each leading background job holds a connection (its lock).
+    /// Refused below [`Database::MIN_CONNECTIONS`].
     pub max_connections: u32,
+    /// Apply the migrations at boot. `false` leaves them to `notify-server migrate`
+    /// (a Job or an init container), and the server then refuses to start on a
+    /// schema that is behind the binary rather than serving against it.
+    pub migrate_on_start: bool,
+    /// How long a request waits for a pooled connection before failing.
+    pub acquire_timeout: HumanDuration,
+    /// How long an unused connection is kept.
+    pub idle_timeout: HumanDuration,
+    /// How long any connection lives before it is replaced.
+    pub max_lifetime: HumanDuration,
+    /// Postgres `statement_timeout` on every pooled connection; `0` disables it.
+    /// Migrations run with it lifted.
+    pub statement_timeout: HumanDuration,
+    /// Postgres `idle_in_transaction_session_timeout`; `0` disables it.
+    pub idle_in_transaction_timeout: HumanDuration,
+}
+
+impl Database {
+    /// The smallest pool this build can run on.
+    ///
+    /// Five leader jobs (purge, stale closure, DND digest, sink drain, reconcile)
+    /// each hold one connection for as long as they lead — the advisory lock lives
+    /// on it — and a replica can lead all five at once. Four more is the least that
+    /// still serves requests (and lets those jobs do their own queries) while they
+    /// do. The `LISTEN` connection is taken from the pool and detached, so it is
+    /// not counted against it.
+    pub(crate) const MIN_CONNECTIONS: u32 = 5 + 4;
+
+    /// What the persistence adapter is handed.
+    pub(crate) const fn pool(&self) -> notify_persistence_pg::PoolSettings {
+        notify_persistence_pg::PoolSettings {
+            max_connections: self.max_connections,
+            acquire_timeout: self.acquire_timeout.as_duration(),
+            idle_timeout: self.idle_timeout.as_duration(),
+            max_lifetime: self.max_lifetime.as_duration(),
+            statement_timeout: self.statement_timeout.as_duration(),
+            idle_in_transaction_timeout: self.idle_in_transaction_timeout.as_duration(),
+        }
+    }
 }
 
 impl Default for Database {
     fn default() -> Self {
         Self {
-            url: "postgres://weebo:weebo@localhost:5432/weebo_notify".to_owned(),
+            url: "postgres://weebo:weebo@localhost:5432/weebo_notify".into(),
             max_connections: 16,
+            migrate_on_start: true,
+            acquire_timeout: HumanDuration::from_secs_const(5),
+            idle_timeout: HumanDuration::from_secs_const(10 * 60),
+            max_lifetime: HumanDuration::from_secs_const(30 * 60),
+            statement_timeout: HumanDuration::from_secs_const(30),
+            idle_in_transaction_timeout: HumanDuration::from_secs_const(60),
         }
     }
 }
@@ -135,6 +288,16 @@ pub(crate) struct Oidc {
     pub audiences: Vec<String>,
     /// Which claim carries group membership; there is no standard one (T29).
     pub groups_claim: String,
+    /// Trust an `email` the issuer does not mark `email_verified`. Off: an
+    /// individual `email` binding (§11) must not go to whoever typed the address
+    /// first. Only for an issuer that never sends the claim.
+    pub trust_unverified_email: bool,
+    /// How long past its one-hour max age the issuer key set keeps verifying
+    /// while the issuer cannot be reached. It is also the window in which a key
+    /// the issuer *withdrew* still verifies here, if the outage and the
+    /// withdrawal coincide. `0` drops the set on the first failed refetch: no
+    /// window, but an IdP blip logs everybody out.
+    pub jwks_stale_grace: HumanDuration,
 }
 
 impl Default for Oidc {
@@ -144,6 +307,52 @@ impl Default for Oidc {
             client_id: "weebo-notify".to_owned(),
             audiences: Vec::new(),
             groups_claim: "groups".to_owned(),
+            trust_unverified_email: false,
+            jwks_stale_grace: HumanDuration::from_secs_const(3_600),
+        }
+    }
+}
+
+/// `[auth]` — how credentials are turned into callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Auth {
+    /// How old an owner's remembered groups may be and still widen what their
+    /// personal API key reaches. Groups are remembered when the owner syncs or
+    /// enrols a device; past this, the key keeps only direct memberships.
+    pub group_snapshot_ttl: HumanDuration,
+}
+
+impl Auth {
+    /// Under an hour, an owner who is actively using the SPA but has not synced
+    /// in that time flickers in and out of their group reach.
+    const MIN_GROUP_SNAPSHOT_TTL: u64 = 3_600;
+    /// Past 90 days, a user removed from a group at the IdP keeps reaching its
+    /// channels through a key for a season — revocation by forgetting stops
+    /// meaning anything.
+    const MAX_GROUP_SNAPSHOT_TTL: u64 = 90 * 24 * 3_600;
+
+    fn validate(self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (Self::MIN_GROUP_SNAPSHOT_TTL..=Self::MAX_GROUP_SNAPSHOT_TTL)
+                .contains(&self.group_snapshot_ttl.as_secs()),
+            "[auth] group_snapshot_ttl = {} is outside 1h..=90d: shorter makes an \
+             active user's personal key flicker out of its group reach, longer keeps \
+             a user removed from a group reaching it through a key for months",
+            self.group_snapshot_ttl
+        );
+        Ok(())
+    }
+}
+
+impl Default for Auth {
+    fn default() -> Self {
+        Self {
+            group_snapshot_ttl: HumanDuration::from_secs_const(
+                notify_app::DEFAULT_GROUP_SNAPSHOT_TTL
+                    .unsigned_abs()
+                    .as_secs(),
+            ),
         }
     }
 }
@@ -163,6 +372,19 @@ pub(crate) struct Retention {
     /// Whether a channel may keep notifications forever. Off by default: unbounded
     /// retention is a deliberate operator decision (§7.2bis).
     pub allow_forever: bool,
+    /// Rows per statement in the purge pass. A pass loops batches until each queue
+    /// is drained or `pass_budget` is spent.
+    pub batch_size: u32,
+    /// How long one purge pass may keep looping. Keep it under the one-minute job
+    /// interval.
+    pub pass_budget: HumanDuration,
+    /// How long a revoked device or a revoked/expired API key is kept before its
+    /// row is deleted. It authenticates nothing either way; this is how long the
+    /// owner's list keeps showing it.
+    pub revoked_credentials: HumanDuration,
+    /// How long audit entries are kept (ADR-0027). Unset — the default — keeps
+    /// them for ever; anything under 90 days is refused at boot.
+    pub audit: Option<HumanDuration>,
 }
 
 impl Default for Retention {
@@ -176,6 +398,10 @@ impl Default for Retention {
             default_ttl: Ttl::parse("7d", "retention.default_ttl").expect("a valid literal"),
             max_ttl: None,
             allow_forever: false,
+            batch_size: 1_000,
+            pass_budget: HumanDuration::from_secs_const(20),
+            revoked_credentials: HumanDuration::from_secs_const(90 * 24 * 3_600),
+            audit: None,
         }
     }
 }
@@ -231,8 +457,8 @@ pub(crate) struct Attachments {
     // --- `kind = "s3"` ---
     pub endpoint: String,
     pub bucket: String,
-    pub access_key: String,
-    pub secret_key: String,
+    pub access_key: Secret,
+    pub secret_key: Secret,
     /// Region; required by the signature, meaningless to most self-hosted stores.
     #[serde(default = "default_region")]
     pub region: String,
@@ -243,7 +469,7 @@ pub(crate) struct Attachments {
     /// This server's externally reachable base URL; the filesystem backend presigns against itself.
     pub public_base_url: String,
     /// Signs the bearer URLs a filesystem-backed presign hands out.
-    pub token_secret: String,
+    pub token_secret: Secret,
 }
 
 fn default_region() -> String {
@@ -286,7 +512,7 @@ pub(crate) struct ManagedChannel {
     pub access: Vec<Access>,
     /// Channel-scoped federation publishers (§5.3).
     pub publishers: Vec<Publisher>,
-    /// Outbound sinks (§7.1bis).
+    /// Outbound sinks (§7.1bis), swapped on `SIGHUP` like the rest of this block.
     pub sinks: Vec<Sink>,
 }
 
@@ -409,10 +635,65 @@ pub(crate) fn resolve_secret(what: &str, reference: &str) -> anyhow::Result<Stri
 }
 
 /// `[sinks]` — what outbound sinks need beyond their channel (design §7.1bis): the instance-wide relay.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Sinks {
     pub smtp: Option<Smtp>,
+    /// How long a dead letter is kept before the leader's drain forgets it. It
+    /// carries the whole event it failed to deliver, so "for ever" would be a
+    /// retention policy nobody chose.
+    pub dead_letter_retention: HumanDuration,
+    /// The key a webhook's sink id is an HMAC under (`WNK_SINKS__FINGERPRINT_KEY`),
+    /// at least [`notify_ports::FingerprintKey::MIN_BYTES`] bytes. Required as soon
+    /// as one webhook is configured: the id is stored, listed and backed up, and an
+    /// unkeyed digest of a url is one a short token in its query can be guessed
+    /// back from (see `notify_ports::redact_url`).
+    pub fingerprint_key: Secret,
+    /// Keys the ids were fingerprinted under before the current one. Rows still
+    /// carrying an id under one of them are re-keyed at boot, so a rotation does
+    /// not orphan what was queued; drop a key once a boot has run with it.
+    pub previous_fingerprint_keys: Vec<Secret>,
+}
+
+impl Default for Sinks {
+    fn default() -> Self {
+        Self {
+            smtp: None,
+            dead_letter_retention: HumanDuration::from_secs_const(30 * 24 * 3_600),
+            fingerprint_key: Secret::default(),
+            previous_fingerprint_keys: Vec::new(),
+        }
+    }
+}
+
+impl Sinks {
+    /// `[sinks] fingerprint_key`, as the key it is.
+    pub(crate) fn fingerprint_key(&self) -> anyhow::Result<notify_ports::FingerprintKey> {
+        fingerprint_key(
+            "[sinks] fingerprint_key (WNK_SINKS__FINGERPRINT_KEY)",
+            &self.fingerprint_key,
+        )
+    }
+
+    /// `[sinks] previous_fingerprint_keys`, as keys.
+    pub(crate) fn previous_fingerprint_keys(
+        &self,
+    ) -> anyhow::Result<Vec<notify_ports::FingerprintKey>> {
+        self.previous_fingerprint_keys
+            .iter()
+            .map(|key| fingerprint_key("an entry of [sinks] previous_fingerprint_keys", key))
+            .collect()
+    }
+}
+
+fn fingerprint_key(what: &str, key: &Secret) -> anyhow::Result<notify_ports::FingerprintKey> {
+    notify_ports::FingerprintKey::new(key.expose().as_bytes()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{what} must be at least {} bytes: webhook sink ids are an HMAC under it; \
+             generate one with `openssl rand -base64 48`",
+            notify_ports::FingerprintKey::MIN_BYTES
+        )
+    })
 }
 
 /// `[sinks.smtp]` — the relay the `email` sinks hand their mail to.
@@ -520,14 +801,27 @@ impl Config {
         Ok(config)
     }
 
-    /// The configuration a `SIGHUP` may adopt (design §11, T21): `[[channels.managed]]`,
-    /// `[[service_accounts]]` and trust policies (via `notify_app::LivePolicies`). Everything else
-    /// was wired at boot; changes there are reported by [`Config::unreloadable`].
+    /// The configuration a `SIGHUP` may adopt (design §11, T21): `[[channels.managed]]` (with their
+    /// sinks and `[sinks.smtp]`, swapped via `crate::sinks::SinkRoutes::adopt`), `[[service_accounts]]`
+    /// and trust policies (via `notify_app::LivePolicies`). Everything else was wired at boot;
+    /// changes there are reported by [`Config::unreloadable`].
     pub(crate) fn reloaded_from(&self, file: Self) -> Self {
         Self {
             channels: file.channels,
             service_accounts: file.service_accounts,
             trust_policy: file.trust_policy,
+            // The relay rides with the sinks: a reload that adds an email sink
+            // rebuilds the sink fleet from this, and a fleet built from the old
+            // `[sinks.smtp]` would mail through a relay the file no longer names.
+            // The fingerprint keys stay as booted: every stored sink id is keyed
+            // under them, and only the boot-time re-key moves rows to a new one.
+            sinks: Sinks {
+                dead_letter_retention: self.sinks.dead_letter_retention,
+                fingerprint_key: self.sinks.fingerprint_key.clone(),
+                previous_fingerprint_keys: self.sinks.previous_fingerprint_keys.clone(),
+                ..file.sinks
+            },
+            reconcile: file.reconcile,
             ..self.clone()
         }
     }
@@ -545,25 +839,24 @@ impl Config {
         if self.oidc.issuer != file.oidc.issuer || self.oidc.client_id != file.oidc.client_id {
             moved.push("[oidc] — the verifier is built at boot".to_owned());
         }
+        if self.auth != file.auth {
+            moved.push("[auth] — the authenticator is built at boot".to_owned());
+        }
+        if self.sinks.dead_letter_retention != file.sinks.dead_letter_retention {
+            moved.push("[sinks] dead_letter_retention — the drain is built at boot".to_owned());
+        }
+        if self.sinks.fingerprint_key != file.sinks.fingerprint_key
+            || self.sinks.previous_fingerprint_keys != file.sinks.previous_fingerprint_keys
+        {
+            moved.push("[sinks] fingerprint_key — stored sink ids are re-keyed at boot".to_owned());
+        }
 
         moved
     }
 
-    /// Refuse a configuration this build cannot honour, rather than silently downgrade it.
-    fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.ha.leader_election == LeaderBackend::Postgres,
-            "[ha] leader_election = \"kubernetes\" is not implemented yet; \
-             use \"postgres\" (advisory lock) or pin an older release"
-        );
-        anyhow::ensure!(
-            self.eventbus.backend == BusBackend::Postgres,
-            "[eventbus] backend = \"redis\" is not implemented yet; \
-             use \"postgres\" (LISTEN/NOTIFY)"
-        );
-
-        // actix-cors rejects `*` and malformed origins only when a worker starts,
-        // which fails every worker. Refuse here, with the key named.
+    /// actix-cors rejects `*` and malformed origins only when a worker starts,
+    /// which fails every worker. Refuse here, with the key named.
+    fn validate_cors_origins(&self) -> anyhow::Result<()> {
         for origin in &self.server.cors_origins {
             let exact = !origin.ends_with('/')
                 && url::Url::parse(origin).is_ok_and(|url| {
@@ -579,6 +872,51 @@ impl Config {
                  (`scheme://host[:port]`, no path, no trailing slash, no `*`)"
             );
         }
+        Ok(())
+    }
+
+    /// Refuse a configuration this build cannot honour, rather than silently downgrade it.
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.database.max_connections >= Database::MIN_CONNECTIONS,
+            "[database] max_connections = {} is below the {} this build needs: five \
+             leader jobs each hold a connection while they lead, and requests need the \
+             rest — a smaller pool deadlocks the first time they all lead at once",
+            self.database.max_connections,
+            Database::MIN_CONNECTIONS
+        );
+        anyhow::ensure!(
+            self.devices.max_per_user > 0,
+            "[devices] max_per_user = 0 would refuse every enrolment, and a user with \
+             no device receives nothing"
+        );
+        self.auth.validate()?;
+        anyhow::ensure!(
+            !self.database.acquire_timeout.is_zero(),
+            "[database] acquire_timeout = 0 would fail every request the moment the \
+             pool is busy; give it a few seconds"
+        );
+        anyhow::ensure!(
+            self.ha.leader_election == LeaderBackend::Postgres,
+            "[ha] leader_election = \"kubernetes\" is not implemented yet; \
+             use \"postgres\" (advisory lock) or pin an older release"
+        );
+        anyhow::ensure!(
+            self.eventbus.backend == BusBackend::Postgres,
+            "[eventbus] backend = \"redis\" is not implemented yet; \
+             use \"postgres\" (LISTEN/NOTIFY)"
+        );
+        // Refused here rather than left to the database, which refuses it too:
+        // there it would fail every purge pass, in a log line, for ever.
+        anyhow::ensure!(
+            self.retention.audit.is_none_or(|keep| {
+                keep.as_duration() >= notify_ports::AUDIT_RETENTION_FLOOR.unsigned_abs()
+            }),
+            "[retention] audit is under the 90-day floor (ADR-0027); an audit log \
+             that forgets last month cannot answer an incident review"
+        );
+
+        self.validate_cors_origins()?;
 
         if let Some(attachments) = &self.attachments {
             match attachments.kind {
@@ -595,7 +933,7 @@ impl Config {
                          URLs against"
                     );
                     anyhow::ensure!(
-                        !attachments.token_secret.is_empty(),
+                        !attachments.token_secret.expose().is_empty(),
                         "[attachments] kind = \"filesystem\" requires `token_secret` \
                          — it signs the URLs presign hands out, and an empty one would \
                          mean an unsigned, open directory"
@@ -603,6 +941,8 @@ impl Config {
                 }
             }
         }
+
+        self.validate_fingerprint_keys()?;
 
         for channel in &self.channels.managed {
             anyhow::ensure!(
@@ -642,6 +982,28 @@ impl Config {
             }
         }
 
+        Ok(())
+    }
+
+    /// `[sinks] fingerprint_key` and its predecessors.
+    ///
+    /// Checked whenever they are set, and the current one required once a webhook
+    /// needs it: a previous key is only ever read to re-key, so a typo in one would
+    /// orphan exactly the rows it was kept for.
+    fn validate_fingerprint_keys(&self) -> anyhow::Result<()> {
+        self.sinks.previous_fingerprint_keys()?;
+        if self
+            .channels
+            .managed
+            .iter()
+            .flat_map(|channel| &channel.sinks)
+            .any(|sink| sink.kind == "webhook")
+        {
+            self.sinks.fingerprint_key().map_err(|error| {
+                error
+                    .context("a webhook sink is configured, so [sinks] fingerprint_key is required")
+            })?;
+        }
         Ok(())
     }
 
@@ -897,6 +1259,44 @@ mod tests {
     }
 
     #[test]
+    fn the_group_snapshot_ttl_defaults_to_a_week_and_takes_an_override_within_bounds() {
+        let default = load_isolated(Path::new("/nonexistent/config.toml")).unwrap();
+        assert_eq!(default.auth.group_snapshot_ttl.as_secs(), 7 * 24 * 3_600);
+
+        let path = with_config("auth-ttl", "[auth]\ngroup_snapshot_ttl = \"1d\"\n");
+        assert_eq!(
+            load_isolated(&path)
+                .unwrap()
+                .auth
+                .group_snapshot_ttl
+                .as_secs(),
+            24 * 3_600
+        );
+
+        for (test, value) in [("auth-ttl-short", "30m"), ("auth-ttl-long", "91d")] {
+            let path = with_config(test, &format!("[auth]\ngroup_snapshot_ttl = \"{value}\"\n"));
+            let error = load_isolated(&path).unwrap_err().to_string();
+            assert!(error.contains("outside 1h..=90d"), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn audit_retention_is_off_by_default_and_never_under_ninety_days() {
+        let config = load_isolated(Path::new("/nonexistent/config.toml")).unwrap();
+        assert_eq!(
+            config.retention.audit, None,
+            "keep for ever unless asked (ADR-0027)"
+        );
+
+        let path = with_config("audit-keep", "[retention]\naudit = \"365d\"\n");
+        assert!(load_isolated(&path).unwrap().retention.audit.is_some());
+
+        let path = with_config("audit-short", "[retention]\naudit = \"30d\"\n");
+        let error = load_isolated(&path).unwrap_err().to_string();
+        assert!(error.contains("90-day floor"), "{error}");
+    }
+
+    #[test]
     fn a_kubernetes_lease_is_refused_rather_than_silently_downgraded() {
         let path = with_config("k8s", "[ha]\nleader_election = \"kubernetes\"\n");
 
@@ -999,7 +1399,9 @@ mod tests {
     fn a_sink_is_no_longer_reported_as_a_key_this_build_ignores() {
         let path = with_config(
             "sinks-honoured",
-            "[[channels.managed]]\n\
+            "[sinks]\n\
+             fingerprint_key = \"test-only-fingerprint-key-0123456789\"\n\
+             [[channels.managed]]\n\
              id = \"ci-infra\"\n\
              [[channels.managed.sinks]]\n\
              type = \"webhook\"\n\
@@ -1021,7 +1423,9 @@ mod tests {
     fn a_webhook_with_no_secret_is_refused_at_startup() {
         let path = with_config(
             "unsigned-webhook",
-            "[[channels.managed]]\n\
+            "[sinks]\n\
+             fingerprint_key = \"test-only-fingerprint-key-0123456789\"\n\
+             [[channels.managed]]\n\
              id = \"ci-infra\"\n\
              [[channels.managed.sinks]]\n\
              type = \"webhook\"\n\
@@ -1030,6 +1434,44 @@ mod tests {
 
         // An unsigned webhook is a refusal, not a degraded mode (§7.1bis).
         assert!(load_isolated(&path).is_err());
+    }
+
+    #[test]
+    fn a_webhook_without_a_fingerprint_key_of_full_length_is_refused_at_startup() {
+        for (name, sinks) in [
+            ("unkeyed-webhook", ""),
+            (
+                "short-keyed-webhook",
+                "[sinks]\nfingerprint_key = \"too-short\"\n",
+            ),
+        ] {
+            let path = with_config(
+                name,
+                &format!(
+                    "{sinks}[[channels.managed]]\n\
+                     id = \"ci-infra\"\n\
+                     [[channels.managed.sinks]]\n\
+                     type = \"webhook\"\n\
+                     url = \"https://hooks.weebo.poc/incidents\"\n\
+                     secret_ref = \"env:WNK_SINK_HMAC\"\n"
+                ),
+            );
+
+            // No fallback to an unkeyed (brute-forceable) id; the message names the key and its env var.
+            let error = format!("{:#}", load_isolated(&path).unwrap_err());
+            assert!(error.contains("[sinks] fingerprint_key"), "{error}");
+            assert!(error.contains("WNK_SINKS__FINGERPRINT_KEY"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_fingerprint_key_is_never_printed() {
+        let sinks = Sinks {
+            fingerprint_key: "do-not-print-this-fingerprint-key-ever".into(),
+            ..Sinks::default()
+        };
+
+        assert!(!format!("{sinks:?}").contains("do-not-print"));
     }
 
     #[test]
@@ -1043,7 +1485,9 @@ mod tests {
             let path = with_config(
                 "bad-webhook",
                 &format!(
-                    "[[channels.managed]]\n\
+                    "[sinks]\n\
+                     fingerprint_key = \"test-only-fingerprint-key-0123456789\"\n\
+                     [[channels.managed]]\n\
                      id = \"ci-infra\"\n\
                      [[channels.managed.sinks]]\n\
                      type = \"webhook\"\n\
@@ -1246,7 +1690,7 @@ mod tests {
                 ..TrustPolicy::default()
             }],
             database: Database {
-                url: "postgres://elsewhere/db".to_owned(),
+                url: "postgres://elsewhere/db".into(),
                 ..Database::default()
             },
             ..Config::default()
@@ -1266,6 +1710,106 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_adopts_the_sinks_and_their_relay() {
+        let running = Config::default();
+        let file = Config {
+            sinks: Sinks {
+                smtp: Some(Smtp {
+                    url: "smtp://relay:25".to_owned(),
+                    ..Smtp::default()
+                }),
+                ..Sinks::default()
+            },
+            ..Config::default()
+        };
+
+        let reloaded = running.reloaded_from(file.clone());
+
+        assert!(
+            reloaded.sinks.smtp.is_some(),
+            "a new relay rides with the sinks"
+        );
+        assert!(
+            running.unreloadable(&file).is_empty(),
+            "and nothing is reported as stuck"
+        );
+    }
+
+    #[test]
+    fn a_pool_too_small_for_the_leader_jobs_is_refused_by_name() {
+        let path = with_config("tiny-pool", "[database]\nmax_connections = 4\n");
+
+        let error = load_isolated(&path).unwrap_err().to_string();
+
+        assert!(error.contains("max_connections"), "{error}");
+        assert!(
+            load_isolated(&with_config(
+                "enough-pool",
+                &format!(
+                    "[database]\nmax_connections = {}\n",
+                    Database::MIN_CONNECTIONS
+                )
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_database_defaults_migrate_at_boot_and_bound_every_wait() {
+        let database = load_isolated(Path::new("/nonexistent/config.toml"))
+            .unwrap()
+            .database;
+
+        assert!(database.migrate_on_start);
+        let pool = database.pool();
+        assert_eq!(pool.acquire_timeout.as_secs(), 5);
+        assert_eq!(pool.statement_timeout.as_secs(), 30);
+        assert_eq!(pool.idle_in_transaction_timeout.as_secs(), 60);
+    }
+
+    #[test]
+    fn migrations_can_be_left_to_the_subcommand_from_the_environment() {
+        #[expect(
+            clippy::result_large_err,
+            reason = "the signature belongs to figment::Jail"
+        )]
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("WNK_DATABASE__MIGRATE_ON_START", "false");
+            let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
+            assert!(!config.database.migrate_on_start);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn secrets_never_print_in_a_debug_of_the_configuration() {
+        let config = Config {
+            database: Database {
+                url: "postgres://notify:hunter2@db/notify".into(),
+                ..Database::default()
+            },
+            attachments: Some(Attachments {
+                access_key: "AKIAEXAMPLE".into(),
+                secret_key: "s3-hunter2".into(),
+                token_secret: "fs-hunter2".into(),
+                ..Attachments::default()
+            }),
+            ..Config::default()
+        };
+
+        let printed = format!("{config:?}");
+
+        for secret in ["hunter2", "AKIAEXAMPLE"] {
+            assert!(!printed.contains(secret), "{secret} leaked: {printed}");
+        }
+        assert!(printed.contains("[redacted]"));
+        assert_eq!(
+            config.database.url.expose(),
+            "postgres://notify:hunter2@db/notify"
+        );
+    }
+
+    #[test]
     fn an_unchanged_file_has_nothing_to_report() {
         let running = Config {
             trust_policy: vec![TrustPolicy {
@@ -1276,6 +1820,9 @@ mod tests {
         };
 
         // A no-op SIGHUP must be quiet.
-        assert!(running.unreloadable(&running.clone()).is_empty());
+        assert_eq!(
+            running.unreloadable(&running.clone()),
+            [] as [std::string::String; 0]
+        );
     }
 }

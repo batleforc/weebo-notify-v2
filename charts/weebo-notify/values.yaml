@@ -9,12 +9,18 @@ imagePullSecrets: []
 image:
   server:
     repository: ghcr.io/batleforc/weebo-notify
-    # Defaults to .Chart.AppVersion when empty.
+    # Defaults to "v" + .Chart.AppVersion when empty — release.yaml tags images
+    # with the git tag, which carries cog's `v` prefix.
     tag: ""
+    # `sha256:...` — pins the image by digest and overrides `tag`. The digests of
+    # a release are in its GitHub release notes, next to the cosign command that
+    # verifies them.
+    digest: ""
     pullPolicy: IfNotPresent
   web:
     repository: ghcr.io/batleforc/weebo-notify-web
     tag: ""
+    digest: ""
     pullPolicy: IfNotPresent
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,7 +38,7 @@ server:
   # Browser origins allowed to call the API (§5.1); empty means `https://<web.ingress.host>` when enabled.
   corsOrigins: []
 
-  # Scrapes `/metrics` on the API port (no separate listener yet), never via the public Ingress.
+  # Scrapes `/metrics` on the API port 8080 (no separate listener), never via the public Ingress.
   serviceMonitor:
     enabled: false
     interval: 30s
@@ -55,14 +61,14 @@ server:
     maxReplicas: 6
     targetCPUUtilizationPercentage: 70
     # targetMemoryUtilizationPercentage: 80
-    # Extra HPA metrics, appended verbatim (e.g. `sse_connections` via a custom-metrics adapter,
-    # a better signal than CPU for idle long-lived streams):
+    # Extra HPA metrics, appended verbatim. Needs a custom-metrics adapter (Prometheus Adapter, KEDA);
+    # `realtime_connections` is a better signal than CPU for idle long-lived streams:
     #
     #   customMetrics:
     #     - type: Pods
     #       pods:
     #         metric:
-    #           name: sse_connections
+    #           name: realtime_connections
     #         target:
     #           type: AverageValue
     #           averageValue: "500"
@@ -87,6 +93,13 @@ server:
 
   # Must outlive the server's 15 s drain of in-flight requests and streams.
   terminationGracePeriodSeconds: 30
+
+  # Merged under the startup probe's httpGet (server-deployment.yaml). Raise
+  # failureThreshold if boot-time migrations (migrations.job.enabled: false)
+  # can outlast 5 minutes on your data.
+  startupProbe:
+    periodSeconds: 5
+    failureThreshold: 60
 
   resources:
     requests:
@@ -201,6 +214,15 @@ server:
     audience: ""
 
   sinks:
+    # The HMAC key webhook sink ids are fingerprinted under ([sinks]
+    # fingerprint_key, at least 32 bytes — `openssl rand -base64 48`). Required
+    # as soon as `extraConfig` declares a webhook sink: the server and the
+    # migrate Job both refuse to start without it. Injected as
+    # WNK_SINKS__FINGERPRINT_KEY. Rotating it re-ids every webhook; see the
+    # runbook (docs/ops/runbooks) before changing it.
+    fingerprintKey:
+      existingSecret: ""
+      secretKey: sink-fingerprint-key
     smtp:
       enabled: false
       url: ""
@@ -310,8 +332,85 @@ web:
     # Only for attachments served from a third origin the CSP must name.
     attachmentOrigin: ""
 
+# ─────────────────────────────────────────────────────────────────────────────
+# migrations — a Helm pre-install/pre-upgrade hook Job running
+# `notify-server migrate` (templates/server-migrate-job.yaml).
+# ─────────────────────────────────────────────────────────────────────────────
+# With it, the schema is migrated once, before any new pod starts, and a failed
+# migration fails the `helm upgrade` instead of crash-looping the new replicas
+# while the old ones keep serving — and the Deployment gets
+# WNK_DATABASE__MIGRATE_ON_START=false. Turn it off only where hooks do not run
+# (plain `helm template | kubectl apply`); the server then migrates on boot,
+# under Postgres's advisory lock. Argo CD maps these hooks to PreSync.
+migrations:
+  job:
+    enabled: true
+    backoffLimit: 1
+    # Kills a migration stuck on a lock rather than letting `helm upgrade` sit
+    # until its own --timeout. Keep it below that timeout (default 5m).
+    activeDeadlineSeconds: 280
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alerting and dashboards — need the Prometheus Operator CRDs / a Grafana with
+# the dashboard sidecar. Off by default: neither is something this chart can
+# assume exists. Rules and their thresholds are documented in
+# docs/content/docs/ops/observability.mdx; runbooks in runbooks.mdx.
+# ─────────────────────────────────────────────────────────────────────────────
+prometheusRule:
+  enabled: false
+  namespace: ""
+  # Whatever your Prometheus's ruleSelector matches (e.g. `release: kube-prometheus-stack`).
+  labels: {}
+  # Added to every alert, e.g. `severity` routing overrides or a team label.
+  additionalLabels: {}
+  # Thresholds, so tuning one is a values change rather than a fork.
+  # The 60-second jobs alert after ten missed passes.
+  jobStaleSeconds: 600
+  pushFailureRatio: 0.2
+  dlqDepth: 0
+  # The gauge is capped at 100000 per kind (retention.mdx), so this must stay
+  # below that or the alert can never fire.
+  retentionBacklogRows: 50000
+  # The 5xx alert reads ingress-nginx's `nginx_ingress_controller_requests` for
+  # the server Ingress (notify-server has no request counter of its own). Turn
+  # off on any other ingress controller rather than ship a rule that never fires.
+  http5xxFromIngressNginx: true
+
+grafanaDashboard:
+  enabled: false
+  namespace: ""
+  # The default label kube-prometheus-stack's Grafana sidecar watches.
+  labels:
+    grafana_dashboard: "1"
+  annotations: {}
+
 networkPolicy:
-  # Ingress-only default-deny (web -> server, plus `ingressFrom` to both); no egress policy.
-  # `ingressFrom` (ingress controller and Prometheus namespaces) is required when enabled.
+  # Off by default: a correct policy needs the ingress-controller/Prometheus namespaces (`ingressFrom`,
+  # required when enabled) and, for egress, where Postgres, the bucket, the issuer and SMTP live.
+  # Ingress: web -> server, plus `ingressFrom` to both. examples/values-production.yaml fills both in.
   enabled: false
   ingressFrom: []
+
+  # Egress — off unless `egress.enabled`. When on, the server may reach DNS,
+  # every rule in `egress.to` and (optionally) public HTTPS, and nothing else;
+  # the web pods (static nginx, no upstream) may reach nothing at all.
+  egress:
+    enabled: false
+    # Peers for DNS (UDP+TCP 53). The default matches CoreDNS/kube-dns in any
+    # namespace; NodeLocal DNSCache needs an ipBlock for its link-local address.
+    dns:
+      - namespaceSelector: {}
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    # NetworkPolicyEgressRule entries appended verbatim — Postgres, the S3
+    # endpoint, an in-cluster OIDC issuer, the SMTP relay, the OTLP collector.
+    # See examples/values-production.yaml for the shape.
+    to: []
+    # Web Push relays, APNs, FCM, UnifiedPush distributors and webhook sinks are
+    # arbitrary public hosts by design — no allow-list of names can be written
+    # for them. This admits TCP 443 to the public internet only: RFC 1918,
+    # CGNAT, loopback and link-local (which covers the 169.254.169.254 cloud
+    # metadata endpoint) are excepted, so a webhook URL cannot be pointed back
+    # into the cluster or at the node's credentials.
+    allowPublicHttps: false

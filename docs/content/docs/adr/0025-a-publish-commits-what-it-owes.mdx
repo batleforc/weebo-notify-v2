@@ -1,0 +1,105 @@
+---
+title: ADR-0025 — A publish commits what it owes, and a worker pushes
+description: Sink deliveries, the idempotent replay and a fan-out outbox row are written in the publish's own transaction; the request returns after the commit and a leased worker on any replica pushes to devices and derives thumbnails.
+---
+
+Status: **accepted** (2026-10-10) · Supersedes: — · Superseded by: —
+
+## Context
+
+A publish committed its revision, then — still inside the HTTP request — pushed to
+each device in turn (10 s timeout each), queued the channel's sinks, derived the
+attachment thumbnail, and only then stored the `Idempotency-Key` response.
+
+A request is a future, and a future gets dropped: a client that stops waiting, or
+the 15 s `shutdown_timeout` running out during a `SIGTERM`. Everything after the
+commit was then lost — sink deliveries, the thumbnail, and the replay. The last one
+is the worst: the key stayed claimed with no response, a retry was answered `409`,
+and once the claim lapsed the retry published a second notification. Serial pushes
+made the window long: a channel with fifty phones behind a slow relay held the
+request for minutes.
+
+## Decision
+
+The write carries an `AfterWrite` (`notify_ports::outbox`) and the store commits it
+**in the revision's own transaction**:
+
+- one `sink_queue` row per sink the channel routes to;
+- the idempotent response, encoded against the cursor the write just took;
+- one `fanout_outbox` row (keyed by that cursor) naming the notification and the
+  attachment to thumbnail.
+
+The request then pokes the bus — real-time delivery is unchanged, it was always the
+event log plus `NOTIFY` — wakes the local worker, and returns.
+
+`DrainFanout` claims outbox rows with `UPDATE … FOR UPDATE SKIP LOCKED` and a
+five-minute lease, pushes to a notification's devices with bounded concurrency (16),
+derives the thumbnail, and deletes the row. It runs on **every** replica: a publish
+wakes its own replica's worker at once, and a 5 s tick picks up rows another replica
+committed and did not reach, or whose worker died.
+
+### Amended (2026-10-10, security review)
+
+- **Re-read at drain time.** The row names the notification; the worker reads its
+  *current* state. Deleted, expired or purged: nothing is pushed. Otherwise the
+  **head** revision is pushed, not the one the write committed — so two revisions
+  drained out of order cannot leave the older one on a lock screen. Rows of one
+  notification claimed together are collapsed into one push. Deleting or expiring a
+  notification also deletes its pending rows, in the same transaction.
+- **Attempts and dead rows.** Each claim counts an attempt (`attempts`), so a row
+  whose worker dies without reporting still uses one up. A worker still pushing a
+  row extends its lease every 60 s (back to five minutes), so a live worker is never
+  raced by a second one however big the channel; a 15-minute ceiling per row
+  remains as a safety net for a wedged worker. Hitting it, or a failed re-read,
+  gives the row back with `last_error` and a backoff of 30 s per attempt. After 10 attempts, when it cannot be decoded (each
+  row is decoded on its own — one bad row never fails a claim), or once it has
+  waited an hour, the row is retired (`dead_at`) and never claimed again.
+  `fanout_outbox_rows{kind}` and `fanout_outbox_oldest_age_seconds` expose the
+  backlog; the leader logs when it falls behind.
+- **Bounded delivery.** Each push is capped at 12 s in total, retries included, and a
+  timed-out request is not retried (only refused connections, `429` and `5xx`). Rows
+  are drained with bounded concurrency rather than batch by batch, so one stalled
+  notification holds one slot, not the outbox.
+- **Per-device progress.** Each successful push is recorded in `fanout_deliveries`
+  as `(notification, revision, device)` right after the send; a retried row skips
+  the devices already recorded for the head it is pushing (a newer head goes to
+  everyone). The rows go when the notification's last outbox row completes, or
+  with the notification (cascade) for a dead row's leftovers.
+- **Idempotent digest count.** A held-back push is counted once per
+  `(user, notification, revision)` (`dnd_deferrals`), however many devices or
+  retries ask.
+
+## Consequences
+
+**Positive**
+
+- A request dropped after the commit loses nothing; a retry with the same key gets
+  the original response, never a second notification.
+- A publish's latency is the transaction plus a poke, whatever the channel's device
+  count or relay health.
+- A crash between commit and push is recovered by whichever replica claims the row
+  once its lease lapses.
+
+**Negative**
+
+- At least once, not exactly once — but only for the devices in flight: a crash
+  between a send and its record, or a lost record, pushes those devices again on
+  the retry, never the ones already recorded. Clients replace a notification by id,
+  and thumbnails are overwritten with the same bytes, so the duplicate is
+  invisible; the do-not-disturb tally is keyed and counts it once.
+- A push shows the notification as it is when the worker reaches it, which may be a
+  revision later than the write that queued it — the intent, but a re-read per
+  notification on the drain path.
+- The trace no longer runs `publish → fanout → push` in one tree: the fan-out span
+  starts in the worker.
+- Two more tables, a few more statements inside the publish transaction (which
+  holds the event-log lock), and one insert per successful push on the drain path.
+
+**Accepted debt**
+
+- ~~The row deadline is fixed, not scaled with the device count~~ — closed
+  (2026-10-10): the lease is extended while the worker pushes, and a retried row
+  pushes only the devices it has not reached yet.
+- Dead rows are kept for an operator and deleted by hand (runbooks).
+- A publish dropped *before* its commit still leaves the key claimed until the claim
+  lapses (5 min), answered `409` meanwhile — never a duplicate.

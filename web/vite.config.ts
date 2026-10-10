@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
@@ -27,7 +28,7 @@ import { contentSecurityPolicy, inlineScriptHashes } from "./src/lib/csp.ts";
  * `WNK_API_BASE_URL`/`WNK_OIDC_ISSUER`/`WNK_ATTACHMENT_ORIGIN` — so this plugin
  * hands `contentSecurityPolicy` those exact shell placeholders in place of real
  * origins, and only the inline-script hash, which names bytes this build
- * actually shipped, is real. `web/nginx/docker-entrypoint.d/05-runtime-config.sh`
+ * actually shipped, is real. `web/nginx/docker-entrypoint.d/05-runtime-config.envsh`
  * is what resolves the placeholders, once, against the container's actual
  * environment.
  *
@@ -97,6 +98,83 @@ function cspTemplate(): Plugin {
   };
 }
 
+/**
+ * Render `dist/env.js` from `WNK_*` build environment, when it is set.
+ *
+ * The desktop shell has no nginx to render `env.js` at boot (ADR-0021): whatever
+ * `dist/env.js` holds when `cargo tauri build` embeds it is what every installed
+ * copy talks to — and `public/env.js` names the local dev stack. `task
+ * tauri:bundle` therefore requires these variables and this writes them in.
+ * Unset (the web image, `pnpm build` locally) the committed file ships as before.
+ * `JSON.stringify` rather than a template, so a value cannot break out of the
+ * string it is put in.
+ */
+function desktopEnv(): Plugin {
+  let outDir = "dist";
+  return {
+    name: "weebo-notify:desktop-env",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const { WNK_API_BASE_URL, WNK_OIDC_ISSUER, WNK_OIDC_CLIENT_ID } =
+        process.env;
+      if (!WNK_API_BASE_URL) {
+        return;
+      }
+      if (!WNK_OIDC_ISSUER) {
+        this.error("WNK_API_BASE_URL is set but WNK_OIDC_ISSUER is not");
+      }
+      const env = {
+        apiBaseUrl: WNK_API_BASE_URL,
+        oidcIssuer: WNK_OIDC_ISSUER,
+        oidcClientId: WNK_OIDC_CLIENT_ID || "weebo-notify",
+      };
+      writeFileSync(
+        resolve(outDir, "env.js"),
+        `window.__ENV__ = ${JSON.stringify(env)};\n`,
+      );
+    },
+  };
+}
+
+/**
+ * Stamp `dist/sw.js` with this build's version, so its shell cache has a new name
+ * on every deploy and `activate` drops the previous one (`public/sw.js`).
+ *
+ * The version is a hash of the built `index.html`, which names every hashed entry
+ * chunk — it changes exactly when the app does. A rewrite of one literal rather
+ * than bundling the worker, which stays the plain file its spec evaluates.
+ */
+function swVersion(): Plugin {
+  let outDir = "dist";
+  return {
+    name: "weebo-notify:sw-version",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const html = readFileSync(resolve(outDir, "index.html"));
+      const version = createHash("sha256")
+        .update(html)
+        .digest("hex")
+        .slice(0, 12);
+      const path = resolve(outDir, "sw.js");
+      const source = readFileSync(path, "utf8");
+      const stamped = source.replace(
+        'const VERSION = "dev";',
+        `const VERSION = "${version}";`,
+      );
+      if (stamped === source) {
+        this.error('public/sw.js no longer declares `const VERSION = "dev";`');
+      }
+      writeFileSync(path, stamped);
+    },
+  };
+}
+
 // The dev server does NOT proxy the API. The browser talks to the server on
 // :8080 directly, which is why `config/dev.toml` lists :5173 in `cors_origins`
 // (design §5.1): a proxy would make CORS pass in development and fail in
@@ -108,6 +186,8 @@ export default defineConfig({
     vue(),
     tailwindcss(),
     cspTemplate(),
+    desktopEnv(),
+    swVersion(),
     vueI18n({
       // `.json` only: `src/locales/**` also holds `keys.spec.ts`, which this
       // plugin would otherwise try (and fail) to parse as a locale resource.
@@ -153,6 +233,15 @@ export default defineConfig({
         "src/test-setup.ts",
         "**/*.spec.ts",
       ],
+      // A floor a little under what the suite measures today (50/35/30/51 %), so
+      // a change that deletes tests or adds untested code fails here rather than
+      // drifting. Raise it as coverage grows; never lower it to make a build pass.
+      thresholds: {
+        statements: 48,
+        branches: 33,
+        functions: 29,
+        lines: 49,
+      },
     },
   },
 });

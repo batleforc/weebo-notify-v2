@@ -21,13 +21,20 @@ on:
       - "deny.toml"
       - "**/pnpm-lock.yaml"
       - "Containerfile*"
+      - "charts/**"
+      - "**/.trivyignore.yaml"
   pull_request:
     paths:
       - "Cargo.lock"
       - "deny.toml"
       - "**/pnpm-lock.yaml"
       - "Containerfile*"
+      - "charts/**"
+      - "**/.trivyignore.yaml"
   workflow_dispatch:
+  # release.yaml calls this on the tagged commit: a tag must pass today's
+  # advisories, not the ones that existed when its last pull request merged.
+  workflow_call:
 
 # Least privilege; a job that needs more says so itself.
 permissions:
@@ -78,8 +85,20 @@ jobs:
         # RustSec advisories, plus the licence and source policy in deny.toml.
         run: mise exec -- task audit:cargo
 
+      - name: Suppressed advisories
+        # Advisory only (it never fails): reports which ignores in
+        # .cargo/audit.toml / .trivyignore.yaml have become removable, which is
+        # exactly the news a nightly run exists to deliver.
+        run: mise exec -- task audit:suppressions
+
       - name: JavaScript dependencies
         run: mise exec -- task audit:web
 
       - name: Repository and image scan
         run: mise exec -- task audit:container
+
+      - name: Helm chart scan
+        # `audit:container` skips charts/ on purpose (see .tasks/audit.yaml); this
+        # is where the chart is scanned instead, so skipping it there must not
+        # mean skipping it everywhere.
+        run: mise exec -- task audit:helm

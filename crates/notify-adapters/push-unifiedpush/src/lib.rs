@@ -4,12 +4,15 @@
 
 use notify_domain::{Device, DevicePublicKey};
 use notify_ports::{
-    PortError, PortResult, PushMessage, PushOutcome, PushTransport, SEALED_ENVELOPE_VERSION,
+    PortError, PortResult, PushDispatcher, PushMessage, PushOutcome, PushTransport,
+    SEALED_ENVELOPE_VERSION,
 };
+use notify_push_http::{PublicOnly, send_retrying};
 use serde::Serialize;
 
-/// Max plaintext: a conservative budget (the spec sets no minimum) keeping sealed, base64'd JSON under 4 KiB.
-const MAX_PAYLOAD: usize = 2_750;
+/// The largest wire body (whole JSON envelope, sealing and base64 included) a distributor
+/// must accept per the spec. Measured, not estimated: over it, the poke goes ([`body_for`]).
+const MAX_BODY: usize = 4_096;
 
 /// Why the transport could not be built: an operator configuration problem found at startup (design §11).
 #[derive(Debug, thiserror::Error)]
@@ -32,8 +35,27 @@ impl Envelope {
     fn sealed_for(key: &DevicePublicKey, message: &PushMessage) -> Option<Self> {
         Some(Self {
             v: SEALED_ENVELOPE_VERSION,
-            ciphertext_device: notify_sealed_box::seal_base64(key, &message.sealed_plaintext())?,
+            ciphertext_device: notify_sealed_box::seal_base64(
+                key,
+                SEALED_ENVELOPE_VERSION,
+                &message.sealed_plaintext(),
+            )?,
         })
+    }
+}
+
+/// The wire body for `message`, or for its poke when that is over [`MAX_BODY`].
+/// `None` for a key nothing can be sealed to, as [`Envelope::sealed_for`].
+fn body_for(key: &DevicePublicKey, message: &PushMessage) -> PortResult<Option<Vec<u8>>> {
+    let encode = |message: &PushMessage| {
+        Envelope::sealed_for(key, message)
+            .map(|envelope| serde_json::to_vec(&envelope))
+            .transpose()
+            .map_err(|error| PortError::corrupt("push.envelope", error))
+    };
+    match encode(message)? {
+        Some(body) if body.len() > MAX_BODY => encode(&message.as_poke()),
+        fitted => Ok(fitted),
     }
 }
 
@@ -51,6 +73,10 @@ impl UnifiedPush {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
+                // A proxy would resolve the name itself, and `PublicOnly` would
+                // never be asked: `HTTPS_PROXY` in the environment must not be a
+                // way around it.
+                .no_proxy()
                 .dns_resolver(PublicOnly)
                 .build()
                 .map_err(UnifiedPushSetup::Client)?,
@@ -65,7 +91,7 @@ impl PushTransport for UnifiedPush {
     }
 
     fn max_payload_bytes(&self) -> usize {
-        MAX_PAYLOAD
+        MAX_BODY
     }
 
     async fn deliver(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
@@ -91,46 +117,33 @@ impl PushTransport for UnifiedPush {
         };
 
         // A non-contributory key never recovers: expire (revoke) rather than retry.
-        let Some(envelope) = Envelope::sealed_for(&public_key, message) else {
+        let Some(body) = body_for(&public_key, message)? else {
             return Ok(PushOutcome::Expired);
         };
 
-        let body = serde_json::to_vec(&envelope)
-            .map_err(|error| PortError::corrupt("push.envelope", error))?;
-
-        let response = self
-            .http
-            .post(endpoint.clone())
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send()
-            .await;
+        let response = send_retrying(
+            self.http
+                .post(endpoint.clone())
+                .header("Content-Type", "application/json")
+                .body(body),
+        )
+        .await;
 
         Ok(match response {
-            Ok(response) => outcome(response.status().as_u16()),
+            Some(response) => outcome(response.status().as_u16()),
             // Unreachable is a metric, not an `Err` (which means the transport is unusable).
-            Err(_) => PushOutcome::Failed {
+            None => PushOutcome::Failed {
                 reason: "unreachable",
             },
         })
     }
 }
 
-/// A resolver that only ever hands back public addresses (duplicated in `notify-push-webpush`).
-struct PublicOnly;
-
-impl reqwest::dns::Resolve for PublicOnly {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        Box::pin(async move {
-            let addrs: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
-                .filter(|addr| notify_domain::is_public_address(addr.ip()))
-                .collect();
-            if addrs.is_empty() {
-                return Err("the push endpoint resolves to no public address".into());
-            }
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
+/// UnifiedPush as a dispatcher, so tests reach it through the fan-out's trait.
+#[async_trait::async_trait]
+impl PushDispatcher for UnifiedPush {
+    async fn dispatch(&self, device: &Device, message: &PushMessage) -> PortResult<PushOutcome> {
+        self.deliver(device, message).await
     }
 }
 
@@ -259,7 +272,7 @@ mod tests {
                 serde_json::to_string(&Envelope::sealed_for(&key, &message).unwrap()).unwrap();
             let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
-            assert_eq!(value["v"], 2);
+            assert_eq!(value["v"], 3);
             assert!(value["ciphertext_device"].is_string());
             assert_eq!(value.as_object().unwrap().len(), 2, "{rendered}");
             assert!(!rendered.contains("ci-infra"), "{rendered}");
@@ -275,6 +288,50 @@ mod tests {
             PushOutcome::Failed {
                 reason: "rate_limited"
             }
+        );
+    }
+
+    fn titled(len: usize) -> PushMessage {
+        PushMessage::Notification {
+            channel: ChannelId::parse("ci-infra").unwrap(),
+            notification_id: NotificationId::generate(),
+            priority: Priority::Default,
+            body: PushBody::Payload {
+                bytes: serde_json::to_vec(&serde_json::json!({ "title": "x".repeat(len) }))
+                    .unwrap(),
+                sealed: false,
+            },
+        }
+    }
+
+    #[test]
+    fn the_largest_content_that_fits_is_sent_whole_and_one_byte_more_is_a_poke() {
+        let key = device_key();
+        let full = |len: usize| {
+            serde_json::to_vec(&Envelope::sealed_for(&key, &titled(len)).unwrap())
+                .unwrap()
+                .len()
+        };
+        // The longest title whose full envelope is still within the ceiling —
+        // base64 grows in steps, so the line is found rather than computed.
+        let fits = (0..MAX_BODY)
+            .rev()
+            .find(|&len| full(len) <= MAX_BODY)
+            .unwrap();
+
+        let at = body_for(&key, &titled(fits)).unwrap().unwrap();
+        assert_eq!(at.len(), full(fits), "sent with its content");
+        assert!(at.len() <= MAX_BODY);
+
+        let over = body_for(&key, &titled(fits + 1)).unwrap().unwrap();
+        assert!(full(fits + 1) > MAX_BODY);
+        let poke = titled(fits + 1).as_poke();
+        assert_eq!(
+            over.len(),
+            serde_json::to_vec(&Envelope::sealed_for(&key, &poke).unwrap())
+                .unwrap()
+                .len(),
+            "identifiers only; the device fetches the rest over TLS"
         );
     }
 }

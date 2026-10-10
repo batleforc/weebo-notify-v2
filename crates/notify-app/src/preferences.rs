@@ -159,7 +159,7 @@ mod tests {
 
         let dnd = fixture.read.execute(&caller).await.unwrap();
 
-        assert!(dnd.quiet_hours.is_empty());
+        assert_eq!(dnd.quiet_hours, [] as [notify_domain::QuietHours; 0]);
         assert!(!dnd.is_active(fixture.clock.now()));
     }
 
@@ -241,14 +241,9 @@ mod tests {
         };
 
         assert!(fixture.set.execute(&caller, bad).await.is_err());
-        assert!(
-            fixture
-                .read
-                .execute(&caller)
-                .await
-                .unwrap()
-                .quiet_hours
-                .is_empty()
+        assert_eq!(
+            fixture.read.execute(&caller).await.unwrap().quiet_hours,
+            [] as [notify_domain::QuietHours; 0]
         );
     }
 

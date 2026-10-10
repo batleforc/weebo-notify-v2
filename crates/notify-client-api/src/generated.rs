@@ -8008,7 +8008,7 @@ compaction count (§7.2) and DND-deferred ids (§7.4).*/
     ///  ],
     ///  "properties": {
     ///    "compacted": {
-    ///      "description": "How many revisions the compaction folded away.",
+    ///      "description": "How many revisions the compaction folded away, over the whole window since\n`after` and not just this page — so the first page of a catch-up carries the\ntotal, and that is the one a client reads it from.\n\nCounted over at most the first ten thousand events of the window (in no\nparticular order): past that it is a **lower bound**, \"at least this many\",\nrather than a count that could cost a long absence its catch-up.",
     ///      "type": "integer",
     ///      "format": "int32",
     ///      "minimum": 0.0
@@ -8043,7 +8043,13 @@ compaction count (§7.2) and DND-deferred ids (§7.4).*/
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SyncPage {
-        ///How many revisions the compaction folded away.
+        /**How many revisions the compaction folded away, over the whole window since
+`after` and not just this page — so the first page of a catch-up carries the
+total, and that is the one a client reads it from.
+
+Counted over at most the first ten thousand events of the window (in no
+particular order): past that it is a **lower bound**, "at least this many",
+rather than a count that could cost a long absence its catch-up.*/
         pub compacted: i32,
         /**Notifications on this page delayed on purpose by a quiet period (§7.4); kept
 off the events because events are identical for every reader.*/
@@ -9057,6 +9063,9 @@ Sends a `GET` request to `/api/v1/apikeys`
         match response.status().as_u16() {
             200u16 => ResponseValue::from_response(response).await,
             401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),
@@ -10456,6 +10465,9 @@ Sends a `POST` request to `/api/v1/devices`
         match response.status().as_u16() {
             201u16 => ResponseValue::from_response(response).await,
             401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             422u16 => {

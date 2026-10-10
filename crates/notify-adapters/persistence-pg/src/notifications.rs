@@ -7,7 +7,7 @@ use notify_domain::{
     Ttl,
 };
 use notify_ports::{
-    Audience, ClosedNotification, EventPayload, ExpiredNotification, InboxQuery,
+    AfterWrite, Audience, ClosedNotification, EventPayload, ExpiredNotification, InboxQuery,
     NotificationRepository, Page, PageRequest, PortResult, RevisionEvent, SearchQuery, UnreadCount,
 };
 use sqlx::Row as _;
@@ -17,8 +17,8 @@ use time::OffsetDateTime;
 
 use crate::PgStore;
 use crate::mapping::{
-    EXPIRED_UNSEEN, append_event, begin_with_events, cursor, enum_from_text, enum_to_text, fail,
-    from_json, lock_event_log, parse, priority_rank, sequence, to_json,
+    EVENTS_PER_TRANSACTION, EXPIRED_UNSEEN, append_event, cursor, enum_from_text, enum_to_text,
+    fail, from_json, parse, priority_rank, sequence, to_json,
 };
 
 /// Columns for a [`Notification`] with its head revision, plus whatever the caller appends.
@@ -36,6 +36,31 @@ macro_rules! select_notification {
              FROM notifications n
              JOIN revisions r ON r.notification_id = n.id AND r.seq = n.head_seq ",
             $($tail),*
+        )
+    };
+}
+
+/// The stale-closure predicate (design §7.2bis), shared by the unlocked candidate
+/// read and the locked re-check in `close_stale` so the two cannot disagree about
+/// what "stale" means.
+macro_rules! stale {
+    ($tail:literal) => {
+        concat!(
+            "SELECT n.id, n.channel_id, n.ttl
+             FROM notifications n
+             JOIN unnest($1::text[], $2::timestamptz[]) AS d(channel_id, cutoff)
+               ON d.channel_id = n.channel_id
+             WHERE n.deleted_at IS NULL
+               AND n.state <> 'closed'
+               AND n.created_at <= d.cutoff
+               AND GREATEST(
+                     n.created_at,
+                     (SELECT MAX(r.received_at) FROM revisions r
+                       WHERE r.notification_id = n.id),
+                     (SELECT MAX(i.recorded_at) FROM interactions i
+                       WHERE i.notification_id = n.id)
+                   ) <= d.cutoff ",
+            $tail
         )
     };
 }
@@ -87,8 +112,17 @@ impl NotificationRepository for PgStore {
         row.as_ref().map(hydrate).transpose()
     }
 
-    async fn insert(&self, notification: &Notification, revision: &Revision) -> PortResult<Cursor> {
-        let mut transaction = begin_with_events(self.pool(), "notification").await?;
+    async fn insert_with(
+        &self,
+        notification: &Notification,
+        revision: &Revision,
+        after: &AfterWrite,
+    ) -> PortResult<Cursor> {
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("notification", error))?;
 
         // Retire an expired row still holding the external id, as the sweep would, to avoid a conflict loop.
         if let Some(external_id) = &notification.external_id {
@@ -168,6 +202,7 @@ impl NotificationRepository for PgStore {
         .map_err(|error| fail("notification.external_id", error))?;
 
         insert_revision(&mut transaction, revision, cursor).await?;
+        crate::outbox::record(&mut transaction, notification, revision, cursor, after).await?;
 
         transaction
             .commit()
@@ -177,12 +212,17 @@ impl NotificationRepository for PgStore {
         Ok(cursor)
     }
 
-    async fn append_revision(
+    async fn append_revision_with(
         &self,
         notification: &Notification,
         revision: &Revision,
+        after: &AfterWrite,
     ) -> PortResult<Cursor> {
-        let mut transaction = begin_with_events(self.pool(), "notification").await?;
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("notification", error))?;
 
         // Locked and re-checked: a concurrent revision or tombstone means `Conflict` and a re-read (T16).
         let current: Option<(i32, bool)> = sqlx::query_as(
@@ -245,6 +285,7 @@ impl NotificationRepository for PgStore {
         .execute(&mut *transaction)
         .await
         .map_err(|error| fail("notification", error))?;
+        crate::outbox::record(&mut transaction, notification, revision, cursor, after).await?;
 
         transaction
             .commit()
@@ -396,7 +437,11 @@ impl NotificationRepository for PgStore {
         id: NotificationId,
         at: OffsetDateTime,
     ) -> PortResult<Option<Cursor>> {
-        let mut transaction = begin_with_events(self.pool(), "notification").await?;
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("notification", error))?;
 
         // Locked and re-read so concurrent deletes emit one tombstone.
         let existing: Option<(String, Option<OffsetDateTime>)> = sqlx::query_as(
@@ -430,6 +475,7 @@ impl NotificationRepository for PgStore {
             .execute(&mut *transaction)
             .await
             .map_err(|error| fail("notification", error))?;
+        crate::outbox::discard(&mut transaction, id).await?;
 
         transaction
             .commit()
@@ -444,8 +490,34 @@ impl NotificationRepository for PgStore {
         now: OffsetDateTime,
         limit: u32,
     ) -> PortResult<Vec<ExpiredNotification>> {
-        let mut transaction = begin_with_events(self.pool(), "notification").await?;
+        // Candidates first, unlocked: the locked statement below gives this
+        // transaction its id, and from then until the commit it holds the event
+        // watermark back for every reader in the deployment (ADR-0028). The scan
+        // stays out of that window. It is bounded and served by
+        // `notifications_expiry_idx`; the locked statement only re-checks these
+        // ids by primary key.
+        let candidates: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM notifications
+             WHERE deleted_at IS NULL AND expires_at IS NOT NULL AND expires_at <= $1
+             ORDER BY expires_at
+             LIMIT $2",
+        )
+        .bind(now)
+        .bind(i64::from(limit.min(EVENTS_PER_TRANSACTION)))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("notification", error))?;
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
 
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("notification", error))?;
+
+        // Re-checked under the row lock (revised or deleted in between).
         // SKIP LOCKED: a briefly double leader claims a different batch (T22).
         let due: Vec<(String, String, bool)> = sqlx::query_as(
             "SELECT n.id, n.channel_id,
@@ -454,13 +526,13 @@ impl NotificationRepository for PgStore {
                         WHERE r.notification_id = n.id AND r.kind IN ('delivered', 'seen')
                     ) AS was_delivered
              FROM notifications n
-             WHERE n.deleted_at IS NULL AND n.expires_at IS NOT NULL AND n.expires_at <= $1
+             WHERE n.id = ANY($2)
+               AND n.deleted_at IS NULL AND n.expires_at IS NOT NULL AND n.expires_at <= $1
              ORDER BY n.expires_at
-             LIMIT $2
              FOR NO KEY UPDATE OF n SKIP LOCKED",
         )
         .bind(now)
-        .bind(i64::from(limit))
+        .bind(&candidates)
         .fetch_all(&mut *transaction)
         .await
         .map_err(|error| fail("notification", error))?;
@@ -503,32 +575,37 @@ impl NotificationRepository for PgStore {
             .map(|(channel, cutoff)| (channel.to_string(), *cutoff))
             .unzip();
 
-        let mut transaction = begin_with_events(self.pool(), "notification").await?;
-
         // Per-channel deadlines via `unnest`. TTL comes back so `expires_at` is set with `closed_at`
         // (the purge keys on it), parsed in Rust rather than re-implementing `HumanDuration` in SQL.
+        // Candidates first, unlocked: the `GREATEST` is the expensive part (ADR-0028).
+        // `n.created_at <= d.cutoff` is implied but lets the planner range-scan `notifications_open_idx`.
+        let candidates: Vec<(String, String, serde_json::Value)> =
+            sqlx::query_as(stale!("ORDER BY n.created_at LIMIT $3"))
+                .bind(&channels)
+                .bind(&cutoffs)
+                .bind(i64::from(limit.min(EVENTS_PER_TRANSACTION)))
+                .fetch_all(self.pool())
+                .await
+                .map_err(|error| fail("notification", error))?;
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let candidates: Vec<String> = candidates.into_iter().map(|(id, _, _)| id).collect();
+
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("notification", error))?;
+
+        // Re-checked by primary key under the row lock: activity in between keeps it open.
         // SKIP LOCKED as in `claim_expired` (T22).
-        let due: Vec<(String, String, serde_json::Value)> = sqlx::query_as(
-            "SELECT n.id, n.channel_id, n.ttl
-             FROM notifications n
-             JOIN unnest($1::text[], $2::timestamptz[]) AS d(channel_id, cutoff)
-               ON d.channel_id = n.channel_id
-             WHERE n.deleted_at IS NULL
-               AND n.state <> 'closed'
-               AND GREATEST(
-                     n.created_at,
-                     (SELECT MAX(r.received_at) FROM revisions r
-                       WHERE r.notification_id = n.id),
-                     (SELECT MAX(i.recorded_at) FROM interactions i
-                       WHERE i.notification_id = n.id)
-                   ) <= d.cutoff
-             ORDER BY n.created_at
-             LIMIT $3
-             FOR NO KEY UPDATE OF n SKIP LOCKED",
-        )
+        let due: Vec<(String, String, serde_json::Value)> = sqlx::query_as(stale!(
+            "AND n.id = ANY($3) ORDER BY n.created_at FOR NO KEY UPDATE OF n SKIP LOCKED"
+        ))
         .bind(&channels)
         .bind(&cutoffs)
-        .bind(i64::from(limit))
+        .bind(&candidates)
         .fetch_all(&mut *transaction)
         .await
         .map_err(|error| fail("notification", error))?;
@@ -738,6 +815,7 @@ async fn expire(
         .execute(&mut **transaction)
         .await
         .map_err(|error| fail("notification", error))?;
+    crate::outbox::discard(transaction, notification).await?;
 
     Ok(cursor)
 }
@@ -749,9 +827,6 @@ async fn expired_unseen(
     notification: NotificationId,
     at: OffsetDateTime,
 ) -> PortResult<Cursor> {
-    // It draws a sequence value like any append, so it holds the same lock.
-    lock_event_log(transaction).await?;
-
     let sequence: i64 = sqlx::query_scalar(
         "INSERT INTO events
              (audience_kind, channel_id, user_id, recorded_at, kind, notification_id, payload)

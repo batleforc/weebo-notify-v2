@@ -126,7 +126,8 @@ pub(crate) async fn list_interactions(
     responses(
         (status = 200, description = "The silence now in force", body = Silence),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 403, description = "Not a member of its channel", body = Problem),
+        (status = 403, description = "Not a member of its channel, or a key or CI token \
+                                      rather than a session", body = Problem),
         (status = 422, description = "A group silence with no duration", body = Problem),
     ),
     security(("bearer" = []))
@@ -160,7 +161,8 @@ pub(crate) async fn silence(
          description = "The receipt, or `null` when receipts are off on that channel",
          body = Option<Receipt>),
         (status = 401, description = "No usable credential", body = Problem),
-        (status = 403, description = "Not a member of its channel", body = Problem),
+        (status = 403, description = "Not a member of its channel, or a key naming a \
+                                      push device", body = Problem),
     ),
     security(("bearer" = []))
 )]

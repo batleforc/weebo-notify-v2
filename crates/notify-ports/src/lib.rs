@@ -18,6 +18,7 @@ pub mod leader;
 pub mod media;
 pub mod metrics;
 pub mod notifications;
+pub mod outbox;
 pub mod pagination;
 pub mod preferences;
 pub mod push;
@@ -37,7 +38,8 @@ pub use attachments::{
     UploadRequest,
 };
 pub use audit::{
-    AUDIT_ACTIONS, AuditAction, AuditActor, AuditEntry, AuditLog, AuditQuery, Configured, actions,
+    AUDIT_ACTIONS, AUDIT_RETENTION_FLOOR, AuditAction, AuditActor, AuditEntry, AuditLog,
+    AuditQuery, Configured, actions,
 };
 pub use channels::ChannelRepository;
 pub use clock::{Clock, SystemClock};
@@ -51,17 +53,18 @@ pub use event::{
 pub use eventbus::{EventBus, Poke};
 pub use idempotency::{Claim, IdempotencyStore};
 pub use identities::{
-    ApiKeyRepository, KeyGenerator, SecretHasher, ServiceAccountRepository, StoredApiKey,
-    UserRepository,
+    ApiKeyRepository, EmailMatch, KeyGenerator, SecretHasher, ServiceAccountRepository,
+    StoredApiKey, UserRepository,
 };
 pub use interactions::InteractionRepository;
 pub use leader::{LeaderElection, LeaderGuard};
 pub use media::{AttachmentThumbnailer, AvatarProcessor, ImageRejection, ProcessedImage};
-pub use metrics::{Metrics, NoMetrics, PushResult, StreamKind};
+pub use metrics::{FanoutBacklog, Metrics, NoMetrics, PushResult, RetentionBacklog, StreamKind};
 pub use notifications::{
     ClosedNotification, ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery,
     UnreadCount,
 };
+pub use outbox::{AfterWrite, FanoutOutbox, IdempotentReply, PendingFanout};
 pub use pagination::{Page, PageRequest};
 pub use preferences::{DeferredTally, PreferenceRepository};
 pub use push::{
@@ -70,7 +73,8 @@ pub use push::{
 pub use quota::{Acquired, Allowance, Lease, LeaseRequest, Quota, RateLimiter, StreamLeases};
 pub use receipts::{ReceiptRepository, Visibility};
 pub use sinks::{
-    DeadLetter, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkRegistry, SinkTarget,
+    DeadLetter, FingerprintKey, SinkDelivery, SinkDispatcher, SinkOutcome, SinkQueue, SinkRegistry,
+    SinkTarget, redact_url,
 };
 pub use tokens::{
     FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,

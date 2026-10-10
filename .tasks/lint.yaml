@@ -16,6 +16,38 @@ tasks:
       - task: rust:check
       - task: web:check
       - task: docs:check
+      - task: migrations
+      - task: ignore-files
+
+  migrations:
+    desc: "Fail on a destructive migration (DROP/RENAME/ALTER TYPE) that lacks an `-- allow-destructive: <why>` marker (expand/contract rule)"
+    # During a rolling update — and before it, with the Helm migration Job — the
+    # PREVIOUS version runs against the NEW schema (runbooks.mdx, expand/contract).
+    # A column dropped or renamed in the same release that stops using it breaks
+    # those old pods mid-rollout, and makes rolling the image back impossible.
+    # Destructive steps belong in a later release, once no running version reads
+    # the object; the marker is where that later release says why it is safe.
+    # Comments are stripped first, so prose about a rename never trips it.
+    cmds:
+      - cmd: |
+          set -eu
+          bad=0
+          for f in crates/notify-adapters/*/migrations/*.sql; do
+            [ -f "$f" ] || continue
+            grep -q -- '-- allow-destructive:' "$f" && continue
+            if sed 's/--.*$//' "$f" | grep -qiE 'drop[[:space:]]+(column|table)|(^|[^a-z_])rename([^a-z_]|$)|alter[[:space:]]+column[^;]*[[:space:]]type[[:space:]]'; then
+              echo "destructive statement without '-- allow-destructive: <reason>': $f" >&2
+              bad=1
+            fi
+          done
+          [ "$bad" = 0 ] && echo "migrations: expand-only (or explicitly allowed)"
+          exit "$bad"
+
+  ignore-files:
+    desc: "Fail when .dockerignore drifts from .containerignore (root and web/) — BuildKit reads only the former"
+    cmds:
+      - cmp .containerignore .dockerignore
+      - cmp web/.containerignore web/.dockerignore
 
   rust:
     desc: "Format and lint the cargo workspace (fmt applies, clippy denies warnings)"
@@ -43,6 +75,24 @@ tasks:
           if [ ! -f web/package.json ]; then echo "web/ not bootstrapped yet — skipping"; exit 0; fi
           pnpm -C web lint
           pnpm -C web types:check
+      - task: web:build-only-advisories
+
+  web:build-only-advisories:
+    desc: "Fail if braces (GHSA-vfj7-8cjw-p6xm, ignored in web/pnpm-workspace.yaml as build-time only) ever reaches a production dependency"
+    # The audit ignore is only sound while braces stays a build tool's dependency:
+    # the day a runtime package pulls it in, user input can reach it and the
+    # advisory applies for real — and `pnpm audit` would still say nothing.
+    cmds:
+      - cmd: |
+          if [ ! -f web/package.json ]; then echo "web/ not bootstrapped yet — skipping"; exit 0; fi
+          set -eu
+          prod=$(pnpm -C web list --prod --depth Infinity --parseable)
+          if echo "$prod" | grep -q '/braces@'; then
+            echo "braces is now a production dependency — GHSA-vfj7-8cjw-p6xm's ignore no longer holds:" >&2
+            pnpm -C web why braces --prod >&2
+            exit 1
+          fi
+          echo "braces: build-time only"
 
   docs:
     desc: "Lint and format the Fumadocs site, applying fixes"

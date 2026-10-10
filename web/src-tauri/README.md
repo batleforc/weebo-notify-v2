@@ -49,6 +49,57 @@ a `.icns`; `pnpm tauri icon icons/icon@1024.png` generates the whole platform se
 from the large PNG, and that step belongs to whoever first builds on those
 platforms rather than to a guess made here.
 
+## Updates and signing
+
+`tauri-plugin-updater` is compiled in on desktop but only **registered** when the
+build's config carries a `plugins.updater` section (`lib.rs::run`): the plugin
+refuses to start without a `pubkey`, and a dev or unsigned build must still run.
+Without that section the app simply never updates — nothing fails.
+
+1. **Generate the key pair, once**, and keep the private half out of the repository:
+
+   ```sh
+   pnpm tauri signer generate -w ~/.tauri/weebo-notify.key
+   ```
+
+   It prints the public key (also written to `~/.tauri/weebo-notify.key.pub`).
+
+2. **CI secrets.** Store the private key's *contents* as `TAURI_SIGNING_PRIVATE_KEY`
+   and its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. `tauri build` signs the
+   update artefacts with them and writes a `.sig` next to each bundle.
+
+3. **Build with the environment set.** `task tauri:bundle` (and `task tauri:build`)
+   pass `web/scripts/tauri-csp.ts --updater` to Tauri as a config merge patch, which
+   reads (`src/lib/tauri-updater.ts`, tested in its `.spec.ts`):
+
+   | Variable | Effect |
+   |---|---|
+   | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | `bundle.createUpdaterArtifacts`: each artefact is signed and gets its `.sig`. Tauri reads both variables itself. |
+   | `WNK_UPDATER_ENDPOINT` | `plugins.updater.endpoints` — must be `https://`, e.g. `https://<host>/releases/{{target}}-{{arch}}/latest.json`, serving the static manifest the plugin expects (`version`, `platforms.<target>.url` and `.signature` — the `.sig` contents). |
+   | `WNK_UPDATER_PUBKEY` | `plugins.updater.pubkey` — the contents of `weebo-notify.key.pub`. |
+
+   None set: an unsigned build with no updater, as before. An endpoint without a
+   public key (or a key without an endpoint, or a plain-`http` endpoint) **fails the
+   build** — an updater with nothing to verify against would install whatever the
+   endpoint serves. Nothing is committed to `tauri.conf.json`, so a build without
+   the secrets can never turn into one that updates.
+
+The signature checked here is the updater's own (minisign), and it is what makes an
+update trustworthy. It is not OS code signing, which needs certificates this project
+does not have — so it is not wired, only described. What Tauri expects when they
+exist:
+
+- **macOS** (signing + notarisation): `APPLE_CERTIFICATE` (base64 `.p12`),
+  `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, then either `APPLE_ID` +
+  `APPLE_PASSWORD` (app-specific) + `APPLE_TEAM_ID`, or `APPLE_API_ISSUER` +
+  `APPLE_API_KEY` + `APPLE_API_KEY_PATH`. Needs a `dmg`/`app` target and `.icns`
+  icons first (see « Icons »).
+- **Windows** (Authenticode): no environment variable — `bundle.windows.certificateThumbprint`,
+  `digestAlgorithm` and `timestampUrl` for a certificate in the runner's store, or
+  `bundle.windows.signCommand` for a remote signer (Azure Trusted Signing, a HSM).
+  Needs an `nsis`/`msi` target and a `.ico` first.
+- **Linux** `deb`/`appimage`: nothing — they carry no OS-enforced signature.
+
 ## Known gaps in this scaffold
 
 Beyond the §10bis bullets that are simply not started (see §14.1, M5) — §10bis.3bis's
@@ -68,9 +119,11 @@ hygiene now lives in the shared front, gated on `is-desktop`:
 - the dock/taskbar badge (§10bis.3bis) and the quick panel window
   (`tauri-plugin-positioner`, §10bis.3quater) are still unbuilt — the tray is the
   first of the "trois rendus," not the third;
-- no updater, no signing, no `beta` channel — and no "Rechercher les mises à jour"
-  menu item either, on purpose: an inert item with nothing to check against would be
-  the same "port implemented, called by nobody" mistake D27 already named once;
+- the updater checks once per launch and installs for the next start (see « Updates
+  and signing » below), but there is no `beta` channel and no "Rechercher les mises à
+  jour" menu item yet, and no published endpoint or key — the build is wired for
+  them, nothing serves them; OS code signing (Authenticode, Apple notarisation) is
+  not set up either;
 - no Linux tray-detection at launch — closing the window always hides, even on a
   machine where the tray itself failed to build (real, at runtime, even past
   `task tauri:doctor` — see `lib.rs`'s note on the appindicator backend);

@@ -36,6 +36,21 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
     // No scope-wide payload limit: raw-body routes enforce their own ceiling.
     config.service(
         utoipa_actix_web::scope("/api/v1")
+            .app_data(crate::problem::json_config())
+            .app_data(crate::problem::query_config())
+            .app_data(crate::problem::path_config())
+            // Defaults: a route that sets its own (`served_bytes`, an avatar's
+            // `cache-control`) keeps it. Every response here is either for one
+            // authenticated caller or a refusal — nothing a shared cache should
+            // keep, nothing a browser should sniff into a document, and no URL
+            // (a `?token=` one included) worth sending on as a referrer. HSTS is
+            // the ingress's (ADR-0023).
+            .wrap(
+                actix_web::middleware::DefaultHeaders::new()
+                    .add(("x-content-type-options", "nosniff"))
+                    .add(("referrer-policy", "no-referrer"))
+                    .add(("cache-control", "no-store")),
+            )
             .service(notifications::publish)
             .service(notifications::upsert)
             .service(notifications::inbox)

@@ -6,13 +6,16 @@ use futures::StreamExt as _;
 use futures::stream::BoxStream;
 use notify_ports::{EventBus, Poke, PortError, PortResult};
 use sqlx::PgPool;
-use sqlx::postgres::PgListener;
+use sqlx::postgres::{PgListener, PgPoolOptions};
 
 /// The `NOTIFY` channel every replica listens on; one for all, filtering happens at the connections.
 const CHANNEL: &str = "weebo_notify_pokes";
 
 /// How long the listener waits before asking again after a failure.
 const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What Postgres accepts as a `NOTIFY` payload, exclusive.
+const NOTIFY_LIMIT: usize = 8_000;
 
 /// Fan-out between replicas, over the database they already share.
 #[derive(Debug, Clone)]
@@ -31,8 +34,20 @@ impl PgEventBus {
 #[async_trait]
 impl EventBus for PgEventBus {
     async fn publish(&self, poke: &Poke) -> PortResult<()> {
-        let payload = serde_json::to_string(poke)
+        let mut payload = serde_json::to_string(poke)
             .map_err(|error| PortError::corrupt("eventbus.poke", error))?;
+        // Unreachable with today's pokes (an id and a cursor), and the test below
+        // pins that. If a future poke outgrows `NOTIFY`, a `Resync` still wakes
+        // every stream and the cursor makes it lossless — better than a publish
+        // that starts failing on one long channel id.
+        if payload.len() >= NOTIFY_LIMIT {
+            tracing::warn!(
+                bytes = payload.len(),
+                "poke too large for NOTIFY; sending a resync"
+            );
+            payload = serde_json::to_string(&Poke::Resync)
+                .map_err(|error| PortError::corrupt("eventbus.poke", error))?;
+        }
 
         // `pg_notify` binds channel and payload, so nothing is concatenated into SQL. Deliberately
         // outside the caller's transaction: an early poke is harmless since receivers read the log.
@@ -47,7 +62,15 @@ impl EventBus for PgEventBus {
     }
 
     async fn subscribe(&self) -> PortResult<BoxStream<'static, Poke>> {
-        let mut listener = PgListener::connect_with(&self.pool)
+        // A one-connection pool of its own, from the same options: the listener
+        // holds its connection for the life of the process, and drawing it from the
+        // shared pool would quietly make that pool one smaller than configured
+        // (high-availability.mdx counts it as "one more", outside the pool). Its
+        // reconnects go through this pool too, so they never queue behind requests.
+        let own = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with((*self.pool.connect_options()).clone());
+        let mut listener = PgListener::connect_with(&own)
             .await
             .map_err(|error| PortError::unavailable("eventbus", error))?;
 

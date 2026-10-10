@@ -256,7 +256,12 @@
       "unsupported": "Ce navigateur ne sait pas recevoir de push.",
       "unavailable": "Ce déploiement ne fait pas de Web Push.",
       "denied": "Les notifications sont refusées pour ce site.",
-      "failed": "Le service worker n'est pas disponible."
+      "failed": "Le service worker n'est pas disponible.",
+      "incomplete": "Le navigateur a rendu un abonnement incomplet."
+    },
+    "label": {
+      "browser": "Navigateur",
+      "onPlatform": "{browser} sur {platform}"
     },
     "prompt": {
       "ariaLabel": "Activer les notifications",

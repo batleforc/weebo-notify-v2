@@ -303,7 +303,7 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new(profile: String, holds_stream: bool) -> Self {
-        let history = history::History::load(Some(history::history_path(&profile)));
+        let history = history::History::load(history::history_path(&profile));
         Self {
             profile,
             holds_stream,

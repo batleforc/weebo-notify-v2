@@ -85,7 +85,9 @@ impl SinkDispatcher for WebhookSink {
         Ok(match response {
             Ok(response) => classify(response.status()),
             Err(error) => {
-                // Connect, timeout, TLS, DNS: all can recover, so retry.
+                // Connect, timeout, TLS, DNS: all can recover, so retry. `without_url`: the path
+                // may hold the consumer's credential, and this text lands in `last_error`.
+                let error = error.without_url();
                 tracing::debug!(?error, delivery = %delivery.delivery_id, "webhook attempt failed");
                 SinkOutcome::Retry {
                     reason: error.to_string(),
@@ -158,8 +160,11 @@ pub fn verify(
 ) -> Result<(), SignatureError> {
     let (timestamp, digest) = parse(header).ok_or(SignatureError::Malformed)?;
 
-    let age = (now.unix_timestamp() - timestamp).abs();
-    if age > REPLAY_WINDOW.as_secs().cast_signed() {
+    // `abs_diff`, not `(a - b).abs()`: `t` is attacker-supplied, and `t = i64::MIN`
+    // would overflow the subtraction — a panic in debug, a wrapped "fresh" age in
+    // release.
+    let age = now.unix_timestamp().abs_diff(timestamp);
+    if age > REPLAY_WINDOW.as_secs() {
         return Err(SignatureError::Stale);
     }
 
@@ -261,6 +266,17 @@ mod tests {
         let header = format!("v2=whatever,v1={},t={at}", sign(SECRET, at, BODY));
 
         assert_eq!(verify(SECRET, &header, BODY, now), Ok(()));
+    }
+
+    #[test]
+    fn an_extreme_timestamp_is_stale_rather_than_an_overflow() {
+        let now = OffsetDateTime::now_utc();
+        for at in [i64::MIN, i64::MAX] {
+            assert_eq!(
+                verify(SECRET, &format!("t={at},v1=00"), BODY, now),
+                Err(SignatureError::Stale)
+            );
+        }
     }
 
     #[test]

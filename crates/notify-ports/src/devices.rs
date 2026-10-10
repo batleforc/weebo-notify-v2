@@ -17,6 +17,10 @@ pub trait DeviceRepository: Send + Sync {
     /// Enrol or update a device.
     async fn upsert(&self, device: &Device) -> PortResult<()>;
 
+    /// Enrol a device unless its owner already holds `max` active ones (`false`,
+    /// nothing written). Count and insert are atomic per owner.
+    async fn enrol_capped(&self, device: &Device, max: u32) -> PortResult<bool>;
+
     /// Revoke a device: push subscription, cursor and public key all go (§8, §15, T18).
     /// Returns whether one was there to revoke.
     async fn revoke(&self, id: DeviceId, at: OffsetDateTime) -> PortResult<bool>;

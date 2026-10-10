@@ -1,6 +1,7 @@
 //! One `LISTEN` per replica, rebroadcast in process to every stream (best-effort, ADR-0008).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::stream::BoxStream;
 use notify_ports::{EventBus, Poke, PortResult};
@@ -9,11 +10,43 @@ use tokio::sync::broadcast;
 /// How many pokes a subscriber may fall behind before losing them; pokes are cheap, so generous.
 const BACKLOG: usize = 1_024;
 
+/// The longest the pump waits between two attempts to resubscribe.
+const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A subscription that lived this long counts as healthy, and the backoff starts
+/// over after it ends.
+const STABLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether the pump is subscribed right now — what `/readyz` reports as
+/// `eventbus`.
+///
+/// A replica whose pump is down still answers reads, so nothing else would look
+/// broken while every stream it holds went stale.
+#[derive(Debug, Clone)]
+pub(crate) struct BusHealth(Arc<AtomicBool>);
+
+impl BusHealth {
+    pub(crate) fn is_alive(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, alive: bool) {
+        self.0.store(alive, Ordering::Relaxed);
+    }
+
+    /// One that reports alive, for tests that wire `/readyz` without a pump.
+    #[cfg(test)]
+    pub(crate) fn alive() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+}
+
 /// The real bus, subscribed to once, rebroadcast in process.
 #[derive(Clone)]
 pub(crate) struct SharedBus {
     inner: Arc<dyn EventBus>,
     pokes: broadcast::Sender<Poke>,
+    health: BusHealth,
 }
 
 impl core::fmt::Debug for SharedBus {
@@ -25,7 +58,9 @@ impl core::fmt::Debug for SharedBus {
 }
 
 impl SharedBus {
-    /// Subscribe to `inner` once and start rebroadcasting for the life of the process.
+    /// Subscribe to `inner` once and start a supervised rebroadcast for the life of the process:
+    /// if the subscription ends or the pump panics, it resubscribes with backoff, sends
+    /// [`Poke::Resync`] and reports down on [`BusHealth`] meanwhile.
     /// Keep the returned handle and abort it before the runtime ends: dropping the `PgListener`
     /// after the runtime is gone aborts the process.
     ///
@@ -35,21 +70,93 @@ impl SharedBus {
     pub(crate) async fn start(
         inner: Arc<dyn EventBus>,
     ) -> PortResult<(Self, actix_web::rt::task::JoinHandle<()>)> {
-        let mut stream = inner.subscribe().await?;
+        let stream = inner.subscribe().await?;
         let (pokes, _) = broadcast::channel(BACKLOG);
+        let health = BusHealth(Arc::new(AtomicBool::new(true)));
 
-        let sender = pokes.clone();
-        let pump = actix_web::rt::spawn(async move {
-            use futures::StreamExt as _;
+        let pump = actix_web::rt::spawn(pump(
+            Arc::clone(&inner),
+            pokes.clone(),
+            stream,
+            health.clone(),
+        ));
 
-            while let Some(poke) = stream.next().await {
-                // `send` fails only when nobody is listening: normal on an idle replica.
-                let _ = sender.send(poke);
+        Ok((
+            Self {
+                inner,
+                pokes,
+                health,
+            },
+            pump,
+        ))
+    }
+
+    /// Whether the pump is subscribed, for `/readyz`.
+    pub(crate) fn health(&self) -> BusHealth {
+        self.health.clone()
+    }
+}
+
+/// Forward pokes for ever, resubscribing whenever the subscription ends or the
+/// forwarding panics.
+///
+/// The panic is caught in place (`catch_unwind`) rather than by spawning a child
+/// task and watching its handle: the composition root aborts *this* task at
+/// shutdown, and a child would outlive it — taking the `LISTEN` connection past the
+/// end of the runtime, which is the abort-instead-of-exit this module's handle
+/// exists to prevent.
+async fn pump(
+    inner: Arc<dyn EventBus>,
+    sender: broadcast::Sender<Poke>,
+    first: BoxStream<'static, Poke>,
+    health: BusHealth,
+) {
+    use futures::FutureExt as _;
+
+    let mut subscription = Some(first);
+    let mut backoff = std::time::Duration::from_millis(250);
+
+    loop {
+        if let Some(stream) = subscription.take() {
+            health.set(true);
+            let started = std::time::Instant::now();
+            let ended = std::panic::AssertUnwindSafe(forward(stream, &sender))
+                .catch_unwind()
+                .await;
+            health.set(false);
+
+            if ended.is_ok() {
+                tracing::error!("the poke subscription ended; resubscribing");
+            } else {
+                tracing::error!("the poke pump panicked; resubscribing");
             }
-            tracing::warn!("the poke subscription ended; this replica will not fan out");
-        });
+            // Whatever was published while nobody listened is gone; every stream
+            // re-reads from its own cursor, which is authoritative.
+            let _ = sender.send(Poke::Resync);
 
-        Ok((Self { inner, pokes }, pump))
+            if started.elapsed() > STABLE {
+                backoff = std::time::Duration::from_millis(250);
+            }
+        }
+
+        actix_web::rt::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+
+        match inner.subscribe().await {
+            Ok(stream) => subscription = Some(stream),
+            Err(error) => tracing::warn!(?error, "could not resubscribe to the poke bus"),
+        }
+    }
+}
+
+/// Rebroadcast one subscription until it ends.
+async fn forward(mut stream: BoxStream<'static, Poke>, sender: &broadcast::Sender<Poke>) {
+    use futures::StreamExt as _;
+
+    while let Some(poke) = stream.next().await {
+        // `send` fails only when nobody is listening, which is the normal state of
+        // a replica with no open streams.
+        let _ = sender.send(poke);
     }
 }
 
@@ -64,6 +171,83 @@ impl EventBus for SharedBus {
         let receiver = self.pokes.subscribe();
 
         Ok(Box::pin(async_stream(receiver)))
+    }
+}
+
+/// How often a replica looks at the event watermark (ADR-0028).
+///
+/// Shorter than the time a read waits for it (`notify-persistence-pg`'s five
+/// seconds) by enough that any row a read gave up on is seen held back on two
+/// ticks in a row — which is what arms the re-poke below.
+const WATERMARK_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A hold this long is logged, once, rather than only graphed.
+const WATERMARK_WARN_AFTER_SECONDS: u64 = 30;
+
+/// Watch the event watermark for ever: export its lag, and wake every stream once
+/// a long hold ends (ADR-0028).
+///
+/// A row committed behind a transaction still running is held back, and a read
+/// waits only so long for it before serving what is safe. Nothing else would ever
+/// announce the row afterwards: its own poke was spent on the read that gave up,
+/// and the transaction that was holding it back may have written no event and so
+/// poke nobody. A `Resync` once the watermark passes it is that announcement.
+///
+/// Armed only by a hold that outlived a whole tick — the newest row of the last
+/// tick still past the watermark on this one — so the ordinary millisecond overlap
+/// of concurrent writes never wakes every stream on the replica. Every replica
+/// runs this and each `Resync` goes through the bus, so a release costs every
+/// stream one read per replica; releases are rare, and that is cheaper than a
+/// leader election for a watcher.
+pub(crate) async fn watch_watermark(
+    store: &notify_persistence_pg::PgStore,
+    bus: &dyn EventBus,
+    metrics: &dyn notify_ports::Metrics,
+) {
+    let mut tick = tokio::time::interval(WATERMARK_TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut previous_newest = None;
+    let mut armed = None;
+    let mut warned = false;
+
+    loop {
+        tick.tick().await;
+        let reading = match store.event_watermark().await {
+            Ok(reading) => reading,
+            Err(error) => {
+                tracing::warn!(?error, "could not read the event watermark");
+                continue;
+            }
+        };
+
+        let lag = reading.oldest_held_back.map_or(0, |at| {
+            u64::try_from((time::OffsetDateTime::now_utc() - at).whole_seconds()).unwrap_or(0)
+        });
+        metrics.event_watermark_lag(lag);
+        if lag >= WATERMARK_WARN_AFTER_SECONDS && !warned {
+            tracing::warn!(
+                lag_seconds = lag,
+                "a long-running transaction is holding event delivery back"
+            );
+            warned = true;
+        } else if lag == 0 && warned {
+            tracing::info!("event delivery is no longer held back");
+            warned = false;
+        }
+
+        if armed.is_some_and(|target| reading.watermark >= target) {
+            if let Err(error) = bus.publish(&Poke::Resync).await {
+                tracing::warn!(?error, "could not announce released events");
+            }
+            armed = None;
+        }
+        if armed.is_none()
+            && let Some(previous) = previous_newest
+            && reading.watermark < previous
+        {
+            armed = Some(previous);
+        }
+        previous_newest = Some(reading.newest);
     }
 }
 
@@ -130,6 +314,56 @@ mod tests {
             Some(poke(1)),
             "one LISTEN, every connection — not one connection per client"
         );
+    }
+
+    /// A bus whose first subscription ends, whose second panics, and whose third
+    /// stays up — the three things the pump has to survive.
+    struct Flaky {
+        subscriptions: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl EventBus for Flaky {
+        async fn publish(&self, _poke: &Poke) -> PortResult<()> {
+            Ok(())
+        }
+
+        #[allow(clippy::panic, reason = "the panic is what this double is for")]
+        async fn subscribe(&self) -> PortResult<BoxStream<'static, Poke>> {
+            use futures::StreamExt as _;
+
+            Ok(match self.subscriptions.fetch_add(1, Ordering::SeqCst) {
+                0 => futures::stream::iter([poke(1)]).boxed(),
+                1 => futures::stream::poll_fn(|_| panic!("the listener blew up")).boxed(),
+                _ => futures::stream::pending().boxed(),
+            })
+        }
+    }
+
+    #[actix_web::test]
+    async fn the_pump_resubscribes_after_its_subscription_ends_or_panics() {
+        let flaky = Arc::new(Flaky {
+            subscriptions: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (bus, pump) = SharedBus::start(flaky.clone()).await.unwrap();
+
+        // 250 ms after the end, 500 ms after the panic: well inside two seconds.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while flaky.subscriptions.load(Ordering::SeqCst) < 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pump stopped resubscribing"
+            );
+            actix_web::rt::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        actix_web::rt::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            bus.health().is_alive(),
+            "subscribed again, so /readyz must say so"
+        );
+        assert!(!pump.is_finished(), "a panic must not end the pump");
+        pump.abort();
     }
 
     #[actix_web::test]

@@ -60,6 +60,33 @@ impl AttachmentRegistry for PgStore {
             .collect()
     }
 
+    async fn forget_referenced(&self, limit: u32) -> PortResult<u64> {
+        // Once a revision names the id, the orphan sweep in `notifications.rs`
+        // owns the object's fate and this row answers nothing: `unreferenced`
+        // would re-check it on every pass, forever, for an attachment that is
+        // already accounted for. Same predicate as `unreferenced`, so both use
+        // `revisions_image_ref_idx`.
+        let deleted = sqlx::query(
+            "DELETE FROM attachment_presigns
+             WHERE id IN (
+                 SELECT p.id FROM attachment_presigns p
+                 WHERE EXISTS (
+                     SELECT 1 FROM revisions r
+                     WHERE r.content->'image'->>'kind' = 'attachment'
+                       AND r.content->'image'->>'ref' = p.id
+                 )
+                 ORDER BY p.requested_at
+                 LIMIT $1
+             )",
+        )
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("attachment_presign", error))?;
+
+        Ok(deleted.rows_affected())
+    }
+
     async fn forget(&self, ids: &[AttachmentId]) -> PortResult<u64> {
         if ids.is_empty() {
             // Skip the round trip on a quiet instance.

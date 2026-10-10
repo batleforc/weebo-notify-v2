@@ -102,6 +102,15 @@ impl Caller {
         }
     }
 
+    /// Refuse anything but an interactive session: devices, keys and service accounts are
+    /// managed by a person, never by a key or a CI token that could reroute or revoke them.
+    pub fn ensure_session(&self) -> Result<(), DomainError> {
+        if self.grant == Grant::Membership {
+            return Ok(());
+        }
+        Err(DomainError::SessionRequired)
+    }
+
     /// Refuse anyone without the platform role (§5.4): a 403, not a 404, since the
     /// console is not a secret.
     pub const fn ensure_platform_admin(&self) -> Result<(), DomainError> {
@@ -487,12 +496,9 @@ mod tests {
             platform_admin: false,
             expires_at: None,
         };
-        assert!(
-            authorizer
-                .readable_channels(&publish_only)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            authorizer.readable_channels(&publish_only).await.unwrap(),
+            [] as [notify_domain::ChannelId; 0]
         );
 
         // The same person through the UI reads what their membership says.

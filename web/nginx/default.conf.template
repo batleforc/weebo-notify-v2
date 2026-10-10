@@ -8,7 +8,7 @@
 # once the origins it names stopped being known at build time: `${WNK_CSP_HEADER}`
 # below is `web/src/lib/csp.ts`'s `contentSecurityPolicy()`, exactly as
 # `csp.spec.ts` pins its shape, resolved against this container's actual
-# environment by `docker-entrypoint.d/05-runtime-config.sh` before nginx starts.
+# environment by `docker-entrypoint.d/05-runtime-config.envsh` before nginx starts.
 # One policy, one emitter, which is the shape D22 spent two increments getting the
 # do-not-disturb rule to — a second copy here to keep in step with the first is
 # exactly what that pattern was for.
@@ -31,6 +31,9 @@ map $uri $wnk_cache_control {
     # application nobody can replace, which is how a PWA gets stuck on an old build.
     "~^/sw\.js$"                  "no-cache";
     "~^/manifest\.webmanifest$"   "no-cache";
+    # Rendered at every boot from the container's environment (ADR-0021): an
+    # `immutable` copy would pin a browser to the API origin of a past deployment.
+    "~^/env\.js$"                 "no-cache";
 }
 
 server {
@@ -64,7 +67,7 @@ server {
 
         # ── The whole policy, assembled at boot ──────────────────────────────
         # See this file's header comment — `${WNK_CSP_HEADER}` is set by
-        # `docker-entrypoint.d/05-runtime-config.sh`, not by the `WNK_`-filtered
+        # `docker-entrypoint.d/05-runtime-config.envsh`, not by the `WNK_`-filtered
         # envsubst pass that renders the rest of this file, because it needs a
         # second substitution pass of its own first.
         add_header Content-Security-Policy "${WNK_CSP_HEADER}" always;

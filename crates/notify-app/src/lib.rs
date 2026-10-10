@@ -32,15 +32,15 @@ pub use attachments::{
     is_allowed_attachment_type, normalised_content_type,
 };
 pub use attribution::Attribution;
-pub use auth::{Authenticate, Credential};
+pub use auth::{Authenticate, Credential, DEFAULT_GROUP_SNAPSHOT_TTL};
 pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{
     CreateChannel, DeleteChannel, ListChannels, ManageMembers, ReadChannel, UpdateChannel,
 };
 pub use closure::{CloseStale, ClosureReport};
-pub use devices::{EnrolDevice, ListDevices, RevokeDevice};
+pub use devices::{DEFAULT_MAX_DEVICES_PER_USER, EnrolDevice, ListDevices, RevokeDevice};
 pub use digest::{DigestReport, SendDndDigests};
-pub use fanout::Fanout;
+pub use fanout::{DrainFanout, Fanout};
 pub use federate::{ExchangeToken, LivePolicies};
 pub use interact::{
     ListInteractions, PostReceipt, ReadReceipts, RecordInteraction, SilenceNotification,
@@ -49,7 +49,7 @@ pub use keys::{
     CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, OsRngKeyGenerator, RevokeApiKey,
     SetApiKeyLimit,
 };
-pub use maintenance::{PurgeExpired, PurgeReport};
+pub use maintenance::{EVENT_RETENTION, PurgeExpired, PurgeLimits, PurgeReport, TOMBSTONE_GRACE};
 pub use platform::{
     BrowseAudit, ChannelCard, ChannelInventory, ListTrustPolicies, ReadReconciliation,
     Reconciliation, ReconciliationLog, SelfJoin, Trigger, TrustPolicyCard,

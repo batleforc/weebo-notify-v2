@@ -29,6 +29,7 @@ import {
   type PendingAuthorization,
   readClaims,
 } from "./pkce";
+import { announcePresence, anotherTabSignedIn } from "./presence";
 
 /** Registered in the IdP (§12.5). Desktop uses RFC 8252 loopback: no IdP registers `tauri://`. */
 export const redirectUri = isDesktop()
@@ -37,6 +38,9 @@ export const redirectUri = isDesktop()
 
 const PENDING_KEY = "weebo-notify:pending-auth";
 const REFRESH_KEY = "weebo-notify:refresh-token";
+
+/** How long sign-out waits for the device revocation before going ahead anyway. */
+const LOGOUT_PUSH_TIMEOUT_MS = 3_000;
 
 /** Refresh this long before expiry, so no in-flight request rides a dead token. */
 const REFRESH_MARGIN_MS = 60_000;
@@ -93,6 +97,12 @@ export const useSession = defineStore("session", () => {
   /** Desktop's sync mirror of the async OS vault, hydrated in `restore`. Every write also hits the vault. */
   const refreshToken = ref<string | null>(null);
 
+  // The shell has no browser-wide push to keep alive for anyone (`lib/push` is
+  // web-only), so it neither asks nor answers.
+  if (!isDesktop()) {
+    announcePresence(() => storedRefreshToken() !== null);
+  }
+
   if (rotations && !isDesktop()) {
     rotations.onmessage = (
       event: MessageEvent<{ from: string; to: string }>,
@@ -130,7 +140,21 @@ export const useSession = defineStore("session", () => {
     expiresAt.value = Date.now() + (tokens.expires_in ?? 900) * 1000;
     expired.value = false;
     if (tokens.id_token) {
-      claims.value = readClaims(tokens.id_token);
+      const read = readClaims(tokens.id_token);
+      claims.value = read;
+      if (read && !isDesktop()) {
+        const subject = read.sub;
+        // A device another person enrolled on this browser must not carry on
+        // under this one: their notifications would keep ringing here.
+        void import("@/lib/push")
+          .then((push) => push.claimFor(subject))
+          .catch((error: unknown) => {
+            console.error(
+              "weebo-notify: could not check the push owner",
+              error,
+            );
+          });
+      }
     }
     if (tokens.refresh_token) {
       persistRefreshToken(tokens.refresh_token);
@@ -160,7 +184,22 @@ export const useSession = defineStore("session", () => {
     sessionStorage.removeItem(REFRESH_KEY);
     sessionStorage.removeItem(PENDING_KEY);
     shareWithShell(null);
-    if (isDesktop()) {
+    // Drop the browser-wide push subscription only once no other tab is signed in
+    // (`./presence`); the push service's `410` then revokes the device server-side.
+    if (!isDesktop()) {
+      void anotherTabSignedIn()
+        .then(async (others) => {
+          if (!others) {
+            await (await import("@/lib/push")).dropLocalPush();
+          }
+        })
+        .catch((error: unknown) => {
+          console.error(
+            "weebo-notify: could not drop the push subscription",
+            error,
+          );
+        });
+    } else {
       void clearCredential().catch((error: unknown) => {
         console.error("weebo-notify: could not clear the credential", error);
       });
@@ -292,6 +331,11 @@ export const useSession = defineStore("session", () => {
     return accessToken.value;
   }
 
+  /** Whether a refresh token is held: a `null` from `bearer()` was transient, not the end. */
+  function canResume(): boolean {
+    return storedRefreshToken() !== null;
+  }
+
   /** Restore across a reload (and a restart on desktop). The only place the vault is read. */
   async function restore(): Promise<boolean> {
     if (accessToken.value) {
@@ -314,6 +358,26 @@ export const useSession = defineStore("session", () => {
 
   /** Sign out here, and at the provider when it offers a way to. */
   async function logout(): Promise<void> {
+    // Revoke the device while there is still a token to do it with. Best-effort
+    // and bounded: a slow or unreachable API must not keep someone signed in.
+    await Promise.race([
+      import("@/lib/push")
+        .then((push) => push.disable())
+        .catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, LOGOUT_PUSH_TIMEOUT_MS)),
+    ]);
+    // The local half regardless of how the race above ended: a revocation the
+    // API never answered must still not leave this browser subscribed. Imported
+    // lazily: it pulls in the generated API client, which this store must not
+    // depend on (`api/client.ts` depends on it).
+    void import("@/lib/push")
+      .then((push) => push.dropLocalPush())
+      .catch((error: unknown) => {
+        console.error(
+          "weebo-notify: could not drop the push subscription",
+          error,
+        );
+      });
     forget();
     const metadata = await discover().catch(() => null);
     if (metadata?.end_session_endpoint) {
@@ -347,6 +411,7 @@ export const useSession = defineStore("session", () => {
     groups,
     pendingAuthorizeUrl,
     bearer,
+    canResume,
     completeLogin,
     login,
     logout,

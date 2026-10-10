@@ -35,13 +35,20 @@
 
 /// <reference lib="webworker" />
 
-const CACHE = "weebo-notify-shell-v1";
+/**
+ * The build this worker shipped with. `"dev"` here; `vite build` rewrites the
+ * literal in `dist/sw.js` with a hash of the page it built (`swVersion` in
+ * `vite.config.ts`), so every deploy is a new cache name — and, as a side effect,
+ * a byte-different worker the browser installs.
+ */
+const VERSION = "dev";
+const CACHE = `weebo-notify-shell-${VERSION}`;
 
 /**
  * How many responses the cache keeps before dropping the least recently fetched.
  *
- * The name above never changes between deploys, and Vite's asset names do — so
- * without a bound every build's hashed chunks would pile up under it for ever.
+ * The name above changes per deploy, but within one a long-lived tab still
+ * fetches lazily-loaded chunks into it — so the bound stays.
  * `put` re-appends an entry it replaces, so the oldest keys are the ones no
  * current page has asked for in the longest time.
  */
@@ -200,10 +207,19 @@ self.addEventListener("push", (event) => {
 });
 
 /**
- * Give it to a visible tab, and say whether one took it.
+ * How long a visible tab has to confirm it raised the push itself. Short: past it
+ * the OS notification shows anyway, and a late duplicate beats a lost one.
+ */
+const ACK_TIMEOUT_MS = 1_000;
+
+/**
+ * Give it to a visible tab, and say whether one confirmed it took it.
  *
  * "Visible" and not merely "open": a background tab shows nothing, so treating it
- * as having handled the push would swallow the notification entirely.
+ * as having handled the push would swallow the notification entirely. And
+ * "confirmed" and not merely "sent": a visible tab on `/login`, or one still
+ * loading, has no listener — the toast only exists where the app shell is mounted
+ * (`views/AppLayout.vue`), which answers on the port.
  */
 function handedToAVisibleTab(envelope) {
   return self.clients
@@ -212,14 +228,24 @@ function handedToAVisibleTab(envelope) {
       const visible = windows.filter(
         (client) => client.visibilityState === "visible",
       );
-      if (visible.length === 0) {
-        return false;
-      }
-      for (const client of visible) {
-        client.postMessage({ type: "push", envelope });
-      }
-      return true;
-    });
+      return Promise.all(visible.map((client) => offer(client, envelope)));
+    })
+    .then((answers) => answers.some(Boolean));
+}
+
+/** Post the push to one tab, resolving whether it acknowledged in time. */
+function offer(client, envelope) {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const done = (handled) => {
+      clearTimeout(timer);
+      channel.port1.close();
+      resolve(handled);
+    };
+    const timer = setTimeout(() => done(false), ACK_TIMEOUT_MS);
+    channel.port1.onmessage = (event) => done(event.data === true);
+    client.postMessage({ type: "push", envelope }, [channel.port2]);
+  });
 }
 
 /** Put it on the lock screen. */
@@ -318,16 +344,21 @@ self.addEventListener("notificationclick", (event) => {
       .then((windows) => {
         for (const client of windows) {
           if (new URL(client.url).origin === target.origin) {
-            return client.focus().then((focused) =>
-              // `navigate` is not available on every client handle; falling back
-              // to a message lets the app route itself.
-              focused.navigate
-                ? focused.navigate(target.href)
-                : focused.postMessage({
-                    type: "navigate",
-                    url: target.pathname,
-                  }),
-            );
+            let focused = client;
+            const message = () =>
+              focused.postMessage({ type: "navigate", url: target.pathname });
+            return client
+              .focus()
+              .then((handle) => {
+                focused = handle ?? client;
+                // `navigate` is not available on every client handle, and rejects
+                // on one this worker does not control (`includeUncontrolled`
+                // above); either way a message lets the app route itself.
+                return focused.navigate
+                  ? focused.navigate(target.href).catch(message)
+                  : message();
+              })
+              .catch(() => self.clients.openWindow(target.href));
           }
         }
         return self.clients.openWindow(target.href);

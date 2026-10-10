@@ -28,6 +28,7 @@ impl ReplayGuard for PgStore {
 
     async fn prune(&self, now: OffsetDateTime) -> PortResult<u64> {
         // An id past its token's expiry protects nothing: the replay fails on expiry.
+        // `expires_at` already includes the verifier's leeway.
         let deleted = sqlx::query("DELETE FROM federation_replay WHERE expires_at <= $1")
             .bind(now)
             .execute(self.pool())

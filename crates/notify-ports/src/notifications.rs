@@ -8,6 +8,7 @@ use notify_domain::{
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
+use crate::outbox::AfterWrite;
 use crate::pagination::{Page, PageRequest};
 
 /// What one channel's unread badge shows (design §7.3, §10.4).
@@ -93,13 +94,36 @@ pub trait NotificationRepository: Send + Sync {
     /// Store a new notification and its first revision with its event row.
     /// [`crate::error::PortError::Conflict`] if a concurrent publisher won the
     /// `external_id` race; the caller re-reads and revises (T16).
-    async fn insert(&self, notification: &Notification, revision: &Revision) -> PortResult<Cursor>;
+    async fn insert(&self, notification: &Notification, revision: &Revision) -> PortResult<Cursor> {
+        self.insert_with(notification, revision, &AfterWrite::default())
+            .await
+    }
+
+    /// [`Self::insert`], committing `after` in the same transaction (ADR-0025).
+    async fn insert_with(
+        &self,
+        notification: &Notification,
+        revision: &Revision,
+        after: &AfterWrite,
+    ) -> PortResult<Cursor>;
 
     /// Append a revision and update the head, persisting the domain's `seq` decision.
     async fn append_revision(
         &self,
         notification: &Notification,
         revision: &Revision,
+    ) -> PortResult<Cursor> {
+        self.append_revision_with(notification, revision, &AfterWrite::default())
+            .await
+    }
+
+    /// [`Self::append_revision`], committing `after` in the same transaction
+    /// (ADR-0025).
+    async fn append_revision_with(
+        &self,
+        notification: &Notification,
+        revision: &Revision,
+        after: &AfterWrite,
     ) -> PortResult<Cursor>;
 
     /// List an inbox.

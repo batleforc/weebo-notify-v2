@@ -32,6 +32,7 @@ use crate::notifications::{
     ClosedNotification, ExpiredNotification, InboxQuery, NotificationRepository, SearchQuery,
     UnreadCount,
 };
+use crate::outbox::{AfterWrite, FanoutOutbox, PendingFanout};
 use crate::pagination::{Page, PageRequest};
 use crate::preferences::{DeferredTally, PreferenceRepository};
 use crate::push::{PushDispatcher, PushMessage, PushOutcome};
@@ -96,11 +97,26 @@ struct State {
     pushes: Vec<(DeviceId, PushMessage)>,
     push_outcome: Option<PushOutcome>,
     sink_queue: Vec<QueuedDelivery>,
+    /// Pending device fan-outs (ADR-0025).
+    fanout_outbox: Vec<OutboxRow>,
+    /// The `(notification, seq, device)` pushes a fan-out has made (ADR-0025).
+    fanout_deliveries: Vec<(NotificationId, u32, DeviceId)>,
+    /// The `(user, notification, seq)` keys a do-not-disturb tally has counted.
+    deferral_keys: Vec<(UserId, NotificationId, u32)>,
     dead_letters: Vec<DeadLetter>,
     /// The bodies behind the dead letters, so a requeue puts back something sendable.
     buried: Vec<SinkDelivery>,
     /// The groups a principal's token last carried, one row per principal.
     group_snapshots: Vec<(String, Vec<String>, OffsetDateTime)>,
+}
+
+/// One fan-out outbox row, as the Postgres table holds it.
+#[derive(Debug)]
+struct OutboxRow {
+    pending: PendingFanout,
+    queued_at: OffsetDateTime,
+    leased_until: Option<OffsetDateTime>,
+    dead: bool,
 }
 
 impl State {
@@ -156,6 +172,56 @@ impl State {
 
     fn is_live(notification: &Notification, now: OffsetDateTime) -> bool {
         !notification.is_gone(now)
+    }
+
+    /// Commit what a write owes alongside it, the way the Postgres adapter does in
+    /// the write's own transaction (ADR-0025). Encodes the reply before touching
+    /// anything, so a failure leaves nothing half-recorded.
+    fn record_after(
+        &mut self,
+        notification: &Notification,
+        revision: &Revision,
+        cursor: Cursor,
+        after: &AfterWrite,
+    ) -> PortResult<()> {
+        let reply = after
+            .reply
+            .as_ref()
+            .map(|reply| (reply.encode)(cursor).map(|encoded| (reply, encoded)))
+            .transpose()?;
+
+        for delivery in after.deliveries(notification, revision, cursor) {
+            self.sink_queue.push(QueuedDelivery {
+                delivery,
+                due_at: revision.received_at,
+                leased_until: None,
+            });
+        }
+        if after.fanout {
+            self.fanout_outbox.push(OutboxRow {
+                pending: PendingFanout {
+                    cursor,
+                    notification: notification.id,
+                    thumbnail: after.thumbnail,
+                    attempts: 0,
+                },
+                queued_at: revision.received_at,
+                leased_until: None,
+                dead: false,
+            });
+        }
+        if let Some((reply, encoded)) = reply
+            && let Some(reservation) = self.reservations.iter_mut().find(|candidate| {
+                candidate.principal_ref == reply.principal_ref
+                    && candidate.key == reply.key
+                    && candidate.claimed_at == reply.claimed_at
+                    && candidate.response.is_none()
+            })
+        {
+            reservation.response = Some(encoded);
+            reservation.expires_at = Some(reply.expires_at);
+        }
+        Ok(())
     }
 }
 
@@ -318,7 +384,12 @@ impl NotificationRepository for InMemory {
             .cloned())
     }
 
-    async fn insert(&self, notification: &Notification, revision: &Revision) -> PortResult<Cursor> {
+    async fn insert_with(
+        &self,
+        notification: &Notification,
+        revision: &Revision,
+        after: &AfterWrite,
+    ) -> PortResult<Cursor> {
         let mut state = self.state();
         let now = self.now();
 
@@ -348,6 +419,10 @@ impl NotificationRepository for InMemory {
             });
         }
 
+        // Recorded first against the cursor the append is about to take, so a
+        // reply that cannot be encoded fails the write before anything changed.
+        let next = Cursor::from_sequence(state.sequence + 1);
+        state.record_after(notification, revision, next, after)?;
         let cursor = state.append(
             Audience::Channel {
                 id: notification.channel.clone(),
@@ -366,23 +441,32 @@ impl NotificationRepository for InMemory {
         Ok(cursor)
     }
 
-    async fn append_revision(
+    async fn append_revision_with(
         &self,
         notification: &Notification,
         revision: &Revision,
+        after: &AfterWrite,
     ) -> PortResult<Cursor> {
         let mut state = self.state();
         let now = self.now();
 
         // The same optimistic check the Postgres adapter makes under its row lock.
-        if let Some(stored) = state.notification(notification.id)
-            && (stored.value.last_seq.saturating_add(1) != revision.seq
-                || !State::is_live(&stored.value, now))
+        let Some(stored) = state.notification(notification.id) else {
+            return Err(PortError::corrupt(
+                "notification",
+                format!("{} has no stored row to revise", notification.id),
+            ));
+        };
+        if stored.value.last_seq.saturating_add(1) != revision.seq
+            || !State::is_live(&stored.value, now)
         {
             return Err(PortError::Conflict {
                 what: "notification.revision",
             });
         }
+
+        let next = Cursor::from_sequence(state.sequence + 1);
+        state.record_after(notification, revision, next, after)?;
 
         let cursor = state.append(
             Audience::Channel {
@@ -574,6 +658,9 @@ impl NotificationRepository for InMemory {
             row.value.delete(at);
             row.cursor = cursor;
         }
+        state
+            .fanout_outbox
+            .retain(|row| row.pending.notification != id);
         Ok(Some(cursor))
     }
 
@@ -627,6 +714,9 @@ impl NotificationRepository for InMemory {
                 row.value.delete(now);
                 row.cursor = cursor;
             }
+            state
+                .fanout_outbox
+                .retain(|row| row.pending.notification != id);
             claimed.push(ExpiredNotification {
                 id,
                 channel,
@@ -787,6 +877,26 @@ impl crate::AttachmentRegistry for InMemory {
             .filter(|id| !referenced.contains(id))
             .take(limit as usize)
             .collect())
+    }
+
+    async fn forget_referenced(&self, limit: u32) -> PortResult<u64> {
+        let mut state = self.state();
+        let referenced: Vec<AttachmentId> = state
+            .revisions
+            .iter()
+            .filter_map(|row| attachment_of(&row.value))
+            .collect();
+        let mut budget = limit as usize;
+        let before = state.presigns.len();
+        state.presigns.retain(|(id, _, _)| {
+            if budget > 0 && referenced.contains(id) {
+                budget -= 1;
+                false
+            } else {
+                true
+            }
+        });
+        Ok((before - state.presigns.len()) as u64)
     }
 
     async fn forget(&self, ids: &[AttachmentId]) -> PortResult<u64> {
@@ -1037,6 +1147,21 @@ impl DeviceRepository for InMemory {
         Ok(())
     }
 
+    async fn enrol_capped(&self, device: &Device, max: u32) -> PortResult<bool> {
+        // Count and push under the one state lock, which is what makes it atomic.
+        let mut state = self.state();
+        let active = state
+            .devices
+            .iter()
+            .filter(|held| held.owner == device.owner && held.is_active())
+            .count();
+        if active >= max as usize {
+            return Ok(false);
+        }
+        state.devices.push(device.clone());
+        Ok(true)
+    }
+
     async fn revoke(&self, id: DeviceId, at: OffsetDateTime) -> PortResult<bool> {
         let mut state = self.state();
         match state.devices.iter_mut().find(|device| device.id == id) {
@@ -1283,16 +1408,29 @@ impl PreferenceRepository for InMemory {
         state.dnd.push(dnd.clone());
         // Redefining the quiet period clears the held-back tally.
         state.deferred.retain(|(user, ..)| *user != dnd.user);
+        state.deferral_keys.retain(|(user, ..)| *user != dnd.user);
 
         Ok(state.announce_preference(dnd.user, now))
     }
 
-    async fn defer(&self, user: UserId, status: Status) -> PortResult<()> {
+    async fn defer(
+        &self,
+        user: UserId,
+        notification: NotificationId,
+        seq: u32,
+        status: Status,
+    ) -> PortResult<()> {
         let mut state = self.state();
         // No preference means nothing could have muted them, so nothing to count.
         if !state.dnd.iter().any(|dnd| dnd.user == user) {
             return Ok(());
         }
+        // Counted once per revision, however many devices or retries ask.
+        let key = (user, notification, seq);
+        if state.deferral_keys.contains(&key) {
+            return Ok(());
+        }
+        state.deferral_keys.push(key);
 
         let failure = u32::from(status == Status::Failure);
         match state.deferred.iter_mut().find(|(owner, ..)| *owner == user) {
@@ -1341,11 +1479,17 @@ impl PreferenceRepository for InMemory {
     }
 
     async fn clear_deferred(&self, user: UserId, total: u32, failures: u32) -> PortResult<()> {
-        for (owner, held, failed) in &mut self.state().deferred {
+        let mut state = self.state();
+        let mut emptied = true;
+        for (owner, held, failed) in &mut state.deferred {
             if *owner == user {
                 *held = held.saturating_sub(total);
                 *failed = failed.saturating_sub(failures);
+                emptied &= *held == 0;
             }
+        }
+        if emptied {
+            state.deferral_keys.retain(|(owner, ..)| *owner != user);
         }
         Ok(())
     }
@@ -1373,13 +1517,28 @@ impl UserRepository for InMemory {
             .cloned())
     }
 
-    async fn find_by_email(&self, email: &str) -> PortResult<Option<User>> {
+    async fn find_by_email(&self, email: &str) -> PortResult<crate::EmailMatch> {
+        // Case-insensitive, like the Postgres adapter.
+        let wanted = email.to_lowercase();
+        let state = self.state();
+        let mut matches = state.users.iter().filter(|user| {
+            user.email
+                .as_deref()
+                .is_some_and(|stored| stored.to_lowercase() == wanted)
+        });
+        Ok(match (matches.next(), matches.next()) {
+            (None, _) => crate::EmailMatch::Nobody,
+            (Some(user), None) => crate::EmailMatch::One(Box::new(user.clone())),
+            (Some(_), Some(_)) => crate::EmailMatch::Ambiguous,
+        })
+    }
+
+    async fn is_avatar(&self, avatar: AttachmentId) -> PortResult<bool> {
         Ok(self
             .state()
             .users
             .iter()
-            .find(|user| user.email.as_deref() == Some(email))
-            .cloned())
+            .any(|user| user.profile.avatar == Some(avatar)))
     }
 
     async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>> {
@@ -1772,6 +1931,140 @@ impl PushDispatcher for InMemory {
     }
 }
 
+// --- Fan-out outbox --------------------------------------------------------
+
+#[async_trait::async_trait]
+impl FanoutOutbox for InMemory {
+    async fn claim_fanout(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+        lease_until: OffsetDateTime,
+        max_attempts: u32,
+        too_old: OffsetDateTime,
+    ) -> PortResult<Vec<PendingFanout>> {
+        let mut state = self.state();
+        let mut claimed = Vec::new();
+        for row in &mut state.fanout_outbox {
+            if row.dead || row.leased_until.is_some_and(|until| until > now) {
+                continue;
+            }
+            if row.pending.attempts >= max_attempts || row.queued_at < too_old {
+                row.dead = true;
+                continue;
+            }
+            if claimed.len() >= limit as usize {
+                continue;
+            }
+            row.leased_until = Some(lease_until);
+            row.pending.attempts += 1;
+            claimed.push(row.pending.clone());
+        }
+        Ok(claimed)
+    }
+
+    async fn complete_fanout(&self, cursor: Cursor) -> PortResult<()> {
+        let mut state = self.state();
+        let Some(done) = state
+            .fanout_outbox
+            .iter()
+            .position(|row| row.pending.cursor == cursor)
+        else {
+            return Ok(());
+        };
+        let notification = state.fanout_outbox.remove(done).pending.notification;
+        if !state
+            .fanout_outbox
+            .iter()
+            .any(|row| row.pending.notification == notification)
+        {
+            state
+                .fanout_deliveries
+                .retain(|(id, _, _)| *id != notification);
+        }
+        Ok(())
+    }
+
+    async fn extend_fanout(
+        &self,
+        cursors: &[Cursor],
+        lease_until: OffsetDateTime,
+    ) -> PortResult<()> {
+        for row in &mut self.state().fanout_outbox {
+            if !row.dead && cursors.contains(&row.pending.cursor) {
+                row.leased_until = Some(lease_until);
+            }
+        }
+        Ok(())
+    }
+
+    async fn delivered_devices(
+        &self,
+        notification: NotificationId,
+        seq: u32,
+    ) -> PortResult<Vec<DeviceId>> {
+        Ok(self
+            .state()
+            .fanout_deliveries
+            .iter()
+            .filter(|(id, at, _)| *id == notification && *at == seq)
+            .map(|(_, _, device)| *device)
+            .collect())
+    }
+
+    async fn record_delivery(
+        &self,
+        notification: NotificationId,
+        seq: u32,
+        device: DeviceId,
+    ) -> PortResult<()> {
+        let mut state = self.state();
+        let key = (notification, seq, device);
+        if !state.fanout_deliveries.contains(&key) {
+            state.fanout_deliveries.push(key);
+        }
+        Ok(())
+    }
+
+    async fn retry_fanout(
+        &self,
+        cursor: Cursor,
+        _error: &str,
+        retry_at: OffsetDateTime,
+    ) -> PortResult<()> {
+        for row in &mut self.state().fanout_outbox {
+            if row.pending.cursor == cursor {
+                row.leased_until = Some(retry_at);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl InMemory {
+    /// The fan-out rows still owed, dead ones excluded — what a test checks a
+    /// delete dropped or a drain finished.
+    #[must_use]
+    pub fn pending_fanout(&self) -> Vec<PendingFanout> {
+        self.state()
+            .fanout_outbox
+            .iter()
+            .filter(|row| !row.dead)
+            .map(|row| row.pending.clone())
+            .collect()
+    }
+
+    /// How many fan-out rows have been retired as dead.
+    #[must_use]
+    pub fn dead_fanout(&self) -> usize {
+        self.state()
+            .fanout_outbox
+            .iter()
+            .filter(|row| row.dead)
+            .count()
+    }
+}
+
 // --- Sink queue ------------------------------------------------------------
 
 #[async_trait::async_trait]
@@ -1902,6 +2195,39 @@ impl SinkQueue for InMemory {
         }
         Ok(depth)
     }
+
+    async fn prune_dead_letters(&self, older_than: OffsetDateTime, limit: u32) -> PortResult<u64> {
+        let mut state = self.state();
+        let mut pruned = 0_u64;
+        state.dead_letters.retain(|letter| {
+            let goes = letter.dead_at < older_than && pruned < u64::from(limit);
+            pruned += u64::from(goes);
+            !goes
+        });
+        Ok(pruned)
+    }
+
+    async fn rekey_sinks(
+        &self,
+        rekey: &(dyn for<'s> Fn(&'s str) -> Option<notify_domain::SinkId> + Sync),
+    ) -> PortResult<u64> {
+        let mut guard = self.state();
+        // Through a plain reference, so the two tables borrow disjointly.
+        let state = &mut *guard;
+        let mut moved = 0_u64;
+        let sinks = state
+            .sink_queue
+            .iter_mut()
+            .map(|queued| &mut queued.delivery.sink)
+            .chain(state.dead_letters.iter_mut().map(|letter| &mut letter.sink));
+        for sink in sinks {
+            if let Some(renamed) = rekey(sink.as_str()).filter(|renamed| renamed != sink) {
+                *sink = renamed;
+                moved += 1;
+            }
+        }
+        Ok(moved)
+    }
 }
 
 // --- What GitOps last applied (§11, §13) -----------------------------------
@@ -1983,6 +2309,48 @@ impl AuditLog for InMemory {
         }
 
         Ok(paginate(&matched, query.page.effective_limit()))
+    }
+
+    async fn purge_older_than(&self, cutoff: OffsetDateTime, batch: u32) -> PortResult<u64> {
+        // The same floor `wnk_audit_purge` holds against the wall clock, so a use
+        // case that would be refused by Postgres is refused here too.
+        if cutoff > OffsetDateTime::now_utc() - crate::AUDIT_RETENTION_FLOOR {
+            return Err(PortError::unavailable(
+                "audit",
+                std::io::Error::other("cutoff is inside the 90-day floor (ADR-0027)"),
+            ));
+        }
+
+        let mut state = self.state();
+        let mut old: Vec<Cursor> = state
+            .audit
+            .iter()
+            .filter(|row| row.value.at < cutoff)
+            .map(|row| row.cursor)
+            .collect();
+        old.sort_unstable();
+        old.truncate(batch as usize);
+        state.audit.retain(|row| !old.contains(&row.cursor));
+
+        let purged = old.len() as u64;
+        if purged > 0 {
+            let cursor = state.next_cursor();
+            state.audit.push(Row {
+                value: AuditEntry {
+                    actor: crate::AuditActor::configuration(),
+                    action: crate::actions::AUDIT_PURGED,
+                    target: None,
+                    channel: None,
+                    detail: Some(serde_json::json!({
+                        "purged_entries": purged,
+                        "cutoff": cutoff.unix_timestamp(),
+                    })),
+                    at: OffsetDateTime::now_utc(),
+                },
+                cursor,
+            });
+        }
+        Ok(purged)
     }
 }
 
@@ -2142,7 +2510,7 @@ mod tests {
         let page = EventStore::sync(&store, alice_id, &sync_query(None))
             .await
             .unwrap();
-        assert!(page.events.is_empty());
+        assert_eq!(page.events, []);
     }
 
     // --- T8 · Compaction --------------------------------------------------
@@ -2329,7 +2697,7 @@ mod tests {
             ),
             "somebody has it on screen and needs to be told it is gone"
         );
-        assert!(page.expired.is_empty());
+        assert_eq!(page.expired, []);
     }
 
     // --- T16 · Idempotency ------------------------------------------------
@@ -3178,12 +3546,7 @@ mod tests {
                 .unwrap(),
             "the second requeue has nothing to put back"
         );
-        assert!(
-            SinkQueue::dead_letters(&store, None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(SinkQueue::dead_letters(&store, None).await.unwrap(), []);
         assert_eq!(
             SinkQueue::claim_due(&store, now(), 10, lease)
                 .await

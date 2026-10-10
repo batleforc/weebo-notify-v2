@@ -85,11 +85,27 @@ tasks:
         charts/weebo-notify
 
   image:
-    desc: "Scan the built server and web images for CVEs with trivy (needs built images and an engine)."
-    # Not in `audit:default`: it needs built images; the release workflow runs it.
+    desc: "Scan the built server and web images for CVEs (trivy) — needs them built and a container engine, or SERVER_REF/WEB_REF pointing at a registry"
+    # Not in `audit:default`: it needs built images; the release workflow runs it. SERVER_REF/WEB_REF
+    # take a full `repo@sha256:…` (CI scans the digest before tagging it); given one, every platform
+    # in PLATFORMS is scanned, since `trivy image` on an index only scans the host's.
     vars:
+      PLATFORMS: '{{.PLATFORMS | default (and (or .SERVER_REF .WEB_REF) "linux/amd64 linux/arm64")}}'
       IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
       IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'
+      SERVER_REF: '{{.SERVER_REF | default (print .IMAGE_REPO ":" .IMAGE_TAG)}}'
+      WEB_REF: '{{.WEB_REF | default (print .IMAGE_REPO "-web:" .IMAGE_TAG)}}'
     cmds:
-      - trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed {{.IMAGE_REPO}}:{{.IMAGE_TAG}}
-      - trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed {{.IMAGE_REPO}}-web:{{.IMAGE_TAG}}
+      - cmd: |
+          set -eu
+          for ref in "{{.SERVER_REF}}" "{{.WEB_REF}}"; do
+            if [ -z "{{.PLATFORMS}}" ]; then
+              echo "==> $ref"
+              trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$ref"
+              continue
+            fi
+            for platform in {{.PLATFORMS}}; do
+              echo "==> $ref ($platform)"
+              trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --platform "$platform" "$ref"
+            done
+          done

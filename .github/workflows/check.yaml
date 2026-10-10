@@ -20,6 +20,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yaml replays this on the tagged commit (lint, the chart, the
+  # production build, the whole suite with coverage).
+  workflow_call:
 
 concurrency:
   # A newer push supersedes an in-flight run on the same branch.

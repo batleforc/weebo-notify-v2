@@ -171,12 +171,13 @@ pub fn check_push_endpoint(endpoint: &Url) -> Result<()> {
 }
 
 /// Whether an address is publicly routable (not loopback, private, link-local, CGNAT,
-/// documentation, multicast, reserved…); IPv4-mapped IPv6 is judged as IPv4.
+/// documentation, multicast, reserved… per the IANA special-purpose registries), nor an
+/// IPv6 prefix that embeds or tunnels IPv4 (NAT64, 6to4, Teredo); IPv4-mapped IPv6 is judged as IPv4.
 #[must_use]
 pub fn is_public_address(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
+            let [a, b, c, _] = v4.octets();
             !(v4.is_private()
                 || v4.is_loopback()
                 || v4.is_link_local()
@@ -187,19 +188,49 @@ pub fn is_public_address(ip: IpAddr) -> bool {
                 || a == 0
                 || (a == 100 && (64..128).contains(&b))
                 || (a == 198 && (b == 18 || b == 19))
+                // IETF protocol assignments (192.0.0.0/24) and the deprecated
+                // 6to4 relay anycast (192.88.99.0/24).
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 88 && c == 99)
                 || a >= 240)
         }
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_public_address(IpAddr::V4(v4));
             }
-            let [first, second, ..] = v6.segments();
+            let segments = v6.segments();
+            let [first, second, ..] = segments;
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
+                // Unique-local (fc00::/7), link-local (fe80::/10) and the
+                // deprecated site-local (fec0::/10).
                 || (first & 0xfe00) == 0xfc00
                 || (first & 0xffc0) == 0xfe80
-                || (first == 0x2001 && second == 0x0db8))
+                || (first & 0xffc0) == 0xfec0
+                // Documentation: 2001:db8::/32 and 3fff::/20.
+                || (first == 0x2001 && second == 0x0db8)
+                || (first & 0xfff0) == 0x3ff0
+                // Discard-only (100::/64).
+                || segments[..4] == [0x0100, 0, 0, 0]
+                // SRv6 segment identifiers (5f00::/16), never routed publicly.
+                || first == 0x5f00
+                // IETF protocol assignments (2001::/23): Teredo, benchmarking,
+                // ORCHID and friends. No push service lives in any of them.
+                || (first == 0x2001 && second < 0x0200)
+                // IPv4-compatible (::a.b.c.d, ::/96) and IPv4-translated
+                // (::ffff:0:a.b.c.d): both embed an IPv4 address that a stack or
+                // a translator may still deliver to.
+                || segments[..6] == [0; 6]
+                || segments[..6] == [0, 0, 0, 0, 0xffff, 0]
+                // Prefixes that translate or tunnel to an IPv4 address: a gateway
+                // on the path would carry the request to whatever IPv4 is embedded,
+                // private ones included. Refused whole rather than judged by the
+                // embedded address — no push service lives behind one.
+                // NAT64 well-known (64:ff9b::/96) and local-use (64:ff9b:1::/48).
+                || (first == 0x0064 && second == 0xff9b)
+                // 6to4 (2002::/16). Teredo (2001::/32) is in 2001::/23 above.
+                || first == 0x2002)
         }
     }
 }
@@ -477,6 +508,12 @@ mod tests {
             "https://[fd00::1]/x",
             "https://[fe80::1]/x",
             "https://[::ffff:10.0.0.1]/x",
+            // IPv4 reached through a translator or a tunnel: NAT64 (well-known
+            // and local-use), 6to4 wrapping 10.0.0.1, Teredo.
+            "https://[64:ff9b::a00:1]/x",
+            "https://[64:ff9b:1::a00:1]/x",
+            "https://[2002:a00:1::1]/x",
+            "https://[2001:0:4136:e378::1]/x",
             "file:///etc/passwd",
         ] {
             assert!(
@@ -489,6 +526,48 @@ mod tests {
             endpoint: Url::parse("https://169.254.169.254/").unwrap(),
         };
         assert!(enrol(internal, Some(key())).is_err());
+    }
+
+    #[test]
+    fn every_iana_special_purpose_range_is_refused() {
+        for special in [
+            "192.0.0.8",
+            "192.88.99.1",
+            "198.18.0.1",
+            "198.19.255.255",
+            "192.0.2.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "224.0.0.1",
+            "::a00:1",
+            "::8.8.8.8",
+            "::ffff:0:a00:1",
+            "fec0::1",
+            "100::1",
+            "2001:2::1",
+            "2001:10::1",
+            "2001:db8::1",
+            "3fff::1",
+            "5f00::1",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+        ] {
+            let ip: IpAddr = special.parse().unwrap();
+            assert!(!is_public_address(ip), "{special}");
+        }
+        for public in [
+            "8.8.8.8",
+            "192.0.1.1",
+            "192.88.98.1",
+            "2606:4700::1111",
+            "2001:4860::8888",
+        ] {
+            let ip: IpAddr = public.parse().unwrap();
+            assert!(is_public_address(ip), "{public}");
+        }
     }
 
     #[test]

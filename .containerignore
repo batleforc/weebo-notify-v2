@@ -1,3 +1,8 @@
+# Docker BuildKit reads `.dockerignore` and never this file (podman/buildah read
+# both), so `.dockerignore` beside it is an identical copy — a copy rather than a
+# symlink because not every builder follows one. `task lint:ignore-files` (part
+# of `lint:check`, so CI) fails the moment the two drift.
+#
 # What never belongs in a build context (design §14.4, D17).
 #
 # The first block is the one that matters: `dev/secrets/` holds the VAPID and

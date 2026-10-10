@@ -33,3 +33,52 @@ tasks:
     # No `--build-arg`: origin, issuer and client id are read at boot (ADR-0021).
     cmds:
       - "{{.ENGINE}} build -f web/Containerfile -t {{.IMAGE_REPO}}-web:{{.IMAGE_TAG}} web"
+
+  web:image:smoke:
+    desc: "Build the web image, boot it with test env, and check env.js and the CSP header render (needs a container engine)"
+    # The entrypoint hook that renders both was once silently skipped (wrong
+    # suffix/mode) and nothing failed: the image booted and served an empty CSP and
+    # the bundle's localhost env.js. Only a running container shows that.
+    vars:
+      NAME: wnk-web-smoke
+      PORT: '{{.PORT | default "18080"}}'
+    cmds:
+      - task: web:image
+      - defer: "{{.ENGINE}} rm -f {{.NAME}} >/dev/null 2>&1 || true"
+      - >-
+        {{.ENGINE}} run -d --rm --name {{.NAME}} -p 127.0.0.1:{{.PORT}}:8080
+        -e WNK_API_BASE_URL=https://api.smoke.test
+        -e WNK_OIDC_ISSUER=https://idp.smoke.test
+        -e WNK_OIDC_CLIENT_ID=smoke-client
+        -e WNK_ATTACHMENT_ORIGIN=https://files.smoke.test
+        {{.IMAGE_REPO}}-web:{{.IMAGE_TAG}}
+      - cmd: |
+          set -eu
+          base=http://127.0.0.1:{{.PORT}}
+          for _ in $(seq 1 30); do curl -fsS "$base/healthz" >/dev/null 2>&1 && break; sleep 1; done
+          env_js=$(curl -fsS "$base/env.js")
+          echo "$env_js" | grep -q '"https://api.smoke.test"' || { echo "env.js not rendered:"; echo "$env_js"; exit 1; }
+          echo "$env_js" | grep -q 'smoke-client' || { echo "env.js missing client id"; exit 1; }
+          headers=$(curl -fsSI "$base/")
+          csp=$(echo "$headers" | grep -i '^content-security-policy:' || true)
+          echo "$csp" | grep -q "connect-src 'self' https://api.smoke.test https://idp.smoke.test" \
+            || { echo "CSP header not rendered: $csp"; exit 1; }
+          echo "$csp" | grep -q 'WNK_' && { echo "CSP header has unresolved placeholders: $csp"; exit 1; }
+          curl -fsSI "$base/env.js" | grep -qi '^cache-control: no-cache' || { echo "env.js is cacheable"; exit 1; }
+          # The other half: a value that would inject into env.js or the CSP must
+          # stop the container, not boot it. `timeout` bounds the case where the
+          # validation regressed and nginx starts serving (exit 124 — a failure).
+          good='-e WNK_API_BASE_URL=https://api.smoke.test -e WNK_OIDC_ISSUER=https://idp.smoke.test -e WNK_OIDC_CLIENT_ID=smoke-client'
+          for bad in 'WNK_API_BASE_URL=https://api.smoke.test";alert(1);"' \
+                     'WNK_OIDC_ISSUER=https://idp.smoke.test; script-src *' \
+                     "WNK_OIDC_CLIENT_ID=smoke'client" \
+                     'WNK_ATTACHMENT_ORIGIN=https://files.smoke.test"' \
+                     'WNK_API_BASE_URL='; do
+            rc=0
+            # shellcheck disable=SC2086 # $good is a deliberate word-split flag list
+            out=$(timeout 30 {{.ENGINE}} run --rm $good -e "$bad" {{.IMAGE_REPO}}-web:{{.IMAGE_TAG}} 2>&1) || rc=$?
+            if [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ] || ! echo "$out" | grep -q '05-runtime-config:'; then
+              echo "container did not refuse to start with $bad (exit $rc):"; echo "$out"; exit 1
+            fi
+          done
+          echo "web image smoke test passed"

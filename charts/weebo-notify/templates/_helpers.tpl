@@ -60,17 +60,29 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{/*
-Image references. `.tag` falls back to Chart.AppVersion, same convention as
-every image field in values.yaml.
+Image references. `.tag` falls back to "v" + Chart.AppVersion: release.yaml
+pushes the git tag cog creates (`tag_prefix = "v"` in cog.toml), so the image
+for appVersion 0.4.2 is `:v0.4.2` — a bare `:0.4.2` does not exist and would
+leave a default install in ImagePullBackOff.
+
+`.digest` (sha256:...) wins over the tag when set: a tag is a mutable pointer,
+the digest is the bytes release.yaml scanned and cosign signed, and it is what
+an admission controller verifying signatures actually checks.
 */}}
+{{- define "weebo-notify.image" -}}
+{{- if .image.digest -}}
+{{- printf "%s@%s" .image.repository .image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .image.repository (.image.tag | default (printf "v%s" .ctx.Chart.AppVersion)) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "weebo-notify.serverImage" -}}
-{{- $tag := .Values.image.server.tag | default .Chart.AppVersion -}}
-{{- printf "%s:%s" .Values.image.server.repository $tag -}}
+{{- include "weebo-notify.image" (dict "image" .Values.image.server "ctx" .) -}}
 {{- end -}}
 
 {{- define "weebo-notify.webImage" -}}
-{{- $tag := .Values.image.web.tag | default .Chart.AppVersion -}}
-{{- printf "%s:%s" .Values.image.web.repository $tag -}}
+{{- include "weebo-notify.image" (dict "image" .Values.image.web "ctx" .) -}}
 {{- end -}}
 
 {{/*

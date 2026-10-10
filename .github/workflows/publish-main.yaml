@@ -4,13 +4,14 @@ name: publish-main
 #
 # Two things come out of it, and they are published differently on purpose:
 #
-#   * `:main` and `:sha-*` images, pushed to ghcr.io. amd64-only.
+#   * `:main` and `:sha-*` images, pushed to ghcr.io. amd64-only, trivy-scanned and
+#     cosign-signed before either tag moves, with buildx's SBOM attestation.
 #   * The CLI and the Android app, as workflow ARTEFACTS. They expire in fourteen
 #     days, they carry no cosign provenance, and they are not installed from
 #     anywhere — they exist so somebody can try a commit without building it.
 #
-# `release.yaml` in this directory stays the one that matters: multi-arch,
-# trivy-scanned, cosign-signed, and the source of `:latest`. Nothing here replaces
+# `release.yaml` in this directory stays the one that matters: multi-arch, gated
+# on every pull-request workflow, and the source of `:latest`. Nothing here replaces
 # it, and the §3.2bis artefact matrix still lands there with M5.
 #
 # The client job is also the only thing in this repository that builds either
@@ -44,6 +45,26 @@ jobs:
   gate:
     name: Lint and critical suite
     runs-on: ubuntu-latest
+    # A real database for the Postgres-backed critical scenarios, which skip
+    # without one — and with WNK_TEST_REQUIRE_DB a missing one fails instead of
+    # quietly passing (see release.yaml's gate).
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: weebo
+          POSTGRES_PASSWORD: weebo
+          POSTGRES_DB: weebo_notify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U weebo -d weebo_notify"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      WNK_TEST_DATABASE_URL: postgres://weebo:weebo@localhost:5432/weebo_notify
+      WNK_TEST_REQUIRE_DB: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -227,6 +248,15 @@ jobs:
         # them — the minisign updater manifest and cosign provenance — belongs to the
         # release path, not to a per-commit convenience build.
         run: mise exec -- task tauri:bundle
+        # What the bundle talks to is baked in (no nginx renders env.js on a
+        # desktop): `task tauri:bundle` fails when these are unset, rather than
+        # shipping the dev stack's localhost. Repository variables, not secrets —
+        # nothing here is secret (public OIDC client, §5.1).
+        env:
+          WNK_API_BASE_URL: ${{ vars.WNK_DESKTOP_API_BASE_URL }}
+          WNK_OIDC_ISSUER: ${{ vars.WNK_DESKTOP_OIDC_ISSUER }}
+          WNK_OIDC_CLIENT_ID: ${{ vars.WNK_DESKTOP_OIDC_CLIENT_ID }}
+          WNK_ATTACHMENT_ORIGIN: ${{ vars.WNK_DESKTOP_ATTACHMENT_ORIGIN }}
 
       - name: Upload the desktop bundles
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -337,12 +367,53 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # cosign keyless signing, same identity model as release.yaml.
+      id-token: write
+    # Same order as release.yaml: push by digest only, scan, sign, and only then
+    # point `:main` / `:sha-*` at the digest. A `:main` that fails the scan keeps
+    # pointing at the last one that passed. amd64-only, so one SBOM per image.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Short SHA
         id: sha
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Install the toolchain
+        # The same pinned, checksum-verified bootstrap every other workflow in this
+        # directory uses. It used to be `jdx/mise-action` here and the manual block
+        # everywhere else; two ways of installing the toolchain meant two things to
+        # keep on the same version, and the pinned-binary reasoning (see any of the
+        # other files) applies to this job as much as to the ones holding tokens.
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        # Not optional, and not a nicety: the `aqua:` backend resolves every version
+        # through the GitHub API, which allows 60 requests an hour to an
+        # UNAUTHENTICATED caller — counted per IP, and a GitHub-hosted runner shares
+        # its egress with everyone else on that host. The first run of this pipeline
+        # exhausted it and died on `cargo-tauri` with a 403 that reads like the
+        # release was deleted. The token every workflow already has raises the limit
+        # to 1000/hour for this repository and needs no scopes to read public
+        # releases.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Set up buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -355,25 +426,39 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push the server image
+        id: server_image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Containerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:main
-            ${{ env.IMAGE_NAME }}:sha-${{ steps.sha.outputs.short }}
+          sbom: true
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Build and push the web image
         # No build args since ADR-0021: one image now serves every deployment, and
         # the API origin, the issuer and the client id are read at container boot
-        # instead (web/nginx/docker-entrypoint.d/05-runtime-config.sh) — same image
-        # this workflow pushes here works for any origin an operator starts it with.
+        # instead (web/nginx/docker-entrypoint.d/) — same image this workflow
+        # pushes here works for any origin an operator starts it with.
+        id: web_image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./web
           file: ./web/Containerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}-web:main
-            ${{ env.IMAGE_NAME }}-web:sha-${{ steps.sha.outputs.short }}
+          sbom: true
+          outputs: type=image,name=${{ env.IMAGE_NAME }}-web,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Scan, sign and tag
+        env:
+          SERVER: ${{ env.IMAGE_NAME }}@${{ steps.server_image.outputs.digest }}
+          WEB: ${{ env.IMAGE_NAME }}-web@${{ steps.web_image.outputs.digest }}
+          SHORT: ${{ steps.sha.outputs.short }}
+        run: |
+          set -euo pipefail
+          test -n "${{ steps.server_image.outputs.digest }}" && test -n "${{ steps.web_image.outputs.digest }}"
+          mise exec -- task audit:image SERVER_REF="$SERVER" WEB_REF="$WEB"
+          cosign sign --yes "$SERVER"
+          cosign sign --yes "$WEB"
+          for image in "$SERVER" "$WEB"; do
+            repo="${image%@*}"
+            docker buildx imagetools create -t "$repo:main" -t "$repo:sha-$SHORT" "$image"
+          done

@@ -26,6 +26,102 @@ That property is what makes a single `config/dev.toml` work under Docker Compose
 inside an Eclipse Che workspace, where browser-facing endpoints must be public routes
 rather than `localhost`. No second file, no `if env == che`.
 
+## Database
+
+```toml
+[database]
+url = "postgres://…"                 # WNK_DATABASE__URL — never printed (Debug shows [redacted])
+max_connections = 16                 # refused below 9
+migrate_on_start = true              # WNK_DATABASE__MIGRATE_ON_START
+acquire_timeout = "5s"               # wait for a pooled connection, then fail
+idle_timeout = "10m"
+max_lifetime = "30m"
+statement_timeout = "30s"            # Postgres statement_timeout per connection; 0 disables
+idle_in_transaction_timeout = "60s"  # Postgres idle_in_transaction_session_timeout; 0 disables
+```
+
+`max_connections` has a floor of **9**: five leader jobs (purge, stale closure, DND
+digest, sink drain, reconcile) each hold a connection for as long as they lead — the
+advisory lock lives on it — and four more is the least that still serves requests
+while they do. A smaller value is refused at startup by name.
+
+With `migrate_on_start = false` the server does not touch the schema; run
+`notify-server migrate` (a Job or init container — it applies the migrations and
+exits 0) first. A replica whose schema is behind its binary then **refuses to start**
+rather than serve against it. Migrations run on a dedicated connection with
+`statement_timeout` lifted, so a long one is not cut off by the request limit.
+
+Like `url`, `[attachments] access_key`, `secret_key` and `token_secret` are secrets:
+they never appear in a `{:?}` of the configuration.
+
+## Reconciliation guard
+
+```toml
+[reconcile]
+max_removals = 5             # WNK_RECONCILE__MAX_REMOVALS
+allow_mass_removal = false   # WNK_RECONCILE__ALLOW_MASS_REMOVAL
+```
+
+A truncated file reads exactly like an operator deleting most of what they manage.
+When one pass would archive, delete or disable more than `max_removals` managed
+channels and service accounts, it applies the rest of the file, **refuses the
+removals**, logs an error and counts `reconcile_removals_refused_total`. Set
+`allow_mass_removal = true` for the one deploy that removes a lot on purpose, then
+unset it. Re-declaring a service account a pass disabled re-enables it, but its API
+keys **stay revoked** — issue new ones.
+
+## Devices
+
+```toml
+[devices]
+max_per_user = 20   # WNK_DEVICES__MAX_PER_USER
+```
+
+The most **active** devices one owner may hold, push and stream counted together.
+Past it, `POST /devices` answers `422` with code `device.limit_reached`; revoking a
+device frees its slot. A ceiling so a leaked session cannot enrol endpoints without
+end, each one a push the fan-out pays for.
+
+## Retention
+
+```toml
+[retention]
+batch_size = 1000            # WNK_RETENTION__BATCH_SIZE
+pass_budget = "20s"          # WNK_RETENTION__PASS_BUDGET
+revoked_credentials = "90d"  # WNK_RETENTION__REVOKED_CREDENTIALS
+# audit = "400d"             # WNK_RETENTION__AUDIT — unset: the audit log keeps everything
+```
+
+`audit` is off by default, and a value **under 90 days is refused at startup**
+([ADR-0027](/docs/adr/0027-audit-retention-through-one-sanctioned-purge)). The
+database refuses it again whatever the file says. Archive what it will delete
+before you set it: [Retention](/docs/ops/retention#the-audit-log).
+
+## Sinks
+
+```toml
+[sinks]
+dead_letter_retention = "30d"   # WNK_SINKS__DEAD_LETTER_RETENTION — set at boot
+fingerprint_key = "…"           # WNK_SINKS__FINGERPRINT_KEY — ≥ 32 bytes, set at boot
+previous_fingerprint_keys = []  # WNK_SINKS__PREVIOUS_FINGERPRINT_KEYS — rotation only
+```
+
+A webhook is identified — in the queue, the dead-letter API, the audit log and the
+logs — by its **origin plus a fingerprint** (`https://hooks.slack.com#4f1c0a9e2b7d3c58`),
+never its full url: many consumers keep their credential in the path. The fingerprint
+is an HMAC under `fingerprint_key`, so it cannot be brute-forced back to the url
+without the key ([hardening](/docs/ops/hardening#a-webhooks-fingerprint-is-keyed)).
+The key is **required as soon as one webhook sink is configured** — the server
+refuses to start without it — and must be at least 32 bytes (`openssl rand -base64
+48`); serve it from a Secret. `config/dev.toml` carries a public development key that
+only a `[server] dev` instance will boot on. Rotating the url changes the fingerprint;
+so does rotating the key, which is why it is only read at boot and has a
+[runbook](/docs/ops/runbooks#rotating-the-sink-fingerprint-key). `[[channels.managed.sinks]]` and `[sinks.smtp]` are re-read on
+`SIGHUP`. A delivery whose sink the draining replica does not know (a rolling deploy,
+a reload that reached some pods first) is kept and retried later; only after the 24 h
+retry window does it become a dead letter, saying why. Dead letters older than
+`dead_letter_retention` are deleted by the leader's drain.
+
 ## Development instances
 
 `[server] dev = true` (`WNK_SERVER__DEV`) declares a development instance, and is
@@ -33,6 +129,71 @@ the only thing that lets the server boot on the development stack's defaults —
 loopback `[oidc] issuer`, the `weebo:weebo` database. `config/dev.toml` sets it;
 nothing else should. Without it, a config that forgot `[oidc]` or `[database]`
 refuses to start rather than trusting whatever answers on localhost.
+
+## Identity provider: unverified email
+
+```toml
+[oidc]
+trust_unverified_email = false    # WNK_OIDC__TRUST_UNVERIFIED_EMAIL
+```
+
+An individual `email` binding in a channel's access list goes to whoever logs in
+with that address — so only an address the identity provider vouches for counts.
+A token whose `email_verified` is not `true` (absent included) is accepted, but its
+`email` is ignored: the user is not created with it, and no `email` binding matches
+them. Most providers send the claim — check what yours sends for an address it has
+not confirmed.
+
+Set it to `true` only for an issuer that never sends `email_verified` **and** only
+lets users hold addresses it has checked. Otherwise anyone who can register
+`alice@example.com` at the IdP is handed Alice's bindings.
+
+A token that omits `email` altogether (a client that asked for fewer scopes) leaves
+the stored address alone. A token that **carries** an `email` the provider does not
+mark verified clears it: the provider no longer vouches for any address. Upgrading
+clears every stored address once; each comes back on that user's next login, if
+verified — until then their `email` bindings report them as pending.
+
+If two users end up holding the same address (case-insensitively), an `email`
+binding on it binds **neither**, and the reconciler logs an error: bind by `oidc_sub`
+instead.
+
+## Identity provider: key-set staleness
+
+```toml
+[oidc]
+jwks_stale_grace = "1h"    # WNK_OIDC__JWKS_STALE_GRACE
+```
+
+The issuer's key set is refetched once it is an hour old. While the issuer is
+unreachable, the old set keeps verifying for `jwks_stale_grace` more, so a short IdP
+outage does not log everybody out — and one request refreshes while the rest carry
+on with the set they have.
+
+The cost is the withdrawn-key window: a key the issuer removed (the response to a
+compromised signing key) keeps verifying here for up to one hour plus
+`jwks_stale_grace`, if the issuer is unreachable when the set expires. `0` closes
+the window — the set is dropped on the first failed refetch — at the price of
+refusing every login during any IdP blip, and of every request waiting on the
+refetch rather than one. Raise it only if your IdP's outages are longer than its
+compromises are likely.
+
+## Personal API keys: group snapshot
+
+```toml
+[auth]
+group_snapshot_ttl = "7d"    # WNK_AUTH__GROUP_SNAPSHOT_TTL
+```
+
+A personal API key carries no token, so the groups it reaches channels through are
+the ones its owner last showed — remembered whenever they sync or enrol a device.
+Once that snapshot is older than `group_snapshot_ttl`, the key keeps only its
+owner's direct memberships until they come back.
+
+This is the bound on how long a user removed from a group at the IdP keeps reaching
+its channels through a key nobody revoked. Lower it for a tighter bound; the price is
+that an owner who has not opened the app for that long sees their key lose its group
+reach. Accepted range: `1h` to `90d`. Read at boot — a `SIGHUP` does not change it.
 
 ## GitOps: managed versus dynamic
 

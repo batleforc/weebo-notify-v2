@@ -274,7 +274,13 @@ pub struct SyncPage {
     /// Per channel, how many notifications expired unseen during the absence.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub expired: Vec<ExpiredWhileAway>,
-    /// How many revisions the compaction folded away.
+    /// How many revisions the compaction folded away, over the whole window since
+    /// `after` and not just this page — so the first page of a catch-up carries the
+    /// total, and that is the one a client reads it from.
+    ///
+    /// Counted over at most the first ten thousand events of the window (in no
+    /// particular order): past that it is a **lower bound**, "at least this many",
+    /// rather than a count that could cost a long absence its catch-up.
     pub compacted: u32,
     /// Notifications on this page delayed on purpose by a quiet period (§7.4); kept
     /// off the events because events are identical for every reader.

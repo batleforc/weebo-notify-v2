@@ -310,7 +310,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!signed.url.as_str().is_empty());
+        assert_ne!(signed.url.as_str(), "");
     }
 
     #[tokio::test]
@@ -369,7 +369,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(known.is_empty());
+        assert_eq!(known, [] as [notify_domain::AttachmentId; 0]);
     }
 
     /// Publish a notification showing `reference`, and pretend the upload landed.
@@ -421,7 +421,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!signed.url.as_str().is_empty());
+        assert_ne!(signed.url.as_str(), "");
     }
 
     #[tokio::test]

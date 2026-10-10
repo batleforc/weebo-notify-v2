@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /** `session.ts`'s own constant, which it does not export. */
 const REFRESH_KEY = "weebo-notify:refresh-token";
 
-const { desktop, credential } = vi.hoisted(() => ({
+const { desktop, credential, push } = vi.hoisted(() => ({
   // A holder rather than a bare boolean: `session.ts` reads `isDesktop()` at module
   // scope for `redirectUri`, so the value has to be settable before the import.
   desktop: { value: true },
@@ -18,7 +18,10 @@ const { desktop, credential } = vi.hoisted(() => ({
     clear: vi.fn(),
     share: vi.fn(),
   },
+  push: { disable: vi.fn(), dropLocalPush: vi.fn(), claimFor: vi.fn() },
 }));
+
+vi.mock("@/lib/push", () => push);
 
 vi.mock("@/lib/desktop", () => ({
   isDesktop: () => desktop.value,
@@ -64,7 +67,11 @@ describe("session — where the refresh token rests", () => {
     credential.load.mockReset().mockResolvedValue(null);
     credential.clear.mockReset().mockResolvedValue(undefined);
     credential.share.mockReset().mockResolvedValue(undefined);
+    push.disable.mockReset().mockResolvedValue(undefined);
+    push.dropLocalPush.mockReset().mockResolvedValue(undefined);
+    push.claimFor.mockReset().mockResolvedValue(undefined);
     sessionStorage.clear();
+    localStorage.clear();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => rotated()),
@@ -239,8 +246,8 @@ describe("session — where the refresh token rests", () => {
       expect(sessionStorage.getItem(REFRESH_KEY)).toBe("refresh-1");
     });
 
-    it("ends the session when the provider refuses the token", async () => {
-      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+    /** The provider refuses every refresh: the session dies without a sign-out. */
+    function refuseRefresh() {
       vi.stubGlobal(
         "fetch",
         vi.fn(
@@ -248,11 +255,104 @@ describe("session — where the refresh token rests", () => {
             new Response('{"error":"invalid_grant"}', { status: 400 }),
         ),
       );
+    }
+
+    /**
+     * An in-memory `BroadcastChannel`, per name and asynchronous like the real one,
+     * so a test controls exactly which other "tabs" exist.
+     */
+    function fakeChannels() {
+      const open: {
+        name: string;
+        onmessage: ((e: MessageEvent) => void) | null;
+      }[] = [];
+      vi.stubGlobal(
+        "BroadcastChannel",
+        class {
+          onmessage: ((e: MessageEvent) => void) | null = null;
+          constructor(readonly name: string) {
+            open.push(this);
+          }
+          postMessage(data: unknown) {
+            for (const other of open) {
+              if (other !== this && other.name === this.name) {
+                queueMicrotask(() =>
+                  other.onmessage?.({ data } as MessageEvent),
+                );
+              }
+            }
+          }
+        },
+      );
+    }
+
+    /** Long enough for the presence question to have timed out. */
+    const pastTimeout = () =>
+      new Promise((resolve) => setTimeout(resolve, 400));
+
+    it("ends the session when the provider refuses the token", async () => {
+      fakeChannels();
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      refuseRefresh();
       const store = await session(false);
 
       expect(await store.refresh()).toBeNull();
       expect(store.expired).toBe(true);
       expect(sessionStorage.getItem(REFRESH_KEY)).toBeNull();
+      // The only signed-in tab is gone: nothing else can revoke this browser's
+      // push, so it is dropped locally (the push service's `410` does the rest).
+      await vi.waitFor(() => expect(push.dropLocalPush).toHaveBeenCalled());
+      expect(push.disable).not.toHaveBeenCalled();
+    });
+
+    it("keeps push when another signed-in tab answers", async () => {
+      fakeChannels();
+      const peer = new BroadcastChannel("weebo-notify:presence");
+      const heard: unknown[] = [];
+      peer.onmessage = (event) => {
+        heard.push(event.data);
+        if (event.data === "ping") peer.postMessage("pong");
+      };
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      refuseRefresh();
+      const store = await session(false);
+
+      await store.refresh();
+      await pastTimeout();
+
+      expect(heard).toContain("ping");
+      expect(push.dropLocalPush).not.toHaveBeenCalled();
+    });
+
+    it("falls back to a localStorage heartbeat without BroadcastChannel", async () => {
+      vi.stubGlobal("BroadcastChannel", undefined);
+      localStorage.setItem("weebo-notify:presence:peer", String(Date.now()));
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      refuseRefresh();
+      const store = await session(false);
+
+      await store.refresh();
+      await pastTimeout();
+      expect(push.dropLocalPush).not.toHaveBeenCalled();
+
+      // A heartbeat gone stale is a tab that crashed, not one signed in.
+      localStorage.clear(); // the first store's own beat, a "tab" of its own here
+      localStorage.setItem("weebo-notify:presence:peer", "1");
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      await (await session(false)).refresh();
+      await vi.waitFor(() => expect(push.dropLocalPush).toHaveBeenCalled());
+    });
+
+    it("tears push down on an explicit sign-out", async () => {
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      const store = await session(false);
+      await store.restore();
+
+      await store.logout();
+
+      // Revoked server-side while the token still works, then dropped locally.
+      expect(push.disable).toHaveBeenCalled();
+      await vi.waitFor(() => expect(push.dropLocalPush).toHaveBeenCalled());
     });
 
     it("hands a rotated token to a duplicated tab holding the old one", async () => {

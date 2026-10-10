@@ -110,6 +110,10 @@ pub trait AttachmentRegistry: Send + Sync {
         limit: u32,
     ) -> PortResult<Vec<AttachmentId>>;
 
+    /// Drop up to `limit` rows whose id some revision now references; returns how many.
+    /// Their objects are the purge sweep's concern now.
+    async fn forget_referenced(&self, limit: u32) -> PortResult<u64>;
+
     /// Drop rows for ids whose objects were actually deleted.
     async fn forget(&self, ids: &[AttachmentId]) -> PortResult<u64>;
 }

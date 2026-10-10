@@ -23,8 +23,16 @@ vulnerabilities:
   # upstream (the gtk-rs project moved to GTK4), so "upgrade glib" is not a move that
   # exists until Tauri's Linux stack does.
   #
-  # Scope, stated plainly: that crate is the desktop shell (M5). No gate compiles it,
-  # no release ships it, and nothing in the deployed server or web image links it.
+  # Scope, stated plainly: that crate is the desktop shell. It IS built and
+  # distributed — publish-main.yaml bundles a .deb and an AppImage on every commit
+  # to main (14-day workflow artefacts), and release.yaml will ship them once the
+  # M5 artefact matrix lands — so "nobody runs it" is not the argument. The
+  # argument is the classification: the advisory is an unsound iterator impl, not
+  # a vulnerability, and the shell's own code never touches `glib::Variant`
+  # (web/src-tauri/src has no use of it). Whether tao/wry reach `VariantStrIter`
+  # internally has NOT been verified — that is the residual risk accepted here,
+  # for a desktop client, not for anything deployed: nothing in the server or
+  # web image links it.
   #
   # REVISIT IF: Tauri moves off GTK3, or this stops being `unsound` and becomes a
   # vulnerability with a reachable path.

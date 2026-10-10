@@ -1,8 +1,14 @@
 //! Health and readiness (design §13): `/healthz` is liveness only, `/readyz` probes dependencies,
 //! so a database outage drains the replica instead of restart-looping it.
+//! `/readyz` is bounded by [`PROBE_TIMEOUT`], skips the database when the pool is saturated
+//! (a waiting probe would drain the whole fleet under load), and, being unauthenticated,
+//! reports a fixed word while the real error goes to the log.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use actix_web::{HttpResponse, Responder, web};
-use notify_persistence_pg::PgStore;
+use notify_persistence_pg::{PgStore, Probe};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -39,27 +45,95 @@ pub(crate) struct DependencyCheck {
     pub detail: Option<String>,
 }
 
+/// How long `/readyz` may take, all checks included.
+///
+/// Under the default kubelet probe timeout (one second is the default, and most
+/// charts raise it) is not the goal; under the *period* is — a probe that outlives
+/// its period stacks up behind itself.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// What this replica probes.
 #[derive(Debug, Clone)]
 pub(crate) struct Dependencies {
     store: PgStore,
     transports: Vec<&'static str>,
+    bus: crate::bus::BusHealth,
+    started: Started,
+}
+
+/// Whether boot has finished the work that has to precede traffic — today, the
+/// first attempt to apply the declarative configuration (§11).
+///
+/// The listener is bound *before* that work so `/healthz` answers while it runs
+/// (a reconcile can wait up to a minute on another replica's lock); this is what
+/// keeps the replica out of the load balancer until it is done.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Started(Arc<AtomicBool>);
+
+impl Started {
+    pub(crate) fn finish(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    fn is_done(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 impl Dependencies {
-    pub(crate) const fn new(store: PgStore, transports: Vec<&'static str>) -> Self {
-        Self { store, transports }
+    pub(crate) const fn new(
+        store: PgStore,
+        transports: Vec<&'static str>,
+        bus: crate::bus::BusHealth,
+        started: Started,
+    ) -> Self {
+        Self {
+            store,
+            transports,
+            bus,
+            started,
+        }
     }
 
     async fn probe(&self) -> Readiness {
         let mut checks = Vec::new();
 
         // Postgres is also the event bus (ADR-0008), so one probe answers for both.
-        let database = self.store.ping().await;
+        let (healthy, detail) =
+            match actix_web::rt::time::timeout(PROBE_TIMEOUT, self.store.probe()).await {
+                Ok(Ok(Probe::Answered)) => (true, None),
+                Ok(Ok(Probe::Saturated)) => (true, Some("pool saturated; not probed")),
+                Ok(Err(error)) => {
+                    tracing::warn!(?error, "readiness: postgres did not answer");
+                    (false, Some("unreachable"))
+                }
+                Err(_) => {
+                    tracing::warn!(timeout = ?PROBE_TIMEOUT, "readiness: postgres timed out");
+                    (false, Some("timed out"))
+                }
+            };
         checks.push(DependencyCheck {
             name: "postgres".to_owned(),
-            healthy: database.is_ok(),
-            detail: database.err().map(|error| error.to_string()),
+            healthy,
+            detail: detail.map(str::to_owned),
+        });
+
+        // The `LISTEN` pump, separately from the database it listens on: the pump
+        // can be down — between two resubscribe attempts, after a panic — while
+        // every query answers, and that replica's streams would go stale with
+        // nothing else reporting it.
+        let listening = self.bus.is_alive();
+        checks.push(DependencyCheck {
+            name: "eventbus".to_owned(),
+            healthy: listening,
+            detail: (!listening).then(|| "not subscribed; resubscribing".to_owned()),
+        });
+
+        let started = self.started.is_done();
+        checks.push(DependencyCheck {
+            name: "startup".to_owned(),
+            healthy: started,
+            detail: (!started).then(|| "applying the configuration".to_owned()),
         });
 
         // Push transports are reported but never gate readiness.
@@ -162,18 +236,54 @@ mod tests {
             .connect_lazy("postgres://nobody@127.0.0.1:1/none")
             .unwrap();
 
-        let readiness = Dependencies::new(PgStore::new(pool), Vec::new())
-            .probe()
-            .await;
+        let readiness = dependencies(PgStore::new(pool), Vec::new()).probe().await;
 
         assert!(
             !readiness.ready,
             "a replica that cannot serve must leave the pool"
         );
         assert_eq!(readiness.checks[0].name, "postgres");
+        let detail = readiness.checks[0].detail.as_deref().unwrap();
+        assert_eq!(
+            detail, "unreachable",
+            "which dependency, and nothing an unauthenticated caller should read"
+        );
+        assert!(!detail.contains("127.0.0.1") && !detail.contains("nobody"));
+    }
+
+    fn dependencies(store: PgStore, transports: Vec<&'static str>) -> Dependencies {
+        let started = Started::default();
+        started.finish();
+        Dependencies::new(store, transports, crate::bus::BusHealth::alive(), started)
+    }
+
+    #[actix_web::test]
+    async fn a_replica_still_booting_or_deaf_to_the_bus_is_not_ready() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(250))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .unwrap();
+
+        let readiness = Dependencies::new(
+            PgStore::new(pool),
+            Vec::new(),
+            crate::bus::BusHealth::alive(),
+            Started::default(),
+        )
+        .probe()
+        .await;
+
         assert!(
-            readiness.checks[0].detail.is_some(),
-            "an operator needs to be told which dependency, not just that one failed"
+            readiness
+                .checks
+                .iter()
+                .any(|check| check.name == "startup" && !check.healthy)
+        );
+        assert!(
+            readiness
+                .checks
+                .iter()
+                .any(|check| check.name == "eventbus" && check.healthy)
         );
     }
 
@@ -242,7 +352,7 @@ mod tests {
             .connect_lazy("postgres://nobody@127.0.0.1:1/none")
             .unwrap();
 
-        let checks = Dependencies::new(PgStore::new(pool), vec!["webpush"])
+        let checks = dependencies(PgStore::new(pool), vec!["webpush"])
             .probe()
             .await
             .checks;

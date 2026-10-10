@@ -156,9 +156,9 @@ mod tests {
 
     #[test]
     fn an_empty_csv_parameter_is_no_filter_rather_than_one_empty_value() {
-        assert!(csv(None).is_empty());
-        assert!(csv(Some("")).is_empty());
-        assert!(csv(Some(" , ,")).is_empty());
+        assert_eq!(csv(None), [] as [&str; 0]);
+        assert_eq!(csv(Some("")), [] as [&str; 0]);
+        assert_eq!(csv(Some(" , ,")), [] as [&str; 0]);
         assert_eq!(csv(Some("ci-infra, deploys")), ["ci-infra", "deploys"]);
     }
 

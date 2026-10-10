@@ -1,5 +1,6 @@
-//! The audit log is append-only (SEC-P2-37): no SQL in this crate may name `audit_entries` in a
-//! destructive statement, and the TTL purge never reaches it. A source scan, so it runs everywhere.
+//! The audit log is append-only (SEC-P2-37, ADR-0027): no SQL in this crate may name `audit_entries`
+//! in a destructive statement, and the only purge is one call to `wnk_audit_purge`. A source scan,
+//! so it runs everywhere; the trigger (ADR-0026) is the database-side backstop.
 
 #![allow(
     clippy::expect_used,
@@ -72,6 +73,42 @@ fn the_ttl_purge_only_reclaims_notifications() {
         "the TTL purge now names {TABLE}: audit entries must outlive the \
          notifications they describe, or an incident review reads a log with the \
          interesting rows already reclaimed"
+    );
+}
+
+#[test]
+fn the_sanctioned_purge_has_exactly_one_caller() {
+    // The function, not a `DELETE`: it is the only path the trigger lets through,
+    // and a second caller is a second retention policy nobody decided on.
+    const FUNCTION: &str = "wnk_audit_purge";
+
+    let callers: Vec<String> =
+        rust_sources(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path())
+            .into_iter()
+            .flat_map(|file| {
+                let text =
+                    std::fs::read_to_string(&file).expect("a source file this crate compiles");
+                text.lines()
+                    .enumerate()
+                    .filter(|(_, line)| line.contains(FUNCTION) && line.contains("SELECT"))
+                    .map(|(number, line)| {
+                        format!("{}:{}: {}", file.display(), number + 1, line.trim())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+    assert_eq!(
+        callers.len(),
+        1,
+        "`{FUNCTION}` must be called from exactly one place (`AuditLog::purge_older_than`, \
+         ADR-0027):\n{}",
+        callers.join("\n")
+    );
+    assert!(
+        callers[0].contains("audit.rs"),
+        "the purge belongs to the audit adapter: {}",
+        callers[0]
     );
 }
 

@@ -1,0 +1,94 @@
+{{/*
+`notify-server migrate` as a pre-install/pre-upgrade hook: the schema moves
+once, before any pod of the new version starts, and a failing migration fails
+the `helm upgrade` while the old ReplicaSet keeps serving — instead of every new
+replica crash-looping on the same error.
+
+Hooks run BEFORE the release's ordinary objects exist, so the server ConfigMap
+and ServiceAccount are not there yet on a first install. The Job therefore gets
+its own copy of the config as a hook ConfigMap (same rendered data, weight -10
+so it exists first) and runs under the namespace's default ServiceAccount with
+no token mounted — it talks to Postgres and nothing else.
+
+Migrations are expand/contract (runbooks.mdx): the old version keeps running
+against the new schema for the length of the rollout, which is what makes
+running them ahead of it safe.
+*/}}
+{{- if .Values.migrations.job.enabled }}
+{{- $name := include "weebo-notify.componentFullname" (dict "ctx" . "component" "migrate") }}
+{{- $config := (include (print $.Template.BasePath "/server-configmap.yaml") . | fromYaml).data }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  {{- toYaml $config | nindent 2 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "weebo-notify.componentLabels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    # Not `hook-failed`: a failed Job stays, with its pod's logs, until the next
+    # attempt replaces it — that log is the first thing the runbook asks for.
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "weebo-notify.componentSelectorLabels" (dict "ctx" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.server.podSecurityContext | nindent 8 }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "weebo-notify.serverImage" . }}
+          imagePullPolicy: {{ .Values.image.server.pullPolicy }}
+          args: ["migrate", "--config", "/etc/weebo-notify/config.toml"]
+          securityContext:
+            {{- toYaml .Values.server.securityContext | nindent 12 }}
+          env:
+            {{- include "weebo-notify.serverEnv" . | trim | nindent 12 }}
+          {{- with .Values.server.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/weebo-notify
+              readOnly: true
+            {{- include "weebo-notify.serverSecretMounts" . | trim | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        {{- include "weebo-notify.serverSecretVolumes" . | trim | nindent 8 }}
+{{- end }}

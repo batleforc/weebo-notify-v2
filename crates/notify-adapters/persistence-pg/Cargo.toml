@@ -30,3 +30,5 @@ notify-ports = { workspace = true, features = ["test-utils"] }
 # `_sqlx_migrations` are things the adapter has no business exposing as API.
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Building the webhook urls the sink-id migration test redacts.
+url = { workspace = true }

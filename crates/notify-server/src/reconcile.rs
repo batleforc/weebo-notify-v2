@@ -10,8 +10,8 @@ use notify_domain::{
 };
 use notify_ports::{
     ApiKeyRepository, AuditAction, AuditActor, AuditEntry, AuditLog, ChannelRepository, Clock,
-    Declaration, DeclarationKind, DeclarationStore, ServiceAccountRepository, UserRepository,
-    actions,
+    Declaration, DeclarationKind, DeclarationStore, EmailMatch, ServiceAccountRepository,
+    UserRepository, actions,
 };
 use time::OffsetDateTime;
 
@@ -31,6 +31,9 @@ pub(crate) struct ReconcileReport {
     pub pending: Vec<String>,
     /// Audit entries this pass wrote — zero unless the file moved (§13, D28).
     pub journalled: usize,
+    /// Removals this pass would have made and refused, because there were more of
+    /// them than `[reconcile] max_removals` allows (see [`Reconciler::execute`]).
+    pub refused: usize,
 }
 
 impl ReconcileReport {
@@ -82,10 +85,50 @@ fn managed_channels(config: &Config) -> anyhow::Result<Vec<Declaration>> {
         .map(|channel| {
             Ok(Declaration {
                 key: channel.id.clone(),
-                snapshot: serde_json::to_value(channel)?,
+                snapshot: channel_snapshot(channel, &config.sinks)?,
             })
         })
         .collect()
+}
+
+/// A channel's declaration as it is stored and journalled, webhook urls redacted.
+///
+/// The snapshot lands in `managed_declarations` and, on every change, in an audit
+/// entry's `detail` — and a webhook url often carries its consumer's credential in
+/// the path. So it is stored as `notify_ports::redact_url` renders it: the origin
+/// and the same keyed fingerprint the sink id carries, which still changes when the
+/// url does, so rotating one is journalled as the change it is — and which, unlike
+/// an unkeyed digest, a reader of the log or a backup cannot guess the url back from.
+fn channel_snapshot(
+    channel: &ManagedChannel,
+    settings: &crate::config::Sinks,
+) -> anyhow::Result<serde_json::Value> {
+    let mut snapshot = serde_json::to_value(channel)?;
+    // Only read when there is a url to redact: `Config::validate` requires the key
+    // exactly when a webhook is configured.
+    let mut key = None;
+    if let Some(sinks) = snapshot
+        .get_mut("sinks")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for sink in sinks {
+            let url = sink
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|raw| url::Url::parse(raw).ok());
+            if let (Some(url), Some(object)) = (url, sink.as_object_mut()) {
+                let key = match &mut key {
+                    Some(key) => key,
+                    None => key.insert(settings.fingerprint_key()?),
+                };
+                object.insert(
+                    "url".to_owned(),
+                    serde_json::Value::String(notify_ports::redact_url(&url, key)),
+                );
+            }
+        }
+    }
+    Ok(snapshot)
 }
 
 /// `[[service_accounts]]` blocks, keyed by account id.
@@ -114,6 +157,8 @@ pub(crate) struct Reconciler {
     audit: Arc<dyn AuditLog>,
     /// Revokes the keys of accounts [`Self::retire_departed_accounts`] retires, in the same pass.
     keys: Arc<dyn ApiKeyRepository>,
+    /// Where a refused mass removal is counted.
+    metrics: Arc<dyn notify_ports::Metrics>,
 }
 
 impl core::fmt::Debug for Reconciler {
@@ -140,10 +185,34 @@ impl Reconciler {
             declarations,
             audit,
             keys,
+            metrics: Arc::new(notify_ports::NoMetrics),
         }
     }
 
+    /// Count refused mass removals into `metrics`.
+    pub(crate) fn with_metrics(mut self, metrics: Arc<dyn notify_ports::Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
     /// Apply the configuration.
+    ///
+    /// # The blast-radius guard
+    ///
+    /// A truncated file, a bad merge or an empty `WNK_CONFIG` mount reads exactly
+    /// like an operator removing most of what they manage, and on its own this pass
+    /// would act on it: every key of every managed service account revoked, and
+    /// with `on_removed = "delete"` every channel deleted with its history. So when
+    /// a pass would remove (archive, delete or disable) more than
+    /// `[reconcile] max_removals` entities, it applies everything else in the file,
+    /// refuses the removals, logs an error and counts
+    /// `reconcile_removals_refused_total`. `allow_mass_removal = true` is how an
+    /// operator says the big removal is meant.
+    ///
+    /// Re-declaring an account that a pass *did* disable re-enables it, but its
+    /// keys stay revoked: a revocation is not undone by a file edit, and whoever
+    /// needs the account back issues new keys. That is deliberate — the keys may
+    /// have leaked while nobody was watching them.
     pub(crate) async fn execute(&self, config: &Config) -> anyhow::Result<ReconcileReport> {
         let mut report = ReconcileReport::default();
 
@@ -190,11 +259,48 @@ impl Reconciler {
             report.channels += 1;
         }
 
-        report.removed = self.drop_departed(config, &declared).await?
-            + self.retire_departed_accounts(&declared_accounts).await?;
+        let departed_channels: Vec<Channel> = self
+            .channels
+            .list_managed()
+            .await?
+            .into_iter()
+            .filter(|channel| !declared.contains(&channel.id))
+            .collect();
+        let departed_accounts: Vec<ServiceAccount> = self
+            .accounts
+            .list_managed()
+            .await?
+            .into_iter()
+            // Already disabled is already retired: it is not a removal this pass
+            // would make, so it does not count towards the guard either.
+            .filter(|account| {
+                !declared_accounts.contains(&account.id) && account.disabled_at.is_none()
+            })
+            .collect();
+
+        let removals = departed_channels.len() + departed_accounts.len();
+        let guard = config.reconcile;
+        let refused = removals > usize::try_from(guard.max_removals).unwrap_or(usize::MAX)
+            && !guard.allow_mass_removal;
+
+        if refused {
+            tracing::error!(
+                channels = departed_channels.len(),
+                accounts = departed_accounts.len(),
+                max_removals = guard.max_removals,
+                "refusing to remove this many managed entities in one pass; the rest of \
+                 the file was applied. Check the configuration is complete, or set \
+                 [reconcile] allow_mass_removal = true if this is intended"
+            );
+            self.metrics.reconcile_removals_refused();
+            report.refused = removals;
+        } else {
+            report.removed = self.drop_departed(config, departed_channels).await?
+                + self.retire_departed_accounts(departed_accounts).await?;
+        }
 
         // Journal after the writes: better applied-but-unannounced (re-diffed next pass) than the reverse.
-        report.journalled = self.journal(config).await?;
+        report.journalled = self.journal(config, refused).await?;
 
         Ok(report)
     }
@@ -215,7 +321,9 @@ impl Reconciler {
     }
 
     /// Write what the file changed since the last pass into the audit log (§13); zero when steady.
-    async fn journal(&self, config: &Config) -> anyhow::Result<usize> {
+    /// With `removals_refused`, removals are neither journalled nor dropped from the snapshot,
+    /// so the next pass still sees them pending.
+    async fn journal(&self, config: &Config, removals_refused: bool) -> anyhow::Result<usize> {
         let at = self.clock.now();
         let mut written = 0;
 
@@ -249,9 +357,10 @@ impl Reconciler {
                 },
             ),
         ] {
-            let declarations = declarations?;
+            let mut declarations = declarations?;
             let before = self.declarations.snapshot(kind).await?;
             let changes = notify_ports::declarations::diff(&before, &declarations);
+            let held = removals_refused && kind != DeclarationKind::TrustPolicy;
 
             for added in &changes.added {
                 self.record(
@@ -278,6 +387,10 @@ impl Reconciler {
                 written += 1;
             }
             for removed in &changes.removed {
+                if held {
+                    declarations.push(removed.clone());
+                    continue;
+                }
                 if let Some(action) = vocabulary.removed {
                     self.record(&action, kind, &removed.key, &removed.snapshot, None, at)
                         .await?;
@@ -387,7 +500,22 @@ impl Reconciler {
         let found = if let Some(subject) = &access.oidc_sub {
             self.users.find_by_subject(subject).await?
         } else if let Some(email) = &access.email {
-            self.users.find_by_email(email).await?
+            match self.users.find_by_email(email).await? {
+                EmailMatch::One(user) => Some(*user),
+                EmailMatch::Nobody => None,
+                // Granting either would hand a channel to whichever row came back
+                // first. Nobody is bound, and nobody is reported as pending either:
+                // logging in will not fix this, an operator has to.
+                EmailMatch::Ambiguous => {
+                    tracing::error!(
+                        channel = %channel.id,
+                        email = %email,
+                        "email binding skipped: several users have this address; \
+                         bind by `oidc_sub` instead"
+                    );
+                    return Ok(());
+                }
+            }
         } else {
             // The config validator refuses a binding naming nothing.
             return Ok(());
@@ -413,16 +541,10 @@ impl Reconciler {
     async fn drop_departed(
         &self,
         config: &Config,
-        declared: &[ChannelId],
+        departed: Vec<Channel>,
     ) -> anyhow::Result<usize> {
-        let stored = self.channels.list_managed().await?;
-        let departed: Vec<&Channel> = stored
-            .iter()
-            .filter(|channel| !declared.contains(&channel.id))
-            .collect();
-
         let mut removed = 0;
-        for channel in departed {
+        for channel in &departed {
             match config.channels.on_removed {
                 OnRemoved::Delete => {
                     self.channels.delete(&channel.id).await?;
@@ -449,16 +571,11 @@ impl Reconciler {
     /// Disabled rather than made dynamic (a stray is usually an id change); already-disabled ones are skipped.
     async fn retire_departed_accounts(
         &self,
-        declared: &[ServiceAccountId],
+        departed: Vec<ServiceAccount>,
     ) -> anyhow::Result<usize> {
-        let stored = self.accounts.list_managed().await?;
         let mut retired = 0;
 
-        for mut account in stored {
-            if declared.contains(&account.id) || account.disabled_at.is_some() {
-                continue;
-            }
-
+        for mut account in departed {
             let now = self.clock.now();
             // Keys first: `disabled_at` marks "retired", so a failure between calls is retried next pass.
             let revoked = self.keys.revoke_all_for(&account.principal(), now).await?;
@@ -828,13 +945,51 @@ mod tests {
         UserRepository::upsert(&store, &carol).await.unwrap();
 
         let report = reconciler(&store, &clock).execute(&declared).await.unwrap();
-        assert!(report.pending.is_empty());
+        assert_eq!(report.pending, [] as [std::string::String; 0]);
 
         let stored = ChannelRepository::get(&store, &ChannelId::parse("ci-infra").unwrap())
             .await
             .unwrap()
             .unwrap();
         assert!(stored.grants(&carol.principal(), Scope::Subscribe));
+    }
+
+    #[tokio::test]
+    async fn an_email_two_users_share_binds_neither() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let declared = config(vec![ManagedChannel {
+            id: "ci-infra".to_owned(),
+            access: vec![Access {
+                email: Some("carol@weebo.local".to_owned()),
+                ..access(vec![Scope::Subscribe])
+            }],
+            ..ManagedChannel::default()
+        }]);
+
+        // Same address, different case: the comparison is case-insensitive, so
+        // this is one address held by two people.
+        let mut both = Vec::new();
+        for (subject, email) in [
+            ("carol", "carol@weebo.local"),
+            ("mallory", "Carol@weebo.local"),
+        ] {
+            let user =
+                User::from_claims(UserId::generate(), subject, Some(email), None, clock.now())
+                    .unwrap();
+            UserRepository::upsert(&store, &user).await.unwrap();
+            both.push(user);
+        }
+
+        reconciler(&store, &clock).execute(&declared).await.unwrap();
+
+        let stored = ChannelRepository::get(&store, &ChannelId::parse("ci-infra").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        for user in &both {
+            assert!(!stored.grants(&user.principal(), Scope::Subscribe));
+        }
     }
 
     #[tokio::test]
@@ -1084,5 +1239,110 @@ mod tests {
             channel.policy.publish_per_minute, None,
             "`None` means §8.2's default, not `0`"
         );
+    }
+
+    // --- The blast-radius guard ------------------------------------------------
+
+    fn channels(count: usize) -> Vec<ManagedChannel> {
+        (0..count)
+            .map(|n| ManagedChannel {
+                id: format!("ch-{n}"),
+                ..ManagedChannel::default()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_truncated_file_does_not_take_every_channel_with_it() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let metrics = Arc::new(notify_metrics_prometheus::PrometheusMetrics::new());
+        let reconciler = reconciler(&store, &clock).with_metrics(metrics.clone());
+
+        let mut full = config(channels(8));
+        full.channels.on_removed = OnRemoved::Delete;
+        reconciler.execute(&full).await.unwrap();
+
+        // The file lost seven of its eight channels — and gained one.
+        let mut truncated = config(vec![
+            ManagedChannel {
+                id: "ch-0".to_owned(),
+                ..ManagedChannel::default()
+            },
+            ManagedChannel {
+                id: "brand-new".to_owned(),
+                ..ManagedChannel::default()
+            },
+        ]);
+        truncated.channels.on_removed = OnRemoved::Delete;
+        let report = reconciler.execute(&truncated).await.unwrap();
+
+        assert_eq!(report.removed, 0, "the destructive half is refused");
+        assert_eq!(report.refused, 7);
+        assert_eq!(
+            ChannelRepository::list_managed(&store).await.unwrap().len(),
+            9,
+            "nothing deleted, and the rest of the file was still applied"
+        );
+        assert!(
+            notify_ports::Metrics::render(metrics.as_ref())
+                .contains("reconcile_removals_refused_total 1")
+        );
+        assert!(
+            !journal(&store)
+                .await
+                .iter()
+                .any(|entry| entry.action.as_str() == "managed.channel.removed"),
+            "a removal that did not happen is not journalled"
+        );
+
+        // The operator means it.
+        truncated.reconcile.allow_mass_removal = true;
+        let report = reconciler.execute(&truncated).await.unwrap();
+        assert_eq!(report.removed, 7);
+        assert_eq!(report.refused, 0);
+    }
+
+    #[tokio::test]
+    async fn a_few_removals_stay_under_the_guard() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let reconciler = reconciler(&store, &clock);
+
+        reconciler.execute(&config(channels(4))).await.unwrap();
+        let report = reconciler.execute(&config(channels(1))).await.unwrap();
+
+        assert_eq!(report.removed, 3, "renaming a few channels is ordinary");
+        assert_eq!(report.refused, 0);
+    }
+
+    #[tokio::test]
+    async fn a_webhook_url_is_never_journalled_in_full() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let mut declared = config(vec![ManagedChannel {
+            id: "ci-infra".to_owned(),
+            sinks: vec![crate::config::Sink {
+                kind: "webhook".to_owned(),
+                url: Some("https://hooks.slack.com/services/T0/B0/SECRETPATH".to_owned()),
+                secret_ref: Some("env:WNK_SINK_HMAC".to_owned()),
+                ..crate::config::Sink::default()
+            }],
+            ..ManagedChannel::default()
+        }]);
+
+        declared.sinks.fingerprint_key = "reconcile-test-fingerprint-key-0123456789".into();
+
+        reconciler(&store, &clock).execute(&declared).await.unwrap();
+
+        let entries = journal(&store).await;
+        let detail = serde_json::to_string(&entries[0].detail).unwrap();
+        assert!(!detail.contains("SECRETPATH"), "{detail}");
+        // The keyed fingerprint, the same one the sink id carries.
+        let keyed = notify_ports::redact_url(
+            &url::Url::parse("https://hooks.slack.com/services/T0/B0/SECRETPATH").unwrap(),
+            &declared.sinks.fingerprint_key().unwrap(),
+        );
+        assert!(detail.contains(&keyed), "{detail}");
     }
 }

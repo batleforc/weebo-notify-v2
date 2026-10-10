@@ -16,11 +16,16 @@ interface Harness {
   listeners: Map<string, (event: unknown) => void>;
   shown: { title: string; options: Record<string, unknown> }[];
   posted: unknown[];
-  windows: { visibilityState: string; url: string }[];
+  /** `ack`: the tab answers on the port, as a mounted `AppLayout` does. */
+  windows: { visibilityState: string; url: string; ack?: boolean }[];
 }
 
 /** Load `sw.js` into a fake `ServiceWorkerGlobalScope` and return what it touched. */
-function load(language = "fr-FR"): Harness {
+function load(
+  language = "fr-FR",
+  /** Client handles passed through as-is, for a test that needs their shape. */
+  raw?: { windows: unknown[]; opened: string[] },
+): Harness {
   const listeners = new Map<string, (event: unknown) => void>();
   const shown: Harness["shown"] = [];
   const posted: unknown[] = [];
@@ -42,13 +47,23 @@ function load(language = "fr-FR"): Harness {
       claim: () => Promise.resolve(),
       matchAll: () =>
         Promise.resolve(
-          windows.map((window) => ({
-            ...window,
-            postMessage: (message: unknown) => posted.push(message),
-            focus: () => Promise.resolve({ navigate: () => Promise.resolve() }),
-          })),
+          raw?.windows ??
+            windows.map((window) => ({
+              ...window,
+              postMessage: (message: unknown, transfer?: MessagePort[]) => {
+                posted.push(message);
+                if (window.ack) {
+                  transfer?.[0]?.postMessage(true);
+                }
+              },
+              focus: () =>
+                Promise.resolve({ navigate: () => Promise.resolve() }),
+            })),
         ),
-      openWindow: () => Promise.resolve(null),
+      openWindow: (url: string) => {
+        raw?.opened.push(url);
+        return Promise.resolve(null);
+      },
     },
   };
 
@@ -183,6 +198,7 @@ describe("the service worker", () => {
     harness.windows.push({
       visibilityState: "visible",
       url: "https://notify.test/",
+      ack: true,
     });
     const { event, settled } = pushEvent({
       kind: "notification",
@@ -205,6 +221,50 @@ describe("the service worker", () => {
         }),
       },
     ]);
+  });
+
+  it("still shows it when the visible tab never confirms (no shell mounted)", async () => {
+    // A tab on `/login` has no listener: a push handed to it would vanish.
+    harness.windows.push({
+      visibilityState: "visible",
+      url: "https://notify.test/login",
+    });
+    const { event, settled } = pushEvent({
+      kind: "notification",
+      channel: "ci-infra",
+      notification_id: "ntf_01P",
+      content: { title: "etcd degraded" },
+    });
+
+    harness.listeners.get("push")?.(event);
+    await settled();
+
+    expect(harness.posted).toHaveLength(1);
+    expect(harness.shown).toHaveLength(1);
+  });
+
+  it("falls back to a message when navigating an uncontrolled tab rejects", async () => {
+    const messages: unknown[] = [];
+    const opened: string[] = [];
+    const tab = {
+      url: "https://notify.test/",
+      focus: () => Promise.resolve(tab),
+      navigate: () => Promise.reject(new TypeError("not controlled")),
+      postMessage: (message: unknown) => messages.push(message),
+    };
+    const waits: Promise<unknown>[] = [];
+    // Re-load with a client whose `navigate` rejects, as Chrome's does for a
+    // window this worker does not control.
+    const self = load("fr-FR", { windows: [tab], opened });
+
+    self.listeners.get("notificationclick")?.({
+      notification: { close: () => undefined, data: { url: "/n/ntf_01Q" } },
+      waitUntil: (promise: Promise<unknown>) => waits.push(promise),
+    });
+    await Promise.all(waits);
+
+    expect(messages).toEqual([{ type: "navigate", url: "/n/ntf_01Q" }]);
+    expect(opened).toEqual([]);
   });
 
   it("shows the notification when every tab is hidden", async () => {

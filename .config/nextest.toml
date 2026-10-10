@@ -45,3 +45,46 @@ status-level = "retry"
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# ---------------------------------------------------------------------------
+# Shared-database hygiene. The Postgres suites share one database, so a test
+# whose operation is global by nature has to be kept away from the others.
+# Overrides on the default profile apply to every profile.
+# ---------------------------------------------------------------------------
+[test-groups]
+# `claim_due` leases every due row in `sink_queue`, not just the test's own, so
+# two of these at once steal each other's deliveries.
+sink-queue = { max-threads = 1 }
+
+[[profile.default.overrides]]
+# Prunes the whole event log up to tomorrow: run alone, or it deletes the events
+# a concurrent sync test is in the middle of reading.
+filter = 'package(notify-persistence-pg) & test(the_head_does_not_move_backwards_when_the_log_is_pruned)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+# The fan-out outbox claims are just as global: they lease, and retire as dead,
+# every row in `fanout_outbox`.
+filter = 'package(notify-persistence-pg) & test(/claim_leases|retry_reschedules|buried_delivery|dead_letters_past|what_a_write_owes|fanout_row/)'
+test-group = "sink-queue"
+
+[[profile.default.overrides]]
+# Re-runs the audit redaction migration (ADR-0026), whose `ALTER TABLE ... DISABLE
+# TRIGGER` takes an ACCESS EXCLUSIVE lock on `audit_entries` and whose UPDATE scans
+# the whole log: run alone, so it neither stalls nor rewrites under another test.
+filter = 'package(notify-persistence-pg) & test(old_audit_webhook_urls_are_redacted)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+# The audit purge (ADR-0027) deletes every entry past its cutoff, not just the
+# test's own, and its refusal test attempts a TRUNCATE that waits on an ACCESS
+# EXCLUSIVE lock: run alone, like the redaction above.
+filter = 'package(notify-persistence-pg) & test(/audit_purge/)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+# The event watermark (ADR-0028) is cluster-wide: these hold a transaction open on
+# purpose, which holds back every other test's reads while they do. Run alone;
+# they assert eventual delivery, so other traffic on the server cannot fail them.
+filter = 'package(notify-persistence-pg) & binary(watermark)'
+threads-required = "num-test-threads"

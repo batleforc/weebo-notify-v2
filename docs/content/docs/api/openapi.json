@@ -451,6 +451,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Not a session — a key cannot list keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -547,7 +557,7 @@
             }
           },
           "403": {
-            "description": "Not the caller's key",
+            "description": "Not a session — a key may revoke only itself",
             "content": {
               "application/json": {
                 "schema": {
@@ -727,7 +737,7 @@
             "description": "Stored"
           },
           "403": {
-            "description": "The token is missing, expired, or for another id/purpose/content type"
+            "description": "The token is missing, expired, or for another id/purpose/content type/length"
           },
           "404": {
             "description": "Not a valid attachment id"
@@ -2261,7 +2271,7 @@
         "operationId": "list_devices",
         "responses": {
           "200": {
-            "description": "Devices, newest first",
+            "description": "Devices, newest first — `stream` ones only for an API key or a CI token",
             "content": {
               "application/json": {
                 "schema": {
@@ -2327,8 +2337,18 @@
               }
             }
           },
+          "403": {
+            "description": "A push transport, from a credential that is not a session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "422": {
-            "description": "A relayed transport with no key, or the reverse",
+            "description": "A relayed transport with no key, or the reverse; or `device.limit_reached`, the owner's `[devices] max_per_user` active devices already enrolled",
             "content": {
               "application/json": {
                 "schema": {
@@ -2378,7 +2398,7 @@
             }
           },
           "403": {
-            "description": "Not the caller's device",
+            "description": "A push device, from a credential that is not a session",
             "content": {
               "application/json": {
                 "schema": {
@@ -3101,7 +3121,7 @@
             }
           },
           "403": {
-            "description": "Not a member of its channel",
+            "description": "Not a member of its channel, or a key or CI token rather than a session",
             "content": {
               "application/json": {
                 "schema": {
@@ -3330,7 +3350,7 @@
             }
           },
           "403": {
-            "description": "Not a member of its channel",
+            "description": "Not a member of its channel, or a key naming a push device",
             "content": {
               "application/json": {
                 "schema": {
@@ -3560,7 +3580,7 @@
             }
           },
           "403": {
-            "description": "Somebody else's, or a person is not asking",
+            "description": "Somebody else's, or not a person's own session",
             "content": {
               "application/json": {
                 "schema": {
@@ -5330,7 +5350,7 @@
           },
           "sink": {
             "$ref": "#/components/schemas/SinkId",
-            "description": "Which sink it was going to, endpoint included."
+            "description": "Which sink it was going to: origin plus keyed fingerprint ([`redact_url`])."
           }
         }
       },
@@ -7799,7 +7819,7 @@
           "compacted": {
             "type": "integer",
             "format": "int32",
-            "description": "How many revisions the compaction folded away.",
+            "description": "How many revisions the compaction folded away, over the whole window since\n`after` and not just this page — so the first page of a catch-up carries the\ntotal, and that is the one a client reads it from.\n\nCounted over at most the first ten thousand events of the window (in no\nparticular order): past that it is a **lower bound**, \"at least this many\",\nrather than a count that could cost a long absence its catch-up.",
             "minimum": 0
           },
           "deferred_by_dnd": {

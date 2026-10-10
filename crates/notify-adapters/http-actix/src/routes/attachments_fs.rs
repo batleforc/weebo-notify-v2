@@ -1,6 +1,7 @@
 //! The filesystem store's own upload/download routes (ADR-0022). Unauthenticated like a
 //! presigned S3 URL: the short-lived HMAC token in the query *is* the credential.
 
+use actix_web::body::SizedStream;
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, ResponseError, get, put, web};
 use notify_attachments_fs::{Purpose, TokenError};
@@ -8,6 +9,7 @@ use notify_domain::AttachmentId;
 use notify_domain::limits::MAX_ATTACHMENT_BYTES;
 use notify_ports::{AttachmentStore as _, PortError};
 use serde::Deserialize;
+use tokio_util::io::ReaderStream;
 use utoipa::openapi::{KnownFormat, Object, RefOr, Schema, SchemaFormat, Type};
 use utoipa::{PartialSchema, ToSchema};
 
@@ -123,7 +125,7 @@ impl ResponseError for FsError {
     request_body(content = RawBytes, content_type = "application/octet-stream", description = "The raw bytes"),
     responses(
         (status = 204, description = "Stored"),
-        (status = 403, description = "The token is missing, expired, or for another id/purpose/content type"),
+        (status = 403, description = "The token is missing, expired, or for another id/purpose/content type/length"),
         (status = 404, description = "Not a valid attachment id"),
         (status = 409, description = "Already uploaded — a token is good for one upload"),
         (status = 413, description = "Over the 25 MiB ceiling (§8.2)"),
@@ -160,11 +162,19 @@ pub(crate) async fn fs_upload(
         return Err(FsError::UnsupportedType);
     }
 
-    // The content type is in the token's MAC, so this also compares it to the presign.
+    // The content type and declared length are in the token's MAC, so this also compares them
+    // to the presign. No `content-length` (a chunked body) is refused as a mismatch.
+    let length = request
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(FsError::Invalid(TokenError::Mismatch))?;
     store
         .verify(
             Purpose::Upload {
                 content_type: &declared,
+                content_length: length,
             },
             id,
             &query.token,
@@ -176,7 +186,9 @@ pub(crate) async fn fs_upload(
         return Err(FsError::AlreadyUploaded);
     }
 
-    let limit = usize::try_from(MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
+    // The signed length, never more — actix holds the body to its declared length,
+    // and this holds the declared length to what the presign approved.
+    let limit = usize::try_from(length.min(MAX_ATTACHMENT_BYTES)).unwrap_or(usize::MAX);
     let body = match payload.to_bytes_limited(limit).await {
         Ok(Ok(body)) => body,
         failed => {
@@ -228,9 +240,13 @@ pub(crate) async fn fs_download(
         .verify(Purpose::Download, id, &query.token)
         .map_err(FsError::Invalid)?;
 
-    let object = store.get(id).await?.ok_or(FsError::NoSuchObject)?;
+    // Streamed off the file rather than read whole: an attachment is up to 25 MiB,
+    // and a buffer per concurrent download is how a few dozen of them become the
+    // heap. Sized, so the client still gets a `content-length`.
+    let object = store.open(id).await?.ok_or(FsError::NoSuchObject)?;
+    let body = SizedStream::new(object.length, ReaderStream::new(object.file));
 
     Ok(crate::routes::served_bytes(&mut HttpResponse::Ok())
         .content_type(object.content_type)
-        .body(object.bytes))
+        .body(body))
 }

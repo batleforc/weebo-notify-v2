@@ -283,7 +283,7 @@ impl Harness {
                 Arc::new(ImageAvatarProcessor::new()),
                 Arc::new(attachments.clone()),
             ),
-            avatar: ReadAvatar::new(Arc::new(attachments.clone())),
+            avatar: ReadAvatar::new(Arc::new(store.clone()), Arc::new(attachments.clone())),
 
             dnd: ReadDnd::new(Arc::new(store.clone())),
             set_dnd: SetDnd::new(
@@ -342,6 +342,7 @@ impl Harness {
                 issuer: Url::parse("https://idp.example").unwrap(),
                 subject: "alice".to_owned(),
                 email: Some("alice@weebo.local".to_owned()),
+                email_unverified: false,
                 display_name: Some("Alice Martin".to_owned()),
                 groups: vec![],
                 expires_at: self.clock.now() + Duration::hours(1),
@@ -375,6 +376,7 @@ impl Harness {
                 issuer: Url::parse("https://idp.example").unwrap(),
                 subject: "alice".to_owned(),
                 email: Some("alice@weebo.local".to_owned()),
+                email_unverified: false,
                 display_name: Some("Alice Martin".to_owned()),
                 groups: vec!["platform-admins".to_owned()],
                 expires_at: self.clock.now() + Duration::hours(1),
@@ -1109,6 +1111,7 @@ async fn a_stream_ends_when_its_token_expires() {
             issuer: Url::parse("https://idp.example").unwrap(),
             subject: "alice".to_owned(),
             email: Some("alice@weebo.local".to_owned()),
+            email_unverified: false,
             display_name: Some("Alice Martin".to_owned()),
             groups: vec![],
             expires_at: harness.clock.now() + Duration::milliseconds(200),
@@ -1722,10 +1725,13 @@ async fn fs_upload_is_capped_and_single_use() {
             .to_request()
     };
 
-    let over = vec![0_u8; 25 * 1024 * 1024 + 1];
-    let response = test::call_service(&app, put(over)).await;
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(fs.get(signed.id).await.unwrap().is_none());
+    // Larger than the presign approved — whether or not it is under the 25 MiB
+    // ceiling — is a body the token was not signed for.
+    for over in [vec![0_u8; 5], vec![0_u8; 25 * 1024 * 1024 + 1]] {
+        let response = test::call_service(&app, put(over)).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(fs.get(signed.id).await.unwrap().is_none());
+    }
 
     let response = test::call_service(&app, put(b"\x89PNG".to_vec())).await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -1750,6 +1756,38 @@ async fn an_avatar_over_its_ceiling_is_refused_with_413() {
     let response = test::call_service(&app, request).await;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[actix_web::test]
+async fn fs_download_streams_a_large_object_with_its_length() {
+    // 10 MiB, written straight to the store: the download route streams it off the
+    // file handle (`FsAttachments::open`), so what has to hold is that every byte
+    // arrives and the response still declares its size up front.
+    let (fs, _dir) = fs_store();
+    let (_harness, mut state) = Harness::new();
+    state.attachments_fs = Some(Arc::new(fs.clone()));
+    let app = service!(state);
+
+    let id = notify_domain::AttachmentId::generate();
+    let bytes: Vec<u8> = (0..10 * 1024 * 1024_u32).map(|i| (i % 251) as u8).collect();
+    fs.put(id, "image/png", bytes.clone()).await.unwrap();
+    let signed = fs.presign_download(id).await.unwrap();
+
+    let request = test::TestRequest::get()
+        .uri(&path_and_query(&signed.url))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        actix_web::body::MessageBody::size(response.response().body()),
+        actix_web::body::BodySize::Sized(10 * 1024 * 1024)
+    );
+    assert_eq!(
+        response.headers().get("content-disposition").unwrap(),
+        "attachment"
+    );
+    assert_eq!(test::read_body(response).await.as_ref(), bytes.as_slice());
 }
 
 #[actix_web::test]

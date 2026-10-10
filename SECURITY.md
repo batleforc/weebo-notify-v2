@@ -26,7 +26,7 @@ needs a platform admin to be careless.
 ## What is in scope
 
 The server (`crates/`), the web bundle (`web/`), the CLI, the Helm chart
-(`charts/`), and the release pipeline (`.forgejo/workflows/`, both Containerfiles).
+(`charts/`), and the release pipeline (`.github/workflows/`, both Containerfiles).
 
 Also in scope, and worth saying explicitly because it is where a real compromise
 would most likely start: **the supply chain.** A way to get an unreviewed change
@@ -79,3 +79,25 @@ cosign verify ghcr.io/batleforc/weebo-notify@sha256:<digest> \
 
 An image that does not verify did not come from this project's pipeline, whatever
 it is tagged.
+
+The Helm chart is published the same way, as an OCI artifact
+(`oci://ghcr.io/batleforc/charts/weebo-notify`) signed by the same identity, and
+each image carries a cosign-signed SPDX SBOM attestation per platform
+(`cosign verify-attestation --type spdxjson …`, same identity flags).
+
+## Before 1.0: open release gates
+
+Nothing below can be closed in code, and a `1.0.0` tag is not cut while any of it is
+open. They come from the [2026-08-10 state advisory](docs/content/docs/ops/state-advisory-2026-08-10.md):
+
+- [ ] **SEC-P0-08** — rehearse the release pipeline on a throwaway pre-release tag
+  (`v0.x.y-rc.0`), so the images, the SBOM extraction, the chart push and every
+  signature run for the first time on a tag that does not matter.
+- [ ] **SEC-P0-09** — read and act on the first real `task audit:image` output from
+  that rehearsal (blocked on P0-08).
+- [ ] **SEC-P2-39** — an **external penetration test**, commissioned from someone
+  with no prior belief about how the system works, with
+  [ADR-0023](docs/content/docs/adr) (the threat model) as the brief. Every review so
+  far was code read by an assistant and tests it wrote; that is not a substitute.
+- [ ] Findings from the pentest triaged: fixed, or accepted here with reasoning and
+  a revisit condition like every other accepted finding.

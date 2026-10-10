@@ -11,7 +11,7 @@ post_package_bump_hooks = []
 tag_prefix = "v"
 
 # One version for the whole product (design §3.2bis): the sync script propagates the
-# computed version to the cargo workspace, both JS projects and — from M5 — the Tauri
+# computed version to the cargo workspace, both JS projects, the Helm chart and the Tauri
 # configuration, so the bump commit already contains them all.
 #
 # The gates run here too: a tag never exempts anything from what a pull request had

@@ -32,12 +32,23 @@ mod e2e {
         Some(PgEventBus::new(pool))
     }
 
+    /// No database configured: skip — unless `WNK_TEST_REQUIRE_DB` is set, which is
+    /// how CI says "a database is supposed to be here". There a skip would report
+    /// green for a suite that never ran, so it fails instead.
+    fn skip_without_database() {
+        assert!(
+            std::env::var_os("WNK_TEST_REQUIRE_DB").is_none(),
+            "WNK_TEST_REQUIRE_DB is set but neither WNK_TEST_DATABASE_URL nor DATABASE_URL is — refusing to skip"
+        );
+        eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+    }
+
     macro_rules! bus {
         () => {
             match bus().await {
                 Some(bus) => bus,
                 None => {
-                    eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+                    skip_without_database();
                     return;
                 }
             }
@@ -119,7 +130,7 @@ mod e2e {
     #[tokio::test]
     async fn a_listener_that_loses_its_connection_says_so_and_keeps_listening() {
         let Some(url) = database_url() else {
-            eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
+            skip_without_database();
             return;
         };
         // A name of its own, so killing this listener cannot touch another test's.

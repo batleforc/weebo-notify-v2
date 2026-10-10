@@ -5,10 +5,11 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt as _;
 use notify_domain::{ChannelId, DeliveryId, RetryPolicy};
 use notify_ports::{
-    AuditEntry, AuditLog, Clock, DeadLetter, Failure, LeaderElection, SinkDelivery, SinkDispatcher,
-    SinkOutcome, SinkQueue, SinkRegistry, actions,
+    AuditEntry, AuditLog, Clock, DeadLetter, Failure, LeaderElection, LeaderGuard, SinkDelivery,
+    SinkDispatcher, SinkOutcome, SinkQueue, SinkRegistry, actions,
 };
 
 use crate::authz::Caller;
@@ -16,9 +17,24 @@ use crate::authz::Caller;
 /// How many deliveries one pass takes on; bounded so a lost lock is noticed (T22).
 const BATCH: u32 = 100;
 
-/// How long a claimed delivery stays claimed: above the dispatcher timeout, short
-/// enough that a killed leader's delivery is owed again within minutes.
-const LEASE: time::Duration = time::Duration::minutes(2);
+/// How many sinks are spoken to at once. Concurrency is across sinks, never within one:
+/// a sink's deliveries go in claim order, and one slow endpoint is never hit in parallel.
+const CONCURRENCY: usize = 8;
+
+/// How long a pass keeps starting attempts; what is still claimed after is released for
+/// the next pass, bounding a pass at this plus one attempt's own timeout.
+const PASS_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a claimed delivery stays claimed: past the worst pass so a working drain
+/// never loses it, short enough that a killed leader's delivery is owed again within minutes.
+const LEASE: time::Duration = time::Duration::minutes(5);
+
+/// How long a delivery whose sink this replica does not know waits before it is looked
+/// at again: during a rolling deploy another replica may know it.
+const ORPHAN_RECHECK: time::Duration = time::Duration::minutes(5);
+
+/// How many expired dead letters one pass forgets.
+const PRUNE_BATCH: u32 = 500;
 
 /// What one drain pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -29,13 +45,37 @@ pub struct DrainReport {
     pub retried: u64,
     /// Deliveries that became dead letters this pass.
     pub buried: u64,
-    /// Deliveries dropped because their sink is no longer configured.
+    /// Deliveries whose sink this replica's configuration does not declare, put
+    /// back for later rather than dropped (see [`DrainSinks`]).
     pub orphaned: u64,
+    /// Dead letters forgotten because they outlived the retention.
+    pub pruned: u64,
     /// Whether this replica led. `false` is the normal answer on all but one.
     pub led: bool,
 }
 
+impl DrainReport {
+    fn absorb(&mut self, other: Self) {
+        self.delivered += other.delivered;
+        self.retried += other.retried;
+        self.buried += other.buried;
+        self.orphaned += other.orphaned;
+        self.pruned += other.pruned;
+    }
+}
+
 /// The periodic sink drain (design §7.1bis, §11 — leader-only).
+///
+/// # A sink this replica does not know is not a sink that is gone
+///
+/// Each replica holds its own copy of the configuration, and during a rolling
+/// deploy or after a `SIGHUP` that reached only some pods those copies differ. A
+/// delivery whose sink is missing from *this* replica's routes may well be one the
+/// next leader can send — so it is never completed here. It is put back with a
+/// delay, its give-up clock started, and only when the normal retry window has run
+/// out is it buried, with a reason that says so. A sink an operator really removed
+/// therefore ends in the dead-letter queue a day later, where it can be seen and
+/// dropped, rather than vanishing the moment some replica with an old file led.
 #[derive(Clone)]
 pub struct DrainSinks {
     queue: Arc<dyn SinkQueue>,
@@ -44,6 +84,7 @@ pub struct DrainSinks {
     election: Arc<dyn LeaderElection>,
     clock: Arc<dyn Clock>,
     policy: RetryPolicy,
+    dead_letter_retention: Option<time::Duration>,
 }
 
 impl core::fmt::Debug for DrainSinks {
@@ -71,6 +112,7 @@ impl DrainSinks {
             election,
             clock,
             policy: RetryPolicy::CONTRACT,
+            dead_letter_retention: None,
         }
     }
 
@@ -81,30 +123,117 @@ impl DrainSinks {
         self
     }
 
+    /// Forget dead letters older than `retention` at the end of each pass it leads
+    /// (`[sinks] dead_letter_retention`). Without it they are kept for ever.
+    #[must_use]
+    pub const fn with_dead_letter_retention(mut self, retention: time::Duration) -> Self {
+        self.dead_letter_retention = Some(retention);
+        self
+    }
+
     /// Run one pass.
     pub async fn execute(&self) -> Result<DrainReport, Failure> {
         let Some(guard) = self.election.try_acquire(Self::JOB).await? else {
             return Ok(DrainReport::default());
         };
 
+        let outcome = self.drain(guard.as_ref()).await;
+        guard.release().await;
+        outcome
+    }
+
+    /// The pass itself, under a lock `execute` took and will release.
+    async fn drain(&self, guard: &dyn LeaderGuard) -> Result<DrainReport, Failure> {
+        let started = std::time::Instant::now();
         let now = self.clock.now();
         let mut report = DrainReport {
             led: true,
             ..DrainReport::default()
         };
 
+        // One lane per sink, in claim order — see `CONCURRENCY`.
+        let mut lanes: Vec<Vec<SinkDelivery>> = Vec::new();
         for delivery in self.queue.claim_due(now, BATCH, now + LEASE).await? {
+            match lanes.iter_mut().find(|lane| {
+                lane.first().is_some_and(|first| {
+                    first.channel == delivery.channel && first.sink == delivery.sink
+                })
+            }) {
+                Some(lane) => lane.push(delivery),
+                None => lanes.push(vec![delivery]),
+            }
+        }
+
+        let outcomes: Vec<Result<DrainReport, Failure>> = futures::stream::iter(lanes)
+            .map(|lane| self.lane(lane, guard, started))
+            .buffer_unordered(CONCURRENCY)
+            .collect()
+            .await;
+        // Every lane finishes before the first error is reported, so nothing is abandoned.
+        for outcome in outcomes {
+            report.absorb(outcome?);
+        }
+
+        if let Some(retention) = self.dead_letter_retention
+            && guard.is_held().await
+        {
+            report.pruned = self
+                .queue
+                .prune_dead_letters(self.clock.now() - retention, PRUNE_BATCH)
+                .await?;
+        }
+
+        Ok(report)
+    }
+
+    /// One sink's deliveries, one at a time.
+    async fn lane(
+        &self,
+        lane: Vec<SinkDelivery>,
+        guard: &dyn LeaderGuard,
+        started: std::time::Instant,
+    ) -> Result<DrainReport, Failure> {
+        let mut report = DrainReport::default();
+        let mut rest = lane.into_iter();
+
+        while let Some(delivery) = rest.next() {
             // Re-checked per delivery: a partition mid-pass must stop this replica (T22).
             if !guard.is_held().await {
                 tracing::warn!("lost leadership mid-drain; stopping");
                 break;
             }
 
-            self.attempt(&delivery, &mut report).await?;
+            if started.elapsed() > PASS_BUDGET {
+                // Out of time: hand the rest back now rather than when the lease
+                // runs out, so the next pass starts on them in seconds.
+                self.release(std::iter::once(delivery).chain(rest), self.clock.now())
+                    .await?;
+                break;
+            }
+
+            if self.attempt(&delivery, &mut report).await? == Endpoint::Failing {
+                // The endpoint itself is down or slow. Every other delivery in this
+                // lane would wait out the same timeout, so they are released to be
+                // tried after the first backoff rather than one by one now.
+                let later = self.clock.now() + to_time(self.policy.backoff(1));
+                self.release(rest, later).await?;
+                break;
+            }
         }
 
-        guard.release().await;
         Ok(report)
+    }
+
+    /// Hand claimed deliveries back, untried, due at `at`.
+    async fn release(
+        &self,
+        deliveries: impl Iterator<Item = SinkDelivery>,
+        at: time::OffsetDateTime,
+    ) -> Result<(), Failure> {
+        for delivery in deliveries {
+            self.queue.enqueue(&delivery, at).await?;
+        }
+        Ok(())
     }
 
     /// How deep the dead-letter queue is, per channel (§13, `sink_dlq_depth`). Only the
@@ -118,18 +247,10 @@ impl DrainSinks {
         &self,
         delivery: &SinkDelivery,
         report: &mut DrainReport,
-    ) -> Result<(), Failure> {
+    ) -> Result<Endpoint, Failure> {
         let Some(target) = self.registry.target(&delivery.channel, &delivery.sink) else {
-            // The sink was removed while queued: nowhere to requeue, so drop it, loudly.
-            tracing::info!(
-                delivery = %delivery.delivery_id,
-                channel = %delivery.channel,
-                sink = %delivery.sink,
-                "dropping a delivery whose sink left the configuration"
-            );
-            self.queue.complete(&delivery.delivery_id).await?;
-            report.orphaned += 1;
-            return Ok(());
+            self.defer_orphan(delivery, report).await?;
+            return Ok(Endpoint::Answering);
         };
 
         let attempted = SinkDelivery {
@@ -162,8 +283,7 @@ impl DrainSinks {
                     self.queue.bury(&attempted, &reason, now).await?;
                     report.buried += 1;
                 } else {
-                    let wait = self.policy.backoff(attempted.attempts);
-                    let next = now + time::Duration::try_from(wait).unwrap_or(time::Duration::ZERO);
+                    let next = now + to_time(self.policy.backoff(attempted.attempts));
                     self.queue
                         .enqueue(
                             &SinkDelivery {
@@ -175,11 +295,76 @@ impl DrainSinks {
                         .await?;
                     report.retried += 1;
                 }
+                return Ok(Endpoint::Failing);
             }
         }
 
+        Ok(Endpoint::Answering)
+    }
+
+    /// A delivery whose sink this replica's configuration does not declare.
+    ///
+    /// Never completed — see [`DrainSinks`] for why "unknown here" is not "gone".
+    /// No attempt is counted, because none was made; the give-up clock does start,
+    /// so a sink that really left the file reaches the dead-letter queue after the
+    /// same window as one whose endpoint stayed down.
+    async fn defer_orphan(
+        &self,
+        delivery: &SinkDelivery,
+        report: &mut DrainReport,
+    ) -> Result<(), Failure> {
+        let now = self.clock.now();
+        let since = delivery.first_failed_at.unwrap_or(now);
+
+        if self.policy.is_exhausted(since, now) {
+            tracing::warn!(
+                delivery = %delivery.delivery_id,
+                channel = %delivery.channel,
+                sink = %delivery.sink,
+                "burying a delivery whose sink no replica that led has declared for a day"
+            );
+            self.queue
+                .bury(
+                    delivery,
+                    "sink not configured on the replica that drained it for the whole \
+                     retry window; removed from the configuration?",
+                    now,
+                )
+                .await?;
+            report.buried += 1;
+        } else {
+            tracing::info!(
+                delivery = %delivery.delivery_id,
+                channel = %delivery.channel,
+                sink = %delivery.sink,
+                "sink not configured on this replica; leaving the delivery for one that knows it"
+            );
+            self.queue
+                .enqueue(
+                    &SinkDelivery {
+                        first_failed_at: Some(since),
+                        ..delivery.clone()
+                    },
+                    now + ORPHAN_RECHECK,
+                )
+                .await?;
+            report.orphaned += 1;
+        }
         Ok(())
     }
+}
+
+/// Whether the endpoint behind a delivery is worth another attempt this pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    Answering,
+    Failing,
+}
+
+/// A backoff as the clock's duration type. Saturates rather than failing: a wait
+/// too long to represent is "not this pass", which zero would get wrong.
+fn to_time(wait: core::time::Duration) -> time::Duration {
+    time::Duration::try_from(wait).unwrap_or(time::Duration::MAX)
 }
 
 /// `GET /api/v1/admin/dlq` — what is stuck (design §8, §10.4bis).
@@ -264,7 +449,7 @@ impl RequeueDeadLetter {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
 
-    use notify_domain::{Principal, SinkId, UserId};
+    use notify_domain::{Principal, UserId};
     use notify_ports::SinkTarget;
     use notify_ports::test_utils::{
         InMemory, RecordingSinkDispatcher, StaticSinkRegistry, TestClock, TestLeaderElection,
@@ -352,7 +537,9 @@ mod tests {
         let delivery = SinkDelivery {
             delivery_id: DeliveryId::generate(),
             channel: channel_id(),
-            sink: SinkId::new("webhook", "https://hooks.weebo.poc/incidents").unwrap(),
+            sink: webhook()
+                .id(&notify_ports::test_utils::test_fingerprint_key())
+                .unwrap(),
             event,
             attempts: 0,
             first_failed_at: None,
@@ -423,11 +610,11 @@ mod tests {
 
         // Not due yet: the first retry waits the published thirty seconds.
         let soon = fixture.clock.now() + time::Duration::seconds(29);
-        assert!(
+        assert_eq!(
             SinkQueue::claim_due(&fixture.store, soon, 10, soon)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [notify_ports::SinkDelivery; 0]
         );
 
         let later = fixture.clock.now() + time::Duration::seconds(30);
@@ -455,15 +642,20 @@ mod tests {
         let letters = SinkQueue::dead_letters(&fixture.store, None).await.unwrap();
         assert_eq!(letters.len(), 1);
         assert_eq!(letters[0].last_error, "410 Gone");
-        assert_eq!(
-            letters[0].sink.destination(),
-            "https://hooks.weebo.poc/incidents",
-            "the first thing an operator needs is where to go and look"
+        assert!(
+            letters[0]
+                .sink
+                .destination()
+                .starts_with("https://hooks.weebo.poc#"),
+            "where to go and look, without the url's path: {}",
+            letters[0].sink
         );
     }
 
     #[tokio::test]
-    async fn a_delivery_whose_sink_left_the_configuration_is_dropped_not_buried() {
+    async fn a_delivery_whose_sink_this_replica_does_not_know_is_kept_not_dropped() {
+        // A rolling deploy: the replica that leads has an older file. The delivery
+        // belongs to whichever replica *does* know the sink, so it stays owed.
         let fixture = fixture();
         let delivery = queue_one(&fixture).await;
         fixture.registry.withdraw(&delivery.sink);
@@ -471,13 +663,121 @@ mod tests {
         let report = fixture.drain.execute().await.unwrap();
 
         assert_eq!(report.orphaned, 1);
-        assert!(fixture.dispatcher.delivered().is_empty());
+        assert_eq!(
+            fixture.dispatcher.delivered(),
+            [] as [notify_ports::SinkDelivery; 0]
+        );
         assert!(
             SinkQueue::dead_letters(&fixture.store, None)
                 .await
                 .unwrap()
                 .is_empty(),
-            "a dead letter exists to be requeued, and there is nowhere left to requeue this to"
+            "not buried on the first sight of an unknown sink"
+        );
+
+        // Still queued, and back once the recheck delay is up — where a replica
+        // that knows the sink sends it.
+        let later = fixture.clock.now() + ORPHAN_RECHECK;
+        let due = SinkQueue::claim_due(&fixture.store, later, 10, later)
+            .await
+            .unwrap();
+        assert_eq!(
+            due.len(),
+            1,
+            "an unknown sink must never complete a delivery"
+        );
+        assert_eq!(due[0].attempts, 0, "no attempt was made");
+        assert!(
+            due[0].first_failed_at.is_some(),
+            "the give-up clock started"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sink_unknown_for_the_whole_retry_window_ends_in_the_dead_letter_queue() {
+        let fixture = fixture();
+        let delivery = queue_one(&fixture).await;
+        fixture.registry.withdraw(&delivery.sink);
+        SinkQueue::enqueue(
+            &fixture.store,
+            &SinkDelivery {
+                first_failed_at: Some(fixture.clock.now() - time::Duration::hours(25)),
+                ..delivery
+            },
+            fixture.clock.now(),
+        )
+        .await
+        .unwrap();
+
+        let report = fixture.drain.execute().await.unwrap();
+
+        assert_eq!(report.buried, 1);
+        let letters = SinkQueue::dead_letters(&fixture.store, None).await.unwrap();
+        assert!(
+            letters[0].last_error.contains("not configured"),
+            "the reason says why: {}",
+            letters[0].last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_endpoint_stops_its_lane_and_releases_the_rest() {
+        // Three deliveries to one sink and an endpoint that times out: trying all
+        // three would spend three timeouts on the same answer.
+        let fixture = fixture();
+        queue_one(&fixture).await;
+        queue_one(&fixture).await;
+        queue_one(&fixture).await;
+        fixture.dispatcher.always(SinkOutcome::Retry {
+            reason: "timed out".to_owned(),
+        });
+
+        let report = fixture.drain.execute().await.unwrap();
+
+        assert_eq!(report.retried, 1);
+        assert_eq!(
+            fixture.dispatcher.delivered().len(),
+            1,
+            "one attempt, not three"
+        );
+        let later = fixture.clock.now() + time::Duration::seconds(30);
+        assert_eq!(
+            SinkQueue::claim_due(&fixture.store, later, 10, later)
+                .await
+                .unwrap()
+                .len(),
+            3,
+            "nothing is lost: the other two are owed again after the first backoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_dead_letters_are_forgotten_after_the_retention() {
+        let fixture = fixture();
+        queue_one(&fixture).await;
+        fixture.dispatcher.always(SinkOutcome::Rejected {
+            reason: "410 Gone".to_owned(),
+        });
+        let drain = fixture
+            .drain
+            .clone()
+            .with_dead_letter_retention(time::Duration::days(30));
+        drain.execute().await.unwrap();
+        assert_eq!(
+            SinkQueue::dead_letters(&fixture.store, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        fixture
+            .clock
+            .set(fixture.clock.now() + time::Duration::days(31));
+        assert_eq!(drain.execute().await.unwrap().pruned, 1);
+        assert_eq!(
+            SinkQueue::dead_letters(&fixture.store, None).await.unwrap(),
+            [] as [notify_ports::DeadLetter; 0]
         );
     }
 
@@ -566,11 +866,9 @@ mod tests {
         let report = fixture.drain.execute().await.unwrap();
 
         assert_eq!(report.delivered, 1, "the requeued delivery is sendable");
-        assert!(
-            SinkQueue::dead_letters(&fixture.store, None)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            SinkQueue::dead_letters(&fixture.store, None).await.unwrap(),
+            [] as [notify_ports::DeadLetter; 0]
         );
         assert_eq!(
             fixture.dispatcher.delivered().last().unwrap().delivery_id,

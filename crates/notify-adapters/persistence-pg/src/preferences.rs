@@ -1,7 +1,7 @@
 //! Do not disturb, per user (design §7.4), stored as one jsonb document. [`PgStore::announce_preference`]
 //! is the single builder of the §8.1 `preference` event, so it always carries the whole preference.
 
-use notify_domain::{Dnd, Status, UserId};
+use notify_domain::{Dnd, NotificationId, Status, UserId};
 use notify_ports::{
     Audience, DeferredTally, EventPayload, PortError, PortResult, PreferenceEvent,
     PreferenceRepository,
@@ -57,6 +57,13 @@ impl PreferenceRepository for PgStore {
         .await
         .map_err(|error| fail("dnd", error))?;
 
+        // The keys go with the tally they were counted into.
+        sqlx::query("DELETE FROM dnd_deferrals WHERE user_id = $1")
+            .bind(dnd.user.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| fail("dnd", error))?;
+
         let cursor = self
             .announce_preference(&mut transaction, dnd.user, now)
             .await?;
@@ -69,15 +76,30 @@ impl PreferenceRepository for PgStore {
         Ok(cursor)
     }
 
-    async fn defer(&self, user: UserId, status: Status) -> PortResult<()> {
-        // No row means nothing muted them, so matching nothing is correct (§7.4).
+    async fn defer(
+        &self,
+        user: UserId,
+        notification: NotificationId,
+        seq: u32,
+        status: Status,
+    ) -> PortResult<()> {
+        // No row means nothing muted them, so matching nothing is correct (§7.4). The tally moves
+        // only for a new key, so a retried push or a second device counts nothing.
         sqlx::query(
-            "UPDATE user_dnd
+            "WITH counted AS (
+                 INSERT INTO dnd_deferrals (user_id, notification_id, seq)
+                 SELECT user_id, $2, $3 FROM user_dnd WHERE user_id = $1
+                 ON CONFLICT DO NOTHING
+                 RETURNING user_id
+             )
+             UPDATE user_dnd
                 SET deferred_total = deferred_total + 1,
-                    deferred_failures = deferred_failures + $2
-              WHERE user_id = $1",
+                    deferred_failures = deferred_failures + $4
+              WHERE user_id IN (SELECT user_id FROM counted)",
         )
         .bind(user.to_string())
+        .bind(notification.to_string())
+        .bind(i32::try_from(seq).unwrap_or(i32::MAX))
         .bind(i32::from(status == Status::Failure))
         .execute(self.pool())
         .await
@@ -137,6 +159,22 @@ impl PreferenceRepository for PgStore {
         .bind(user.to_string())
         .bind(i32::try_from(total).unwrap_or(i32::MAX))
         .bind(i32::try_from(failures).unwrap_or(i32::MAX))
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("dnd", error))?;
+
+        // Forget the keys once nothing is left to count, so the table only holds
+        // users whose digest is still owed. Not while a `defer` that landed after
+        // the digest was read keeps the tally above zero: its key still has to
+        // stop a retry of the same push counting twice.
+        sqlx::query(
+            "DELETE FROM dnd_deferrals
+              WHERE user_id = $1
+                AND NOT EXISTS (
+                    SELECT 1 FROM user_dnd WHERE user_id = $1 AND deferred_total > 0
+                )",
+        )
+        .bind(user.to_string())
         .execute(self.pool())
         .await
         .map_err(|error| fail("dnd", error))?;
