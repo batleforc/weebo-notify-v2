@@ -15,10 +15,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Pinned to the toolchain this workspace develops on rather than floating on `1`:
 # a release image is the one artefact that should not change because a base tag
-# moved between two runs of the same pipeline. `bookworm` is not a preference — it
-# has to be the same Debian as the runtime stage below, or the binary links against
+# moved between two runs of the same pipeline. `trixie` is not a preference — it
+# has to be the same Debian as the runtime stage below (`cc-debian13`), or the binary links against
 # a glibc the runtime does not have.
-FROM docker.io/library/rust:1.97-slim-bookworm@sha256:96c0af8cf054fd006435089f0076729716784ec9be485bd655de59c55df105ce AS builder
+FROM docker.io/library/rust:1.99-slim-trixie@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d AS builder
 
 WORKDIR /build
 
@@ -52,7 +52,7 @@ RUN cargo build --release --locked -p notify-server -p notify-cli
 #
 # `nonroot` is the tag, not a runtime flag: the image has no shell, no package
 # manager and no root user to drop from.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS runtime
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS runtime
 
 COPY --from=builder /build/target/release/notify-server /usr/local/bin/notify-server
 

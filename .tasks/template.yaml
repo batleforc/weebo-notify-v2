@@ -10,9 +10,10 @@ vars:
     .hooks/whitespace-fixer.sh
     .rtk/filters.toml
     .tasks/mise.yaml
-    .tasks/claude.yaml
+    .tasks/skills.yaml
     .tasks/template.yaml
     .github/CODEOWNERS
+    .github/workflows/update.yml
     .forgejo/CODEOWNERS
     LICENSE.md
   # Files every project customises: they are only ever diffed, never overwritten.
@@ -57,10 +58,6 @@ tasks:
     preconditions:
       - sh: "git diff --quiet && git diff --cached --quiet"
         msg: "commit or stash your changes first, sync overwrites files in place"
-      # `git diff` is blind to untracked files, and an owned file that was never
-      # committed would be overwritten with no way back.
-      - sh: '[ -z "$(git ls-files --others --exclude-standard -- {{.OWNED}})" ]'
-        msg: "some template-owned files are untracked, commit them first: sync would overwrite them"
     cmds:
       - |
         set -eu

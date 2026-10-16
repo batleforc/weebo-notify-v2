@@ -12,10 +12,9 @@ all-features = true
 # author found something, and pinning to one is a decision, not an accident.
 yanked = "deny"
 # Mirrors `.cargo/audit.toml`, which carries the full reasoning for each.
-# In one line each: `rsa` needs an RSA PRIVATE key we do not have (verification
-# only, §5.1), and the two `quick-xml` advisories are reachable only by an object
-# store that is already inside the trust boundary (§6).
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+# In one line: `rsa` needs an RSA PRIVATE key we do not have (verification only,
+# §5.1).
+ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]
 # weebo-notify ships under Apache-2.0 — the licence in `LICENSE.md`, and the one

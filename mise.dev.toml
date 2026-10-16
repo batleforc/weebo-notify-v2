@@ -19,9 +19,14 @@ claude = "latest"
 # Token-optimised command wrappers (see CLAUDE.md).
 rtk = "latest"
 herdr = "latest"
-# Needed by `task claude:install` to read .claude/settings.json.
+# JSON plumbing for the shell steps of the tasks (weebo-base).
 jq = "latest"
 # Python tool installer for the pipx tool below.
 uv = "latest"
 # Knowledge graph behind the `/graphify` skill and the .claude/settings.json hooks.
 "pipx:graphifyy" = "latest"
+# Code-quality scanner from weebo-base.
+"pipx:desloppify[full]" = "latest"
+# `wska`, which links the weebo-skillsagent skills (`task skills:install`). Pinned
+# like weebo-base pins it: the CLI and the skill layout it expects move together.
+"github:batleforc/weebo-skillsagent" = "0.5.0"

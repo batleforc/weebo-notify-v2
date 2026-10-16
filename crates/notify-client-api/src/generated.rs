@@ -11,186 +11,7 @@ use progenitor_client::{encode_path, ClientHooks, OperationInfo, RequestBuilderE
 /// Types used as operation parameters and responses.
 #[allow(clippy::all)]
 pub mod types {
-    /// Error types.
-    pub mod error {
-        /// Error from a `TryFrom` or `FromStr` implementation.
-        pub struct ConversionError(::std::borrow::Cow<'static, str>);
-        impl ::std::error::Error for ConversionError {}
-        impl ::std::fmt::Display for ConversionError {
-            fn fmt(
-                &self,
-                f: &mut ::std::fmt::Formatter<'_>,
-            ) -> Result<(), ::std::fmt::Error> {
-                ::std::fmt::Display::fmt(&self.0, f)
-            }
-        }
-        impl ::std::fmt::Debug for ConversionError {
-            fn fmt(
-                &self,
-                f: &mut ::std::fmt::Formatter<'_>,
-            ) -> Result<(), ::std::fmt::Error> {
-                ::std::fmt::Debug::fmt(&self.0, f)
-            }
-        }
-        impl From<&'static str> for ConversionError {
-            fn from(value: &'static str) -> Self {
-                Self(value.into())
-            }
-        }
-        impl From<String> for ConversionError {
-            fn from(value: String) -> Self {
-                Self(value.into())
-            }
-        }
-    }
     ///A validated call to action.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A validated call to action.",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "Open a link. Client-side only, produces no interaction.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "label",
-    ///        "type",
-    ///        "url"
-    ///      ],
-    ///      "properties": {
-    ///        "label": {
-    ///          "description": "Button text.",
-    ///          "type": "string"
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "view"
-    ///          ]
-    ///        },
-    ///        "url": {
-    ///          "description": "Where to go. `http(s)` only, checked here and again before opening.",
-    ///          "type": "string",
-    ///          "format": "uri"
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Acknowledge; idempotent per user and key (§2.3, T4).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "key",
-    ///        "label",
-    ///        "type"
-    ///      ],
-    ///      "properties": {
-    ///        "key": {
-    ///          "$ref": "#/components/schemas/ActionKey"
-    ///        },
-    ///        "label": {
-    ///          "description": "Button text.",
-    ///          "type": "string"
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "ack"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Answer in free text.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "label",
-    ///        "type"
-    ///      ],
-    ///      "properties": {
-    ///        "label": {
-    ///          "description": "Button text.",
-    ///          "type": "string"
-    ///        },
-    ///        "placeholder": {
-    ///          "description": "Hint shown in the empty input.",
-    ///          "type": [
-    ///            "string",
-    ///            "null"
-    ///          ]
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "reply"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Pick exactly one option; the last pick wins (§2.2).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "key",
-    ///        "label",
-    ///        "options",
-    ///        "type"
-    ///      ],
-    ///      "properties": {
-    ///        "key": {
-    ///          "$ref": "#/components/schemas/ActionKey"
-    ///        },
-    ///        "label": {
-    ///          "description": "Button text.",
-    ///          "type": "string"
-    ///        },
-    ///        "options": {
-    ///          "description": "The options offered, in display order.",
-    ///          "type": "array",
-    ///          "items": {
-    ///            "$ref": "#/components/schemas/ChoiceOption"
-    ///          }
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "choice"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Stop being notified about this, for the acting user only.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "label",
-    ///        "scope",
-    ///        "type"
-    ///      ],
-    ///      "properties": {
-    ///        "duration": {
-    ///          "$ref": "#/components/schemas/HumanDuration"
-    ///        },
-    ///        "label": {
-    ///          "description": "Button text.",
-    ///          "type": "string"
-    ///        },
-    ///        "scope": {
-    ///          "$ref": "#/components/schemas/SilenceScope"
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "silence"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "type")]
     pub enum Action {
@@ -215,7 +36,7 @@ pub mod types {
             ///Button text.
             label: ::std::string::String,
             ///Hint shown in the empty input.
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             placeholder: ::std::option::Option<::std::string::String>,
         },
         ///Pick exactly one option; the last pick wins (§2.2).
@@ -230,7 +51,7 @@ pub mod types {
         ///Stop being notified about this, for the acting user only.
         #[serde(rename = "silence")]
         Silence {
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             duration: ::std::option::Option<HumanDuration>,
             ///Button text.
             label: ::std::string::String,
@@ -239,16 +60,6 @@ pub mod types {
     }
     /**The publisher-chosen key an `ack` or `choice` action is addressed by, stable
 across revisions (interactions dedup per user and key, §2.3).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The publisher-chosen key an `ack` or `choice` action is addressed by, stable\nacross revisions (interactions dedup per user and key, §2.3).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -278,32 +89,19 @@ across revisions (interactions dedup per user and key, §2.3).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ActionKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ActionKey {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ActionKey {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     /**The action set of one revision: at most [`MAX_ACTIONS`] with unique keys, in
 display priority order (§2.3).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The action set of one revision: at most [`MAX_ACTIONS`] with unique keys, in\ndisplay priority order (§2.3).",
-    ///  "type": "array",
-    ///  "items": {
-    ///    "$ref": "#/components/schemas/Action"
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(transparent)]
     pub struct Actions(pub ::std::vec::Vec<Action>);
@@ -324,32 +122,6 @@ display priority order (§2.3).*/
         }
     }
     ///Add somebody to a channel.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Add somebody to a channel.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "principal",
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "principal": {
-    ///      "$ref": "#/components/schemas/Principal"
-    ///    },
-    ///    "scopes": {
-    ///      "description": "What they may do there.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Scope"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AddMemberBody {
         pub principal: Principal,
@@ -357,43 +129,6 @@ display priority order (§2.3).*/
         pub scopes: ::std::vec::Vec<Scope>,
     }
     ///One alert of an Alertmanager webhook.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One alert of an Alertmanager webhook.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "status"
-    ///  ],
-    ///  "properties": {
-    ///    "annotations": {
-    ///      "description": "`summary` joins the title, `description` is the body.",
-    ///      "type": "object",
-    ///      "additionalProperties": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "fingerprint": {
-    ///      "description": "Upsert key, so a resolution revises the notification its firing created.",
-    ///      "type": "string"
-    ///    },
-    ///    "labels": {
-    ///      "description": "`alertname` and `severity` are read; `severity`, `job` and `namespace` become tags.",
-    ///      "type": "object",
-    ///      "additionalProperties": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "status": {
-    ///      "description": "`firing` or `resolved`.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Alert {
         ///`summary` joins the title, `description` is the body.
@@ -406,7 +141,7 @@ display priority order (§2.3).*/
             ::std::string::String,
         >,
         ///Upsert key, so a resolution revises the notification its firing created.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub fingerprint: ::std::option::Option<::std::string::String>,
         ///`alertname` and `severity` are read; `severity`, `job` and `namespace` become tags.
         #[serde(
@@ -421,122 +156,12 @@ display priority order (§2.3).*/
         pub status: ::std::string::String,
     }
     ///The Alertmanager webhook payload; only the fields used here are described.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The Alertmanager webhook payload; only the fields used here are described.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "alerts"
-    ///  ],
-    ///  "properties": {
-    ///    "alerts": {
-    ///      "description": "One notification is upserted per alert.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Alert"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AlertmanagerBody {
         ///One notification is upserted per alert.
         pub alerts: ::std::vec::Vec<Alert>,
     }
     ///The public half of an API key: everything `GET /apikeys` may show (§5.2, T12).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The public half of an API key: everything `GET /apikeys` may show (§5.2, T12).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channels",
-    ///    "created_at",
-    ///    "id",
-    ///    "owner",
-    ///    "prefix",
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "channels": {
-    ///      "description": "Which channels it may do it in; empty means none.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ChannelId"
-    ///      }
-    ///    },
-    ///    "created_at": {
-    ///      "description": "When it was created.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "expires_at": {
-    ///      "description": "Optional expiry; rotation is left to operator policy (§5.2).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/ApiKeyId"
-    ///    },
-    ///    "label": {
-    ///      "description": "A label so a human can tell two keys apart before revoking one.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "last_used_at": {
-    ///      "description": "Last successful authentication.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "owner": {
-    ///      "$ref": "#/components/schemas/ApiKeyOwner"
-    ///    },
-    ///    "prefix": {
-    ///      "$ref": "#/components/schemas/ApiKeyPrefix"
-    ///    },
-    ///    "publish_per_minute": {
-    ///      "description": "This key's own publish ceiling, narrowing the channel's (§8.2); set by platform admins only.",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "revoked_at": {
-    ///      "description": "Set on revocation, which takes effect immediately.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "scopes": {
-    ///      "description": "What it may do.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Scope"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiKey {
         ///Which channels it may do it in; empty means none.
@@ -544,39 +169,29 @@ display priority order (§2.3).*/
         ///When it was created.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Optional expiry; rotation is left to operator policy (§5.2).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         pub id: ApiKeyId,
         ///A label so a human can tell two keys apart before revoking one.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub label: ::std::option::Option<::std::string::String>,
         ///Last successful authentication.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub last_used_at: ::std::option::Option<
             ::chrono::DateTime<::chrono::offset::Utc>,
         >,
         pub owner: ApiKeyOwner,
         pub prefix: ApiKeyPrefix,
         ///This key's own publish ceiling, narrowing the channel's (§8.2); set by platform admins only.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
         ///Set on revocation, which takes effect immediately.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///What it may do.
         pub scopes: ::std::vec::Vec<Scope>,
     }
     ///An API key. Identifies the key, never its secret (design §5.2).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An API key. Identifies the key, never its secret (design §5.2).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -606,121 +221,25 @@ display priority order (§2.3).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ApiKeyId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ApiKeyId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ApiKeyId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///Narrow (or clear) one key's own rate-limit ceiling.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Narrow (or clear) one key's own rate-limit ceiling.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "publish_per_minute": {
-    ///      "description": "The new ceiling, or `null` to fall back to the channel's own (design §8.2).",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct ApiKeyLimitBody {
         ///The new ceiling, or `null` to fall back to the channel's own (design §8.2).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
     }
-    impl ::std::default::Default for ApiKeyLimitBody {
-        fn default() -> Self {
-            Self {
-                publish_per_minute: Default::default(),
-            }
-        }
-    }
     ///The owner of an API key, which decides publish attribution (§5.2).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The owner of an API key, which decides publish attribution (§5.2).",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "A personal key, for one human's scripting; never for team bots (§5.2).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "id",
-    ///        "owner"
-    ///      ],
-    ///      "properties": {
-    ///        "id": {
-    ///          "$ref": "#/components/schemas/UserId"
-    ///        },
-    ///        "owner": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "user"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "A service account key — the recommended shape for anything durable.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "id",
-    ///        "owner"
-    ///      ],
-    ///      "properties": {
-    ///        "id": {
-    ///          "$ref": "#/components/schemas/ServiceAccountId"
-    ///        },
-    ///        "owner": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "service_account"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "A channel key: owned by the channel, attributable to nothing finer.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "id",
-    ///        "owner"
-    ///      ],
-    ///      "properties": {
-    ///        "id": {
-    ///          "$ref": "#/components/schemas/ChannelId"
-    ///        },
-    ///        "owner": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "channel"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "owner", content = "id")]
     pub enum ApiKeyOwner {
@@ -750,16 +269,6 @@ display priority order (§2.3).*/
         }
     }
     ///The indexed lookup prefix of a key: the `<prefix>` of `wnk_<prefix>_<secret>`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The indexed lookup prefix of a key: the `<prefix>` of `wnk_<prefix>_<secret>`.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -789,28 +298,18 @@ display priority order (§2.3).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ApiKeyPrefix {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ApiKeyPrefix {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ApiKeyPrefix {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///An uploaded attachment, referenced by a payload rather than embedded (§2.3).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An uploaded attachment, referenced by a payload rather than embedded (§2.3).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -840,35 +339,18 @@ display priority order (§2.3).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for AttachmentId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for AttachmentId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for AttachmentId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///Who performed an audited action: an authenticated principal, or the GitOps configuration.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Who performed an audited action: an authenticated principal, or the GitOps configuration.",
-    ///  "oneOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/Configured"
-    ///    },
-    ///    {
-    ///      "$ref": "#/components/schemas/Principal"
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(untagged)]
     pub enum AuditActor {
@@ -886,48 +368,6 @@ display priority order (§2.3).*/
         }
     }
     ///One administrative act.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One administrative act.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "action",
-    ///    "actor",
-    ///    "at"
-    ///  ],
-    ///  "properties": {
-    ///    "action": {
-    ///      "description": "What they did — one of the constants in [`actions`].",
-    ///      "type": "string"
-    ///    },
-    ///    "actor": {
-    ///      "$ref": "#/components/schemas/AuditActor"
-    ///    },
-    ///    "at": {
-    ///      "description": "When.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "channel": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    },
-    ///    "detail": {
-    ///      "description": "Extra context such as the scopes granted or the previous value; never secrets or payloads."
-    ///    },
-    ///    "target": {
-    ///      "description": "What it was done to, e.g. an id. Absent when the action has no single target.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AuditEntry {
         ///What they did — one of the constants in [`actions`].
@@ -935,55 +375,29 @@ display priority order (§2.3).*/
         pub actor: AuditActor,
         ///When.
         pub at: ::chrono::DateTime<::chrono::offset::Utc>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub channel: ::std::option::Option<ChannelId>,
         ///Extra context such as the scopes granted or the previous value; never secrets or payloads.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub detail: ::std::option::Option<::serde_json::Value>,
         ///What it was done to, e.g. an id. Absent when the action has no single target.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub target: ::std::option::Option<::std::string::String>,
     }
     ///A principal plus the display label clients show next to revisions, interactions and receipts (§2.4, §8.1).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A principal plus the display label clients show next to revisions, interactions and receipts (§2.4, §8.1).",
-    ///  "allOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/Principal"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "properties": {
-    ///        "display_name": {
-    ///          "description": "The name to show; absent for principals without a profile (clients fall back to the reference).",
-    ///          "type": [
-    ///            "string",
-    ///            "null"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(untagged)]
     pub enum Author {
         Variant0 {
             ///The name to show; absent for principals without a profile (clients fall back to the reference).
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             id: UserId,
             kind: AuthorVariant0Kind,
         },
         Variant1 {
             ///The name to show; absent for principals without a profile (clients fall back to the reference).
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             id: ServiceAccountId,
             kind: AuthorVariant1Kind,
@@ -991,14 +405,14 @@ display priority order (§2.3).*/
         Variant2 {
             channel: ChannelId,
             ///The name to show; absent for principals without a profile (clients fall back to the reference).
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             key: ApiKeyId,
             kind: AuthorVariant2Kind,
         },
         Variant3 {
             ///The name to show; absent for principals without a profile (clients fall back to the reference).
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             display_name: ::std::option::Option<::std::string::String>,
             ///The OIDC issuer that vouched for the job.
             issuer: ::std::string::String,
@@ -1008,18 +422,6 @@ display priority order (§2.3).*/
         },
     }
     ///`AuthorVariant0Kind`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "user"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1062,14 +464,6 @@ display priority order (§2.3).*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant0Kind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant0Kind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -1079,18 +473,6 @@ display priority order (§2.3).*/
         }
     }
     ///`AuthorVariant1Kind`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "service_account"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1133,14 +515,6 @@ display priority order (§2.3).*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant1Kind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant1Kind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -1150,18 +524,6 @@ display priority order (§2.3).*/
         }
     }
     ///`AuthorVariant2Kind`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "channel_key"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1204,14 +566,6 @@ display priority order (§2.3).*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant2Kind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant2Kind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -1221,18 +575,6 @@ display priority order (§2.3).*/
         }
     }
     ///`AuthorVariant3Kind`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "ci_job"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1275,14 +617,6 @@ display priority order (§2.3).*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for AuthorVariant3Kind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant3Kind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -1292,17 +626,6 @@ display priority order (§2.3).*/
         }
     }
     ///The body of an avatar upload: the raw image bytes (`format: binary`).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The body of an avatar upload: the raw image bytes (`format: binary`).",
-    ///  "type": "string",
-    ///  "format": "binary"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1332,70 +655,22 @@ display priority order (§2.3).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for AvatarUpload {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for AvatarUpload {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for AvatarUpload {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///A channel.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A channel.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id",
-    ///    "members",
-    ///    "origin",
-    ///    "policy"
-    ///  ],
-    ///  "properties": {
-    ///    "display_name": {
-    ///      "description": "Human label. Falls back to the id when unset.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "group_access": {
-    ///      "description": "Access granted to whole identity-provider groups (§11), resolved per request.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/GroupBinding"
-    ///      }
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    },
-    ///    "members": {
-    ///      "description": "Its members, users and service accounts alike.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Membership"
-    ///      }
-    ///    },
-    ///    "origin": {
-    ///      "$ref": "#/components/schemas/Origin"
-    ///    },
-    ///    "policy": {
-    ///      "$ref": "#/components/schemas/ChannelPolicy"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Channel {
         ///Human label. Falls back to the id when unset.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         ///Access granted to whole identity-provider groups (§11), resolved per request.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -1407,46 +682,6 @@ display priority order (§2.3).*/
         pub policy: ChannelPolicy,
     }
     ///What the console shows for one channel; member counts, not names (§2.4).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What the console shows for one channel; member counts, not names (§2.4).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "group_bindings",
-    ///    "id",
-    ///    "members",
-    ///    "origin_managed",
-    ///    "receipts_enabled"
-    ///  ],
-    ///  "properties": {
-    ///    "group_bindings": {
-    ///      "description": "How many identity-provider groups are bound to it.",
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    },
-    ///    "members": {
-    ///      "description": "How many members it has.",
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "origin_managed": {
-    ///      "description": "Whether GitOps owns it (§11) — the badge that makes the UI read-only.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "receipts_enabled": {
-    ///      "description": "Whether it collects receipts (§7.3).",
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ChannelCard {
         ///How many identity-provider groups are bound to it.
@@ -1460,16 +695,6 @@ display priority order (§2.3).*/
         pub receipts_enabled: bool,
     }
     ///A channel, named by the operator: `ci-infra`, `cluster-ovh-1`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A channel, named by the operator: `ci-infra`, `cluster-ovh-1`.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1499,65 +724,25 @@ display priority order (§2.3).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ChannelId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ChannelId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ChannelId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///The knobs that apply to everything published in a channel.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The knobs that apply to everything published in a channel.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "close_after",
-    ///    "default_priority",
-    ///    "receipts_enabled",
-    ///    "ttl"
-    ///  ],
-    ///  "properties": {
-    ///    "close_after": {
-    ///      "$ref": "#/components/schemas/CloseAfter"
-    ///    },
-    ///    "default_priority": {
-    ///      "$ref": "#/components/schemas/Priority"
-    ///    },
-    ///    "publish_per_minute": {
-    ///      "description": "This channel's own publish ceiling per minute, overriding the §8.2 default;\nset through GitOps only (§11).",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "receipts_enabled": {
-    ///      "description": "Whether delivery and read receipts are collected and shown as \"seen by 3/5\" (§7.3); opt-in.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "ttl": {
-    ///      "$ref": "#/components/schemas/TtlPolicy"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ChannelPolicy {
         pub close_after: CloseAfter,
         pub default_priority: Priority,
         /**This channel's own publish ceiling per minute, overriding the §8.2 default;
 set through GitOps only (§11).*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
         ///Whether delivery and read receipts are collected and shown as "seen by 3/5" (§7.3); opt-in.
         pub receipts_enabled: bool,
@@ -1565,86 +750,21 @@ set through GitOps only (§11).*/
     }
     /**A partial change to a channel's policy (design §8): absent fields are left alone.
 Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A partial change to a channel's policy (design §8): absent fields are left alone.\nLifting a ceiling is spelled `\"0\"` (unbounded, §7.2bis), never `null`.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "close_after": {
-    ///      "$ref": "#/components/schemas/CloseAfter"
-    ///    },
-    ///    "default_priority": {
-    ///      "$ref": "#/components/schemas/Priority"
-    ///    },
-    ///    "default_ttl": {
-    ///      "$ref": "#/components/schemas/Ttl"
-    ///    },
-    ///    "max_ttl": {
-    ///      "$ref": "#/components/schemas/Ttl"
-    ///    },
-    ///    "receipts_enabled": {
-    ///      "description": "Whether delivery and read receipts are collected here (§7.3).",
-    ///      "type": [
-    ///        "boolean",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct ChannelPolicyBody {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub close_after: ::std::option::Option<CloseAfter>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_priority: ::std::option::Option<Priority>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_ttl: ::std::option::Option<Ttl>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub max_ttl: ::std::option::Option<Ttl>,
         ///Whether delivery and read receipts are collected here (§7.3).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub receipts_enabled: ::std::option::Option<bool>,
     }
-    impl ::std::default::Default for ChannelPolicyBody {
-        fn default() -> Self {
-            Self {
-                close_after: Default::default(),
-                default_priority: Default::default(),
-                default_ttl: Default::default(),
-                max_ttl: Default::default(),
-                receipts_enabled: Default::default(),
-            }
-        }
-    }
     ///One option of a `choice` action.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One option of a `choice` action.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "key",
-    ///    "label"
-    ///  ],
-    ///  "properties": {
-    ///    "key": {
-    ///      "$ref": "#/components/schemas/ChoiceOptionKey"
-    ///    },
-    ///    "label": {
-    ///      "description": "What the user reads.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ChoiceOption {
         pub key: ChoiceOptionKey,
@@ -1652,16 +772,6 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
         pub label: ::std::string::String,
     }
     ///One option of a `choice` action.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One option of a `choice` action.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1691,28 +801,18 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ChoiceOptionKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ChoiceOptionKey {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ChoiceOptionKey {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///How long a lifecycle notification may go without activity before the server closes it: a single-unit duration such as `7d`, or `0` to never close it automatically.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How long a lifecycle notification may go without activity before the server closes it: a single-unit duration such as `7d`, or `0` to never close it automatically.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1742,43 +842,18 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for CloseAfter {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for CloseAfter {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for CloseAfter {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///The single-valued tag behind [`AuditActor::Configuration`] (an enum so it serialises as `{"kind":"configuration"}`).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The single-valued tag behind [`AuditActor::Configuration`] (an enum so it serialises as `{\"kind\":\"configuration\"}`).",
-    ///  "oneOf": [
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "kind"
-    ///      ],
-    ///      "properties": {
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "configuration"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub enum Configured {
         #[serde(rename = "kind")]
@@ -1790,18 +865,6 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
         }
     }
     ///`ConfiguredKind`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "configuration"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1844,14 +907,6 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for ConfiguredKind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for ConfiguredKind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -1861,51 +916,6 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
         }
     }
     ///One live connection.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One live connection.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "client",
-    ///    "credential",
-    ///    "current",
-    ///    "id",
-    ///    "opened_at",
-    ///    "transport"
-    ///  ],
-    ///  "properties": {
-    ///    "client": {
-    ///      "description": "What the client calls itself (its `User-Agent`).",
-    ///      "type": "string"
-    ///    },
-    ///    "credential": {
-    ///      "description": "How it signed in: `session`, `key`, `device:<id>` or `ci`.",
-    ///      "type": "string"
-    ///    },
-    ///    "current": {
-    ///      "description": "Whether it uses the credential of this very request (this browser, this CLI).",
-    ///      "type": "boolean"
-    ///    },
-    ///    "id": {
-    ///      "description": "The id `DELETE /streams/{id}` takes.",
-    ///      "type": "string"
-    ///    },
-    ///    "opened_at": {
-    ///      "description": "When it connected.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "transport": {
-    ///      "description": "`sse` or `websocket`.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Connection {
         ///What the client calls itself (its `User-Agent`).
@@ -1922,78 +932,22 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
         pub transport: ::std::string::String,
     }
     ///The validated body of a revision.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The validated body of a revision.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "title"
-    ///  ],
-    ///  "properties": {
-    ///    "actions": {
-    ///      "$ref": "#/components/schemas/Actions"
-    ///    },
-    ///    "body": {
-    ///      "description": "Markdown; raw HTML is inert, escaped at render time (§2.3, §10.3).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "group_key": {
-    ///      "description": "Client-side grouping key, and the unit a group-scoped silence acts on (§2.3).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "icon": {
-    ///      "description": "Name of a client-side icon, e.g. `cluster`; unknown names fall back to the default.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "image": {
-    ///      "$ref": "#/components/schemas/Image"
-    ///    },
-    ///    "progress": {
-    ///      "$ref": "#/components/schemas/Progress"
-    ///    },
-    ///    "tags": {
-    ///      "description": "Free-form labels, normalised to lowercase and deduplicated.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "title": {
-    ///      "description": "One line, always present; what a push shows when there is room for nothing else.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Content {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub actions: ::std::option::Option<Actions>,
         ///Markdown; raw HTML is inert, escaped at render time (§2.3, §10.3).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub body: ::std::option::Option<::std::string::String>,
         ///Client-side grouping key, and the unit a group-scoped silence acts on (§2.3).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub group_key: ::std::option::Option<::std::string::String>,
         ///Name of a client-side icon, e.g. `cluster`; unknown names fall back to the default.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub icon: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub image: ::std::option::Option<Image>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub progress: ::std::option::Option<Progress>,
         ///Free-form labels, normalised to lowercase and deduplicated.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -2002,253 +956,66 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
         pub title: ::std::string::String,
     }
     ///What a publisher sends, before validation (unknown fields tolerated because it is flattened).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a publisher sends, before validation (unknown fields tolerated because it is flattened).",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "actions": {
-    ///      "$ref": "#/components/schemas/Actions"
-    ///    },
-    ///    "body": {
-    ///      "description": "See [`Content::body`].",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "group_key": {
-    ///      "description": "See [`Content::group_key`].",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "icon": {
-    ///      "description": "See [`Content::icon`].",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "image": {
-    ///      "$ref": "#/components/schemas/Image"
-    ///    },
-    ///    "progress": {
-    ///      "$ref": "#/components/schemas/Progress"
-    ///    },
-    ///    "tags": {
-    ///      "description": "See [`Content::tags`].",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "title": {
-    ///      "description": "See [`Content::title`]; absent means \"inherit\" on a revision and is refused on creation.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct ContentDraft {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub actions: ::std::option::Option<Actions>,
         ///See [`Content::body`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub body: ::std::option::Option<::std::string::String>,
         ///See [`Content::group_key`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub group_key: ::std::option::Option<::std::string::String>,
         ///See [`Content::icon`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub icon: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub image: ::std::option::Option<Image>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub progress: ::std::option::Option<Progress>,
         ///See [`Content::tags`].
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
         ///See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
     }
-    impl ::std::default::Default for ContentDraft {
-        fn default() -> Self {
-            Self {
-                actions: Default::default(),
-                body: Default::default(),
-                group_key: Default::default(),
-                icon: Default::default(),
-                image: Default::default(),
-                progress: Default::default(),
-                tags: Default::default(),
-                title: Default::default(),
-            }
-        }
-    }
     ///What it takes to create one.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What it takes to create one.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id"
-    ///  ],
-    ///  "properties": {
-    ///    "description": {
-    ///      "description": "What it is for, for whoever finds it in an audit log.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "display_name": {
-    ///      "description": "What clients show instead of the id.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "id": {
-    ///      "description": "The name it will be known by everywhere (author, audit log, member list).",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateAccountBody {
         ///What it is for, for whoever finds it in an audit log.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub description: ::std::option::Option<::std::string::String>,
         ///What clients show instead of the id.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         ///The name it will be known by everywhere (author, audit log, member list).
         pub id: ::std::string::String,
     }
     ///Create a channel through the API. GitOps-managed ones come from config instead.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Create a channel through the API. GitOps-managed ones come from config instead.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id"
-    ///  ],
-    ///  "properties": {
-    ///    "display_name": {
-    ///      "description": "A human label, when the id is not one.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateChannelBody {
         ///A human label, when the id is not one.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         pub id: ChannelId,
     }
     ///Mint an API key.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Mint an API key.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channels",
-    ///    "owner",
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "channels": {
-    ///      "description": "Where it may do it.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ChannelId"
-    ///      }
-    ///    },
-    ///    "expires_at": {
-    ///      "description": "When it stops working; absent means never.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "label": {
-    ///      "description": "A label, so a key list is readable a year later.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "owner": {
-    ///      "$ref": "#/components/schemas/ApiKeyOwner"
-    ///    },
-    ///    "scopes": {
-    ///      "description": "What it may do.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Scope"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateKeyBody {
         ///Where it may do it.
         pub channels: ::std::vec::Vec<ChannelId>,
         ///When it stops working; absent means never.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///A label, so a key list is readable a year later.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub label: ::std::option::Option<::std::string::String>,
         pub owner: ApiKeyOwner,
         ///What it may do.
         pub scopes: ::std::vec::Vec<Scope>,
     }
     ///A position in the global event sequence.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A position in the global event sequence.",
-    ///  "examples": [
-    ///    "evt_00000000000042"
-    ///  ],
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -2278,37 +1045,18 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for Cursor {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for Cursor {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for Cursor {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///A day of the week, as the wire spells it (`"mon"`…).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A day of the week, as the wire spells it (`\"mon\"`…).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "mon",
-    ///    "tue",
-    ///    "wed",
-    ///    "thu",
-    ///    "fri",
-    ///    "sat",
-    ///    "sun"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -2375,14 +1123,6 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Day {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Day {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -2392,56 +1132,6 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
         }
     }
     ///A delivery that ran out of retries (design §7.1bis).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A delivery that ran out of retries (design §7.1bis).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "attempts",
-    ///    "channel",
-    ///    "dead_at",
-    ///    "first_failed_at",
-    ///    "id",
-    ///    "last_error",
-    ///    "sink"
-    ///  ],
-    ///  "properties": {
-    ///    "attempts": {
-    ///      "description": "How many attempts it took before giving up.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "channel": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    },
-    ///    "dead_at": {
-    ///      "description": "When it was given up on.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "first_failed_at": {
-    ///      "description": "When it first failed.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/DeliveryId"
-    ///    },
-    ///    "last_error": {
-    ///      "description": "The last failure.",
-    ///      "type": "string"
-    ///    },
-    ///    "sink": {
-    ///      "$ref": "#/components/schemas/SinkId"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DeadLetter {
         ///How many attempts it took before giving up.
@@ -2458,16 +1148,6 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
     }
     /**One outbound delivery chain (§7.1bis), sent as `X-Weebo-Delivery` and reused
 across retries as the consumer's idempotency key.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One outbound delivery chain (§7.1bis), sent as `X-Weebo-Delivery` and reused\nacross retries as the consumer's idempotency key.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -2497,56 +1177,22 @@ across retries as the consumer's idempotency key.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for DeliveryId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for DeliveryId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for DeliveryId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///The state of a single dependency.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The state of a single dependency.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "healthy",
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "detail": {
-    ///      "description": "Failure detail, omitted when healthy — never contains credentials.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "healthy": {
-    ///      "description": "Whether the last probe succeeded.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "name": {
-    ///      "description": "Dependency name, e.g. `postgres`, `attachments`, `jwks`, `eventbus`.",
-    ///      "examples": [
-    ///        "postgres"
-    ///      ],
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DependencyCheck {
         ///Failure detail, omitted when healthy — never contains credentials.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub detail: ::std::option::Option<::std::string::String>,
         ///Whether the last probe succeeded.
         pub healthy: bool,
@@ -2554,68 +1200,9 @@ across retries as the consumer's idempotency key.*/
         pub name: ::std::string::String,
     }
     ///An enrolled device.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An enrolled device.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "enrolled_at",
-    ///    "id",
-    ///    "label",
-    ///    "owner",
-    ///    "transport"
-    ///  ],
-    ///  "properties": {
-    ///    "cursor": {
-    ///      "$ref": "#/components/schemas/Cursor"
-    ///    },
-    ///    "enrolled_at": {
-    ///      "description": "When it was enrolled.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/DeviceId"
-    ///    },
-    ///    "label": {
-    ///      "description": "What the owner calls it in the device list.",
-    ///      "type": "string"
-    ///    },
-    ///    "last_seen_at": {
-    ///      "description": "Last time it was seen, for the device list.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "owner": {
-    ///      "$ref": "#/components/schemas/Principal"
-    ///    },
-    ///    "public_key": {
-    ///      "$ref": "#/components/schemas/DevicePublicKey"
-    ///    },
-    ///    "revoked_at": {
-    ///      "description": "Set on revocation.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "transport": {
-    ///      "$ref": "#/components/schemas/PushTransport"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Device {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub cursor: ::std::option::Option<Cursor>,
         ///When it was enrolled.
         pub enrolled_at: ::chrono::DateTime<::chrono::offset::Utc>,
@@ -2623,29 +1210,19 @@ across retries as the consumer's idempotency key.*/
         ///What the owner calls it in the device list.
         pub label: ::std::string::String,
         ///Last time it was seen, for the device list.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub last_seen_at: ::std::option::Option<
             ::chrono::DateTime<::chrono::offset::Utc>,
         >,
         pub owner: Principal,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub public_key: ::std::option::Option<DevicePublicKey>,
         ///Set on revocation.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         pub transport: PushTransport,
     }
     ///An enrolled device: a browser, a desktop app, a phone (design §6.2).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An enrolled device: a browser, a desktop app, a phone (design §6.2).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -2675,29 +1252,18 @@ across retries as the consumer's idempotency key.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for DeviceId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for DeviceId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for DeviceId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///Base64url, 32 bytes
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Base64url, 32 bytes",
-    ///  "type": "string",
-    ///  "format": "byte"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -2727,65 +1293,18 @@ across retries as the consumer's idempotency key.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for DevicePublicKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for DevicePublicKey {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for DevicePublicKey {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///One user's delivery preferences (§7.4), carried whole by the `preference` event (§8.1).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One user's delivery preferences (§7.4), carried whole by the `preference` event (§8.1).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "user"
-    ///  ],
-    ///  "properties": {
-    ///    "exceptions": {
-    ///      "description": "Channels that ring anyway (the on-call case).",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ChannelId"
-    ///      }
-    ///    },
-    ///    "quiet_hours": {
-    ///      "description": "Recurring weekly windows.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/QuietHours"
-    ///      }
-    ///    },
-    ///    "scope": {
-    ///      "$ref": "#/components/schemas/DndScope"
-    ///    },
-    ///    "until": {
-    ///      "description": "The quick toggle: quiet until this instant, whatever the schedule says.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "urgent_bypasses": {
-    ///      "description": "Whether `urgent` is allowed through; the recipient's opt-in (§2.3, §7.4).",
-    ///      "type": "boolean"
-    ///    },
-    ///    "user": {
-    ///      "$ref": "#/components/schemas/UserId"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Dnd {
         ///Channels that ring anyway (the on-call case).
@@ -2794,60 +1313,19 @@ across retries as the consumer's idempotency key.*/
         ///Recurring weekly windows.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub quiet_hours: ::std::vec::Vec<QuietHours>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scope: ::std::option::Option<DndScope>,
         ///The quick toggle: quiet until this instant, whatever the schedule says.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub until: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///Whether `urgent` is allowed through; the recipient's opt-in (§2.3, §7.4).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub urgent_bypasses: ::std::option::Option<bool>,
         pub user: UserId,
     }
     /**A do-not-disturb as a caller states it; the subject is decided by the use case,
 never taken from input.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A do-not-disturb as a caller states it; the subject is decided by the use case,\nnever taken from input.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "exceptions": {
-    ///      "description": "Channels that ring anyway.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ChannelId"
-    ///      }
-    ///    },
-    ///    "quiet_hours": {
-    ///      "description": "Recurring weekly windows. Absent means none.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/QuietHours"
-    ///      }
-    ///    },
-    ///    "scope": {
-    ///      "$ref": "#/components/schemas/DndScope"
-    ///    },
-    ///    "until": {
-    ///      "description": "Quiet until this instant. Absent ends the quick toggle.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "urgent_bypasses": {
-    ///      "description": "Whether `urgent` may come through.",
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct DndDraft {
         ///Channels that ring anyway.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -2855,76 +1333,16 @@ never taken from input.*/
         ///Recurring weekly windows. Absent means none.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub quiet_hours: ::std::vec::Vec<QuietHours>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scope: ::std::option::Option<DndScope>,
         ///Quiet until this instant. Absent ends the quick toggle.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub until: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///Whether `urgent` may come through.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub urgent_bypasses: ::std::option::Option<bool>,
     }
-    impl ::std::default::Default for DndDraft {
-        fn default() -> Self {
-            Self {
-                exceptions: Default::default(),
-                quiet_hours: Default::default(),
-                scope: Default::default(),
-                until: Default::default(),
-                urgent_bypasses: Default::default(),
-            }
-        }
-    }
     ///How wide a do-not-disturb reaches (§7.4).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How wide a do-not-disturb reaches (§7.4).",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "Every channel. What a preference means when it does not say.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "kind"
-    ///      ],
-    ///      "properties": {
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "everything"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Only these ones are quieted; the rest ring as usual.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "channels",
-    ///        "kind"
-    ///      ],
-    ///      "properties": {
-    ///        "channels": {
-    ///          "description": "The channels the preference applies to.",
-    ///          "type": "array",
-    ///          "items": {
-    ///            "$ref": "#/components/schemas/ChannelId"
-    ///          }
-    ///        },
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "channels"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "kind", content = "channels")]
     pub enum DndScope {
@@ -2940,340 +1358,15 @@ never taken from input.*/
         }
     }
     ///Enrol a device.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Enrol a device.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "label",
-    ///    "transport"
-    ///  ],
-    ///  "properties": {
-    ///    "label": {
-    ///      "description": "What to call it in the device list.",
-    ///      "type": "string"
-    ///    },
-    ///    "public_key": {
-    ///      "$ref": "#/components/schemas/DevicePublicKey"
-    ///    },
-    ///    "transport": {
-    ///      "$ref": "#/components/schemas/PushTransport"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EnrolBody {
         ///What to call it in the device list.
         pub label: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub public_key: ::std::option::Option<DevicePublicKey>,
         pub transport: PushTransport,
     }
     ///One row of the event log, flattened as design §8.1 puts it on the wire: the envelope, the audience and the payload share one object.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One row of the event log, flattened as design §8.1 puts it on the wire: the envelope, the audience and the payload share one object.",
-    ///  "oneOf": [
-    ///    {
-    ///      "title": "LoggedRevision",
-    ///      "allOf": [
-    ///        {
-    ///          "$ref": "#/components/schemas/RevisionEvent"
-    ///        },
-    ///        {
-    ///          "type": "object",
-    ///          "required": [
-    ///            "audience",
-    ///            "channel_id",
-    ///            "cursor",
-    ///            "event",
-    ///            "logged_at"
-    ///          ],
-    ///          "properties": {
-    ///            "audience": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "channel"
-    ///              ]
-    ///            },
-    ///            "channel_id": {
-    ///              "$ref": "#/components/schemas/ChannelId"
-    ///            },
-    ///            "cursor": {
-    ///              "$ref": "#/components/schemas/Cursor"
-    ///            },
-    ///            "event": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "revision"
-    ///              ]
-    ///            },
-    ///            "logged_at": {
-    ///              "description": "When it was appended, by the server's clock.",
-    ///              "type": "string",
-    ///              "format": "date-time"
-    ///            },
-    ///            "muted_by_dnd": {
-    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
-    ///              "type": "boolean"
-    ///            }
-    ///          }
-    ///        }
-    ///      ]
-    ///    },
-    ///    {
-    ///      "title": "LoggedReceipt",
-    ///      "allOf": [
-    ///        {
-    ///          "$ref": "#/components/schemas/Receipt"
-    ///        },
-    ///        {
-    ///          "type": "object",
-    ///          "required": [
-    ///            "audience",
-    ///            "channel_id",
-    ///            "cursor",
-    ///            "event",
-    ///            "logged_at"
-    ///          ],
-    ///          "properties": {
-    ///            "audience": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "channel"
-    ///              ]
-    ///            },
-    ///            "channel_id": {
-    ///              "$ref": "#/components/schemas/ChannelId"
-    ///            },
-    ///            "cursor": {
-    ///              "$ref": "#/components/schemas/Cursor"
-    ///            },
-    ///            "event": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "receipt"
-    ///              ]
-    ///            },
-    ///            "logged_at": {
-    ///              "description": "When it was appended, by the server's clock.",
-    ///              "type": "string",
-    ///              "format": "date-time"
-    ///            },
-    ///            "muted_by_dnd": {
-    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
-    ///              "type": "boolean"
-    ///            }
-    ///          }
-    ///        }
-    ///      ]
-    ///    },
-    ///    {
-    ///      "title": "LoggedInteraction",
-    ///      "allOf": [
-    ///        {
-    ///          "$ref": "#/components/schemas/InteractionRecord"
-    ///        },
-    ///        {
-    ///          "type": "object",
-    ///          "required": [
-    ///            "audience",
-    ///            "channel_id",
-    ///            "cursor",
-    ///            "event",
-    ///            "logged_at"
-    ///          ],
-    ///          "properties": {
-    ///            "audience": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "channel"
-    ///              ]
-    ///            },
-    ///            "channel_id": {
-    ///              "$ref": "#/components/schemas/ChannelId"
-    ///            },
-    ///            "cursor": {
-    ///              "$ref": "#/components/schemas/Cursor"
-    ///            },
-    ///            "event": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "interaction"
-    ///              ]
-    ///            },
-    ///            "logged_at": {
-    ///              "description": "When it was appended, by the server's clock.",
-    ///              "type": "string",
-    ///              "format": "date-time"
-    ///            },
-    ///            "muted_by_dnd": {
-    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
-    ///              "type": "boolean"
-    ///            }
-    ///          }
-    ///        }
-    ///      ]
-    ///    },
-    ///    {
-    ///      "title": "LoggedTombstone",
-    ///      "description": "A notification stopped existing; clients drop it locally.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "audience",
-    ///        "channel_id",
-    ///        "cursor",
-    ///        "event",
-    ///        "logged_at",
-    ///        "notification_id",
-    ///        "reason"
-    ///      ],
-    ///      "properties": {
-    ///        "audience": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "channel"
-    ///          ]
-    ///        },
-    ///        "channel_id": {
-    ///          "$ref": "#/components/schemas/ChannelId"
-    ///        },
-    ///        "cursor": {
-    ///          "$ref": "#/components/schemas/Cursor"
-    ///        },
-    ///        "event": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "tombstone"
-    ///          ]
-    ///        },
-    ///        "logged_at": {
-    ///          "description": "When it was appended, by the server's clock.",
-    ///          "type": "string",
-    ///          "format": "date-time"
-    ///        },
-    ///        "muted_by_dnd": {
-    ///          "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
-    ///          "type": "boolean"
-    ///        },
-    ///        "notification_id": {
-    ///          "$ref": "#/components/schemas/NotificationId"
-    ///        },
-    ///        "reason": {
-    ///          "$ref": "#/components/schemas/TombstoneReason"
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "title": "LoggedClosure",
-    ///      "description": "A lifecycle notification was closed by the server because nothing had happened to it for longer than its channel allows; clients mark their copy closed rather than dropping it.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "audience",
-    ///        "channel_id",
-    ///        "closed_at",
-    ///        "cursor",
-    ///        "event",
-    ///        "logged_at",
-    ///        "notification_id"
-    ///      ],
-    ///      "properties": {
-    ///        "audience": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "channel"
-    ///          ]
-    ///        },
-    ///        "channel_id": {
-    ///          "$ref": "#/components/schemas/ChannelId"
-    ///        },
-    ///        "closed_at": {
-    ///          "description": "When the server closed it, and therefore when its retention clock starts.",
-    ///          "type": "string",
-    ///          "format": "date-time"
-    ///        },
-    ///        "cursor": {
-    ///          "$ref": "#/components/schemas/Cursor"
-    ///        },
-    ///        "event": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "closure"
-    ///          ]
-    ///        },
-    ///        "logged_at": {
-    ///          "description": "When it was appended, by the server's clock.",
-    ///          "type": "string",
-    ///          "format": "date-time"
-    ///        },
-    ///        "muted_by_dnd": {
-    ///          "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
-    ///          "type": "boolean"
-    ///        },
-    ///        "notification_id": {
-    ///          "$ref": "#/components/schemas/NotificationId"
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "title": "LoggedPreference",
-    ///      "allOf": [
-    ///        {
-    ///          "$ref": "#/components/schemas/PreferenceEvent"
-    ///        },
-    ///        {
-    ///          "type": "object",
-    ///          "required": [
-    ///            "audience",
-    ///            "cursor",
-    ///            "event",
-    ///            "logged_at",
-    ///            "user_id"
-    ///          ],
-    ///          "properties": {
-    ///            "audience": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "user"
-    ///              ]
-    ///            },
-    ///            "cursor": {
-    ///              "$ref": "#/components/schemas/Cursor"
-    ///            },
-    ///            "event": {
-    ///              "type": "string",
-    ///              "enum": [
-    ///                "preference"
-    ///              ]
-    ///            },
-    ///            "logged_at": {
-    ///              "description": "When it was appended, by the server's clock.",
-    ///              "type": "string",
-    ///              "format": "date-time"
-    ///            },
-    ///            "muted_by_dnd": {
-    ///              "description": "Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.",
-    ///              "type": "boolean"
-    ///            },
-    ///            "user_id": {
-    ///              "$ref": "#/components/schemas/UserId"
-    ///            }
-    ///          }
-    ///        }
-    ///      ]
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(untagged)]
     pub enum Event {
@@ -3285,12 +1378,12 @@ never taken from input.*/
             created_at: ::chrono::DateTime<::chrono::offset::Utc>,
             cursor: Cursor,
             event: LoggedRevisionEvent,
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             external_id: ::std::option::Option<ExternalId>,
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
             ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             payload: Content,
@@ -3308,7 +1401,7 @@ never taken from input.*/
             audience: LoggedReceiptAudience,
             channel_id: ChannelId,
             cursor: Cursor,
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             device: ::std::option::Option<DeviceId>,
             event: LoggedReceiptEvent,
             id: ReceiptId,
@@ -3316,7 +1409,7 @@ never taken from input.*/
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
             ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             principal: Principal,
@@ -3332,7 +1425,7 @@ never taken from input.*/
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
             ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             ///When the server recorded it.
@@ -3346,7 +1439,7 @@ never taken from input.*/
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
             ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
             reason: TombstoneReason,
@@ -3361,7 +1454,7 @@ never taken from input.*/
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
             ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             muted_by_dnd: ::std::option::Option<bool>,
             notification_id: NotificationId,
         },
@@ -3373,7 +1466,7 @@ never taken from input.*/
             ///When it was appended, by the server's clock.
             logged_at: ::chrono::DateTime<::chrono::offset::Utc>,
             ///Whether the reader's do-not-disturb was running when this happened. Set per delivery, never stored: a client uses it to suppress its own popup while the inbox fills as usual.
-            #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
             muted_by_dnd: ::std::option::Option<bool>,
             ///Every silence currently in force for them.
             silences: ::std::vec::Vec<Silence>,
@@ -3382,25 +1475,6 @@ never taken from input.*/
         },
     }
     ///The forge's ID token, presented for exchange.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The forge's ID token, presented for exchange.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "token"
-    ///  ],
-    ///  "properties": {
-    ///    "token": {
-    ///      "description": "The OIDC ID token the CI runner got from its forge; in the body, since it is not a\ncredential for this API.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ExchangeBody {
         /**The OIDC ID token the CI runner got from its forge; in the body, since it is not a
@@ -3408,31 +1482,6 @@ credential for this API.*/
         pub token: ::std::string::String,
     }
     ///"3 notifications expired in `ci-infra` while you were away."
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "\"3 notifications expired in `ci-infra` while you were away.\"",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channel",
-    ///    "count"
-    ///  ],
-    ///  "properties": {
-    ///    "channel": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    },
-    ///    "count": {
-    ///      "description": "How many.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ExpiredWhileAway {
         pub channel: ChannelId,
@@ -3441,16 +1490,6 @@ credential for this API.*/
     }
     /**A publisher-supplied identifier for idempotent upserts (§2.2), looser than a
 [`Slug`]; refused if sanitisation would change it.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A publisher-supplied identifier for idempotent upserts (§2.2), looser than a\n[`Slug`]; refused if sanitisation would change it.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -3480,125 +1519,35 @@ credential for this API.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ExternalId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ExternalId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ExternalId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///A Gotify `POST /message` body, as JSON or a form.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A Gotify `POST /message` body, as JSON or a form.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "message"
-    ///  ],
-    ///  "properties": {
-    ///    "extras": {
-    ///      "description": "Gotify extras; `client::notification.click.url` becomes a `view` action.",
-    ///      "type": [
-    ///        "object",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "message": {
-    ///      "description": "The message text.",
-    ///      "type": "string"
-    ///    },
-    ///    "priority": {
-    ///      "description": "Gotify priority: 0-3 low, 4-7 default, 8 high, 9 and above urgent.",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int64"
-    ///    },
-    ///    "title": {
-    ///      "description": "Title; defaults to the channel id.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct GotifyBody {
         ///Gotify extras; `client::notification.click.url` becomes a `view` action.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub extras: ::std::option::Option<
             ::serde_json::Map<::std::string::String, ::serde_json::Value>,
         >,
         ///The message text.
         pub message: ::std::string::String,
         ///Gotify priority: 0-3 low, 4-7 default, 8 high, 9 and above urgent.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub priority: ::std::option::Option<i64>,
         ///Title; defaults to the channel id.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
     }
     ///What Gotify answers, so clients that parse the response keep working.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What Gotify answers, so clients that parse the response keep working.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "appid",
-    ///    "date",
-    ///    "id",
-    ///    "message",
-    ///    "priority",
-    ///    "title"
-    ///  ],
-    ///  "properties": {
-    ///    "appid": {
-    ///      "description": "Always 0: there are no Gotify applications here.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "date": {
-    ///      "description": "When the server received it (RFC 3339).",
-    ///      "type": "string"
-    ///    },
-    ///    "id": {
-    ///      "description": "The event-log position of this publish.",
-    ///      "type": "integer",
-    ///      "format": "int64",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "message": {
-    ///      "description": "The message text.",
-    ///      "type": "string"
-    ///    },
-    ///    "priority": {
-    ///      "description": "The priority as sent.",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "title": {
-    ///      "description": "The title as published.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct GotifyMessage {
         ///Always 0: there are no Gotify applications here.
@@ -3616,33 +1565,6 @@ credential for this API.*/
     }
     /**The scopes everyone in an identity-provider group holds in one channel (§11).
 Resolved from the token's `groups` claim at request time, never stored per user.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The scopes everyone in an identity-provider group holds in one channel (§11).\nResolved from the token's `groups` claim at request time, never stored per user.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "group",
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "group": {
-    ///      "description": "The group as the `groups` claim spells it.",
-    ///      "type": "string"
-    ///    },
-    ///    "scopes": {
-    ///      "description": "What its members may do here.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Scope"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct GroupBinding {
         ///The group as the `groups` claim spells it.
@@ -3651,36 +1573,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub scopes: ::std::vec::Vec<Scope>,
     }
     ///Liveness answer.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Liveness answer.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "status",
-    ///    "version"
-    ///  ],
-    ///  "properties": {
-    ///    "status": {
-    ///      "description": "Always `\"ok\"` — the process answered, which is the whole question.",
-    ///      "examples": [
-    ///        "ok"
-    ///      ],
-    ///      "type": "string"
-    ///    },
-    ///    "version": {
-    ///      "description": "Version of the running binary, to tell replicas apart during a rolling update.",
-    ///      "examples": [
-    ///        "0.1.0"
-    ///      ],
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Health {
         ///Always `"ok"` — the process answered, which is the whole question.
@@ -3689,20 +1581,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub version: ::std::string::String,
     }
     ///A whole-second, single-unit duration: `"90m"` is fine, `"1h30m"` is not.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A whole-second, single-unit duration: `\"90m\"` is fine, `\"1h30m\"` is not.",
-    ///  "examples": [
-    ///    "48h"
-    ///  ],
-    ///  "type": "string",
-    ///  "pattern": "^\\d+[smhdw]$"
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     #[serde(transparent)]
     pub struct HumanDuration(::std::string::String);
@@ -3738,14 +1616,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for HumanDuration {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for HumanDuration {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -3767,56 +1637,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///The image shown with a notification: an uploaded attachment, or a small inline `data:` URI (§2.3, §6.1).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The image shown with a notification: an uploaded attachment, or a small inline `data:` URI (§2.3, §6.1).",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "A file already uploaded to the bucket through a presigned URL.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "kind",
-    ///        "ref"
-    ///      ],
-    ///      "properties": {
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "attachment"
-    ///          ]
-    ///        },
-    ///        "ref": {
-    ///          "$ref": "#/components/schemas/AttachmentId"
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "A small image inlined in the payload, capped at [`MAX_DATA_URI_BYTES`].",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "kind",
-    ///        "uri"
-    ///      ],
-    ///      "properties": {
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "data_uri"
-    ///          ]
-    ///        },
-    ///        "uri": {
-    ///          "description": "The `data:` URI, already checked for type and size.",
-    ///          "type": "string"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "kind")]
     pub enum Image {
@@ -3831,79 +1651,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         },
     }
     ///What a user sent back.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a user sent back.",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "Acknowledgement of the action registered under `key`.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "key",
-    ///        "type"
-    ///      ],
-    ///      "properties": {
-    ///        "key": {
-    ///          "$ref": "#/components/schemas/ActionKey"
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "ack"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Free text (reply actions have no key).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "text",
-    ///        "type"
-    ///      ],
-    ///      "properties": {
-    ///        "text": {
-    ///          "description": "The text, sanitised like any other user content.",
-    ///          "type": "string"
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "reply"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "One option of the `choice` action registered under `key`.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "key",
-    ///        "option",
-    ///        "type"
-    ///      ],
-    ///      "properties": {
-    ///        "key": {
-    ///          "$ref": "#/components/schemas/ActionKey"
-    ///        },
-    ///        "option": {
-    ///          "$ref": "#/components/schemas/ChoiceOptionKey"
-    ///        },
-    ///        "type": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "choice"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "type")]
     pub enum Interaction {
@@ -3921,16 +1668,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         Choice { key: ActionKey, option: ChoiceOptionKey },
     }
     ///One recorded interaction: an acknowledgement, a reply, a pick (design §2.3).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One recorded interaction: an acknowledgement, a reply, a pick (design §2.3).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -3960,54 +1697,18 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             Self(value)
         }
     }
+    impl ::std::fmt::Display for InteractionId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for InteractionId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for InteractionId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///A stored interaction.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A stored interaction.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "author",
-    ///    "id",
-    ///    "interaction",
-    ///    "notification_id",
-    ///    "recorded_at"
-    ///  ],
-    ///  "properties": {
-    ///    "author": {
-    ///      "$ref": "#/components/schemas/Author"
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/InteractionId"
-    ///    },
-    ///    "interaction": {
-    ///      "$ref": "#/components/schemas/Interaction"
-    ///    },
-    ///    "notification_id": {
-    ///      "$ref": "#/components/schemas/NotificationId"
-    ///    },
-    ///    "recorded_at": {
-    ///      "description": "When the server recorded it.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct InteractionRecord {
         pub author: Author,
@@ -4018,18 +1719,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub recorded_at: ::chrono::DateTime<::chrono::offset::Utc>,
     }
     ///`LoggedClosureAudience`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "channel"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4072,14 +1761,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedClosureAudience {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedClosureAudience {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4089,18 +1770,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedClosureEvent`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "closure"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4143,14 +1812,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedClosureEvent {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedClosureEvent {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4160,18 +1821,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedInteractionAudience`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "channel"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4214,14 +1863,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedInteractionAudience {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedInteractionAudience {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4231,18 +1872,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedInteractionEvent`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "interaction"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4285,14 +1914,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedInteractionEvent {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedInteractionEvent {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4302,18 +1923,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedPreferenceAudience`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "user"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4356,14 +1965,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedPreferenceAudience {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedPreferenceAudience {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4373,18 +1974,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedPreferenceEvent`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "preference"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4427,14 +2016,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedPreferenceEvent {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedPreferenceEvent {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4444,18 +2025,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedReceiptAudience`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "channel"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4498,14 +2067,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedReceiptAudience {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedReceiptAudience {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4515,18 +2076,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedReceiptEvent`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "receipt"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4569,14 +2118,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedReceiptEvent {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedReceiptEvent {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4586,18 +2127,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedRevisionAudience`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "channel"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4640,14 +2169,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedRevisionAudience {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedRevisionAudience {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4657,18 +2178,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedRevisionEvent`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "revision"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4711,14 +2220,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedRevisionEvent {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedRevisionEvent {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4728,18 +2229,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedTombstoneAudience`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "channel"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4782,14 +2271,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedTombstoneAudience {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedTombstoneAudience {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4799,18 +2280,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///`LoggedTombstoneEvent`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "tombstone"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4853,14 +2322,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LoggedTombstoneEvent {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LoggedTombstoneEvent {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4870,32 +2331,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///The scopes one principal holds in one channel.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The scopes one principal holds in one channel.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "principal",
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "principal": {
-    ///      "$ref": "#/components/schemas/Principal"
-    ///    },
-    ///    "scopes": {
-    ///      "description": "What they may do; never empty.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Scope"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Membership {
         pub principal: Principal,
@@ -4903,35 +2338,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub scopes: ::std::vec::Vec<Scope>,
     }
     ///A newly minted key: the only response that ever carries its secret (T12).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A newly minted key: the only response that ever carries its secret (T12).",
-    ///  "allOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/ApiKey"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "secret"
-    ///      ],
-    ///      "properties": {
-    ///        "secret": {
-    ///          "description": "`wnk_<prefix>_<secret>`. Store it now; no endpoint can show it again.",
-    ///          "examples": [
-    ///            "wnk_a1b2c3d4_…"
-    ///          ],
-    ///          "type": "string"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MintedKey {
         ///Which channels it may do it in; empty means none.
@@ -4939,24 +2345,24 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         ///When it was created.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Optional expiry; rotation is left to operator policy (§5.2).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub expires_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         pub id: ApiKeyId,
         ///A label so a human can tell two keys apart before revoking one.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub label: ::std::option::Option<::std::string::String>,
         ///Last successful authentication.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub last_used_at: ::std::option::Option<
             ::chrono::DateTime<::chrono::offset::Utc>,
         >,
         pub owner: ApiKeyOwner,
         pub prefix: ApiKeyPrefix,
         ///This key's own publish ceiling, narrowing the channel's (§8.2); set by platform admins only.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub publish_per_minute: ::std::option::Option<i32>,
         ///Set on revocation, which takes effect immediately.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///What it may do.
         pub scopes: ::std::vec::Vec<Scope>,
@@ -4964,47 +2370,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub secret: ::std::string::String,
     }
     ///A minted CI token.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A minted CI token.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channels",
-    ///    "expires_at",
-    ///    "scopes",
-    ///    "token"
-    ///  ],
-    ///  "properties": {
-    ///    "channels": {
-    ///      "description": "The channels it resolved to.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ChannelId"
-    ///      }
-    ///    },
-    ///    "expires_at": {
-    ///      "description": "When it expires — 15 minutes at most (design §5.3).",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "scopes": {
-    ///      "description": "The scopes it resolved to.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Scope"
-    ///      }
-    ///    },
-    ///    "token": {
-    ///      "description": "The token itself, Ed25519-signed by us.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MintedToken {
         ///The channels it resolved to.
@@ -5017,91 +2382,18 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub token: ::std::string::String,
     }
     ///A notification and its current state.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A notification and its current state.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channel",
-    ///    "created_at",
-    ///    "head",
-    ///    "id",
-    ///    "kind",
-    ///    "last_seq",
-    ///    "revision_count",
-    ///    "ttl"
-    ///  ],
-    ///  "properties": {
-    ///    "channel": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    },
-    ///    "closed_at": {
-    ///      "description": "When it last closed, starting its retention clock; `None` while live (§7.2bis).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "created_at": {
-    ///      "description": "When the first revision landed.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "deleted_at": {
-    ///      "description": "Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "external_id": {
-    ///      "$ref": "#/components/schemas/ExternalId"
-    ///    },
-    ///    "head": {
-    ///      "$ref": "#/components/schemas/Revision"
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/NotificationId"
-    ///    },
-    ///    "kind": {
-    ///      "$ref": "#/components/schemas/NotificationKind"
-    ///    },
-    ///    "last_seq": {
-    ///      "description": "Highest `seq` assigned. The next revision gets `last_seq + 1`.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "revision_count": {
-    ///      "description": "How many revisions have been recorded (equals `last_seq` unless rehydrated partially).",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "ttl": {
-    ///      "$ref": "#/components/schemas/Ttl"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Notification {
         pub channel: ChannelId,
         ///When it last closed, starting its retention clock; `None` while live (§7.2bis).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub closed_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///When the first revision landed.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deleted_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub external_id: ::std::option::Option<ExternalId>,
         pub head: Revision,
         pub id: NotificationId,
@@ -5113,16 +2405,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub ttl: Ttl,
     }
     ///A notification, stable across every revision it accumulates (design §2.2).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A notification, stable across every revision it accumulates (design §2.2).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -5152,32 +2434,18 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             Self(value)
         }
     }
+    impl ::std::fmt::Display for NotificationId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for NotificationId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for NotificationId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///Which of the two publishing shapes produced this notification (§2.2).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Which of the two publishing shapes produced this notification (§2.2).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "lifecycle",
-    ///    "simple"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -5224,14 +2492,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for NotificationKind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for NotificationKind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -5241,123 +2501,27 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///An ntfy JSON publish, sent to the ntfy root.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An ntfy JSON publish, sent to the ntfy root.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "topic"
-    ///  ],
-    ///  "properties": {
-    ///    "click": {
-    ///      "description": "A link, published as a `view` action.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "message": {
-    ///      "description": "The message text.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "priority": {
-    ///      "description": "ntfy priority, 1 (min) to 5 (urgent).",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "tags": {
-    ///      "description": "Tags.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "title": {
-    ///      "description": "Title; defaults to the topic.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "topic": {
-    ///      "description": "The channel to publish into.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct NtfyBody {
         ///A link, published as a `view` action.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub click: ::std::option::Option<::std::string::String>,
         ///The message text.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub message: ::std::option::Option<::std::string::String>,
         ///ntfy priority, 1 (min) to 5 (urgent).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub priority: ::std::option::Option<i32>,
         ///Tags.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
         ///Title; defaults to the topic.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
         ///The channel to publish into.
         pub topic: ::std::string::String,
     }
     ///What ntfy answers to a publish.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What ntfy answers to a publish.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "event",
-    ///    "id",
-    ///    "message",
-    ///    "time",
-    ///    "topic"
-    ///  ],
-    ///  "properties": {
-    ///    "event": {
-    ///      "description": "Always `message`.",
-    ///      "type": "string"
-    ///    },
-    ///    "id": {
-    ///      "description": "The notification id.",
-    ///      "type": "string"
-    ///    },
-    ///    "message": {
-    ///      "description": "The message text.",
-    ///      "type": "string"
-    ///    },
-    ///    "time": {
-    ///      "description": "Unix seconds when the server received it.",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "topic": {
-    ///      "description": "The channel it was published into.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct NtfyMessage {
         ///Always `message`.
@@ -5372,20 +2536,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub topic: ::std::string::String,
     }
     ///Where an object came from, and therefore who may change it.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Where an object came from, and therefore who may change it.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "managed",
-    ///    "dynamic"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -5432,14 +2582,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Origin {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Origin {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -5449,168 +2591,38 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///What a caller gets.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a caller gets.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "items"
-    ///  ],
-    ///  "properties": {
-    ///    "items": {
-    ///      "description": "The rows, in the ordering of the endpoint.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/AuditEntry"
-    ///      }
-    ///    },
-    ///    "next": {
-    ///      "$ref": "#/components/schemas/Cursor"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PageAuditEntry {
         ///The rows, in the ordering of the endpoint.
         pub items: ::std::vec::Vec<AuditEntry>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
     ///What a caller gets.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a caller gets.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "items"
-    ///  ],
-    ///  "properties": {
-    ///    "items": {
-    ///      "description": "The rows, in the ordering of the endpoint.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Channel"
-    ///      }
-    ///    },
-    ///    "next": {
-    ///      "$ref": "#/components/schemas/Cursor"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PageChannel {
         ///The rows, in the ordering of the endpoint.
         pub items: ::std::vec::Vec<Channel>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
     ///What a caller gets.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a caller gets.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "items"
-    ///  ],
-    ///  "properties": {
-    ///    "items": {
-    ///      "description": "The rows, in the ordering of the endpoint.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Notification"
-    ///      }
-    ///    },
-    ///    "next": {
-    ///      "$ref": "#/components/schemas/Cursor"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PageNotification {
         ///The rows, in the ordering of the endpoint.
         pub items: ::std::vec::Vec<Notification>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
     ///What a caller gets.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a caller gets.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "items"
-    ///  ],
-    ///  "properties": {
-    ///    "items": {
-    ///      "description": "The rows, in the ordering of the endpoint.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Revision"
-    ///      }
-    ///    },
-    ///    "next": {
-    ///      "$ref": "#/components/schemas/Cursor"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PageRevision {
         ///The rows, in the ordering of the endpoint.
         pub items: ::std::vec::Vec<Revision>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
     ///This user's whole delivery preference state, DND and silences together (§7.4, §8.1).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "This user's whole delivery preference state, DND and silences together (§7.4, §8.1).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "dnd",
-    ///    "silences",
-    ///    "user"
-    ///  ],
-    ///  "properties": {
-    ///    "dnd": {
-    ///      "$ref": "#/components/schemas/Dnd"
-    ///    },
-    ///    "silences": {
-    ///      "description": "Every silence currently in force for them.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Silence"
-    ///      }
-    ///    },
-    ///    "user": {
-    ///      "$ref": "#/components/schemas/UserId"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PreferenceEvent {
         pub dnd: Dnd,
@@ -5619,37 +2631,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub user: UserId,
     }
     ///What a client asks to upload.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a client asks to upload.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channel",
-    ///    "content_length",
-    ///    "content_type"
-    ///  ],
-    ///  "properties": {
-    ///    "channel": {
-    ///      "description": "Where the publisher intends to publish it; requires `publish` there (design §6.1).",
-    ///      "type": "string"
-    ///    },
-    ///    "content_length": {
-    ///      "description": "The declared size, checked against §8.2's ceiling **before** signing.",
-    ///      "type": "integer",
-    ///      "format": "int64",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "content_type": {
-    ///      "description": "The declared media type, imposed in the signature.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PresignBody {
         ///Where the publisher intends to publish it; requires `publish` there (design §6.1).
@@ -5660,32 +2641,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub content_type: ::std::string::String,
     }
     ///A signed download.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A signed download.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "expires_at",
-    ///    "url"
-    ///  ],
-    ///  "properties": {
-    ///    "expires_at": {
-    ///      "description": "When the signature stops working.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "url": {
-    ///      "description": "Where to GET the bytes.",
-    ///      "type": "string",
-    ///      "format": "uri"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PresignedDownload {
         ///When the signature stops working.
@@ -5694,44 +2649,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub url: ::std::string::String,
     }
     ///A signed upload.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A signed upload.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "expires_at",
-    ///    "headers",
-    ///    "id",
-    ///    "url"
-    ///  ],
-    ///  "properties": {
-    ///    "expires_at": {
-    ///      "description": "When the signature stops working (short-lived: it is a bearer credential).",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "headers": {
-    ///      "description": "Headers the client must send verbatim; they are covered by the signature.",
-    ///      "type": "object",
-    ///      "additionalProperties": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/AttachmentId"
-    ///    },
-    ///    "url": {
-    ///      "description": "Where to PUT the bytes.",
-    ///      "type": "string",
-    ///      "format": "uri"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PresignedUpload {
         ///When the signature stops working (short-lived: it is a bearer credential).
@@ -5746,104 +2663,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub url: ::std::string::String,
     }
     ///The identity behind a request, after authentication.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The identity behind a request, after authentication.",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "A human, whether they arrived with an OIDC token or with a personal API key.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "id",
-    ///        "kind"
-    ///      ],
-    ///      "properties": {
-    ///        "id": {
-    ///          "$ref": "#/components/schemas/UserId"
-    ///        },
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "user"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "A bot with a name of its own.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "id",
-    ///        "kind"
-    ///      ],
-    ///      "properties": {
-    ///        "id": {
-    ///          "$ref": "#/components/schemas/ServiceAccountId"
-    ///        },
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "service_account"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "A key attached to a channel and to nobody else; use a service account when attribution matters (§5.2).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "channel",
-    ///        "key",
-    ///        "kind"
-    ///      ],
-    ///      "properties": {
-    ///        "channel": {
-    ///          "$ref": "#/components/schemas/ChannelId"
-    ///        },
-    ///        "key": {
-    ///          "$ref": "#/components/schemas/ApiKeyId"
-    ///        },
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "channel_key"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "A CI job, identified by the claims of the token it exchanged (design §5.3).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "issuer",
-    ///        "kind",
-    ///        "subject"
-    ///      ],
-    ///      "properties": {
-    ///        "issuer": {
-    ///          "description": "The OIDC issuer that vouched for the job.",
-    ///          "type": "string",
-    ///          "format": "uri"
-    ///        },
-    ///        "kind": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "ci_job"
-    ///          ]
-    ///        },
-    ///        "subject": {
-    ///          "description": "The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.",
-    ///          "type": "string"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "kind")]
     pub enum Principal {
@@ -5866,23 +2685,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         },
     }
     ///How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "min",
-    ///    "low",
-    ///    "default",
-    ///    "high",
-    ///    "urgent"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -5941,14 +2743,6 @@ Resolved from the token's `groups` claim at request time, never stored per user.
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Priority {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Priority {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -5958,69 +2752,13 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         }
     }
     ///The `application/problem+json` body every refusal carries; clients match on `code`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The `application/problem+json` body every refusal carries; clients match on `code`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "status",
-    ///    "title",
-    ///    "type"
-    ///  ],
-    ///  "properties": {
-    ///    "code": {
-    ///      "description": "The stable code to match on; absent only for server-side failures.",
-    ///      "examples": [
-    ///        "field.missing"
-    ///      ],
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "retry_after_seconds": {
-    ///      "description": "When to come back, on a `429`. Mirrors the `Retry-After` header.",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "status": {
-    ///      "description": "The HTTP status, repeated in the body as RFC 9457 asks.",
-    ///      "examples": [
-    ///        422
-    ///      ],
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "title": {
-    ///      "description": "A short, human-readable summary. Prose, and subject to change.",
-    ///      "type": "string"
-    ///    },
-    ///    "type": {
-    ///      "description": "Always `about:blank`; `code` carries the specificity.",
-    ///      "examples": [
-    ///        "about:blank"
-    ///      ],
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Problem {
         ///The stable code to match on; absent only for server-side failures.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub code: ::std::option::Option<::std::string::String>,
         ///When to come back, on a `429`. Mirrors the `Retry-After` header.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub retry_after_seconds: ::std::option::Option<i32>,
         ///The HTTP status, repeated in the body as RFC 9457 asks.
         pub status: i32,
@@ -6031,150 +2769,38 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub type_: ::std::string::String,
     }
     ///Everything a client shows about a person, beyond their identity.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Everything a client shows about a person, beyond their identity.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "avatar": {
-    ///      "$ref": "#/components/schemas/AttachmentId"
-    ///    },
-    ///    "display_name": {
-    ///      "description": "What clients show. Falls back to the identity when unset.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "locale": {
-    ///      "description": "A BCP 47 tag such as `fr-FR`.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "overridden": {
-    ///      "description": "The fields this person set themselves, rather than following the identity provider.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ProfileField"
-    ///      },
-    ///      "uniqueItems": true
-    ///    },
-    ///    "timezone": {
-    ///      "description": "An IANA timezone name such as `Europe/Paris`, validated against the real database.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct Profile {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub avatar: ::std::option::Option<AttachmentId>,
         ///What clients show. Falls back to the identity when unset.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         ///A BCP 47 tag such as `fr-FR`.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub locale: ::std::option::Option<::std::string::String>,
         ///The fields this person set themselves, rather than following the identity provider.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub overridden: ::std::option::Option<Vec<ProfileField>>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub overridden: ::std::option::Option<::std::vec::Vec<ProfileField>>,
         ///An IANA timezone name such as `Europe/Paris`, validated against the real database.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub timezone: ::std::option::Option<::std::string::String>,
-    }
-    impl ::std::default::Default for Profile {
-        fn default() -> Self {
-            Self {
-                avatar: Default::default(),
-                display_name: Default::default(),
-                locale: Default::default(),
-                overridden: Default::default(),
-                timezone: Default::default(),
-            }
-        }
     }
     /**A partial edit of the caller's profile: an absent field is left alone, `null` hands it
 back to the identity provider, a value claims it against later logins (§2.4).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A partial edit of the caller's profile: an absent field is left alone, `null` hands it\nback to the identity provider, a value claims it against later logins (§2.4).",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "display_name": {
-    ///      "description": "The name shown next to everything this person publishes.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "locale": {
-    ///      "description": "A BCP 47 tag such as `fr-FR`.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "timezone": {
-    ///      "description": "An IANA name such as `Europe/Paris`; the default timezone for quiet hours (§7.4).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct ProfileBody {
         ///The name shown next to everything this person publishes.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         ///A BCP 47 tag such as `fr-FR`.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub locale: ::std::option::Option<::std::string::String>,
         ///An IANA name such as `Europe/Paris`; the default timezone for quiet hours (§7.4).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub timezone: ::std::option::Option<::std::string::String>,
     }
-    impl ::std::default::Default for ProfileBody {
-        fn default() -> Self {
-            Self {
-                display_name: Default::default(),
-                locale: Default::default(),
-                timezone: Default::default(),
-            }
-        }
-    }
     ///A field of a profile that can be claimed by its owner.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A field of a profile that can be claimed by its owner.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "display_name",
-    ///    "timezone",
-    ///    "locale"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -6225,14 +2851,6 @@ back to the identity provider, a value claims it against later logins (§2.4).*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for ProfileField {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for ProfileField {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -6242,34 +2860,6 @@ back to the identity provider, a value claims it against later logins (§2.4).*/
         }
     }
     ///How far along a long-running thing is, in the publisher's own units.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How far along a long-running thing is, in the publisher's own units.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "current",
-    ///    "total"
-    ///  ],
-    ///  "properties": {
-    ///    "current": {
-    ///      "description": "Where it is now.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "total": {
-    ///      "description": "Where it finishes.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Progress {
         ///Where it is now.
@@ -6278,127 +2868,40 @@ back to the identity provider, a value claims it against later logins (§2.4).*/
         pub total: i32,
     }
     ///`POST /notifications`: the upsert body's revision draft plus its channel (§8.3).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "`POST /notifications`: the upsert body's revision draft plus its channel (§8.3).",
-    ///  "allOf": [
-    ///    {
-    ///      "description": "The revision itself, flattened into the same object.",
-    ///      "oneOf": [
-    ///        {
-    ///          "description": "A revision as a publisher submits it; absent fields keep the head's value on\nupdate and take channel defaults on creation.",
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/ContentDraft"
-    ///            },
-    ///            {
-    ///              "type": "object",
-    ///              "properties": {
-    ///                "priority": {
-    ///                  "$ref": "#/components/schemas/Priority"
-    ///                },
-    ///                "state": {
-    ///                  "$ref": "#/components/schemas/State"
-    ///                },
-    ///                "status": {
-    ///                  "$ref": "#/components/schemas/Status"
-    ///                },
-    ///                "ttl": {
-    ///                  "$ref": "#/components/schemas/Ttl"
-    ///                }
-    ///              }
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "channel"
-    ///      ],
-    ///      "properties": {
-    ///        "channel": {
-    ///          "$ref": "#/components/schemas/ChannelId"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PublishBody {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub actions: ::std::option::Option<Actions>,
         ///See [`Content::body`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub body: ::std::option::Option<::std::string::String>,
         pub channel: ChannelId,
         ///See [`Content::group_key`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub group_key: ::std::option::Option<::std::string::String>,
         ///See [`Content::icon`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub icon: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub image: ::std::option::Option<Image>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub priority: ::std::option::Option<Priority>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub progress: ::std::option::Option<Progress>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub state: ::std::option::Option<State>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub status: ::std::option::Option<Status>,
         ///See [`Content::tags`].
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
         ///See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub ttl: ::std::option::Option<Ttl>,
     }
     ///What a publish produced; also the stored idempotency response, replayed verbatim.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a publish produced; also the stored idempotency response, replayed verbatim.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "cursor",
-    ///    "notification",
-    ///    "replayed",
-    ///    "retention",
-    ///    "revision"
-    ///  ],
-    ///  "properties": {
-    ///    "cursor": {
-    ///      "$ref": "#/components/schemas/Cursor"
-    ///    },
-    ///    "notification": {
-    ///      "$ref": "#/components/schemas/Notification"
-    ///    },
-    ///    "replayed": {
-    ///      "description": "Whether this is a replay of an earlier identical request.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "retention": {
-    ///      "$ref": "#/components/schemas/TtlResolution"
-    ///    },
-    ///    "revision": {
-    ///      "$ref": "#/components/schemas/Revision"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Published {
         pub cursor: Cursor,
@@ -6409,104 +2912,6 @@ back to the identity provider, a value claims it against later logins (§2.4).*/
         pub revision: Revision,
     }
     ///How the server reaches a device when its client is not connected.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How the server reaches a device when its client is not connected.",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "None: reachable only while it holds a stream (CLI, TUI, service account).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "transport"
-    ///      ],
-    ///      "properties": {
-    ///        "transport": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "stream"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Web Push (RFC 8030/8291), for browsers and installed PWAs; the browser holds the keys (§6.2).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "auth",
-    ///        "endpoint",
-    ///        "p256dh",
-    ///        "transport"
-    ///      ],
-    ///      "properties": {
-    ///        "auth": {
-    ///          "description": "The subscription's `auth` secret, as given by the browser.",
-    ///          "type": "string"
-    ///        },
-    ///        "endpoint": {
-    ///          "description": "The push service endpoint the browser handed us.",
-    ///          "type": "string",
-    ///          "format": "uri"
-    ///        },
-    ///        "p256dh": {
-    ///          "description": "The subscription's `p256dh` key, as given by the browser.",
-    ///          "type": "string"
-    ///        },
-    ///        "transport": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "web_push"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "UnifiedPush, self-hosted end to end (§7.1bis).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "endpoint",
-    ///        "transport"
-    ///      ],
-    ///      "properties": {
-    ///        "endpoint": {
-    ///          "description": "The distributor endpoint to POST to.",
-    ///          "type": "string",
-    ///          "format": "uri"
-    ///        },
-    ///        "transport": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "unified_push"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "APNs — the one part of the stack that cannot be self-hosted (design §15).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "token",
-    ///        "transport"
-    ///      ],
-    ///      "properties": {
-    ///        "token": {
-    ///          "description": "The APNs device token.",
-    ///          "type": "string"
-    ///        },
-    ///        "transport": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "apns"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "transport")]
     pub enum PushTransport {
@@ -6536,40 +2941,6 @@ back to the identity provider, a value claims it against later logins (§2.4).*/
         },
     }
     ///One recurring weekly window of quiet (design §7.4).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One recurring weekly window of quiet (design §7.4).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "end",
-    ///    "start",
-    ///    "timezone"
-    ///  ],
-    ///  "properties": {
-    ///    "days": {
-    ///      "description": "The days it applies to (**empty means every day**). A window crossing midnight\nbelongs to the day it starts on.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Day"
-    ///      }
-    ///    },
-    ///    "end": {
-    ///      "$ref": "#/components/schemas/WallClock"
-    ///    },
-    ///    "start": {
-    ///      "$ref": "#/components/schemas/WallClock"
-    ///    },
-    ///    "timezone": {
-    ///      "description": "The IANA zone `start` and `end` are read in (the preference's, not the device's).",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QuietHours {
         /**The days it applies to (**empty means every day**). A window crossing midnight
@@ -6582,17 +2953,6 @@ belongs to the day it starts on.*/
         pub timezone: ::std::string::String,
     }
     ///The raw attachment bytes.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The raw attachment bytes.",
-    ///  "type": "string",
-    ///  "format": "binary"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -6622,58 +2982,22 @@ belongs to the day it starts on.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for RawBytes {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for RawBytes {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for RawBytes {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///The "seen by 3/5" readership: who saw it and when, plus a delivered-device count (§7.3, §10.3).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The \"seen by 3/5\" readership: who saw it and when, plus a delivered-device count (§7.3, §10.3).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "delivered_devices",
-    ///    "seen"
-    ///  ],
-    ///  "properties": {
-    ///    "audience": {
-    ///      "description": "How many people could see it, or `None` when access is group-derived (show \"seen by 3\").",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "minimum": 0.0
-    ///    },
-    ///    "delivered_devices": {
-    ///      "description": "Distinct devices that acknowledged delivery.",
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "seen": {
-    ///      "description": "Who saw it, oldest sighting first — reading order, like the timeline.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Sighting"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Readership {
         ///How many people could see it, or `None` when access is group-derived (show "seen by 3").
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub audience: ::std::option::Option<u64>,
         ///Distinct devices that acknowledged delivery.
         pub delivered_devices: u64,
@@ -6681,33 +3005,6 @@ belongs to the day it starts on.*/
         pub seen: ::std::vec::Vec<Sighting>,
     }
     ///Readiness answer: the overall verdict plus per-dependency detail.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Readiness answer: the overall verdict plus per-dependency detail.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "checks",
-    ///    "ready"
-    ///  ],
-    ///  "properties": {
-    ///    "checks": {
-    ///      "description": "One entry per dependency actually configured on this replica.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/DependencyCheck"
-    ///      }
-    ///    },
-    ///    "ready": {
-    ///      "description": "`true` only when every checked dependency is reachable.",
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Readiness {
         ///One entry per dependency actually configured on this replica.
@@ -6716,50 +3013,11 @@ belongs to the day it starts on.*/
         pub ready: bool,
     }
     ///One receipt.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One receipt.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "at",
-    ///    "id",
-    ///    "kind",
-    ///    "notification_id",
-    ///    "principal"
-    ///  ],
-    ///  "properties": {
-    ///    "at": {
-    ///      "description": "Server time.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "device": {
-    ///      "$ref": "#/components/schemas/DeviceId"
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/ReceiptId"
-    ///    },
-    ///    "kind": {
-    ///      "$ref": "#/components/schemas/ReceiptKind"
-    ///    },
-    ///    "notification_id": {
-    ///      "$ref": "#/components/schemas/NotificationId"
-    ///    },
-    ///    "principal": {
-    ///      "$ref": "#/components/schemas/Principal"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Receipt {
         ///Server time.
         pub at: ::chrono::DateTime<::chrono::offset::Utc>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub device: ::std::option::Option<DeviceId>,
         pub id: ReceiptId,
         pub kind: ReceiptKind,
@@ -6767,49 +3025,14 @@ belongs to the day it starts on.*/
         pub principal: Principal,
     }
     ///Delivered, or seen.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Delivered, or seen.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "kind",
-    ///    "notification_id"
-    ///  ],
-    ///  "properties": {
-    ///    "device": {
-    ///      "$ref": "#/components/schemas/DeviceId"
-    ///    },
-    ///    "kind": {
-    ///      "$ref": "#/components/schemas/ReceiptKind"
-    ///    },
-    ///    "notification_id": {
-    ///      "$ref": "#/components/schemas/NotificationId"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ReceiptBody {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub device: ::std::option::Option<DeviceId>,
         pub kind: ReceiptKind,
         pub notification_id: NotificationId,
     }
     ///One delivery or read receipt (design §7.3).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One delivery or read receipt (design §7.3).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -6839,32 +3062,18 @@ belongs to the day it starts on.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ReceiptId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ReceiptId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ReceiptId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///How far a notification got.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How far a notification got.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "delivered",
-    ///    "seen"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -6911,14 +3120,6 @@ belongs to the day it starts on.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for ReceiptKind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for ReceiptKind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -6928,56 +3129,6 @@ belongs to the day it starts on.*/
         }
     }
     ///What the last GitOps pass did (design §11, §10.4bis).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What the last GitOps pass did (design §11, §10.4bis).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "accounts",
-    ///    "at",
-    ///    "channels",
-    ///    "pending",
-    ///    "removed",
-    ///    "trigger"
-    ///  ],
-    ///  "properties": {
-    ///    "accounts": {
-    ///      "description": "Managed service accounts written.",
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "at": {
-    ///      "description": "When this replica last applied the configuration.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "channels": {
-    ///      "description": "Managed channels written.",
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "pending": {
-    ///      "description": "Bindings by `oidc_sub` or `email` naming somebody who has never logged in, which\ngrant nothing until that person's first login (§14.1).",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "removed": {
-    ///      "description": "Channels that left the configuration and were archived or deleted.",
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "trigger": {
-    ///      "$ref": "#/components/schemas/Trigger"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Reconciliation {
         ///Managed service accounts written.
@@ -6994,94 +3145,14 @@ grant nothing until that person's first login (§14.1).*/
         pub trigger: Trigger,
     }
     ///What recording an interaction did: whether anything changed worth broadcasting.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What recording an interaction did: whether anything changed worth broadcasting.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "outcome"
-    ///  ],
-    ///  "properties": {
-    ///    "outcome": {
-    ///      "description": "`created`, `unchanged` or `replaced`.",
-    ///      "examples": [
-    ///        "created"
-    ///      ],
-    ///      "type": "string"
-    ///    },
-    ///    "record": {
-    ///      "$ref": "#/components/schemas/InteractionRecord"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct RecordedInteraction {
         ///`created`, `unchanged` or `replaced`.
         pub outcome: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub record: ::std::option::Option<InteractionRecord>,
     }
     ///One immutable step of a notification's life.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One immutable step of a notification's life.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "author",
-    ///    "content",
-    ///    "id",
-    ///    "notification_id",
-    ///    "priority",
-    ///    "received_at",
-    ///    "seq",
-    ///    "state",
-    ///    "status"
-    ///  ],
-    ///  "properties": {
-    ///    "author": {
-    ///      "$ref": "#/components/schemas/Author"
-    ///    },
-    ///    "content": {
-    ///      "$ref": "#/components/schemas/Content"
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/RevisionId"
-    ///    },
-    ///    "notification_id": {
-    ///      "$ref": "#/components/schemas/NotificationId"
-    ///    },
-    ///    "priority": {
-    ///      "$ref": "#/components/schemas/Priority"
-    ///    },
-    ///    "received_at": {
-    ///      "description": "When the server received it — the server's clock, not the publisher's.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "seq": {
-    ///      "description": "Server-assigned, monotonic within the notification, starting at 1; the last-write-wins arbiter.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "state": {
-    ///      "$ref": "#/components/schemas/State"
-    ///    },
-    ///    "status": {
-    ///      "$ref": "#/components/schemas/Status"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Revision {
         pub author: Author,
@@ -7098,154 +3169,45 @@ grant nothing until that person's first login (§14.1).*/
     }
     /**A revision as a publisher submits it; absent fields keep the head's value on
 update and take channel defaults on creation.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A revision as a publisher submits it; absent fields keep the head's value on\nupdate and take channel defaults on creation.",
-    ///  "allOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/ContentDraft"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "properties": {
-    ///        "priority": {
-    ///          "$ref": "#/components/schemas/Priority"
-    ///        },
-    ///        "state": {
-    ///          "$ref": "#/components/schemas/State"
-    ///        },
-    ///        "status": {
-    ///          "$ref": "#/components/schemas/Status"
-    ///        },
-    ///        "ttl": {
-    ///          "$ref": "#/components/schemas/Ttl"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct RevisionDraft {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub actions: ::std::option::Option<Actions>,
         ///See [`Content::body`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub body: ::std::option::Option<::std::string::String>,
         ///See [`Content::group_key`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub group_key: ::std::option::Option<::std::string::String>,
         ///See [`Content::icon`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub icon: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub image: ::std::option::Option<Image>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub priority: ::std::option::Option<Priority>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub progress: ::std::option::Option<Progress>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub state: ::std::option::Option<State>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub status: ::std::option::Option<Status>,
         ///See [`Content::tags`].
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub tags: ::std::vec::Vec<::std::string::String>,
         ///See [`Content::title`]; absent means "inherit" on a revision and is refused on creation.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub title: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub ttl: ::std::option::Option<Ttl>,
     }
-    impl ::std::default::Default for RevisionDraft {
-        fn default() -> Self {
-            Self {
-                actions: Default::default(),
-                body: Default::default(),
-                group_key: Default::default(),
-                icon: Default::default(),
-                image: Default::default(),
-                priority: Default::default(),
-                progress: Default::default(),
-                state: Default::default(),
-                status: Default::default(),
-                tags: Default::default(),
-                title: Default::default(),
-                ttl: Default::default(),
-            }
-        }
-    }
     ///A revision, denormalised so a reconnecting client can render it from one event (§8.1).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A revision, denormalised so a reconnecting client can render it from one event (§8.1).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "author",
-    ///    "created_at",
-    ///    "notification_id",
-    ///    "payload",
-    ///    "priority",
-    ///    "revised_at",
-    ///    "seq",
-    ///    "state",
-    ///    "status"
-    ///  ],
-    ///  "properties": {
-    ///    "author": {
-    ///      "$ref": "#/components/schemas/Author"
-    ///    },
-    ///    "created_at": {
-    ///      "description": "When the notification was first created.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "external_id": {
-    ///      "$ref": "#/components/schemas/ExternalId"
-    ///    },
-    ///    "notification_id": {
-    ///      "$ref": "#/components/schemas/NotificationId"
-    ///    },
-    ///    "payload": {
-    ///      "$ref": "#/components/schemas/Content"
-    ///    },
-    ///    "priority": {
-    ///      "$ref": "#/components/schemas/Priority"
-    ///    },
-    ///    "revised_at": {
-    ///      "description": "When this revision landed.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "seq": {
-    ///      "description": "Server-assigned sequence within the notification, the last-write-wins arbiter (§2.2).",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "state": {
-    ///      "$ref": "#/components/schemas/State"
-    ///    },
-    ///    "status": {
-    ///      "$ref": "#/components/schemas/Status"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct RevisionEvent {
         pub author: Author,
         ///When the notification was first created.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub external_id: ::std::option::Option<ExternalId>,
         pub notification_id: NotificationId,
         pub payload: Content,
@@ -7258,16 +3220,6 @@ update and take channel defaults on creation.*/
         pub status: Status,
     }
     ///One immutable revision of a notification.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One immutable revision of a notification.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7297,33 +3249,18 @@ update and take channel defaults on creation.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for RevisionId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for RevisionId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for RevisionId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///What a principal may do in a channel (design §5.2).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a principal may do in a channel (design §5.2).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "publish",
-    ///    "subscribe",
-    ///    "manage"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7374,14 +3311,6 @@ update and take channel defaults on creation.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Scope {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Scope {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -7391,90 +3320,27 @@ update and take channel defaults on creation.*/
         }
     }
     ///A named machine identity (§5.2bis), the recommended owner for anything durable.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A named machine identity (§5.2bis), the recommended owner for anything durable.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "created_at",
-    ///    "id",
-    ///    "origin"
-    ///  ],
-    ///  "properties": {
-    ///    "created_at": {
-    ///      "description": "When it was created.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "created_by": {
-    ///      "$ref": "#/components/schemas/UserId"
-    ///    },
-    ///    "description": {
-    ///      "description": "What it is for.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "disabled_at": {
-    ///      "description": "Set on deactivation, which revokes its keys and cuts its streams immediately (§8, T25).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "display_name": {
-    ///      "description": "What clients show — \"published by ArgoCD\", not by an opaque id.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/ServiceAccountId"
-    ///    },
-    ///    "origin": {
-    ///      "$ref": "#/components/schemas/Origin"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ServiceAccount {
         ///When it was created.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub created_by: ::std::option::Option<UserId>,
         ///What it is for.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub description: ::std::option::Option<::std::string::String>,
         ///Set on deactivation, which revokes its keys and cuts its streams immediately (§8, T25).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub disabled_at: ::std::option::Option<
             ::chrono::DateTime<::chrono::offset::Utc>,
         >,
         ///What clients show — "published by ArgoCD", not by an opaque id.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         pub id: ServiceAccountId,
         pub origin: Origin,
     }
     ///A service account, named so a timeline can say who published (§5.2bis).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A service account, named so a timeline can say who published (§5.2bis).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7504,42 +3370,18 @@ update and take channel defaults on creation.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for ServiceAccountId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for ServiceAccountId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for ServiceAccountId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///One person and when they first saw the notification (§7.3, §10.3).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One person and when they first saw the notification (§7.3, §10.3).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "at",
-    ///    "author"
-    ///  ],
-    ///  "properties": {
-    ///    "at": {
-    ///      "description": "When they first saw it, across all their devices.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "author": {
-    ///      "$ref": "#/components/schemas/Author"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Sighting {
         ///When they first saw it, across all their devices.
@@ -7547,101 +3389,25 @@ update and take channel defaults on creation.*/
         pub author: Author,
     }
     ///An active silence, held per user.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An active silence, held per user.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "since",
-    ///    "target",
-    ///    "user"
-    ///  ],
-    ///  "properties": {
-    ///    "since": {
-    ///      "description": "When it was set.",
-    ///      "type": "string",
-    ///      "format": "date-time"
-    ///    },
-    ///    "target": {
-    ///      "$ref": "#/components/schemas/SilenceTarget"
-    ///    },
-    ///    "until": {
-    ///      "description": "When it lifts; `None` only for a notification-scoped silence, which ends with the notification.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ],
-    ///      "format": "date-time"
-    ///    },
-    ///    "user": {
-    ///      "$ref": "#/components/schemas/UserId"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Silence {
         ///When it was set.
         pub since: ::chrono::DateTime<::chrono::offset::Utc>,
         pub target: SilenceTarget,
         ///When it lifts; `None` only for a notification-scoped silence, which ends with the notification.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub until: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         pub user: UserId,
     }
     ///Stop notifying *me* about this.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Stop notifying *me* about this.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "duration": {
-    ///      "$ref": "#/components/schemas/HumanDuration"
-    ///    },
-    ///    "scope": {
-    ///      "$ref": "#/components/schemas/SilenceScope"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct SilenceBody {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub duration: ::std::option::Option<HumanDuration>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scope: ::std::option::Option<SilenceScope>,
     }
-    impl ::std::default::Default for SilenceBody {
-        fn default() -> Self {
-            Self {
-                duration: Default::default(),
-                scope: Default::default(),
-            }
-        }
-    }
     ///How far a `silence` reaches (design §2.3).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How far a `silence` reaches (design §2.3).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "notification",
-    ///    "group"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7688,14 +3454,6 @@ update and take channel defaults on creation.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for SilenceScope {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for SilenceScope {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -7705,56 +3463,6 @@ update and take channel defaults on creation.*/
         }
     }
     ///What a silence covers.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a silence covers.",
-    ///  "oneOf": [
-    ///    {
-    ///      "description": "One notification.",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "id",
-    ///        "scope"
-    ///      ],
-    ///      "properties": {
-    ///        "id": {
-    ///          "$ref": "#/components/schemas/NotificationId"
-    ///        },
-    ///        "scope": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "notification"
-    ///          ]
-    ///        }
-    ///      }
-    ///    },
-    ///    {
-    ///      "description": "Everything sharing a `group_key` (design §2.3).",
-    ///      "type": "object",
-    ///      "required": [
-    ///        "key",
-    ///        "scope"
-    ///      ],
-    ///      "properties": {
-    ///        "key": {
-    ///          "description": "The group key silenced.",
-    ///          "type": "string"
-    ///        },
-    ///        "scope": {
-    ///          "type": "string",
-    ///          "enum": [
-    ///            "group"
-    ///          ]
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(tag = "scope")]
     pub enum SilenceTarget {
@@ -7769,16 +3477,6 @@ update and take channel defaults on creation.*/
         },
     }
     ///Which sink of which channel, written as `kind:destination` (never contains secrets).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Which sink of which channel, written as `kind:destination` (never contains secrets).",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7808,33 +3506,18 @@ update and take channel defaults on creation.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for SinkId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for SinkId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for SinkId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///Where a notification is in its lifecycle.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Where a notification is in its lifecycle.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "open",
-    ///    "working",
-    ///    "closed"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7885,14 +3568,6 @@ update and take channel defaults on creation.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for State {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for State {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -7902,23 +3577,6 @@ update and take channel defaults on creation.*/
         }
     }
     ///What the notification is saying, orthogonally to where it is in its lifecycle.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What the notification is saying, orthogonally to where it is in its lifecycle.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "success",
-    ///    "failure",
-    ///    "warning",
-    ///    "info",
-    ///    "cancelled"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7977,14 +3635,6 @@ update and take channel defaults on creation.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Status {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Status {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -7995,52 +3645,6 @@ update and take channel defaults on creation.*/
     }
     /**A catch-up page: events plus the per-user expired counts (§7.2bis), the
 compaction count (§7.2) and DND-deferred ids (§7.4).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A catch-up page: events plus the per-user expired counts (§7.2bis), the\ncompaction count (§7.2) and DND-deferred ids (§7.4).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "compacted",
-    ///    "events"
-    ///  ],
-    ///  "properties": {
-    ///    "compacted": {
-    ///      "description": "How many revisions the compaction folded away, over the whole window since\n`after` and not just this page — so the first page of a catch-up carries the\ntotal, and that is the one a client reads it from.\n\nCounted over at most the first ten thousand events of the window (in no\nparticular order): past that it is a **lower bound**, \"at least this many\",\nrather than a count that could cost a long absence its catch-up.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "deferred_by_dnd": {
-    ///      "description": "Notifications on this page delayed on purpose by a quiet period (§7.4); kept\noff the events because events are identical for every reader.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/NotificationId"
-    ///      }
-    ///    },
-    ///    "events": {
-    ///      "description": "The events, oldest first.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Event"
-    ///      }
-    ///    },
-    ///    "expired": {
-    ///      "description": "Per channel, how many notifications expired unseen during the absence.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ExpiredWhileAway"
-    ///      }
-    ///    },
-    ///    "next": {
-    ///      "$ref": "#/components/schemas/Cursor"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SyncPage {
         /**How many revisions the compaction folded away, over the whole window since
@@ -8060,24 +3664,10 @@ off the events because events are identical for every reader.*/
         ///Per channel, how many notifications expired unseen during the absence.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub expired: ::std::vec::Vec<ExpiredWhileAway>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
     ///Why a notification stopped existing, as broadcast in a `tombstone` event (§8.1).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Why a notification stopped existing, as broadcast in a `tombstone` event (§8.1).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "deleted",
-    ///    "expired"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -8124,14 +3714,6 @@ off the events because events are identical for every reader.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for TombstoneReason {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for TombstoneReason {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -8141,21 +3723,6 @@ off the events because events are identical for every reader.*/
         }
     }
     ///What made a reconciliation pass happen (design §11, §10.4bis).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What made a reconciliation pass happen (design §11, §10.4bis).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "boot",
-    ///    "timer",
-    ///    "sighup"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -8206,14 +3773,6 @@ off the events because events are identical for every reader.*/
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Trigger {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Trigger {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -8223,51 +3782,6 @@ off the events because events are identical for every reader.*/
         }
     }
     ///One trust policy as the console shows it.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One trust policy as the console shows it.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channel_scoped",
-    ///    "channels",
-    ///    "issuer",
-    ///    "scopes",
-    ///    "subject"
-    ///  ],
-    ///  "properties": {
-    ///    "channel_scoped": {
-    ///      "description": "Whether it came from a channel's own `publishers` block, which wins over a global one (§11).",
-    ///      "type": "boolean"
-    ///    },
-    ///    "channels": {
-    ///      "description": "The channel patterns it grants.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "issuer": {
-    ///      "description": "The forge it trusts.",
-    ///      "type": "string"
-    ///    },
-    ///    "scopes": {
-    ///      "description": "What it grants there.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Scope"
-    ///      }
-    ///    },
-    ///    "subject": {
-    ///      "description": "The anchored subject pattern (§5.3).",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TrustPolicyCard {
         ///Whether it came from a channel's own `publishers` block, which wins over a global one (§11).
@@ -8282,16 +3796,6 @@ off the events because events are identical for every reader.*/
         pub subject: ::std::string::String,
     }
     ///How long to keep it: a single-unit duration such as `48h`, or `0` for forever.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "How long to keep it: a single-unit duration such as `48h`, or `0` for forever.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -8321,106 +3825,34 @@ off the events because events are identical for every reader.*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for Ttl {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for Ttl {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for Ttl {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///What retention a channel allows (§7.2bis, configured per channel in §11).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What retention a channel allows (§7.2bis, configured per channel in §11).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "allow_forever",
-    ///    "default"
-    ///  ],
-    ///  "properties": {
-    ///    "allow_forever": {
-    ///      "description": "Whether `\"0\"` (keep forever) is accepted; off by default.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "default": {
-    ///      "$ref": "#/components/schemas/Ttl"
-    ///    },
-    ///    "max": {
-    ///      "$ref": "#/components/schemas/HumanDuration"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TtlPolicy {
         ///Whether `"0"` (keep forever) is accepted; off by default.
         pub allow_forever: bool,
         pub default: Ttl,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub max: ::std::option::Option<HumanDuration>,
     }
     ///The outcome of applying a [`TtlPolicy`] to a request.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The outcome of applying a [`TtlPolicy`] to a request.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "ttl"
-    ///  ],
-    ///  "properties": {
-    ///    "clamped_from": {
-    ///      "$ref": "#/components/schemas/HumanDuration"
-    ///    },
-    ///    "ttl": {
-    ///      "$ref": "#/components/schemas/Ttl"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TtlResolution {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub clamped_from: ::std::option::Option<HumanDuration>,
         pub ttl: Ttl,
     }
     ///What one channel's unread badge shows (design §7.3, §10.4).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What one channel's unread badge shows (design §7.3, §10.4).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "channel",
-    ///    "unread"
-    ///  ],
-    ///  "properties": {
-    ///    "channel": {
-    ///      "$ref": "#/components/schemas/ChannelId"
-    ///    },
-    ///    "unread": {
-    ///      "description": "How many of its notifications this principal has not read; never zero (such\nchannels are omitted).",
-    ///      "type": "integer",
-    ///      "format": "int64",
-    ///      "minimum": 0.0
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UnreadCount {
         pub channel: ChannelId,
@@ -8429,61 +3861,18 @@ channels are omitted).*/
         pub unread: i64,
     }
     ///A person, as the member picker shows them.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A person, as the member picker shows them.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id"
-    ///  ],
-    ///  "properties": {
-    ///    "display_name": {
-    ///      "description": "Their display name, when known.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "email": {
-    ///      "description": "Their email, when the identity provider released one.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "id": {
-    ///      "description": "Their id, which `POST /channels/{channel}/members` takes.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UserCard {
         ///Their display name, when known.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         ///Their email, when the identity provider released one.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub email: ::std::option::Option<::std::string::String>,
         ///Their id, which `POST /channels/{channel}/members` takes.
         pub id: ::std::string::String,
     }
     ///A human, created on first OIDC login.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A human, created on first OIDC login.",
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -8513,31 +3902,18 @@ channels are omitted).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for UserId {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for UserId {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for UserId {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///A time of day on a wall clock, to the minute, rendered `HH:MM`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A time of day on a wall clock, to the minute, rendered `HH:MM`.",
-    ///  "examples": [
-    ///    "22:00"
-    ///  ],
-    ///  "type": "string"
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -8567,67 +3943,59 @@ channels are omitted).*/
             Self(value)
         }
     }
+    impl ::std::fmt::Display for WallClock {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
     impl ::std::str::FromStr for WallClock {
         type Err = ::std::convert::Infallible;
         fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
             Ok(Self(value.to_string()))
         }
     }
-    impl ::std::fmt::Display for WallClock {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
     ///The identity of this server, as a push service knows it.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The identity of this server, as a push service knows it.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "application_server_key"
-    ///  ],
-    ///  "properties": {
-    ///    "application_server_key": {
-    ///      "description": "The uncompressed P-256 public point, base64url: `applicationServerKey` (RFC 8292).",
-    ///      "examples": [
-    ///        "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkFbx4gpXYm…"
-    ///      ],
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WebPushKey {
         ///The uncompressed P-256 public point, base64url: `applicationServerKey` (RFC 8292).
         pub application_server_key: ::std::string::String,
     }
     ///The caller's own id, to name itself as `owner` of e.g. a personal API key (§5.2).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The caller's own id, to name itself as `owner` of e.g. a personal API key (§5.2).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id"
-    ///  ],
-    ///  "properties": {
-    ///    "id": {
-    ///      "$ref": "#/components/schemas/UserId"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Whoami {
         pub id: UserId,
+    }
+    /// Error types.
+    pub mod error {
+        /// Error from a `TryFrom` or `FromStr` implementation.
+        pub struct ConversionError(::std::borrow::Cow<'static, str>);
+        impl ::std::error::Error for ConversionError {}
+        impl ::std::fmt::Display for ConversionError {
+            fn fmt(
+                &self,
+                f: &mut ::std::fmt::Formatter<'_>,
+            ) -> Result<(), ::std::fmt::Error> {
+                ::std::fmt::Display::fmt(&self.0, f)
+            }
+        }
+        impl ::std::fmt::Debug for ConversionError {
+            fn fmt(
+                &self,
+                f: &mut ::std::fmt::Formatter<'_>,
+            ) -> Result<(), ::std::fmt::Error> {
+                ::std::fmt::Debug::fmt(&self.0, f)
+            }
+        }
+        impl From<&'static str> for ConversionError {
+            fn from(value: &'static str) -> Self {
+                Self(value.into())
+            }
+        }
+        impl From<String> for ConversionError {
+            fn from(value: String) -> Self {
+                Self(value.into())
+            }
+        }
     }
 }
 #[derive(Clone, Debug)]

@@ -1,7 +1,7 @@
 [tools]
 # --- Inherited from weebo-base ---
 cocogitto = "latest"
-node = "24"
+node = "26"
 # fmt and clippy are both required (.tasks/lint.yaml) and neither is in rustup's
 # `minimal` profile, so both are named here rather than left to whatever profile
 # the host's rustup happens to default to.

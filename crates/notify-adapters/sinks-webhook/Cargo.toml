@@ -19,7 +19,7 @@ notify-ports = { workspace = true }
 async-trait = { workspace = true }
 # RustCrypto, like everything else this workspace signs or hashes with: no C
 # toolchain, so the image still builds from a plain `cargo build` (M1 audit).
-hmac = "0.12"
+hmac = "0.13"
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

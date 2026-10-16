@@ -104,7 +104,7 @@ pub fn verify(
 
 fn digest(secret: &[u8], purpose: Purpose<'_>, id: AttachmentId, expires_unix: i64) -> Vec<u8> {
     // HMAC accepts any key length, so the fallback is unreachable (panics are denied here).
-    let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(secret).unwrap_or_else(|_| {
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(secret).unwrap_or_else(|_| {
         <Hmac<Sha256> as hmac::digest::KeyInit>::new(&hmac::digest::Key::<Hmac<Sha256>>::default())
     });
 

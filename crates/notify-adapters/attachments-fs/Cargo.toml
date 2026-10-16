@@ -21,7 +21,7 @@ async-trait = { workspace = true }
 # `notify-sinks-webhook`: this is the only adapter that needs an HMAC primitive to
 # sign its own bearer URLs, and one more workspace-wide dependency line is not worth
 # it for a single crate.
-hmac = "0.12"
+hmac = "0.13"
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }

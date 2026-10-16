@@ -120,7 +120,7 @@ fn classify(status: reqwest::StatusCode) -> SinkOutcome {
 #[must_use]
 pub fn sign(secret: &[u8], timestamp: i64, body: &[u8]) -> String {
     // HMAC accepts any key length, so the fallback is unreachable (panics are denied here).
-    let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(secret).unwrap_or_else(|_| {
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(secret).unwrap_or_else(|_| {
         <Hmac<Sha256> as hmac::digest::KeyInit>::new(&hmac::digest::Key::<Hmac<Sha256>>::default())
     });
 

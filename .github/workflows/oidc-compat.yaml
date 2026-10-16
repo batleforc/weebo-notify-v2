@@ -88,7 +88,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install libdbus headers
         # Workspace members link libdbus — see `check.yaml`.
@@ -101,8 +101,8 @@ jobs:
         # which makes whoever controls that host a publisher of this project's
         # images. The version moves when Renovate proposes it, as a reviewable diff.
         env:
-          MISE_VERSION: "v2026.8.3"
-          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+          MISE_VERSION: "v2026.10.12"
+          MISE_SHA256: "72404716768b5b044cbd5170136d3d795cbd592658b6e932b66f0f8d67a54875"
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
@@ -115,7 +115,7 @@ jobs:
           echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
 
       - name: Restore caches
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `~/.rustup` alongside `~/.local/share/mise`: the mise install is the
           # rustup proxies, the toolchain they run is in `~/.rustup`, and caching
@@ -174,7 +174,7 @@ jobs:
 
           docker run -d --name dex --network host \
             -v "$RUNNER_TEMP/dex-config.yaml:/etc/dex/config.yaml:ro" \
-            ghcr.io/dexidp/dex:v2.45.1 dex serve /etc/dex/config.yaml
+            ghcr.io/dexidp/dex:v2.46.0 dex serve /etc/dex/config.yaml
 
           # Waited on rather than slept through: a fixed sleep is either too short
           # on a loaded runner or wasted on an idle one.

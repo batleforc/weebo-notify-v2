@@ -20,9 +20,9 @@ argon2 = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 # The federation signing key (design §5.3). Already in the graph through
-# jsonwebtoken's `rust_crypto` feature; `pkcs8` is what reads the mounted PEM and
+# jsonwebtoken's `rust_crypto` feature; `pem` (PKCS#8 PEM) is what reads the mounted key and
 # derives the public half from it, so the two cannot drift apart in a config file.
-ed25519-dalek = { version = "2", features = ["pkcs8"] }
+ed25519-dalek = { version = "3", features = ["pem"] }
 jsonwebtoken = { workspace = true }
 lru = { workspace = true }
 reqwest = { workspace = true }

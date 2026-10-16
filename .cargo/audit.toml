@@ -30,23 +30,4 @@ ignore = [
     # that point this entry stops being true and the backend swap becomes the
     # cheaper option. Also revisit if `rsa` ships a fixed release.
     "RUSTSEC-2023-0071",
-
-    # RUSTSEC-2026-0194 and RUSTSEC-2026-0195 — quadratic parsing and unbounded
-    # namespace allocation in `quick-xml`, both fixed in 0.41. We are on 0.38
-    # because `rust-s3` pins `^0.38`; upgrading means patching a dependency's
-    # dependency across a breaking release, which trades a denial-of-service we
-    # cannot reach for a compilation we cannot predict.
-    #
-    # Why it is not reachable: this parser only ever reads **responses from our own
-    # object store**. The bucket is private and inside the trust boundary (§6) —
-    # nothing user-supplied is parsed as XML anywhere in this product, and an
-    # attacker able to craft those responses can already read and write every
-    # attachment in the bucket. A denial of service would be the least of it.
-    #
-    # REVISIT IF: `rust-s3` releases against `quick-xml >= 0.41` (then just
-    # upgrade), or this workspace ever parses XML from somewhere a user can reach —
-    # at which point the reachability argument above stops being true and this
-    # entry has to go.
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
 ]

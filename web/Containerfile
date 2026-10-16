@@ -16,14 +16,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Build
 # ─────────────────────────────────────────────────────────────────────────────
-FROM docker.io/library/node:24-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS builder
+FROM docker.io/library/node:26-slim@sha256:0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4 AS builder
 
 WORKDIR /build
 
 # Corepack is no longer shipped with Node, so pnpm is installed by hand. The version
-# is pinned to the one this repository develops on: pnpm 11 writes lockfile 9, and a
+# is pinned to the one this repository develops on: pnpm 12 writes lockfile 9, and a
 # major that reads it differently would resolve a tree nobody tested.
-RUN npm install -g pnpm@11.18.0
+# npm 11 skips global install scripts unless allowed; pnpm's own is the only one
+# approved, by name, so a dependency it pulled in could not run one too.
+RUN npm install -g --allow-scripts=pnpm pnpm@12.14.0
 
 # Manifests first so the install layer survives a source-only change.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -46,7 +48,7 @@ RUN pnpm build
 # `nginx-unprivileged` rather than `nginx`: the stock image starts as root to bind
 # :80 and drops afterwards, which needs a root user to exist. This one never has
 # one, and listens on :8080 accordingly.
-FROM docker.io/nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6 AS runtime
+FROM docker.io/nginxinc/nginx-unprivileged:1.30-alpine@sha256:782bb89768cc87b7f95c18b95baa1af250e5d451f26794f59363540161147c01 AS runtime
 
 # The entrypoint envsubst's `/etc/nginx/templates/*.template` into `conf.d/`. The
 # filter is not decoration: without it envsubst rewrites every `$name` in the file,

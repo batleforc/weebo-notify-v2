@@ -52,7 +52,7 @@ export type Action = {
     options: Array<ChoiceOption>;
     type: 'choice';
 } | {
-    duration?: null | HumanDuration;
+    duration?: HumanDuration | null;
     /**
      * Button text.
      */
@@ -245,7 +245,7 @@ export type AuditEntry = {
      * When.
      */
     at: string;
-    channel?: null | ChannelId;
+    channel?: ChannelId | null;
     /**
      * Extra context such as the scopes granted or the previous value; never secrets or payloads.
      */
@@ -365,10 +365,10 @@ export type ChannelPolicy = {
  * Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.
  */
 export type ChannelPolicyBody = {
-    close_after?: null | CloseAfter;
-    default_priority?: null | Priority;
-    default_ttl?: null | Ttl;
-    max_ttl?: null | Ttl;
+    close_after?: CloseAfter | null;
+    default_priority?: Priority | null;
+    default_ttl?: Ttl | null;
+    max_ttl?: Ttl | null;
     /**
      * Whether delivery and read receipts are collected here (§7.3).
      */
@@ -456,8 +456,8 @@ export type Content = {
      * Name of a client-side icon, e.g. `cluster`; unknown names fall back to the default.
      */
     icon?: string | null;
-    image?: null | Image;
-    progress?: null | Progress;
+    image?: Image | null;
+    progress?: Progress | null;
     /**
      * Free-form labels, normalised to lowercase and deduplicated.
      */
@@ -488,8 +488,8 @@ export type ContentDraft = {
      * See [`Content::icon`].
      */
     icon?: string | null;
-    image?: null | Image;
-    progress?: null | Progress;
+    image?: Image | null;
+    progress?: Progress | null;
     /**
      * See [`Content::tags`].
      */
@@ -643,7 +643,7 @@ export type DependencyCheck = {
  * An enrolled device.
  */
 export type Device = {
-    cursor?: null | Cursor;
+    cursor?: Cursor | null;
     /**
      * When it was enrolled.
      */
@@ -664,7 +664,7 @@ export type Device = {
      * Whose it is; service accounts hold logical devices with no push transport (§5.2bis).
      */
     owner: Principal;
-    public_key?: null | DevicePublicKey;
+    public_key?: DevicePublicKey | null;
     /**
      * Set on revocation.
      */
@@ -763,7 +763,7 @@ export type EnrolBody = {
      * What to call it in the device list.
      */
     label: string;
-    public_key?: null | DevicePublicKey;
+    public_key?: DevicePublicKey | null;
     /**
      * How it is reached. `stream` is a device that only holds a connection.
      */
@@ -1120,7 +1120,7 @@ export type Notification = {
      * Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).
      */
     deleted_at?: string | null;
-    external_id?: null | ExternalId;
+    external_id?: ExternalId | null;
     /**
      * The highest-`seq` revision applied so far — the current truth.
      */
@@ -1441,7 +1441,7 @@ export type Problem = {
  * Everything a client shows about a person, beyond their identity.
  */
 export type Profile = {
-    avatar?: null | AttachmentId;
+    avatar?: AttachmentId | null;
     /**
      * What clients show. Falls back to the identity when unset.
      */
@@ -1511,10 +1511,12 @@ export type Progress = {
  * `POST /notifications`: the upsert body's revision draft plus its channel (§8.3).
  */
 export type PublishBody = ContentDraft & {
-    priority?: null | Priority;
-    state?: null | State;
-    status?: null | Status;
-    ttl?: null | Ttl;
+    priority?: Priority | null;
+    state?: State | null;
+    status?: Status | null;
+    ttl?: Ttl | null;
+} & {
+    [key: string]: unknown;
 } & {
     /**
      * Where it goes.
@@ -1649,7 +1651,7 @@ export type Receipt = {
      * Server time.
      */
     at: string;
-    device?: null | DeviceId;
+    device?: DeviceId | null;
     /**
      * Identity.
      */
@@ -1672,7 +1674,7 @@ export type Receipt = {
  * Delivered, or seen.
  */
 export type ReceiptBody = {
-    device?: null | DeviceId;
+    device?: DeviceId | null;
     /**
      * `delivered` or `seen`.
      */
@@ -1737,7 +1739,7 @@ export type RecordedInteraction = {
      * `created`, `unchanged` or `replaced`.
      */
     outcome: string;
-    record?: null | InteractionRecord;
+    record?: InteractionRecord | null;
 };
 
 /**
@@ -1787,10 +1789,10 @@ export type Revision = {
  * update and take channel defaults on creation.
  */
 export type RevisionDraft = ContentDraft & {
-    priority?: null | Priority;
-    state?: null | State;
-    status?: null | Status;
-    ttl?: null | Ttl;
+    priority?: Priority | null;
+    state?: State | null;
+    status?: Status | null;
+    ttl?: Ttl | null;
 };
 
 /**
@@ -1805,7 +1807,7 @@ export type RevisionEvent = {
      * When the notification was first created.
      */
     created_at: string;
-    external_id?: null | ExternalId;
+    external_id?: ExternalId | null;
     /**
      * The notification this revises.
      */
@@ -1863,7 +1865,7 @@ export type ServiceAccount = {
      * When it was created.
      */
     created_at: string;
-    created_by?: null | UserId;
+    created_by?: UserId | null;
     /**
      * What it is for.
      */
@@ -1931,7 +1933,7 @@ export type Silence = {
  * Stop notifying *me* about this.
  */
 export type SilenceBody = {
-    duration?: null | HumanDuration;
+    duration?: HumanDuration | null;
     /**
      * How far it reaches. Defaults to this notification alone.
      */
@@ -2028,7 +2030,7 @@ export type SyncPage = {
      * Per channel, how many notifications expired unseen during the absence.
      */
     expired?: Array<ExpiredWhileAway>;
-    next?: null | Cursor;
+    next?: Cursor | null;
 };
 
 /**
@@ -2098,14 +2100,14 @@ export type TtlPolicy = {
      * Applied when the publisher says nothing.
      */
     default: Ttl;
-    max?: null | HumanDuration;
+    max?: HumanDuration | null;
 };
 
 /**
  * The outcome of applying a [`TtlPolicy`] to a request.
  */
 export type TtlResolution = {
-    clamped_from?: null | HumanDuration;
+    clamped_from?: HumanDuration | null;
     /**
      * What will actually be applied.
      */
@@ -2380,7 +2382,7 @@ export type ReconciliationResponses = {
     /**
      * The last pass, or `null` if none has finished on this replica
      */
-    200: null | Reconciliation;
+    200: Reconciliation | null;
 };
 
 export type ReconciliationResponse = ReconciliationResponses[keyof ReconciliationResponses];
@@ -3835,7 +3837,7 @@ export type ReadershipResponses = {
     /**
      * The roll, or `null` when receipts are off on that channel
      */
-    200: null | Readership;
+    200: Readership | null;
 };
 
 export type ReadershipResponse = ReadershipResponses[keyof ReadershipResponses];
@@ -4036,7 +4038,7 @@ export type ReceiptResponses = {
     /**
      * The receipt, or `null` when receipts are off on that channel
      */
-    200: null | Receipt;
+    200: Receipt | null;
 };
 
 export type ReceiptResponse = ReceiptResponses[keyof ReceiptResponses];

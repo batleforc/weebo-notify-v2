@@ -79,7 +79,7 @@ components:
         - {name: postgres, targetPort: 5432, exposure: internal}
   - name: rustfs
     container:
-      image: rustfs/rustfs:latest
+      image: rustfs/rustfs:1.0.2
       memoryLimit: 512Mi
       env:
         - {name: RUSTFS_ACCESS_KEY, value: weebo-dev}
@@ -93,7 +93,7 @@ components:
         - {name: rustfs-console, targetPort: 9001, exposure: public, protocol: https}
   - name: redis
     container:
-      image: valkey/valkey:8-alpine
+      image: valkey/valkey:9-alpine
       memoryLimit: 128Mi
       endpoints:
         - {name: redis, targetPort: 6379, exposure: internal}
@@ -111,7 +111,7 @@ components:
   # process once the file is there.
   - name: dex
     container:
-      image: ghcr.io/dexidp/dex:v2.45.1
+      image: ghcr.io/dexidp/dex:v2.46.0
       memoryLimit: 128Mi
       # `${PROJECT_SOURCE}/dev/dex/config.local.yaml` has to be readable from in
       # here, which is why this container sees the project sources at all.

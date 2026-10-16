@@ -27,7 +27,6 @@ x-authentik-env: &authentik-env
   AUTHENTIK_POSTGRESQL__NAME: authentik
   AUTHENTIK_POSTGRESQL__USER: authentik
   AUTHENTIK_POSTGRESQL__PASSWORD: authentik
-  AUTHENTIK_REDIS__HOST: redis
   AUTHENTIK_BOOTSTRAP_EMAIL: admin@weebo.local
   AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run `task dev:env` first}
   AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?run `task dev:env` first}
@@ -58,7 +57,7 @@ services:
   rustfs:
     # S3-compatible object store for attachments. The adapter only ever uses
     # standard S3 operations, so this stays swappable for MinIO/Garage/S3 (§15).
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs:1.0.2
     ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"] # S3 API / console
     environment:
       RUSTFS_ACCESS_KEY: weebo-dev
@@ -69,13 +68,14 @@ services:
       - rustfs-data:/data
 
   redis:
-    # Authentik's broker.
-    image: valkey/valkey:8-alpine
-    profiles: [authentik, eventbus]
+    # The event-bus backend under work (profile `eventbus`). No longer Authentik's
+    # broker: Authentik dropped Redis in 2025.10 and keeps everything in Postgres.
+    image: valkey/valkey:9-alpine
+    profiles: [eventbus]
     ports: ["127.0.0.1:6379:6379"]
 
   authentik-server:
-    image: ghcr.io/goauthentik/server:2025.6
+    image: ghcr.io/goauthentik/server:2026.8
     command: server
     profiles: [authentik]
     ports: ["127.0.0.1:9100:9100"]
@@ -84,10 +84,9 @@ services:
       - ./authentik/blueprints:/blueprints/weebo:ro
     depends_on:
       postgres: { condition: service_healthy }
-      redis: { condition: service_started }
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:2025.6
+    image: ghcr.io/goauthentik/server:2026.8
     command: worker
     profiles: [authentik]
     environment: *authentik-env
@@ -95,11 +94,10 @@ services:
       - ./authentik/blueprints:/blueprints/weebo:ro
     depends_on:
       postgres: { condition: service_healthy }
-      redis: { condition: service_started }
 
   mailpit:
     # SMTP sink for exercising the `email` channel sink (§7.1bis).
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.31.6
     profiles: [sinks]
     ports: ["127.0.0.1:8025:8025", "127.0.0.1:1025:1025"]
 
@@ -112,7 +110,7 @@ services:
     # Its config does not exist until `task dev:dex` renders it: the password is
     # generated per run and never committed (§3.2), so the mount below points at a
     # file the task writes just before bringing this up.
-    image: ghcr.io/dexidp/dex:v2.45.1
+    image: ghcr.io/dexidp/dex:v2.46.0
     profiles: [dex]
     command: ["dex", "serve", "/etc/dex/config.yaml"]
     ports: ["127.0.0.1:5556:5556"]

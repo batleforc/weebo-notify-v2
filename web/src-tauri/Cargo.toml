@@ -49,7 +49,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-keyring = "4.1.6"
+keyring = "4.2.0"
 # The interesting half of this shell lives here and is tested by `task test` on any
 # machine: the tray state machine (§10bis.3ter) and the deep-link parser
 # (§10bis.3quater). What is left in `main.rs` is binding, which is the part that
@@ -88,3 +88,9 @@ tauri-plugin-updater = "2"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# Not used directly: caps the version `tauri-plugin-deep-link` resolves on Linux.
+# deep-link 2.6.2 builds `ini::ParseOption` with a struct literal that 0.21.2 broke
+# (two fields added in a patch release). Drop this once deep-link catches up.
+[target.'cfg(target_os = "linux")'.dependencies]
+rust-ini = "=0.21.1"

@@ -65,3 +65,6 @@ web/src-tauri/gen/schemas/
 # Playwright
 web/test-results/
 web/playwright-report/
+
+# wska links (absolute paths into the local wska clone), re-run `task skills:install`
+.claude/skills/
