@@ -29,4 +29,4 @@ uv = "latest"
 "pipx:desloppify[full]" = "latest"
 # `wska`, which links the weebo-skillsagent skills (`task skills:install`). Pinned
 # like weebo-base pins it: the CLI and the skill layout it expects move together.
-"github:batleforc/weebo-skillsagent" = "0.5.0"
+"github:batleforc/weebo-skillsagent" = "0.12.0"

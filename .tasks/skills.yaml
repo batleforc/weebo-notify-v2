@@ -1,18 +1,46 @@
 version: "3"
 
+# The selection lives in .claude/wska.toml (committed): `install`/`update` with no
+# PROFILE/ITEM re-apply it, `add`/`remove` edit it. PROFILE and ITEM take
+# comma-separated lists. ARGS sits in each task's vars: file-level vars do not see
+# the PROFILE/ITEM given on the command line.
 vars:
-  PROFILES: '{{.PROFILES | default "base design"}}'
   SCOPE: '{{.SCOPE | default "project"}}'
+  RUN_INSTALLERS: '{{.RUN_INSTALLERS | default "1"}}'
 
 tasks:
   install:
-    desc: "Link the skills of the given wska profiles, installers included (usage: task skills:install [PROFILES='base design'] [SCOPE=project|user])"
-    preconditions:
+    desc: "Link the skills recorded in .claude/wska.toml, or replace that selection (usage: task skills:install [PROFILE=base,frontend] [ITEM=weebo-helm] [SCOPE=project|user] [RUN_INSTALLERS=0])"
+    vars: &args
+      ARGS: >-
+        {{range (.PROFILE | default "" | splitList ",") | compact}}--profile {{.}} {{end}}{{range (.ITEM | default "" | splitList ",") | compact}}--item {{.}} {{end}}--scope {{.SCOPE}}{{if eq .RUN_INSTALLERS "1"}} --run-installers{{end}}
+    preconditions: &wska
       - sh: "command -v wska >/dev/null"
         msg: "wska is required, run 'task mise:install'"
     cmds:
-      - wska install {{range splitList " " .PROFILES}}--profile {{.}} {{end}}--scope {{.SCOPE}} --run-installers
+      - wska install {{.ARGS}}
       - echo "Restart Claude Code to load the freshly linked skills"
+
+  add:
+    desc: "Add profiles or items to the recorded selection and link them (usage: task skills:add [PROFILE=planning] [ITEM=weebo-techdoc])"
+    vars: *args
+    preconditions: *wska
+    cmds:
+      - wska add {{.ARGS}}
+
+  remove:
+    desc: "Drop recorded profiles or items and unlink what only they brought (usage: task skills:remove [PROFILE=design] [ITEM=weebo-helm])"
+    vars: *args
+    preconditions: *wska
+    cmds:
+      - wska remove {{.ARGS}}
+
+  update:
+    desc: "Pull the latest weebo-skillsagent and re-apply .claude/wska.toml"
+    vars: *args
+    preconditions: *wska
+    cmds:
+      - wska update {{.ARGS}}
 
   status:
     desc: "Show what wska linked in the target"
@@ -25,11 +53,7 @@ tasks:
       - wska doctor
 
   list:
-    desc: "List the available wska profiles"
+    desc: "List the recorded selection and the available wska profiles"
     cmds:
+      - wska list --recorded --scope {{.SCOPE}}
       - wska list --profiles
-
-  update:
-    desc: "Pull the latest skills into the wska clone (links are live, nothing to reinstall)"
-    cmds:
-      - git -C "${XDG_DATA_HOME:-$HOME/.local/share}/wska/weebo-skillsagent" pull --ff-only

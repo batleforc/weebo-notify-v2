@@ -31,11 +31,11 @@ tasks:
       # Hooks first: they carry gitleaks, and nothing below may stand between a
       # clone and them.
       - cog install-hook -a -o
-      # Skills linked by wska from weebo-skillsagent (weebo-base). `frontend` rather
-      # than the template's `design`: same design voices plus webapp-testing, which
-      # this repo's web/ and Playwright suite have a use for.
+      # Skills linked by wska from weebo-skillsagent (weebo-base), as recorded in
+      # .claude/wska.toml: `frontend` for web/ and its Playwright suite, `weebo` for
+      # the house practices, weebo-helm for charts/weebo-notify.
       # Optional tooling — a network hiccup or a missing clone must not stop init.
-      - cmd: MISE_ENV=dev mise exec -- task skills:install PROFILES="base frontend"
+      - cmd: MISE_ENV=dev mise exec -- task skills:install
         ignore_error: true
       - cmd: '[ -f docs/package.json ] && pnpm -C docs install || true'
         silent: true

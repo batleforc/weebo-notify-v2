@@ -102,6 +102,10 @@ backend = "core:node"
 checksum = "sha256:d9f88af72ad34f7ddf8e67289829f1698f54b6254f7d4f54b7453117ff1a3d2c"
 url = "https://nodejs.org/dist/v26.12.0/node-v26.12.0-linux-x64.tar.gz"
 
+[[tools."pipx:graphifyy"]]
+version = "0.9.92"
+backend = "pipx:graphifyy"
+
 [[tools.pnpm]]
 version = "12.11.2"
 backend = "aqua:pnpm/pnpm"
