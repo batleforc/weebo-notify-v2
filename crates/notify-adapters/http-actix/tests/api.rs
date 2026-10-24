@@ -83,8 +83,14 @@ impl Harness {
 
         let attribution = Attribution::new(Arc::new(store.clone()), Arc::new(store.clone()));
 
+        // Running, as in production: a stream past its backlog hears only from it.
+        let live = notify_app::LiveFeed::new(Arc::new(store.clone()));
+        let pokes = futures::FutureExt::now_or_never(notify_ports::EventBus::subscribe(&store))
+            .unwrap()
+            .unwrap();
+        actix_web::rt::spawn(live.clone().run(pokes));
         let state = ApiState {
-            bus: Arc::new(store.clone()),
+            live,
             // Measured where the exporter lives (`notify-metrics-prometheus`).
             metrics: Arc::new(notify_ports::NoMetrics),
             // Real: it refuses requests, so stubbing it would test a server with no ceiling.

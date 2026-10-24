@@ -3223,6 +3223,59 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn the_live_tail_reads_the_log_compacted_page_by_page() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let head = EventStore::head(&store).await.unwrap();
+
+        let (mut deploy, _) = publish(&store, &channel, &alice, "deploy prod").await;
+        for step in 0..2 {
+            let written = deploy
+                .revise(
+                    RevisionDraft::simple(ContentDraft::titled(&format!("step {step}"))),
+                    author(&alice),
+                    now(),
+                    &ChannelPolicy::default(),
+                )
+                .unwrap();
+            store
+                .append_revision(&deploy, &written.revision)
+                .await
+                .unwrap();
+        }
+        let (other, _) = publish(&store, &channel, &alice, "other").await;
+
+        // Other tests write to the same log: walk it all, keep this channel's events.
+        let mut seen = Vec::new();
+        let mut after = head;
+        loop {
+            let page = store.tail(after, PageRequest::of_size(1)).await.unwrap();
+            for event in &page.items {
+                assert!(event.cursor > after, "pages move forward without repeating");
+                if event.audience.channel() == Some(&channel)
+                    && let EventPayload::Revision(revision) = &event.payload
+                {
+                    seen.push((revision.notification_id, revision.payload.title.clone()));
+                }
+            }
+            match page.next {
+                Some(next) => after = next,
+                None => break,
+            }
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (deploy.id, "step 1".to_owned()),
+                (other.id, "other".to_owned())
+            ],
+            "the deploy's earlier revisions are folded into its last one"
+        );
+    }
+
+    #[tokio::test]
     async fn paging_one_event_at_a_time_reads_the_same_compacted_stream() {
         // The page is merged from one bounded scan per channel; walking it one row
         // at a time must yield exactly what one big page does, in `seq` order, with

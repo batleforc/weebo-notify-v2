@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use notify_domain::{
-    ChannelId, Cursor, Device, DeviceId, DomainError, NotificationId, Principal, UserId,
+    ChannelId, Cursor, Device, DeviceId, Dnd, DomainError, NotificationId, Principal, UserId,
 };
 use notify_ports::{
-    Clock, DeviceRepository, EventPayload, EventStore, Failure, PageRequest, PreferenceRepository,
-    SyncPage, SyncQuery,
+    Clock, DeviceRepository, Event, EventPayload, EventStore, Failure, PageRequest,
+    PreferenceRepository, SyncPage, SyncQuery,
 };
 
 use crate::authz::{Authorizer, Caller, Grant};
@@ -158,34 +158,76 @@ impl SyncBacklog {
         user: UserId,
         page: &SyncPage,
     ) -> Result<Vec<NotificationId>, Failure> {
-        // Notifications, not events: forty revisions are one row and one badge.
-        let mut deferred = Vec::new();
         if page.events.is_empty() {
-            return Ok(deferred);
+            return Ok(Vec::new());
         }
-
         let dnd = self.preferences.dnd(user).await?;
-        // No DND set: nothing was ever deferred.
-        if dnd.quiet_hours.is_empty() && dnd.until.is_none() {
-            return Ok(deferred);
-        }
-
-        for event in &page.events {
-            let (EventPayload::Revision(revision), Some(channel)) =
-                (&event.payload, event.audience.channel())
-            else {
-                continue;
-            };
-            if deferred.contains(&revision.notification_id) {
-                continue;
-            }
-            if dnd.is_muted(channel, revision.priority, revision.created_at) {
-                deferred.push(revision.notification_id);
-            }
-        }
-
-        Ok(deferred)
+        Ok(deferred_by(&dnd, &page.events))
     }
+
+    // --- For the live feed (`crate::live`): what a stream reads once, not per wake.
+
+    /// The caller's do-not-disturb, which a live stream keeps until a preference event
+    /// of theirs goes by; `None` for a principal that has none.
+    pub async fn dnd(&self, caller: &Caller) -> Result<Option<Dnd>, Failure> {
+        match caller.principal {
+            Principal::User { id } => Ok(Some(self.preferences.dnd(id).await?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// The device whose cursor a live stream may advance: the caller's own, and only
+    /// for an unfiltered membership stream (the same rule as [`Self::page`]).
+    pub async fn live_device(
+        &self,
+        caller: &Caller,
+        device: Option<DeviceId>,
+        channels: &[ChannelId],
+    ) -> Result<Option<DeviceId>, Failure> {
+        if !channels.is_empty() || caller.grant != Grant::Membership {
+            return Ok(None);
+        }
+        let Some(id) = device else {
+            return Ok(None);
+        };
+        Ok(owned_device(self.devices.as_ref(), caller, id)
+            .await?
+            .map(|device| device.id))
+    }
+
+    /// Record how far a live stream's device has read.
+    pub async fn advance_device(&self, device: DeviceId, cursor: Cursor) -> Result<(), Failure> {
+        Ok(self
+            .devices
+            .advance_cursor(device, cursor, self.clock.now())
+            .await?)
+    }
+}
+
+/// Which of these notifications a quiet period is holding back for their reader (§7.4);
+/// shared by the catch-up page and the live stream, which marks them `muted_by_dnd`.
+#[must_use]
+pub fn deferred_by(dnd: &Dnd, events: &[Event]) -> Vec<NotificationId> {
+    // Notifications, not events: forty revisions are one row and one badge.
+    let mut deferred = Vec::new();
+    // No DND set: nothing was ever deferred.
+    if dnd.quiet_hours.is_empty() && dnd.until.is_none() {
+        return deferred;
+    }
+    for event in events {
+        let (EventPayload::Revision(revision), Some(channel)) =
+            (&event.payload, event.audience.channel())
+        else {
+            continue;
+        };
+        if deferred.contains(&revision.notification_id) {
+            continue;
+        }
+        if dnd.is_muted(channel, revision.priority, revision.created_at) {
+            deferred.push(revision.notification_id);
+        }
+    }
+    deferred
 }
 
 /// Where a live stream should start. A client that never synced starts at the head,

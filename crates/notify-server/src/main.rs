@@ -236,7 +236,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let serve_docs = config.server.docs;
     let state = actix_web::web::Data::new(application.state);
     let streams = std::sync::Arc::clone(&state.streams);
-    let bus = state.bus.clone();
+    let bus = application.pokes.clone();
     let readiness = actix_web::web::Data::new(health::Dependencies::new(
         application.store.clone(),
         application.transports.names(),
@@ -299,6 +299,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     .run();
 
     let pump = application.pump;
+    let feed = application.feed;
     let store = application.store;
     let jobs = actix_web::rt::spawn(background(
         application.purge,
@@ -333,6 +334,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     // This also releases the leader lock immediately (§11).
     jobs.abort();
     leases.abort();
+    feed.abort();
     // Aborted on purpose: the outcome is a cancellation, and shutdown goes on either way.
     if let Err(error) = jobs.await
         && !error.is_cancelled()

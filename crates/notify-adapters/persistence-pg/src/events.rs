@@ -12,8 +12,8 @@ const WATERMARK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 use notify_domain::{ChannelId, Cursor, UserId};
 use notify_ports::{
-    Audience, Event, EventPayload, EventStore, ExpiredWhileAway, Page, PortError, PortResult,
-    SyncPage, SyncQuery,
+    Audience, Event, EventPayload, EventStore, ExpiredWhileAway, Page, PageRequest, PortError,
+    PortResult, SyncPage, SyncQuery,
 };
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
@@ -163,6 +163,36 @@ impl EventStore for PgStore {
             // Filled by the use case, which reads the preference (§7.4).
             deferred_by_dnd: Vec::new(),
         })
+    }
+
+    async fn tail(&self, after: Cursor, page: PageRequest) -> PortResult<Page<Event>> {
+        let limit = page.effective_limit();
+        self.settle().await?;
+
+        // `superseded!` without its audience test: revisions only go to a channel, so a later
+        // one is visible to exactly whoever could see this one.
+        let rows = sqlx::query(
+            "SELECT e.seq, e.audience_kind, e.channel_id, e.user_id, e.recorded_at, e.kind,
+                    e.payload
+             FROM events e
+             WHERE e.seq > $1 AND e.seq <= events_watermark()
+               AND e.kind <> 'expired_unseen'
+               AND NOT (e.kind = 'revision' AND EXISTS (
+                   SELECT 1 FROM events later
+                   WHERE later.notification_id = e.notification_id
+                     AND later.seq > e.seq
+                     AND later.kind = 'revision'
+               ))
+             ORDER BY e.seq
+             LIMIT $2",
+        )
+        .bind(sequence(after))
+        .bind(i64::from(limit).saturating_add(1))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("event", error))?;
+
+        page_of(rows, limit)
     }
 
     async fn head(&self) -> PortResult<Cursor> {

@@ -1,0 +1,63 @@
+---
+title: ADR-0030 — One live reader per replica
+description: A replica reads each new stretch of the event log once and hands every open stream its share; a stream reads for itself only to catch up.
+---
+
+Status: **accepted** (2026-10-24) · Supersedes: — · Superseded by: —
+
+## Context
+
+A poke used to wake every stream on the replica, and each stream then read the log
+for itself through `SyncBacklog`: its readable channels, a watermark settle, the
+compacted page, a compaction count and an expired-while-away count it threw away, and
+its do-not-disturb. With 1 000 streams, one publication cost about 1 000 reads,
+competing with the writes for a pool of 16.
+
+`task perf:run:fanout` (1 000 WebSocket streams, one replica) measured it: at 20
+publications/s every frame arrived but delivery took ~1 s and `POST /notifications`
+went from 9 ms to 600 ms; at 100/s delivery drifted to 20 s.
+
+A cache (in memory or Redis) was considered and rejected: the reads were not repeated
+over time but repeated across streams at the same instant, a shared cache would add
+invalidation across replicas to a code base that just closed its revocation windows,
+and Redis would add a service to a deployment that needs only Postgres.
+
+## Decision
+
+- `notify_app::LiveFeed` is the replica's single reader. On a poke (queued pokes
+  coalesced) it reads every event after its cursor, all audiences, up to the
+  watermark and compacted — `EventStore::tail` — and broadcasts the batch.
+- A stream subscribes to the feed before its first read, catches up through
+  `SyncBacklog` as before, then takes its share of each batch in memory: the same
+  visibility rule as a page read, `muted_by_dnd` from a do-not-disturb it holds and
+  re-reads when a preference of its own goes by.
+- A stream behind a batch (it joined late), lagging the broadcast, or told its
+  memberships changed reads for itself. A stream that has caught up joins the feed at
+  the feed's position.
+- A device's cursor is written at most every 30 s while live, and when the stream ends.
+
+The bus still carries pokes only (ADR-0008) and every read still stops at the
+watermark (ADR-0028).
+
+## Consequences
+
+**Positive**
+
+- One read per wake per replica, whatever the number of streams. Measured on the same
+  run: delivery p95 57 ms and publish p95 34 ms at 100/s, every threshold green.
+- The catch-up path is unchanged, and it is also the fallback, so the live path cannot
+  lose an event the log has.
+
+**Negative**
+
+- Every replica holds each batch in memory once, every audience included, and filters
+  it once per stream. Cheap next to a read, but it grows with publications × streams.
+- Each stream still serialises its own copy of every event.
+
+**Accepted debt**
+
+- A crash loses up to 30 s of device-cursor progress, and a client resuming from the
+  device rather than `Last-Event-ID` replays that stretch. The CLI/desktop cache upserts
+  by id; the web client's handling of a replayed event has not been checked.
+- Serialising once per batch instead of once per stream waits for a profile that shows
+  it matters.

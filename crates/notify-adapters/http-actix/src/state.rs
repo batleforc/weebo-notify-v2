@@ -15,14 +15,14 @@ use notify_app::{
     SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
 };
 use notify_attachments_fs::FsAttachments;
-use notify_ports::{EventBus, Metrics};
+use notify_ports::Metrics;
 
 /// The application, as the HTTP layer sees it.
 #[derive(Clone)]
 pub struct ApiState {
-    /// The one port held directly: pokes wake live connections, which then read via
-    /// [`ApiState::sync`].
-    pub bus: Arc<dyn EventBus>,
+    /// The replica's one reader of the event log, which live connections listen to; a
+    /// connection behind it reads via [`ApiState::sync`].
+    pub live: notify_app::LiveFeed,
 
     /// Process-level metrics (design §13).
     pub metrics: Arc<dyn Metrics>,

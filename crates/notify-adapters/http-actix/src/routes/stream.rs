@@ -1,15 +1,17 @@
-//! The live transports, SSE and WebSocket (design §8.1, ADR-0001). A poke only wakes
-//! the connection, which reads rows via [`notify_app::SyncBacklog`] like `GET /sync`.
+//! The live transports, SSE and WebSocket (design §8.1, ADR-0001). Live events come from
+//! the replica's [`notify_app::LiveFeed`], one read for every stream; a stream that
+//! joined late or fell behind reads via [`notify_app::SyncBacklog`] like `GET /sync`.
 
 use std::time::Duration;
 
 use actix_web::{HttpRequest, HttpResponse, get, web};
 use actix_web_lab::sse;
-use futures::{FutureExt as _, StreamExt as _};
-use notify_app::{Caller, Credential, SyncBacklog, SyncRequest};
-use notify_domain::{ChannelId, Cursor, DeviceId, Principal};
-use notify_ports::{Event, PageRequest, Poke};
+use futures::StreamExt as _;
+use notify_app::{Caller, Credential, Live, LiveBatch, SyncBacklog, SyncRequest};
+use notify_domain::{ChannelId, Cursor, DeviceId, Dnd, Principal};
+use notify_ports::{Audience, Event, EventPayload, PageRequest};
 use serde::Deserialize;
+use tokio::sync::broadcast;
 use utoipa::IntoParams;
 
 use crate::extract::{Authenticated, csv};
@@ -28,8 +30,9 @@ const BACKPRESSURE: u32 = 64;
 /// stream outlives its revocation (ADR-0023).
 const REAUTHENTICATE: Duration = Duration::from_secs(60);
 
-/// The most queued pokes one wake swallows; whatever is left wakes the next read.
-const DRAIN: usize = 1_024;
+/// How often a live stream records its device's cursor; the rest is written when the
+/// stream ends. A crash loses at most this much, which the client replays and dedups.
+const ADVANCE_EVERY: Duration = Duration::from_secs(30);
 
 /// How long one write may wait on a client that stopped reading; past it the client is
 /// dropped, so it cannot hold a slot (or a revoked credential) by not reading.
@@ -159,9 +162,24 @@ struct Connection {
     channels: Vec<ChannelId>,
     device: Option<DeviceId>,
     cursor: Cursor,
-    /// What the caller may read, so a poke elsewhere costs nothing; refreshed on
+    /// What the caller may read, so the feed's other events are skipped; refreshed on
     /// re-authentication.
     readable: Vec<ChannelId>,
+    /// The caller's do-not-disturb, re-read when a preference of theirs goes by.
+    dnd: Option<Dnd>,
+    /// The device whose cursor live events advance, when this stream may move it.
+    device_live: Option<DeviceId>,
+    /// The furthest live event delivered and not yet recorded on the device.
+    unsaved: Option<Cursor>,
+    saved_at: tokio::time::Instant,
+}
+
+/// What the feed asks of a stream.
+enum Wake {
+    /// Send these, already filtered for this reader.
+    Send(Vec<Event>),
+    /// Read the log for yourself: a gap, a lag, or channels to bring in.
+    Read,
 }
 
 impl Connection {
@@ -190,6 +208,8 @@ impl Connection {
         // Once per connection, not per page: every poke would otherwise write it again.
         state.sync.remember_groups(&caller).await?;
         let readable = state.sync.readable_channels(&caller).await?;
+        let dnd = state.sync.dnd(&caller).await?;
+        let device_live = state.sync.live_device(&caller, device, &channels).await?;
 
         Ok(Self {
             sync: state.sync.clone(),
@@ -198,21 +218,36 @@ impl Connection {
             device,
             cursor,
             readable,
+            dnd,
+            device_live,
+            unsaved: None,
+            saved_at: tokio::time::Instant::now(),
         })
     }
 
-    /// Whether `poke` may carry something this connection has not read yet.
-    fn wants(&self, poke: &Poke) -> bool {
-        match poke {
-            Poke::Resync => true,
-            Poke::Channel { id, cursor } => {
-                *cursor > self.cursor
-                    && self.readable.contains(id)
+    /// Whether this reader sees `event`: the same rule `SyncBacklog::page` applies.
+    fn sees(&self, event: &Event) -> bool {
+        match &event.audience {
+            Audience::Channel { id } => {
+                self.readable.contains(id)
                     && (self.channels.is_empty() || self.channels.contains(id))
             }
-            // Rare (a preference, a membership), and a membership carries no event to
-            // compare a cursor with: always worth a read.
-            Poke::User { id, .. } => self.is_me(*id),
+            // Private events ignore `?channels=` (T26), except where a page read returns
+            // nothing at all: a narrowing or a key left with no channel.
+            Audience::User { id } => {
+                let narrowed = !self.channels.is_empty();
+                let nothing = if narrowed {
+                    !self
+                        .channels
+                        .iter()
+                        .any(|channel| self.readable.contains(channel))
+                } else {
+                    self.readable.is_empty()
+                };
+                self.is_me(*id)
+                    && !(nothing
+                        && (narrowed || self.caller.grant != notify_app::Grant::Membership))
+            }
         }
     }
 
@@ -229,34 +264,92 @@ impl Connection {
         }
     }
 
-    /// Wait for a poke worth reading, then swallow those already queued behind it: a
-    /// burst of publications costs one read, not one per publication. `None` when the
-    /// bus is gone; otherwise whether one of them was addressed to this user, which may
-    /// mean a channel to add (see [`Self::refresh_readable`]).
-    async fn next_wake(
-        &self,
-        pokes: &mut futures::stream::BoxStream<'static, Poke>,
-    ) -> Option<bool> {
-        let mine = |poke: &Poke| matches!(poke, Poke::User { id, .. } if self.is_me(*id));
-        let mut addressed = loop {
-            let poke = pokes.next().await?;
-            if self.wants(&poke) {
-                break mine(&poke);
-            }
-        };
-        // Bounded, so a bus that never goes quiet cannot keep this from yielding.
-        for _ in 0..DRAIN {
-            match pokes.next().now_or_never() {
-                Some(queued) => addressed |= mine(&queued?),
-                None => break,
+    /// Wait for live events this reader sees, or a reason to read for itself. `None`
+    /// when the feed is gone.
+    async fn next_live(&mut self, live: &mut broadcast::Receiver<Live>) -> Option<Wake> {
+        loop {
+            match live.recv().await {
+                Ok(Live::User(id)) if self.is_me(id) => {
+                    // A membership may have added a channel whose events went by unread.
+                    self.refresh_readable().await;
+                    return Some(Wake::Read);
+                }
+                Ok(Live::User(_)) => {}
+                Ok(Live::Batch(batch)) => {
+                    if batch.until <= self.cursor {
+                        continue;
+                    }
+                    if batch.after > self.cursor {
+                        return Some(Wake::Read);
+                    }
+                    let events = self.take(&batch).await;
+                    if !events.is_empty() {
+                        return Some(Wake::Send(events));
+                    }
+                }
+                // Fell behind the feed: whatever was dropped is still in the log.
+                Err(broadcast::error::RecvError::Lagged(_)) => return Some(Wake::Read),
+                Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
-        Some(addressed)
+    }
+
+    /// This reader's share of a batch that starts at or before its cursor, which then
+    /// moves to the batch's end: what it skipped was not its to see.
+    async fn take(&mut self, batch: &LiveBatch) -> Vec<Event> {
+        let mut events: Vec<Event> = batch
+            .events
+            .iter()
+            .filter(|event| event.cursor > self.cursor && self.sees(event))
+            .cloned()
+            .collect();
+        self.cursor = batch.until;
+
+        let mine = |event: &Event| matches!(event.payload, EventPayload::Preference(_));
+        if events.iter().any(mine) {
+            match self.sync.dnd(&self.caller).await {
+                Ok(dnd) => self.dnd = dnd,
+                Err(error) => tracing::warn!(%error, "could not re-read a stream's do-not-disturb"),
+            }
+        }
+        // Carry the per-reader `deferred_by_dnd` (§7.4) so clients needn't re-derive it.
+        if let Some(dnd) = &self.dnd {
+            let muted = notify_app::deferred_by(dnd, &events);
+            for event in &mut events {
+                if let EventPayload::Revision(revision) = &event.payload
+                    && muted.contains(&revision.notification_id)
+                {
+                    event.muted_by_dnd = true;
+                }
+            }
+        }
+
+        if let Some(last) = events.last() {
+            self.unsaved = Some(last.cursor);
+            if self.saved_at.elapsed() >= ADVANCE_EVERY {
+                self.save_device().await;
+            }
+        }
+        events
+    }
+
+    /// Record the device's cursor now rather than at the next [`ADVANCE_EVERY`].
+    async fn save_device(&mut self) {
+        let (Some(device), Some(cursor)) = (self.device_live, self.unsaved.take()) else {
+            return;
+        };
+        self.saved_at = tokio::time::Instant::now();
+        if let Err(error) = self.sync.advance_device(device, cursor).await {
+            tracing::warn!(%error, "could not record a stream's device cursor");
+        }
     }
 
     /// One page after the current cursor, advancing it; `true` when more follow. Callers
     /// loop page by page so an old cursor's backlog is never held in memory at once.
-    async fn page(&mut self) -> Result<(Vec<Event>, bool), ApiError> {
+    ///
+    /// `fed` is the feed's position, taken before the read: once caught up, this stream has
+    /// read everything the feed had sent, and joins it there.
+    async fn page(&mut self, fed: Cursor) -> Result<(Vec<Event>, bool), ApiError> {
         let page = self
             .sync
             .page(
@@ -272,6 +365,9 @@ impl Connection {
 
         if let Some(last) = page.events.last() {
             self.cursor = last.cursor;
+        }
+        if page.next.is_none() {
+            self.cursor = self.cursor.max(fed);
         }
 
         // Carry the per-reader `deferred_by_dnd` (§7.4) so clients needn't re-derive it.
@@ -314,11 +410,62 @@ impl Connection {
     }
 
     /// Resolves when the stream's credential expires; never, for one that does not.
-    async fn expired(&self, state: &ApiState) {
-        match state.authenticate.time_left(&self.caller) {
-            Some(left) => tokio::time::sleep(left).await,
-            None => std::future::pending().await,
+    /// Not borrowing the connection, which the feed's arm of the same `select!` moves on.
+    fn expired(&self, state: &ApiState) -> impl Future<Output = ()> + use<> {
+        let left = state.authenticate.time_left(&self.caller);
+        async move {
+            match left {
+                Some(left) => tokio::time::sleep(left).await,
+                None => std::future::pending().await,
+            }
         }
+    }
+}
+
+/// Write these as SSE; `false` once the client is gone. An event that will not
+/// serialise is our bug: logged and skipped, not the client's end.
+async fn sent_sse(
+    sender: &tokio::sync::mpsc::Sender<sse::Event>,
+    events: impl IntoIterator<Item = Event>,
+) -> bool {
+    for event in events {
+        let Ok(data) = as_sse(&event) else {
+            tracing::error!(cursor = %event.cursor, "an event that will not serialise");
+            continue;
+        };
+        if !sent(sender.send(data.into())).await {
+            return false;
+        }
+    }
+    true
+}
+
+/// [`sent_sse`], as WebSocket frames.
+async fn sent_ws(session: &mut actix_ws::Session, events: impl IntoIterator<Item = Event>) -> bool {
+    for event in events {
+        let Ok(frame) = serde_json::to_string(&event) else {
+            tracing::error!(cursor = %event.cursor, "an event that will not serialise");
+            continue;
+        };
+        if !sent(session.text(frame)).await {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whatever the stream's end, the device keeps the cursor it reached.
+impl Drop for Connection {
+    fn drop(&mut self) {
+        let (Some(device), Some(cursor)) = (self.device_live, self.unsaved.take()) else {
+            return;
+        };
+        let sync = self.sync.clone();
+        actix_web::rt::spawn(async move {
+            if let Err(error) = sync.advance_device(device, cursor).await {
+                tracing::warn!(%error, "could not record a closed stream's device cursor");
+            }
+        });
     }
 }
 
@@ -378,14 +525,15 @@ pub(crate) async fn stream(
     let credential = credential_of(&request)?;
     let mut connection =
         Connection::open(&state, caller.0, &params, last_event_id.as_deref()).await?;
-    let mut pokes = state.bus.subscribe().await?;
+    // Before the first read, so nothing the feed sends after it is missed.
+    let mut live = state.live.subscribe();
 
     let (sender, receiver) = tokio::sync::mpsc::channel(BACKPRESSURE as usize);
     let stream = sse::Sse::from_infallible_receiver(receiver).with_keep_alive(KEEP_ALIVE);
 
     // Backlog before live: the first page here (a refusal is still a status code), the
     // rest from the task one page at a time.
-    let (first, mut more) = connection.page().await?;
+    let (first, mut more) = connection.page(state.live.position()).await?;
     for event in &first {
         let data = as_sse(event).map_err(port_error)?;
         if sender.send(data.into()).await.is_err() {
@@ -398,11 +546,16 @@ pub(crate) async fn stream(
         let connected = connected;
         let mut reauthenticate = tokio::time::interval(REAUTHENTICATE);
         reauthenticate.tick().await;
+        let mut pending: Vec<Event> = Vec::new();
 
         loop {
+            // Send failure: the client left, the ordinary end of a stream.
+            if !sent_sse(&sender, pending.drain(..)).await {
+                return;
+            }
             while more {
                 let events;
-                (events, more) = match connection.page().await {
+                (events, more) = match connection.page(state.live.position()).await {
                     Ok(page) => page,
                     Err(error) => {
                         tracing::warn!(%error, "dropping a stream that cannot read the log");
@@ -410,23 +563,17 @@ pub(crate) async fn stream(
                     }
                 };
 
-                for event in events {
-                    let Ok(data) = as_sse(&event) else {
-                        tracing::error!(cursor = %event.cursor, "an event that will not serialise");
-                        continue;
-                    };
-                    // Send failure: the client left, the ordinary end of a stream.
-                    if !sent(sender.send(data.into())).await {
-                        return;
-                    }
+                if !sent_sse(&sender, events).await {
+                    return;
                 }
             }
 
+            let expiry = connection.expired(&state);
             tokio::select! {
                 // Learn the client left without waiting for a publish.
                 () = sender.closed() => return,
                 () = connected.slot.kicked() => return,
-                () = connection.expired(&state) => return,
+                () = expiry => return,
                 _ = reauthenticate.tick() => {
                     let before = connection.readable.clone();
                     if !connection.still_authorised(&state, &credential).await {
@@ -435,12 +582,10 @@ pub(crate) async fn stream(
                     // A channel joined since may already hold events no poke will repeat.
                     more = connection.readable.iter().any(|channel| !before.contains(channel));
                 }
-                woke = connection.next_wake(&mut pokes) => {
-                    let Some(addressed) = woke else { return };
-                    if addressed {
-                        connection.refresh_readable().await;
-                    }
-                    more = true;
+                woke = connection.next_live(&mut live) => match woke {
+                    None => return,
+                    Some(Wake::Read) => more = true,
+                    Some(Wake::Send(events)) => pending = events,
                 }
             }
         }
@@ -493,7 +638,8 @@ pub(crate) async fn websocket(
     .await?;
     let credential = credential_of(&request)?;
     let mut connection = Connection::open(&state, caller.0, &params, None).await?;
-    let mut pokes = state.bus.subscribe().await?;
+    // Before the first read, so nothing the feed sends after it is missed.
+    let mut live = state.live.subscribe();
 
     let (response, mut session, mut incoming) = match actix_ws::handle(&request, body) {
         Ok(parts) => parts,
@@ -520,7 +666,11 @@ pub(crate) async fn websocket(
 
         // Same order as SSE: backlog first, then live, one page at a time.
         let mut more = true;
+        let mut pending: Vec<Event> = Vec::new();
         'live: loop {
+            if !sent_ws(&mut session, pending.drain(..)).await {
+                return;
+            }
             // Nothing reads the socket while a backlog drains, so a pong that
             // arrives meanwhile waits unread — and a drain longer than
             // `PONG_TIMEOUT` would have a healthy client dropped by the first
@@ -530,7 +680,7 @@ pub(crate) async fn websocket(
             let draining = tokio::time::Instant::now();
             while more {
                 let events;
-                (events, more) = match connection.page().await {
+                (events, more) = match connection.page(state.live.position()).await {
                     Ok(page) => page,
                     Err(error) => {
                         tracing::warn!(%error, "dropping a socket that cannot read the log");
@@ -538,20 +688,15 @@ pub(crate) async fn websocket(
                     }
                 };
 
-                for event in events {
-                    let Ok(frame) = serde_json::to_string(&event) else {
-                        tracing::error!(cursor = %event.cursor, "an event that will not serialise");
-                        continue;
-                    };
-                    if !sent(session.text(frame)).await {
-                        return;
-                    }
+                if !sent_ws(&mut session, events).await {
+                    return;
                 }
             }
             last_heard = last_heard
                 .checked_add(draining.elapsed())
                 .unwrap_or(last_heard);
 
+            let expiry = connection.expired(&state);
             tokio::select! {
                 // Read incoming frames to learn the client left.
                 message = incoming.next() => match message {
@@ -569,7 +714,7 @@ pub(crate) async fn websocket(
                         break;
                     }
                 }
-                () = connection.expired(&state) => break,
+                () = expiry => break,
                 () = connected.slot.kicked() => break,
                 _ = reauthenticate.tick() => {
                     let before = connection.readable.clone();
@@ -579,12 +724,10 @@ pub(crate) async fn websocket(
                     // A channel joined since may already hold events no poke will repeat.
                     more = connection.readable.iter().any(|channel| !before.contains(channel));
                 }
-                woke = connection.next_wake(&mut pokes) => {
-                    let Some(addressed) = woke else { break };
-                    if addressed {
-                        connection.refresh_readable().await;
-                    }
-                    more = true;
+                woke = connection.next_live(&mut live) => match woke {
+                    None => break,
+                    Some(Wake::Read) => more = true,
+                    Some(Wake::Send(events)) => pending = events,
                 }
             }
         }
@@ -637,75 +780,171 @@ mod tests {
             device: None,
             cursor: Cursor::from_sequence(10),
             readable: vec![ci()],
+            dnd: None,
+            device_live: None,
+            unsaved: None,
+            saved_at: tokio::time::Instant::now(),
         }
     }
 
-    #[test]
-    fn only_a_poke_that_can_carry_something_unread_wakes_a_stream() {
-        let me = UserId::generate();
-        let connection = connection(me);
-        let channel = |id: ChannelId, at| Poke::Channel {
-            id,
+    fn event(at: u64, audience: Audience) -> Event {
+        Event {
             cursor: Cursor::from_sequence(at),
-        };
-        let user = |id, at| Poke::User {
-            id,
-            cursor: Cursor::from_sequence(at),
-        };
-
-        assert!(connection.wants(&channel(ci(), 11)));
-        assert!(connection.wants(&user(me, 11)));
-        assert!(connection.wants(&Poke::Resync));
-
-        assert!(!connection.wants(&channel(ci(), 10)), "already read");
-        assert!(
-            !connection.wants(&channel(ChannelId::parse("payroll").unwrap(), 11)),
-            "not readable"
-        );
-        assert!(
-            !connection.wants(&user(UserId::generate(), 11)),
-            "somebody else"
-        );
-        assert!(
-            connection.wants(&user(me, 9)),
-            "a membership carries no event: its poke wakes whatever the cursor"
-        );
+            audience,
+            recorded_at: time::OffsetDateTime::UNIX_EPOCH,
+            muted_by_dnd: false,
+            payload: EventPayload::Tombstone {
+                notification_id: notify_domain::NotificationId::generate(),
+                reason: notify_domain::TombstoneReason::Expired,
+            },
+        }
     }
 
-    #[test]
-    fn a_narrowed_stream_ignores_its_other_readable_channels() {
+    fn on(channel: &str) -> Audience {
+        Audience::Channel {
+            id: ChannelId::parse(channel).unwrap(),
+        }
+    }
+
+    fn batch(after: u64, events: Vec<Event>) -> Live {
+        let until = events
+            .last()
+            .map_or(Cursor::from_sequence(after), |event| event.cursor);
+        Live::Batch(Arc::new(LiveBatch {
+            after: Cursor::from_sequence(after),
+            until,
+            events,
+        }))
+    }
+
+    /// A feed with these messages already queued; hold the sender, or the feed is closed.
+    fn feed(messages: Vec<Live>) -> (broadcast::Sender<Live>, broadcast::Receiver<Live>) {
+        let (sender, receiver) = broadcast::channel(16);
+        for message in messages {
+            sender.send(message).unwrap();
+        }
+        (sender, receiver)
+    }
+
+    fn cursors(wake: Option<Wake>) -> Vec<Cursor> {
+        match wake {
+            Some(Wake::Send(events)) => events.iter().map(|event| event.cursor).collect(),
+            Some(Wake::Read) => panic!("expected events, got a read"),
+            None => panic!("expected events, got the end"),
+        }
+    }
+
+    fn at(sequences: &[u64]) -> Vec<Cursor> {
+        sequences
+            .iter()
+            .copied()
+            .map(Cursor::from_sequence)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_stream_keeps_only_what_its_reader_sees_and_moves_to_the_batch_end() {
+        let me = UserId::generate();
+        let mut connection = connection(me);
+        let (_feed, mut live) = feed(vec![batch(
+            10,
+            vec![
+                event(11, on("ci-infra")),
+                event(12, on("payroll")),
+                event(
+                    13,
+                    Audience::User {
+                        id: UserId::generate(),
+                    },
+                ),
+                event(14, Audience::User { id: me }),
+            ],
+        )]);
+
+        assert_eq!(
+            cursors(connection.next_live(&mut live).await),
+            at(&[11, 14])
+        );
+        assert_eq!(connection.cursor, Cursor::from_sequence(14));
+    }
+
+    #[tokio::test]
+    async fn a_narrowed_stream_ignores_its_other_readable_channels() {
         let mut connection = connection(UserId::generate());
         connection
             .readable
             .push(ChannelId::parse("payroll").unwrap());
         connection.channels = vec![ci()];
+        let (_feed, mut live) = feed(vec![batch(
+            10,
+            vec![event(11, on("payroll")), event(12, on("ci-infra"))],
+        )]);
 
-        assert!(!connection.wants(&Poke::Channel {
-            id: ChannelId::parse("payroll").unwrap(),
-            cursor: Cursor::from_sequence(11),
-        }));
+        assert_eq!(cursors(connection.next_live(&mut live).await), at(&[12]));
     }
 
     #[tokio::test]
-    async fn a_burst_of_pokes_is_one_wake() {
-        let connection = connection(UserId::generate());
-        let burst: Vec<Poke> = (11..20)
-            .map(|at| Poke::Channel {
-                id: ci(),
-                cursor: Cursor::from_sequence(at),
-            })
-            .collect();
-        // A live bus never ends; `pending` keeps the tail open as it would.
-        let mut pokes = futures::stream::iter(burst)
-            .chain(futures::stream::pending())
-            .boxed();
+    async fn a_batch_already_read_is_skipped_and_one_past_a_gap_asks_for_a_read() {
+        let mut connection = connection(UserId::generate());
+        let (_feed, mut live) = feed(vec![
+            batch(5, vec![event(8, on("ci-infra")), event(10, on("ci-infra"))]),
+            batch(12, vec![event(13, on("ci-infra"))]),
+        ]);
 
-        assert!(connection.next_wake(&mut pokes).await.is_some());
-        assert!(pokes.next().now_or_never().flatten().is_none(), "drained");
+        assert!(
+            matches!(connection.next_live(&mut live).await, Some(Wake::Read)),
+            "11 and 12 went out before this stream caught up: the log has them, the feed no longer"
+        );
+        assert_eq!(
+            connection.cursor,
+            Cursor::from_sequence(10),
+            "a read starts where we are"
+        );
     }
 
     #[tokio::test]
-    async fn a_poke_addressed_to_the_reader_brings_in_a_channel_joined_since() {
+    async fn a_batch_overlapping_the_cursor_delivers_only_what_follows_it() {
+        let mut connection = connection(UserId::generate());
+        let (_feed, mut live) = feed(vec![batch(
+            8,
+            vec![
+                event(9, on("ci-infra")),
+                event(10, on("ci-infra")),
+                event(11, on("ci-infra")),
+            ],
+        )]);
+
+        assert_eq!(cursors(connection.next_live(&mut live).await), at(&[11]));
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_fell_behind_the_feed_reads_for_itself() {
+        let mut connection = connection(UserId::generate());
+        let (sender, mut live) = broadcast::channel(1);
+        sender
+            .send(batch(10, vec![event(11, on("ci-infra"))]))
+            .unwrap();
+        sender
+            .send(batch(11, vec![event(12, on("ci-infra"))]))
+            .unwrap();
+
+        assert!(matches!(
+            connection.next_live(&mut live).await,
+            Some(Wake::Read)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_closed_feed_ends_the_stream() {
+        let mut connection = connection(UserId::generate());
+        let (sender, mut live) = broadcast::channel::<Live>(1);
+        drop(sender);
+
+        assert!(connection.next_live(&mut live).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_signal_addressed_to_the_reader_brings_in_a_channel_joined_since() {
         let me = UserId::generate();
         let store = InMemory::new();
         let mut connection = connection_on(&store, me);
@@ -719,23 +958,12 @@ mod tests {
             .unwrap(),
         );
         store.seed_channel(channel);
-        let mut pokes = futures::stream::iter([Poke::User {
-            id: me,
-            cursor: Cursor::START,
-        }])
-        .chain(futures::stream::pending())
-        .boxed();
-
-        let addressed = connection.next_wake(&mut pokes).await;
-        assert_eq!(addressed, Some(true));
-        connection.refresh_readable().await;
+        let (_feed, mut live) = feed(vec![Live::User(UserId::generate()), Live::User(me)]);
 
         assert!(
-            connection.wants(&Poke::Channel {
-                id: joined,
-                cursor: Cursor::from_sequence(11),
-            }),
-            "the new channel's events would wait for the next re-authentication"
+            matches!(connection.next_live(&mut live).await, Some(Wake::Read)),
+            "its events went by before the membership: only a read finds them"
         );
+        assert!(connection.readable.contains(&joined));
     }
 }

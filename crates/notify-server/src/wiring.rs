@@ -47,6 +47,10 @@ pub(crate) struct Application {
     pub store: PgStore,
     /// The task holding this replica's `LISTEN` connection; abort it before the runtime ends.
     pub pump: actix_web::rt::task::JoinHandle<()>,
+    /// The live feed's reader (`notify_app::LiveFeed`); abort it with the pump.
+    pub feed: actix_web::rt::task::JoinHandle<()>,
+    /// The poke bus, for the watermark watcher's re-pokes.
+    pub pokes: Arc<dyn EventBus>,
     /// The TTL purge, run on a timer by whichever replica leads.
     pub purge: PurgeExpired,
     /// The stale-closure sweep (§7.2bis), leader-run before the purge since closing starts retention.
@@ -102,6 +106,9 @@ impl Application {
 
         let clock = Arc::new(SystemClock);
         let repository = Arc::new(store.clone());
+        // One read of the log per wake, for every stream this replica holds.
+        let live = notify_app::LiveFeed::new(repository.clone());
+        let feed = actix_web::rt::spawn(live.clone().run(bus.subscribe().await?));
 
         // `audiences` always includes the client id; extras are for issuers naming the API (§5.1).
         let mut oidc = OidcConfig::new(config.oidc.issuer.parse()?, config.oidc.client_id.clone());
@@ -208,7 +215,7 @@ impl Application {
             time::OffsetDateTime::now_utc().unix_timestamp_nanos()
         );
         let state = ApiState {
-            bus: bus.clone(),
+            live,
             metrics: metrics.clone(),
             streams: Arc::new(notify_http_actix::StreamSlots::clustered(
                 Arc::new(store.clone()),
@@ -508,6 +515,8 @@ impl Application {
             state,
             store,
             pump,
+            feed,
+            pokes: bus,
             purge,
             close_stale,
             digests,

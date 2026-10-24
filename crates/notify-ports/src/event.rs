@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
-use crate::pagination::PageRequest;
+use crate::pagination::{Page, PageRequest};
 
 /// Who an event is for. Wire names are `channel_id`/`user_id` (flattened next to
 /// payloads that own an `id`); its schema lives in `crate::schema`.
@@ -318,6 +318,12 @@ pub struct ExpiredWhileAway {
 pub trait EventStore: Send + Sync {
     /// Replay what a client missed after its cursor, without gaps or duplicates (§8.1, T7).
     async fn sync(&self, user: UserId, query: &SyncQuery) -> PortResult<SyncPage>;
+
+    /// Every event after `after`, whatever its audience, compacted like [`Self::sync`]
+    /// but without its counts: the one read a replica's live feed makes per wake, which
+    /// each stream then filters in memory. Revisions only ever go to a channel, so the
+    /// compaction is the same for every reader.
+    async fn tail(&self, after: Cursor, page: PageRequest) -> PortResult<Page<Event>>;
 
     /// The newest position in the log, to start from "now".
     async fn head(&self) -> PortResult<Cursor>;

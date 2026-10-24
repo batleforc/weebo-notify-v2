@@ -15,6 +15,7 @@ pub mod fanout;
 pub mod federate;
 pub mod interact;
 pub mod keys;
+pub mod live;
 pub mod maintenance;
 pub mod platform;
 pub mod preferences;
@@ -49,6 +50,7 @@ pub use keys::{
     CreateApiKey, ListApiKeys, MintedApiKey, NewApiKey, OsRngKeyGenerator, RevokeApiKey,
     SetApiKeyLimit,
 };
+pub use live::{Live, LiveBatch, LiveFeed};
 pub use maintenance::{EVENT_RETENTION, PurgeExpired, PurgeLimits, PurgeReport, TOMBSTONE_GRACE};
 pub use platform::{
     BrowseAudit, ChannelCard, ChannelInventory, ListTrustPolicies, ReadReconciliation,
@@ -64,4 +66,4 @@ pub use read::{
     SearchNotifications,
 };
 pub use sinks::{DrainReport, DrainSinks, ListDeadLetters, RequeueDeadLetter};
-pub use sync::{ResolveStreamStart, SyncBacklog, SyncRequest};
+pub use sync::{ResolveStreamStart, SyncBacklog, SyncRequest, deferred_by};

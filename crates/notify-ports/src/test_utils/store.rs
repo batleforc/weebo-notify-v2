@@ -1950,6 +1950,26 @@ impl EventStore for InMemory {
         })
     }
 
+    async fn tail(&self, after: Cursor, page: PageRequest) -> PortResult<Page<Event>> {
+        let mut events: Vec<Event> = self
+            .state()
+            .events
+            .iter()
+            .filter(|event| event.cursor > after)
+            .cloned()
+            .collect();
+        events.sort_by_key(|event| event.cursor);
+        let mut events = compact(events);
+
+        let limit = page.effective_limit() as usize;
+        if events.len() > limit {
+            events.truncate(limit);
+            let next = events.last().map_or(after, |event| event.cursor);
+            return Ok(Page::more(events, next));
+        }
+        Ok(Page::last(events))
+    }
+
     async fn head(&self) -> PortResult<Cursor> {
         Ok(Cursor::from_sequence(self.state().sequence))
     }

@@ -12,7 +12,8 @@ request.
 
 Each replica holds its own SSE and WebSocket connections. When anything is published,
 the [event bus](/docs/adr/0008-postgres-listen-notify-as-the-default-eventbus) pokes
-every replica, and each notifies its own connected clients.
+every replica, and each [reads the new events once](/docs/adr/0030-one-live-reader-per-replica)
+and hands every connected client its share.
 
 Failover is invisible to the client: it reconnects — to any replica — with
 `Last-Event-ID`, and the [global cursor](/docs/adr/0012-single-events-table-as-the-cursor)
