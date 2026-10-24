@@ -306,17 +306,28 @@ impl NotificationRepository for PgStore {
         let states = optional_enums("state", &query.states)?;
         let statuses = optional_enums("status", &query.statuses)?;
 
+        // One page per channel, then the best of those: `channel_id = ANY` cannot walk
+        // `notifications_inbox_idx` in order, so it sorted the whole of every channel.
         let rows = sqlx::query(select_notification!(
-            "WHERE n.channel_id = ANY ($1)
-               AND n.deleted_at IS NULL
-               AND (n.expires_at IS NULL OR n.expires_at > $2)
-               AND ($3::text[] IS NULL OR n.state = ANY ($3))
-               AND ($4::text[] IS NULL OR n.status = ANY ($4))
-               AND ($5::smallint IS NULL OR n.priority_rank >= $5)
-               AND ($6::text IS NULL OR n.group_key = $6)
-               AND n.tags @> $7
-               AND ($8::bool IS NULL OR n.has_actions = $8)
-               AND ($9::bigint IS NULL OR n.cursor_seq < $9)
+            "WHERE n.id IN (
+               SELECT page.id
+               FROM unnest($1::text[]) AS c(id)
+               CROSS JOIN LATERAL (
+                 SELECT i.id FROM notifications i
+                 WHERE i.channel_id = c.id
+                   AND i.deleted_at IS NULL
+                   AND (i.expires_at IS NULL OR i.expires_at > $2)
+                   AND ($3::text[] IS NULL OR i.state = ANY ($3))
+                   AND ($4::text[] IS NULL OR i.status = ANY ($4))
+                   AND ($5::smallint IS NULL OR i.priority_rank >= $5)
+                   AND ($6::text IS NULL OR i.group_key = $6)
+                   AND i.tags @> $7
+                   AND ($8::bool IS NULL OR i.has_actions = $8)
+                   AND ($9::bigint IS NULL OR i.cursor_seq < $9)
+                 ORDER BY i.cursor_seq DESC
+                 LIMIT $10
+               ) AS page
+             )
              ORDER BY n.cursor_seq DESC
              LIMIT $10"
         ))

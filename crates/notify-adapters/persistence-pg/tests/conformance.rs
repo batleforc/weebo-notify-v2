@@ -574,6 +574,44 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn an_inbox_over_several_channels_pages_in_one_order() {
+        // The query takes a page per channel and merges them: interleaved channels
+        // must still come back newest first, every row once.
+        let store = store!();
+        let (_, alice) = user();
+        let a = seeded_channel(&store, &alice).await;
+        let b = seeded_channel(&store, &alice).await;
+
+        let mut published = Vec::new();
+        for index in 0..7 {
+            let channel = if index % 3 == 0 { &a } else { &b };
+            let (notification, _) =
+                publish(&store, channel, &alice, &format!("entry {index}")).await;
+            published.push(notification.id);
+        }
+        published.reverse();
+
+        let mut seen = Vec::new();
+        let mut page = PageRequest::of_size(2);
+        loop {
+            let result = notifications(&store)
+                .list(&InboxQuery {
+                    page,
+                    ..inbox(&[a.clone(), b.clone()])
+                })
+                .await
+                .unwrap();
+            seen.extend(result.items.iter().map(|entry| entry.id));
+            match result.next {
+                Some(next) => page = PageRequest::of_size(2).after(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(seen, published);
+    }
+
+    #[tokio::test]
     async fn a_search_cannot_reach_outside_the_channels_it_was_given() {
         let store = store!();
         let (_, alice) = user();
