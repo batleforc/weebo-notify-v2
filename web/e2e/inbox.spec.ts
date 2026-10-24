@@ -56,9 +56,17 @@ test("the detail panel shows the timeline and records an ack", async ({
   await expect(detail.locator("code", { hasText: "node-3" })).toBeVisible();
 
   await detail.getByRole("button", { name: /acknowledge/i }).click();
-  await expect(detail).toContainText(/alice|acknowledg/i);
-  const answers = await http.get(`/api/v1/notifications/${id}/interactions`);
-  expect(JSON.stringify(await answers.json())).toContain('"ack"');
+  // The timeline entry, not /acknowledg/: the button's own label matched that at once,
+  // so the API check below raced the POST. Polled for the same reason.
+  await expect(detail).toContainText("acknowledged (ack)");
+  await expect
+    .poll(async () => {
+      const answers = await http.get(
+        `/api/v1/notifications/${id}/interactions`,
+      );
+      return JSON.stringify(await answers.json());
+    })
+    .toContain('"ack"');
 });
 
 test("an admin creates and deletes a channel from the UI", async ({ page }) => {

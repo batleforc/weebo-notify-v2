@@ -62,7 +62,7 @@ You don't have the right to commit directly has all commit should be signed and 
 
 ## Skills
 
-Weebo Dev skills exist and can be found [here](https://github.com/batleforc/weebo-skills). The most important one if you work on UI is the monofolio skill, which is a design system.
+Weebo Dev skills live in [weebo-skillsagent](https://github.com/batleforc/weebo-skillsagent) and are linked with `wska` (`task skills:install`). If you work on UI, the most important one is the batlehub-design skill, which is the design system.
 
 ## Doc / Gen / Guideline
 

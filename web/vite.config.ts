@@ -220,6 +220,13 @@ export default defineConfig({
     // `src/config.ts` reads `window.__ENV__`, not `import.meta.env`, so this
     // replaces the fixed `VITE_*` values the old `env:` block set here.
     setupFiles: ["./src/test-setup.ts"],
+    // Vitest 5.0.5 turned the persistent transform cache on by default. It
+    // replays `src/i18n.ts` with the `virtual:intlify-i18n-<n>` ids the vue-i18n
+    // plugin handed out in an earlier process, but the plugin keeps that id ->
+    // file map in memory, so on the next run the locale imports resolve to
+    // nothing ("Cannot find module '/@id/virtual:intlify-i18n-0'"). Off until
+    // the plugin's virtual ids survive a cache hit.
+    fsModuleCache: false,
     coverage: {
       provider: "v8",
       reporter: ["text-summary", "lcov"],

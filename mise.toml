@@ -1,7 +1,7 @@
 [tools]
 # --- Inherited from weebo-base ---
 cocogitto = "latest"
-node = "24"
+node = "26"
 # fmt and clippy are both required (.tasks/lint.yaml) and neither is in rustup's
 # `minimal` profile, so both are named here rather than left to whatever profile
 # the host's rustup happens to default to.
@@ -48,7 +48,6 @@ helm = "latest"                  # lint/template/package charts/weebo-notify (ta
 # binary has to be there anyway. `aqua:` fetches tauri-apps' own signed release rather
 # than compiling `cargo:tauri-cli` from source on every runner.
 "aqua:tauri-apps/tauri/cargo-tauri" = "2"
-"github:batleforc/weebo-skillsagent" = "latest"
 "pipx:graphifyy" = "latest"
 # `yq` used to live here for `task gen:devfile`, which inlined the identity
 # provider's configuration into devfile.yaml. The provider reads the committed file

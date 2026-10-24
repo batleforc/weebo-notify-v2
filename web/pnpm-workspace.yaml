@@ -26,28 +26,6 @@ overrides:
   # this repository produces — but "only a build tool" is how a supply-chain
   # problem gets waved through, and the fix is one line.
   js-yaml: ^4.3.2
-  # GHSA-2v37-7h3g-55p8 — nanoid's custom alphabet generator can loop forever
-  # when size is 0, fixed in 3.3.17. Reaches us only through postcss, itself
-  # pulled in at build time by @vue/compiler-sfc — same "only a build tool"
-  # reasoning as js-yaml above, and the same one-line fix.
-  nanoid: ^3.3.17
-  # GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p — brace-expansion
-  # 4.x/5.x < 5.0.12 (unbounded expansion). Through @intlify/unplugin-vue-i18n >
-  # typescript-estree > minimatch: build time only, on globs this repository writes.
-  "brace-expansion@>=4.0.0 <5.0.12": ^5.0.12
-  # GHSA-68fv-2mgg-jv7q — source-map-js < 1.2.2. Through postcss, at build time.
-  source-map-js: ^1.2.2
-
-# Advisories with no fixed release to move to. Each is a build-time-only path, and
-# each should be dropped from here as soon as upstream ships a fix.
-auditConfig:
-  ignoreGhsas:
-    # braces <= 3.0.3, stack exhaustion on deeply nested patterns — 3.0.3 is the
-    # last release. Only through @intlify/unplugin-vue-i18n > fast-glob >
-    # micromatch, which expands the locale glob in `vite.config.ts`: a pattern we
-    # write, never input. `task lint:web:build-only-advisories` (part of
-    # `lint:check`) fails the day braces shows up in a production dependency.
-    - GHSA-vfj7-8cjw-p6xm
 
 # Same supply-chain gate CI's pnpm enforces: never resolve a version published less
 # than a day ago, so a local install cannot produce a lockfile CI then refuses.

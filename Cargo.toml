@@ -35,7 +35,8 @@ exclude = ["web/src-tauri"]
 # One product version (§3.2bis); `cog bump` syncs it to web/ and tauri.conf.json.
 version = "0.1.0"
 edition = "2024"
-# 1.94 for sqlx 0.9.x (1.89 was `std::fs::File::try_lock`, front-end election, §9.3bis).
+# 1.94 because sqlx 0.9 requires it (our own floor is 1.89, for `File::try_lock`,
+# §9.3bis). Cargo resolves against this, so an understated value holds crates back.
 rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/batleforc/weebo-notify-v2"
@@ -71,7 +72,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 # Writes the client profile (`notify login`, §9.1); figment only reads.
-toml = "1"
+toml = "1.1"
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 ulid = { version = "3", features = ["serde"] }
@@ -85,12 +86,12 @@ futures = "0.3"
 # --- HTTP / API ---
 # No `http2`: h2 0.3 (RUSTSEC-2026-0258) has no fix, and TLS terminates at the
 # ingress, which speaks HTTP/1.1 to us. The rest is actix-web's default set.
-actix-web = { version = "4.14", default-features = false, features = ["macros", "compress-brotli", "compress-gzip", "compress-zstd", "cookies", "unicode", "compat", "ws"] }
+actix-web = { version = "4.17", default-features = false, features = ["macros", "compress-brotli", "compress-gzip", "compress-zstd", "cookies", "unicode", "compat", "ws"] }
 actix-cors = "0.7"
 actix-web-lab = "0.29"
 # WebSocket without actors, so SSE and WS share one async loop (§8.1).
 actix-ws = "0.4"
-utoipa = { version = "6", features = ["actix_extras", "time", "ulid", "url"] }
+utoipa = { version = "6.0", features = ["actix_extras", "time", "ulid", "url"] }
 utoipa-actix-web = "0.2"
 utoipa-scalar = { version = "0.4", features = ["actix-web"] }
 
@@ -109,7 +110,7 @@ sqlx = { version = "0.9", default-features = false, features = [
 # --- Auth ---
 # `rust_crypto`, not `aws_lc_rs`: no C toolchain needed to build the image.
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
-# The default `getrandom` feature is what reaches the OS RNG through password-hash: salts come from the OS.
+# Default features: `getrandom` is what gives password-hash an OS-backed salt generator.
 argon2 = "0.6"
 
 # --- Config & observability ---
@@ -139,7 +140,8 @@ crossterm = "0.29"
 anyhow = "1"
 
 # --- Client codegen (ADR-0009) ---
-progenitor = "0.15"
+# Generator only (xtask): the `macro` default drags in the unmaintained serde_yaml/unsafe-libyaml.
+progenitor = { version = "0.15", default-features = false }
 progenitor-client = "0.15"
 # Needed by progenitor's output: `chrono` for `date-time`, `regress` for `pattern`.
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
@@ -180,7 +182,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 # --- Test-only ---
-testcontainers = "0.27"
+testcontainers = "0.28"
 tempfile = "3"
 
 [workspace.lints.rust]

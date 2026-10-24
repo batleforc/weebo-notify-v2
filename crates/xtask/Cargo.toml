@@ -22,7 +22,7 @@ clap.workspace = true
 dbus = { version = "0.9", features = ["vendored"] }
 getrandom = "0.4"
 # Federation signing key (§5.3), in the PKCS#8 PEM form `jsonwebtoken` loads.
-ed25519-dalek = { version = "3", features = ["pkcs8", "pem"] }
+ed25519-dalek = { version = "3", features = ["pem"] }
 jsonwebtoken.workspace = true
 openapiv3 = "2.2"
 # VAPID key generator: PKCS#8 PEM is the form `[push.webpush]` reads.

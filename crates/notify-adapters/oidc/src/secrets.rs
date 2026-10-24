@@ -1,6 +1,8 @@
 //! Hashing the secret half of an API key (design §5.2).
 
-use argon2::{Argon2, PasswordHash, PasswordHasher as _, PasswordVerifier as _};
+use argon2::Argon2;
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher as _, PasswordVerifier as _};
 use notify_ports::{PortError, PortResult, SecretHasher};
 
 /// Failure label; not a `/readyz` dependency, since a broken KDF is a broken process.
@@ -17,7 +19,7 @@ impl SecretHasher for Argon2SecretHasher {
 
         // CPU-bound: keep it off async workers.
         blocking(move || {
-            // The salt is drawn from the OS CSPRNG (argon2's `getrandom` feature).
+            // The salt comes from the OS CSPRNG (password-hash's `getrandom` feature).
             Argon2::default()
                 .hash_password(secret.as_bytes())
                 .map(|hash| hash.to_string())

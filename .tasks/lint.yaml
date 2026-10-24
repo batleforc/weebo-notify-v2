@@ -75,24 +75,6 @@ tasks:
           if [ ! -f web/package.json ]; then echo "web/ not bootstrapped yet — skipping"; exit 0; fi
           pnpm -C web lint
           pnpm -C web types:check
-      - task: web:build-only-advisories
-
-  web:build-only-advisories:
-    desc: "Fail if braces (GHSA-vfj7-8cjw-p6xm, ignored in web/pnpm-workspace.yaml as build-time only) ever reaches a production dependency"
-    # The audit ignore is only sound while braces stays a build tool's dependency:
-    # the day a runtime package pulls it in, user input can reach it and the
-    # advisory applies for real — and `pnpm audit` would still say nothing.
-    cmds:
-      - cmd: |
-          if [ ! -f web/package.json ]; then echo "web/ not bootstrapped yet — skipping"; exit 0; fi
-          set -eu
-          prod=$(pnpm -C web list --prod --depth Infinity --parseable)
-          if echo "$prod" | grep -q '/braces@'; then
-            echo "braces is now a production dependency — GHSA-vfj7-8cjw-p6xm's ignore no longer holds:" >&2
-            pnpm -C web why braces --prod >&2
-            exit 1
-          fi
-          echo "braces: build-time only"
 
   docs:
     desc: "Lint and format the Fumadocs site, applying fixes"

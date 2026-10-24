@@ -268,10 +268,12 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
                 app.wrap(cors)
                     .wrap(security_headers())
                     // Default format without the query string: `?token=` is a bearer credential.
+                    // actix has no `%m`, hence the custom replacement for the method.
                     .wrap(
                         actix_web::middleware::Logger::new(
-                            r#"%a "%m %U" %s %b "%{Referer}i" "%{User-Agent}i" %T"#,
+                            r#"%a "%{METHOD}xi %U" %s %b "%{Referer}i" "%{User-Agent}i" %T"#,
                         )
+                        .custom_request_replace("METHOD", |req| req.method().to_string())
                         .log_target("http"),
                     )
                     // Outermost, so the access log line lands inside the request span (§13).

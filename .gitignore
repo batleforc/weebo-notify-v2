@@ -66,11 +66,8 @@ web/src-tauri/gen/schemas/
 web/test-results/
 web/playwright-report/
 
-graphify-out/cache/
-
-# Symlinks created by `wska install` from .claude/wska.toml (absolute, machine-local).
-.claude/skills/*
-!.claude/skills/graphify/
+# wska links (absolute paths into the local wska clone), re-run `task skills:install`
+.claude/skills/
 .claude/agents/
 # Backups left by tool installers (graphify).
 *.bak

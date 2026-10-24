@@ -72,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # No libdbus step here, unlike the workflows that build `--workspace`: this job
       # builds `notify-cli` and nothing else, and that crate reaches the session bus
@@ -81,8 +81,8 @@ jobs:
         # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`
         # — same reasoning as every other workflow in this directory.
         env:
-          MISE_VERSION: "v2026.8.3"
-          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+          MISE_VERSION: "v2026.10.12"
+          MISE_SHA256: "72404716768b5b044cbd5170136d3d795cbd592658b6e932b66f0f8d67a54875"
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"

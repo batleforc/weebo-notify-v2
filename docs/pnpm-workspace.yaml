@@ -11,36 +11,16 @@ allowBuilds:
   esbuild: true
   sharp: true
 
-# Transitive versions forced up because `task audit` flagged them. Both are pinned
-# by Next.js rather than by us, so an override is the only way to reach the fix
-# without waiting for an upstream release.
+# Transitive versions forced up because `task audit` flagged them, where the
+# package that pins them has not shipped a release carrying the fix yet.
 #
 # Each entry is a liability: it makes us responsible for a compatibility we did not
 # test upstream. Re-run `task audit` after removing one to check whether it is still
 # needed — they should not outlive the advisory.
 overrides:
-  # GHSA-r28c-9q8g-f849 — path traversal via sourceMappingURL auto-loading;
-  # CVE-2026-45623 — information disclosure and denial of service on crafted CSS.
-  postcss: ^8.5.18
-  # GHSA-f88m-g3jw-g9cj — inherited libvips vulnerabilities;
-  # GHSA-rgj7-g3m4-5g8c — inherited libheif vulnerabilities, fixed in 0.35.4;
-  # GHSA-wq5f-xc86-pv6w, fixed in 0.35.5.
-  sharp: ^0.35.5
-  # GHSA-2v37-7h3g-55p8 — nanoid's custom alphabet generator can loop forever
-  # when size is 0, fixed in 3.3.17. Reaches us through postcss above, same as
-  # web/pnpm-workspace.yaml's identical override.
-  nanoid: ^3.3.17
-  # GHSA fast-uri 3.x < 3.1.6 (four advisories, high). Reaches us only through
-  # `serve` > ajv, the static preview server; fixed upstream in 3.1.6.
-  fast-uri: ^3.1.6
-  # GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p — brace-expansion
-  # 1.x < 1.1.21 (unbounded expansion). Through `serve` > serve-handler > minimatch;
-  # the 1.x line carries the fix, so this stays on the major minimatch 3 expects.
-  "brace-expansion@<1.1.21": ^1.1.21
-  # GHSA-vc2v-76pw-4v95 — compression < 1.8.2, through `serve`.
+  # GHSA-vc2v-76pw-4v95 — compression < 1.8.2, through `serve` (static preview
+  # server only).
   compression: ^1.8.2
-  # GHSA-68fv-2mgg-jv7q — source-map-js < 1.2.2, through @tailwindcss/node.
-  source-map-js: ^1.2.2
 
 # Same supply-chain gate CI's pnpm enforces: never resolve a version published less
 # than a day ago, so a local install cannot produce a lockfile CI then refuses.

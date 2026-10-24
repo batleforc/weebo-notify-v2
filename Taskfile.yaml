@@ -2,7 +2,7 @@ version: "3"
 
 includes:
   mise: ./.tasks/mise.yaml
-  claude: ./.tasks/claude.yaml
+  skills: ./.tasks/skills.yaml
   template: ./.tasks/template.yaml
   build: ./.tasks/build.yaml
   dev: ./.tasks/dev.yaml
@@ -32,9 +32,11 @@ tasks:
       # Hooks first: they carry gitleaks, and nothing below may stand between a
       # clone and them.
       - cog install-hook -a -o
-      # Marketplaces and plugins declared in .claude/settings.json (weebo-base).
-      # Optional tooling — a network hiccup or a missing marketplace must not stop init.
-      - cmd: MISE_ENV=dev mise exec -- task claude:install
+      # Skills linked by wska from weebo-skillsagent (weebo-base), as recorded in
+      # .claude/wska.toml: `frontend` for web/ and its Playwright suite, `weebo` for
+      # the house practices, weebo-helm for charts/weebo-notify.
+      # Optional tooling — a network hiccup or a missing clone must not stop init.
+      - cmd: MISE_ENV=dev mise exec -- task skills:install
         ignore_error: true
       - cmd: '[ -f docs/package.json ] && pnpm -C docs install || true'
         silent: true
@@ -44,6 +46,12 @@ tasks:
       # is what the repository needs, this is what running it needs, and a setup
       # split in two is a setup somebody does half of.
       - task: dev:setup
+
+  update:
+    desc: "Bump every mise tool to its latest version (mise.toml ranges included) and regenerate mise.lock"
+    cmds:
+      - mise upgrade --bump
+      - task mise:lock:gen
 
   recu:
     desc: "Recurring job: export the OpenAPI spec, regenerate the derived clients and the sqlx offline data"

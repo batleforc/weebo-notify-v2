@@ -12,7 +12,8 @@ all-features = true
 # author found something, and pinning to one is a decision, not an accident.
 yanked = "deny"
 # Mirrors `.cargo/audit.toml`, which carries the full reasoning for each.
-# In one line: `rsa` needs an RSA PRIVATE key we do not have (verification only, §5.1).
+# In one line: `rsa` needs an RSA PRIVATE key we do not have (verification only,
+# §5.1).
 ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]
