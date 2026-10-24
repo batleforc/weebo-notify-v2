@@ -215,6 +215,9 @@ unimplemented = "deny"
 dbg_macro = "deny"
 mem_forget = "deny"
 undocumented_unsafe_blocks = "deny"
+# Every escape hatch carries its justification and dies with the code it excused.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
 # Noise from the pedantic group that fights the domain vocabulary.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"

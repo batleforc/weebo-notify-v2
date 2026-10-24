@@ -305,12 +305,6 @@ const fn capability(kind: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     fn config(toml: &str) -> Config {

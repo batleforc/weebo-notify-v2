@@ -205,12 +205,6 @@ impl JwksSource for HttpJwksSource {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::expect_used,
-        clippy::unwrap_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     fn config(issuer: &str) -> OidcConfig {

@@ -355,8 +355,6 @@ fn offset_at(timezone: &str, at: OffsetDateTime) -> Option<UtcOffset> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use time::Duration as TimeDuration;
     use time::macros::datetime;
 

@@ -155,8 +155,6 @@ fn collapse_spaces(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     #[test]

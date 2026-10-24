@@ -72,7 +72,7 @@ pub(crate) async fn read_profile(
 #[derive(Debug, ToSchema)]
 #[schema(value_type = String, format = Binary)]
 pub struct AvatarUpload(
-    #[allow(
+    #[expect(
         dead_code,
         reason = "the handler streams `web::Payload`; this field exists so utoipa has a \
                   type to hang the binary schema on"

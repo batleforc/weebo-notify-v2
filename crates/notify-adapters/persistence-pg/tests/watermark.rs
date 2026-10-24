@@ -7,10 +7,9 @@
 //! timing, and they run alone (`.config/nextest.toml`): each holds a transaction
 //! open on purpose, which delays every other test's reads while it does.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::panic,
     reason = "a failing assertion is a failing test"
 )]
 

@@ -114,8 +114,6 @@ impl EventBus for PgEventBus {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
-
     use notify_domain::{ChannelId, Cursor, UserId};
 
     use super::*;

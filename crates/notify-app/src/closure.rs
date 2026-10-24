@@ -155,8 +155,6 @@ impl CloseStale {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{
         Author, Channel, ChannelPolicy, CloseAfter, ContentDraft, HumanDuration, Notification,
         NotificationId, Principal, RevisionDraft, State, Status, UserId,

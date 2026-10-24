@@ -283,7 +283,7 @@ impl PushDispatcher for WebPush {
 pub fn test_vapid_key() -> String {
     use p256::pkcs8::EncodePrivateKey as _;
 
-    #[allow(
+    #[expect(
         clippy::expect_used,
         reason = "a constant scalar that is a valid P-256 key, or this crate cannot \
                   encode the keys it is built to read"
@@ -346,12 +346,6 @@ fn decode_auth(raw: &str) -> Result<[u8; 16], ()> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use notify_domain::{DeviceId, Principal, UserId};
     use time::OffsetDateTime;
 

@@ -390,7 +390,7 @@ pub(crate) struct Retention {
 impl Default for Retention {
     fn default() -> Self {
         Self {
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "a literal that fails to parse is a compile-time mistake, \
                           caught by this module's own tests"
@@ -1057,12 +1057,6 @@ pub(crate) fn load_isolated(path: &Path) -> anyhow::Result<Config> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     /// Write a config file somewhere only this test will look.

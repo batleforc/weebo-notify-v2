@@ -447,8 +447,6 @@ impl RequeueDeadLetter {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{Principal, UserId};
     use notify_ports::SinkTarget;
     use notify_ports::test_utils::{

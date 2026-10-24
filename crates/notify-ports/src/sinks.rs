@@ -259,8 +259,6 @@ pub trait SinkQueue: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     fn key(byte: u8) -> FingerprintKey {

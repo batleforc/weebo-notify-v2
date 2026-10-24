@@ -2,11 +2,6 @@
 //! in a destructive statement, and the only purge is one call to `wnk_audit_purge`. A source scan,
 //! so it runs everywhere; the trigger (ADR-0026) is the database-side backstop.
 
-#![allow(
-    clippy::expect_used,
-    reason = "a failing expect in a test is a failing test, and the message is the diagnosis"
-)]
-
 use std::path::Path;
 
 /// Statements that would remove or rewrite history.

@@ -81,12 +81,6 @@ impl reqwest::dns::Resolve for PublicOnly {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

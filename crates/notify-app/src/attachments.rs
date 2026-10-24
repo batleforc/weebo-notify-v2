@@ -242,8 +242,6 @@ impl ReadAttachmentThumbnail {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{Channel, Membership, Principal, UserId};
     use notify_ports::test_utils::{InMemory, InMemoryAttachments, TestClock};
     use time::OffsetDateTime;

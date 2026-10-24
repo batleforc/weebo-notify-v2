@@ -2,10 +2,9 @@
 //! (the reason `sqlx::query!` is not needed). Under `mod e2e`; skipped without a database.
 //! Tests share the database and isolate by fresh ULID-named channels.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::panic,
     reason = "a failing assertion is a failing test"
 )]
 

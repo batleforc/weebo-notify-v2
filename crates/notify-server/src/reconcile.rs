@@ -607,12 +607,6 @@ impl Reconciler {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use notify_domain::{ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, Scope, User, UserId};
     use notify_ports::StoredApiKey;
     use notify_ports::test_utils::{InMemory, TestClock};

@@ -430,8 +430,6 @@ impl UpsertNotification {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{
         ApiKeyId, Channel, ChannelPolicy, ContentDraft, Membership, Principal, State, Status,
         TtlPolicy, UserId,

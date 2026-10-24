@@ -244,8 +244,6 @@ fn base64_url_decode(raw: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_ports::SystemClock;
 
     use super::*;

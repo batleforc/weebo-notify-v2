@@ -340,8 +340,6 @@ fn validate_tags(raw: &[String]) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use crate::action::Action;
 
     use super::*;

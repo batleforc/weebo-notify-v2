@@ -1,10 +1,6 @@
 //! The bus against a real Postgres; under `mod e2e`, skipped without a database.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "a failing assertion is a failing test"
-)]
+#![expect(clippy::expect_used, reason = "a failing assertion is a failing test")]
 
 mod e2e {
     use futures::StreamExt as _;

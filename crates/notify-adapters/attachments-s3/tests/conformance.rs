@@ -1,11 +1,7 @@
 //! Every operation this adapter issues, against a real S3-compatible store (§15).
 //! Under `mod e2e` (run by `task test:e2e`); skipped without `WNK_TEST_S3_ENDPOINT`.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "a failing assertion is a failing test"
-)]
+#![expect(clippy::expect_used, reason = "a failing assertion is a failing test")]
 
 mod e2e {
     use notify_attachments_s3::{S3Attachments, S3Config};

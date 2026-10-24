@@ -26,7 +26,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             // The dev server, so `notify publish` works against `task dev:run` out of the box.
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "a literal that fails to parse is a compile-time mistake, \
                           caught by this crate's own tests"
@@ -326,12 +326,6 @@ pub(crate) fn app_dir(
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     /// Write a config file at a per-test path (tests run in parallel).

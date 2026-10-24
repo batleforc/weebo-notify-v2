@@ -223,8 +223,6 @@ pub fn ensure_matches(author: &Author, principal: &Principal) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     fn user() -> UserId {

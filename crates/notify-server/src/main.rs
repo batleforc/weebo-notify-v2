@@ -549,7 +549,7 @@ fn every(period: std::time::Duration) -> actix_web::rt::time::Interval {
 /// The leader-tolerant background loops: TTL purge, stale closure, DND digests, sink delivery, the
 /// fan-out outbox and reconciliation. Separate concurrent loops, so a slow job never delays another's
 /// tick, each [`supervise`]d so an error or panic is counted and retried rather than ending it.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "one per job, and each is a different type; a struct would only rename them"
 )]
@@ -859,8 +859,6 @@ async fn reconcile_loop(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
-
     use actix_web::{App, HttpResponse, test, web};
 
     #[actix_web::test]

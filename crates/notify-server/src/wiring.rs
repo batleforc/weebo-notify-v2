@@ -86,7 +86,7 @@ impl core::fmt::Debug for Application {
 
 impl Application {
     /// Fails if the database cannot be reached or the issuer does not parse.
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "one statement per use case; splitting it would hide which port \
                   each one was handed, which is the only thing this function says"
@@ -792,12 +792,6 @@ const fn unconfigured() -> notify_ports::PortError {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     /// Write a key somewhere only this test will look.

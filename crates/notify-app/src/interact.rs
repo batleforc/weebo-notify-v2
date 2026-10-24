@@ -398,8 +398,6 @@ impl ReadReceipts {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{
         ActionDraft, ActionKey, Actions, Author, Channel, ChannelId, ChannelPolicy,
         ChoiceOptionDraft, ChoiceOptionKey, ContentDraft, Device, DeviceId, HumanDuration,

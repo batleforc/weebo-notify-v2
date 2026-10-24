@@ -90,12 +90,6 @@ fn subject(caller: &Caller) -> Result<UserId, Failure> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::panic,
-        clippy::unwrap_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use notify_domain::{
         ChannelId, Day, DndScope, Priority, QuietHours, ServiceAccountId, WallClock,
     };

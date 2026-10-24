@@ -357,12 +357,6 @@ fn cycle_option(index: &mut Option<usize>, delta: i32, len: usize) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     fn channel(id: &str) -> Channel {

@@ -172,7 +172,6 @@ fn lower_exclusive_bounds(object: &mut Map<String, Value>) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "assertions in tests are meant to panic")]
 mod tests {
     use super::*;
 

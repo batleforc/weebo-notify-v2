@@ -205,8 +205,6 @@ pub(crate) fn path_config() -> actix_web::web::PathConfig {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::DomainError;
 
     use super::*;
@@ -301,7 +299,7 @@ mod tests {
 
         #[derive(serde::Deserialize)]
         struct Body {
-            #[allow(dead_code, reason = "only its absence matters")]
+            #[expect(dead_code, reason = "only its absence matters")]
             title: String,
         }
 

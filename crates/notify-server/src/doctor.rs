@@ -250,8 +250,6 @@ pub(crate) fn report(config: &Config) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     /// The defaults, with the two that are the development stack replaced.

@@ -179,12 +179,6 @@ const fn default_true() -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     /// The identities the development stack actually ships.

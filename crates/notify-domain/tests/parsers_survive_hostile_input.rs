@@ -2,9 +2,7 @@
 //! (SEC-P2-35): each must return without panicking and round-trip what it accepts.
 //! A stable-toolchain floor until `cargo-fuzz` targets exist.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
+#![expect(
     clippy::indexing_slicing,
     reason = "a failing assertion is a failing test, and the panic message names the input that caused it — which is the whole value of a randomised suite"
 )]

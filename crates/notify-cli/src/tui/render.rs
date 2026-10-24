@@ -588,8 +588,6 @@ fn elapsed(late: TimeDelta) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, reason = "a failing assertion is a failing test")]
-
     use notify_client_core::types::ActionKey;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

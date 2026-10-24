@@ -109,8 +109,6 @@ pub(crate) fn page(cursor: Option<&str>, limit: Option<u32>) -> Result<PageReque
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::State;
 
     use super::*;

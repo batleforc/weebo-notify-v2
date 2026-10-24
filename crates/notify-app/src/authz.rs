@@ -251,8 +251,6 @@ impl Authorizer {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use std::sync::Arc;
 
     use notify_domain::{Channel, Membership, UserId};

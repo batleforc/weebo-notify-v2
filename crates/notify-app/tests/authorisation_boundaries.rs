@@ -1,7 +1,7 @@
 //! Authorisation, written as attacks (SEC-P2-38): each test names an escalation and
 //! asserts it is refused, so a refactor that widens a grant fails here.
 
-#![allow(
+#![expect(
     clippy::expect_used,
     reason = "a failing expect in a test is a failing test, and the message is the diagnosis"
 )]

@@ -140,8 +140,6 @@ fn intern_action(action: &str) -> PortResult<notify_ports::AuditAction> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
-
     use super::*;
 
     #[test]

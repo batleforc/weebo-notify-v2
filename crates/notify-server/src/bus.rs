@@ -278,8 +278,6 @@ fn async_stream(receiver: broadcast::Receiver<Poke>) -> impl futures::Stream<Ite
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
-
     use notify_domain::{ChannelId, Cursor};
     use notify_ports::test_utils::InMemory;
 
@@ -334,7 +332,6 @@ mod tests {
             Ok(())
         }
 
-        #[allow(clippy::panic, reason = "the panic is what this double is for")]
         async fn subscribe(&self) -> PortResult<BoxStream<'static, Poke>> {
             use futures::StreamExt as _;
 

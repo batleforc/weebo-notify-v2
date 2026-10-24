@@ -58,7 +58,7 @@ fn assemble(
     let cipher = XChaCha20Poly1305::new(&key);
 
     // `encrypt` only fails on wrong key/nonce lengths, which are fixed here.
-    #[allow(
+    #[expect(
         clippy::unwrap_used,
         reason = "key and nonce are this function's own, fixed-length constants"
     )]
@@ -92,7 +92,7 @@ pub fn seal_base64(recipient: &DevicePublicKey, version: u8, plaintext: &[u8]) -
 fn derive_key(shared_secret: &[u8; 32], ephemeral: &PublicKey, recipient: &PublicKey) -> Key {
     let mut okm = [0_u8; 32];
     let hkdf = Hkdf::<Sha256>::new(None, shared_secret);
-    #[allow(
+    #[expect(
         clippy::unwrap_used,
         reason = "32 octets from SHA-256 is always a valid HKDF output length"
     )]
@@ -140,8 +140,6 @@ fn open(secret: &x25519_dalek::StaticSecret, version: u8, sealed: &[u8]) -> Opti
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use x25519_dalek::StaticSecret;
 
     use super::*;

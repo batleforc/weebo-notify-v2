@@ -206,8 +206,6 @@ async fn readyz(dependencies: web::Data<Dependencies>) -> impl Responder {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
-
     use actix_web::{App, test};
 
     use super::*;

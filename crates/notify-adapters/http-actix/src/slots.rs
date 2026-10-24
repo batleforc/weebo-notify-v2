@@ -262,8 +262,6 @@ impl Drop for StreamSlot {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::UserId;
 
     use super::*;
@@ -389,8 +387,6 @@ mod tests {
 
 #[cfg(test)]
 mod ceiling_tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::UserId;
 
     use super::*;

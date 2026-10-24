@@ -76,7 +76,7 @@ fn render(tree: &resvg::usvg::Tree, size: u32, to: &Path) -> anyhow::Result<std:
         resvg::tiny_skia::Pixmap::new(size, size).context("allocating the target bitmap")?;
 
     // Scale from the source's own viewBox so marks on any canvas fill the output.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         reason = "icon sizes are small integers; the nearest f32 is exact here"
     )]

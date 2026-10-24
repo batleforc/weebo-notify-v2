@@ -196,12 +196,6 @@ fn parse(header: &str) -> Option<(i64, &str)> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     const SECRET: &[u8] = b"shh";

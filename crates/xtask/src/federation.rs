@@ -42,8 +42,6 @@ pub(crate) fn generate(output: &Path, force: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     #[test]

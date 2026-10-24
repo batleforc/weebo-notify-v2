@@ -615,12 +615,6 @@ fn by_notification(batch: Vec<PendingFanout>) -> Vec<Vec<PendingFanout>> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::panic,
-        clippy::unwrap_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use notify_domain::{
         Channel, ChannelId, ChannelPolicy, ContentDraft, DeviceId, Dnd, HumanDuration, Membership,
         NotificationId, RevisionDraft, Scope, Silence, SilenceTarget, State, UserId,

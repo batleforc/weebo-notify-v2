@@ -188,13 +188,6 @@ fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::panic,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     #[test]

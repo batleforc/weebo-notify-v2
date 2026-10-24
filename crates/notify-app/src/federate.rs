@@ -157,8 +157,6 @@ impl ExchangeToken {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{Channel, FederatedClaims, Pattern, TrustPolicy};
     use notify_ports::test_utils::{
         InMemory, InMemoryReplayGuard, StaticFederationVerifier, TestClock, TestRateLimiter,

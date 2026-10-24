@@ -252,8 +252,6 @@ fn is_same_slot(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
     use crate::action::{ActionDraft, ChoiceOptionDraft};
     use crate::ids::UserId;

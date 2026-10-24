@@ -526,8 +526,6 @@ impl crate::sinks::SinkRegistry for StaticSinkRegistry {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     fn claims(expires_at: OffsetDateTime) -> VerifiedClaims {

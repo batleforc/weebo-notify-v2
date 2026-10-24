@@ -2356,12 +2356,6 @@ impl AuditLog for InMemory {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "a failing unwrap or an unreachable branch is a failing test"
-    )]
-
     use notify_domain::{
         Actions, Author, Channel, ChannelPolicy, ContentDraft, Interaction, InteractionLog,
         Membership, NotificationId, Origin, PushTransport, ReceiptId, RevisionDraft, State,

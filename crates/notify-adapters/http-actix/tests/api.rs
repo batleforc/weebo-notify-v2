@@ -1,11 +1,7 @@
 //! The HTTP surface end to end against the in-memory doubles: status codes, problem
 //! bodies, query parsing, and that nothing reaches a use case without a caller.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "a failing assertion is a failing test"
-)]
+#![expect(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
 
 use std::sync::Arc;
 
@@ -48,7 +44,7 @@ struct Harness {
 }
 
 impl Harness {
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "wiring, not logic: one line per use case, exactly as the composition \
                   root has to spell it out"

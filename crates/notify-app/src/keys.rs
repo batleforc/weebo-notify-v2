@@ -495,8 +495,6 @@ fn random_string(len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{Channel, Membership, ServiceAccountId, UserId};
     use notify_ports::test_utils::{CountingKeyGenerator, InMemory, StubSecretHasher, TestClock};
 
@@ -1137,8 +1135,6 @@ mod tests {
 
 #[cfg(test)]
 mod generator_tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use std::collections::HashSet;
 
     use super::*;

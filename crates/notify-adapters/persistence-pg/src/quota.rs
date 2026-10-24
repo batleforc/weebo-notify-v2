@@ -252,8 +252,6 @@ impl StreamLeases for PgStore {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
-
     use super::*;
 
     #[test]

@@ -243,7 +243,6 @@ pub(crate) fn gate(lcov: &Path, base: Option<&str>) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "assertions in tests are meant to panic")]
 mod tests {
     use super::*;
 

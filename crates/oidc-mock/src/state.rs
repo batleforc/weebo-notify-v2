@@ -340,12 +340,6 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use super::*;
 
     pub(crate) fn identities() -> Identities {

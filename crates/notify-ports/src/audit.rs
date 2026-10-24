@@ -211,8 +211,6 @@ pub const AUDIT_RETENTION_FLOOR: time::Duration = time::Duration::days(90);
 
 #[cfg(test)]
 mod action_tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     #[test]

@@ -167,8 +167,6 @@ const fn outcome(status: u16) -> PushOutcome {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{ChannelId, DeviceId, NotificationId, Principal, Priority, UserId};
     use notify_ports::PushBody;
     use time::OffsetDateTime;

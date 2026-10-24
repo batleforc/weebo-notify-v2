@@ -189,8 +189,6 @@ impl AttachmentThumbnailer for ImageAttachmentThumbnailer {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use image::{DynamicImage, RgbaImage};
 
     use super::*;
@@ -327,7 +325,7 @@ mod tests {
     }
 
     /// A noisy PNG, so deflate cannot make the size assertion vacuous.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "pseudo-noise for a test fixture; the low bytes of the mix are the point"
     )]

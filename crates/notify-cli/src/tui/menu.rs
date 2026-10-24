@@ -179,8 +179,6 @@ impl Menu {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, reason = "a failing assertion is a failing test")]
-
     use super::super::completion;
     use super::*;
 

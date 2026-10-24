@@ -1,10 +1,5 @@
 //! A real ES256 keypair for tests, derived from the key id: reproducible, and no committed private key.
 
-#![allow(
-    clippy::expect_used,
-    reason = "a fixture that cannot build its own key has no test to run"
-)]
-
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::jwk::{Jwk, JwkSet};

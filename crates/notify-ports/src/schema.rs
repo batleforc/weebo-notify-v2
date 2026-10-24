@@ -236,13 +236,6 @@ fn constant(value: &str) -> ObjectBuilder {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::panic,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use notify_domain::{
         Author, ChannelPolicy, ContentDraft, Dnd, Interaction, InteractionId, Notification,
         Principal, ReceiptId, ReceiptKind, RevisionDraft, State,

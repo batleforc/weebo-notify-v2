@@ -234,8 +234,6 @@ impl TrustPolicies {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     const US: &str = "weebo-notify";

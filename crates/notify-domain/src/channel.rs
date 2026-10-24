@@ -319,8 +319,6 @@ impl Channel {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
     use crate::ids::{ServiceAccountId, UserId};
 
@@ -402,8 +400,6 @@ mod tests {
 
 #[cfg(test)]
 mod group_access_tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
     use crate::ids::UserId;
 
@@ -502,8 +498,6 @@ mod group_access_tests {
 /// Policy edits (`PATCH /channels/{id}`).
 #[cfg(test)]
 mod policy_tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     fn channel() -> Channel {

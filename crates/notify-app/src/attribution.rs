@@ -52,8 +52,6 @@ impl Attribution {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use notify_domain::{Origin, ServiceAccount, ServiceAccountId, User, UserId};
     use notify_ports::test_utils::InMemory;
     use time::OffsetDateTime;

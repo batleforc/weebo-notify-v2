@@ -521,12 +521,6 @@ fn login_page(mock: &Mock, request_id: &str, error: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use actix_web::{App, test};
 
     use super::*;

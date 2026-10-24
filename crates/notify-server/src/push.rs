@@ -112,8 +112,6 @@ const fn capability(transport: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
-
     use notify_domain::{ChannelId, DeviceId, NotificationId, Principal, Priority, UserId};
     use notify_ports::PushBody;
     use time::OffsetDateTime;

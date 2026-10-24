@@ -298,7 +298,7 @@ impl PushTransport for Apns {
             .as_secs();
 
         // `self.host` is a fixed `https://` base, so `path_segments_mut` cannot fail.
-        #[allow(
+        #[expect(
             clippy::unwrap_used,
             reason = "the base URL is this crate's own https constant, always parseable and always a base"
         )]
@@ -401,7 +401,7 @@ fn is_apple_id(value: &str) -> bool {
 pub fn test_apns_key() -> String {
     use p256::pkcs8::EncodePrivateKey as _;
 
-    #[allow(
+    #[expect(
         clippy::expect_used,
         reason = "a constant scalar that is a valid P-256 key, or this crate cannot \
                   encode the keys it is built to read"
@@ -415,12 +415,6 @@ pub fn test_apns_key() -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use notify_domain::{ChannelId, DeviceId, NotificationId, Principal, UserId};
     use notify_ports::PushBody;
     use time::OffsetDateTime;

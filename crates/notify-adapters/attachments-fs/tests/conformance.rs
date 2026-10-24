@@ -1,10 +1,6 @@
 //! Every operation this adapter promises, against a real directory; needs no external service.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "a failing assertion is a failing test"
-)]
+#![expect(clippy::expect_used, reason = "a failing assertion is a failing test")]
 
 use notify_attachments_fs::{FsAttachments, FsConfig, Purpose};
 use notify_domain::AttachmentId;

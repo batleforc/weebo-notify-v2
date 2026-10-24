@@ -235,8 +235,6 @@ fn endpoint(configured: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failing unwrap is a failing test")]
-
     use super::*;
 
     /// What the middleware saw, smuggled out of the request it ran in.

@@ -2,13 +2,12 @@
 //! the real [`OidcVerifier`]. `WNK_TEST_OIDC_PROVIDER` selects `mock` (default, in-process), `dex`
 //! (no `groups` claim) or `authentik`. Never skips: an external provider without an issuer panics.
 
-#![allow(
-    clippy::unwrap_used,
+#![expect(
     clippy::expect_used,
     clippy::indexing_slicing,
     reason = "a failing assertion is a failing test"
 )]
-#![allow(
+#![expect(
     clippy::panic,
     reason = "a missing provider must stop this suite loudly, and a panic carrying \
               the name of the variable it wants is the message a CI log needs"

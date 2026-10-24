@@ -249,7 +249,7 @@ pub(crate) enum Message {
 
 /// What the interface is showing.
 #[derive(Debug)]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "four independent facts about one screen — which role this window has, \
               whether a popup is open, whether it is closing, whether it owes the \
@@ -1105,12 +1105,6 @@ fn shell_split(line: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failing assertion is a failing test"
-    )]
-
     use notify_client_core::types::ChoiceOption;
 
     use super::*;
