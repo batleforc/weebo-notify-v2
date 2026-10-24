@@ -451,13 +451,14 @@ pub struct OsRngKeyGenerator;
 
 impl KeyGenerator for OsRngKeyGenerator {
     fn generate(&self) -> (ApiKeyPrefix, String) {
-        let prefix = random_string(ApiKeyPrefix::LEN);
+        // Every byte comes from `ALPHABET`, so the first draw parses; a failure that
+        // cannot happen draws again rather than panicking.
+        let prefix = loop {
+            if let Ok(prefix) = ApiKeyPrefix::parse(&random_string(ApiKeyPrefix::LEN)) {
+                break prefix;
+            }
+        };
         let secret = random_string(SECRET_LEN);
-
-        let prefix = ApiKeyPrefix::parse(&prefix).unwrap_or_else(|_| {
-            // Unreachable: every byte comes from `ALPHABET`. Build a valid prefix rather than panic.
-            ApiKeyPrefix::parse("00000000").unwrap_or_else(|_| unreachable!())
-        });
 
         (prefix, secret)
     }
@@ -623,7 +624,7 @@ mod tests {
                         ApiKeyOwner::User {
                             id: match fixture.alice {
                                 Principal::User { id } => id,
-                                _ => unreachable!(),
+                                _ => panic!(),
                             }
                         },
                         vec![Scope::Publish],
@@ -687,7 +688,7 @@ mod tests {
                     ApiKeyOwner::User {
                         id: match fixture.alice {
                             Principal::User { id } => id,
-                            _ => unreachable!(),
+                            _ => panic!(),
                         },
                     },
                     vec![Scope::Publish],
@@ -727,7 +728,7 @@ mod tests {
     fn alice_id(fixture: &Fixture) -> UserId {
         match fixture.alice {
             Principal::User { id } => id,
-            _ => unreachable!(),
+            _ => panic!(),
         }
     }
 

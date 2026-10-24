@@ -2061,9 +2061,10 @@ async fn every_operation_design_8_lists_is_served_and_not_only_its_path() {
         ("put", "/api/v1/compat/ntfy/{channel}"),
         ("post", "/api/v1/compat/alertmanager/{channel}"),
     ] {
-        let item = api.paths.paths.get(path).unwrap_or_else(|| {
-            unreachable!("§8 lists {method} {path} and no route serves that path")
-        });
+        let item =
+            api.paths.paths.get(path).unwrap_or_else(|| {
+                panic!("§8 lists {method} {path} and no route serves that path")
+            });
 
         let served: Vec<&str> = [
             ("get", item.get.is_some()),

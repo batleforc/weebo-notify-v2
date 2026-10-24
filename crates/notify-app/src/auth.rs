@@ -642,7 +642,7 @@ mod tests {
             ..
         } = caller.grant
         else {
-            unreachable!("a key authenticates as a key");
+            panic!("a key authenticates as a key");
         };
         assert_eq!(scopes, vec![Scope::Publish]);
         assert_eq!(channels, vec![ChannelId::parse("ci-infra").unwrap()]);
@@ -668,7 +668,7 @@ mod tests {
 
         let owner_groups = |caller: Caller| match caller.grant {
             Grant::ApiKey { owner_groups, .. } => owner_groups,
-            _ => unreachable!("a key authenticates as a key"),
+            _ => panic!("a key authenticates as a key"),
         };
         let key = || Credential::ApiKey("wnk_ci4xa9k2_s3cr3t".to_owned());
 
@@ -709,7 +709,7 @@ mod tests {
             .await
             .unwrap();
         let Grant::ApiKey { owner_groups, .. } = caller.grant else {
-            unreachable!("a key authenticates as a key");
+            panic!("a key authenticates as a key");
         };
         assert!(owner_groups.is_empty(), "two hours is past a one-hour TTL");
     }

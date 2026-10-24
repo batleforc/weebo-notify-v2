@@ -321,7 +321,7 @@ mod tests {
 
     fn alice_id(fixture: &Fixture) -> UserId {
         let Principal::User { id } = fixture.alice else {
-            unreachable!()
+            panic!()
         };
         id
     }
@@ -383,7 +383,7 @@ mod tests {
             .find(|event| matches!(&event.payload, EventPayload::Revision(_)))
             .unwrap(); // the publish appended a revision event
         let EventPayload::Revision(revision) = &revision.payload else {
-            unreachable!()
+            panic!()
         };
         assert!(
             page.deferred_by_dnd.contains(&revision.notification_id),

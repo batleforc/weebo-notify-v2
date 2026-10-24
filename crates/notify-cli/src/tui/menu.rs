@@ -271,7 +271,7 @@ mod tests {
         // Drift guard: every hand-written line must still parse as a real subcommand.
         for item in leaves(&Menu::root_items()) {
             let (MenuItem::Run { line, .. } | MenuItem::Prefill { line, .. }) = item else {
-                unreachable!("`leaves` only ever returns Run/Prefill items")
+                panic!("`leaves` only ever returns Run/Prefill items")
             };
 
             let mut words = line.split_whitespace();

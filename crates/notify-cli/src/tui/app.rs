@@ -655,23 +655,21 @@ impl App {
             return;
         }
 
-        // Détail focused: scroll the body instead of moving the inbox selection (§9.2). The upper
-        // bound is clamped when drawn (`render::detail`).
-        if self.focus == Pane::Detail {
-            let magnitude = u16::try_from(delta.unsigned_abs()).unwrap_or(u16::MAX);
-            self.detail_scroll = if delta.is_negative() {
-                self.detail_scroll.saturating_sub(magnitude)
-            } else {
-                self.detail_scroll.saturating_add(magnitude)
-            };
-            return;
-        }
-
         let (index, len) = match self.focus {
             // `+ 1` for the "Tous" row; never touches `applied_channel`.
             Pane::Channels => (&mut self.selected_channel, self.channels.len() + 1),
             Pane::Inbox => (&mut self.selected_row, self.inbox.len()),
-            Pane::Detail => unreachable!("handled above"),
+            // Détail focused: scroll the body instead of moving the inbox selection (§9.2).
+            // The upper bound is clamped when drawn (`render::detail`).
+            Pane::Detail => {
+                let magnitude = u16::try_from(delta.unsigned_abs()).unwrap_or(u16::MAX);
+                self.detail_scroll = if delta.is_negative() {
+                    self.detail_scroll.saturating_sub(magnitude)
+                } else {
+                    self.detail_scroll.saturating_add(magnitude)
+                };
+                return;
+            }
         };
 
         if len == 0 {

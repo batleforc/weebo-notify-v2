@@ -204,7 +204,7 @@ mod tests {
         let fixture = fixture();
         let caller = Caller::member(fixture.alice.clone());
         let Principal::User { id: alice } = fixture.alice else {
-            unreachable!()
+            panic!()
         };
         let somebody_else = UserId::generate();
 
@@ -253,7 +253,7 @@ mod tests {
         let fixture = fixture();
         let caller = Caller::member(fixture.alice.clone());
         let Principal::User { id: alice } = fixture.alice else {
-            unreachable!()
+            panic!()
         };
 
         fixture

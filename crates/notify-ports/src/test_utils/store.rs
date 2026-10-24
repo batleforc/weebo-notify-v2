@@ -2440,7 +2440,7 @@ mod tests {
         let store = InMemory::new();
         let alice = user();
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
 
@@ -2478,7 +2478,7 @@ mod tests {
         let store = InMemory::new();
         let alice = user();
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
 
@@ -2500,7 +2500,7 @@ mod tests {
         let store = InMemory::new();
         let (alice, bob) = (user(), user());
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
         store.seed_channel(channel("cluster-ovh-1", &bob));
@@ -2520,7 +2520,7 @@ mod tests {
         let store = InMemory::new();
         let alice = user();
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
 
@@ -2563,7 +2563,7 @@ mod tests {
         let store = InMemory::new();
         let alice = user();
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
 
@@ -2597,7 +2597,7 @@ mod tests {
         let store = InMemory::new();
         let alice = user();
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
 
@@ -2647,7 +2647,7 @@ mod tests {
         let store = InMemory::new();
         let alice = user();
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
 
@@ -3165,7 +3165,7 @@ mod tests {
         let (alice, bob) = (user(), user());
         let (Principal::User { id: alice_id }, Principal::User { id: bob_id }) = (&alice, &bob)
         else {
-            unreachable!()
+            panic!()
         };
         store.seed_channel(channel("ci-infra", &alice));
         let mut shared = channel("ci-infra", &alice);

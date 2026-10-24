@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn an_instance_that_measures_nothing_serves_an_empty_document() {
         let metrics = NoMetrics;
-        metrics.published(&ChannelId::parse("ci-infra").unwrap_or_else(|_| unreachable!()));
+        metrics.published(&ChannelId::parse("ci-infra").unwrap_or_else(|_| panic!()));
         assert_eq!(metrics.render(), "");
     }
 }

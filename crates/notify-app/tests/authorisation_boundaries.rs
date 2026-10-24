@@ -408,7 +408,7 @@ async fn a_key_cannot_list_or_revoke_its_owners_other_keys() {
 
     // …but "this leaked, kill it" still works from the leaked key itself.
     let Grant::ApiKey { id: own, .. } = key.grant.clone() else {
-        unreachable!("api_key builds an ApiKey grant")
+        panic!("api_key builds an ApiKey grant")
     };
     let mut own_key = stored_key(ApiKeyOwner::User { id: alice }, "wnk1ownk");
     own_key.key.id = own;

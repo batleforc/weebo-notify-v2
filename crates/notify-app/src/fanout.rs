@@ -781,7 +781,7 @@ mod tests {
 
         // Alice silences the group.
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         let silence = Silence::start(
             alice_id,
@@ -818,7 +818,7 @@ mod tests {
             id: UserId::generate(),
         };
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         seed(&store, &alice, webpush(), clock.now());
 
@@ -862,7 +862,7 @@ mod tests {
             id: UserId::generate(),
         };
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         seed(&store, &alice, webpush(), clock.now());
 
@@ -894,7 +894,7 @@ mod tests {
             id: UserId::generate(),
         };
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         seed(&store, &alice, webpush(), clock.now());
 
@@ -1217,7 +1217,7 @@ mod tests {
             id: UserId::generate(),
         };
         let Principal::User { id: alice_id } = alice else {
-            unreachable!()
+            panic!()
         };
         // Two devices: the fan-out asks about each.
         seed(&store, &alice, webpush(), clock.now());
