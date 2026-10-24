@@ -18,17 +18,57 @@
 # moved between two runs of the same pipeline. `trixie` is not a preference — it
 # has to be the same Debian as the runtime stage below (`cc-debian13`), or the binary links against
 # a glibc the runtime does not have.
-FROM docker.io/library/rust:1.99-slim-trixie@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d AS builder
+#
+# `$BUILDPLATFORM`: the compiler always runs natively and cross-compiles to the
+# target, so the arm64 image no longer builds the workspace under QEMU (hours, not
+# minutes). The runtime stage has no `RUN`, so nothing in this file is emulated.
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99-slim-trixie@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d AS chef
+
+ARG BUILDARCH
+ARG TARGETARCH
+
+# Every C dependency in the tree (aws-lc-sys, ring, zstd-sys, libsqlite3-sys) builds
+# through `cc`, so a cross build needs only the target's gcc and libc headers.
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) triple=x86_64-unknown-linux-gnu; gnu=x86-64-linux-gnu ;; \
+      arm64) triple=aarch64-unknown-linux-gnu; gnu=aarch64-linux-gnu ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    echo "$triple" > /rust-target; \
+    rustup target add "$triple"; \
+    if [ "$BUILDARCH" != "$TARGETARCH" ]; then \
+      apt-get update; \
+      apt-get install -y --no-install-recommends "gcc-$gnu" "libc6-dev-$TARGETARCH-cross"; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+# Read by cargo and `cc` only when that target is built; inert otherwise.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+    CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
+    AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
+
+# cargo-chef derives the dependency-only build from the manifests by itself, which
+# is what the hand-written stub trick could not do: a crate added to the workspace
+# is picked up with no line to add here. It also normalises the workspace version,
+# so a release bump does not invalidate the dependency layer on the one build that
+# counts.
+RUN cargo install --locked cargo-chef --version 0.1.78
 
 WORKDIR /build
 
-# The whole workspace, in one layer, and the dependency-stubbing trick is
-# deliberately NOT used. It works by copying every `Cargo.toml`, stubbing every
-# `lib.rs`/`main.rs`, and building that first so dependencies land in their own
-# layer. With twenty-one crates it is twenty-one paths to keep in step with
-# `Cargo.toml`, and when somebody adds the twenty-second nothing fails — the cache
-# just quietly stops helping, which is the kind of rot nobody notices for a year.
-# A tag build is not on anybody's critical path.
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+# Dependencies only: this layer is reused until a manifest or Cargo.lock changes.
+RUN cargo chef cook --release --locked --target "$(cat /rust-target)" \
+    -p notify-server -p notify-cli --recipe-path recipe.json
+
 COPY . .
 
 # `--locked` so the image is built from the committed lockfile and a release cannot
@@ -37,9 +77,11 @@ COPY . .
 #
 # `notify-cli` is built in the same invocation, from the same commit, as
 # `notify-server` — the whole reason `GET /api/v1/cli` (design §9) can hand out
-# this build's binary and never disagree with the server serving it. Linux only
-# for now: the cross-platform artefact matrix is M5's job.
-RUN cargo build --release --locked -p notify-server -p notify-cli
+# this build's binary and never disagree with the server serving it. One CLI per
+# image architecture; the cross-platform artefact matrix is M5's job.
+RUN cargo build --release --locked --target "$(cat /rust-target)" -p notify-server -p notify-cli \
+    && mkdir /out \
+    && cp "target/$(cat /rust-target)/release/notify-server" "target/$(cat /rust-target)/release/notify" /out/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Runtime
@@ -54,13 +96,13 @@ RUN cargo build --release --locked -p notify-server -p notify-cli
 # manager and no root user to drop from.
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS runtime
 
-COPY --from=builder /build/target/release/notify-server /usr/local/bin/notify-server
+COPY --from=builder /out/notify-server /usr/local/bin/notify-server
 
 # The CLI binary `GET /api/v1/cli` (design §9) hands out. Present in every image,
 # same as `notify-server` above — but nothing serves it until an operator opts in
 # with a `[cli]` section pointing at this path, on the same "no default
 # configuration is baked in" terms the volume below states.
-COPY --from=builder /build/target/release/notify /usr/local/bin/notify
+COPY --from=builder /out/notify /usr/local/bin/notify
 
 # Where an operator mounts `config.toml` and the secrets it points at (§11). No
 # default configuration is baked in: a server that starts on a config nobody wrote
@@ -92,7 +134,9 @@ LABEL org.opencontainers.image.description="Self-hosted notification hub — ser
 LABEL org.opencontainers.image.source="https://github.com/batleforc/weebo-notify-v2"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
-USER nonroot:nonroot
+# Numeric, the UID `nonroot` maps to: the kubelet can only verify `runAsNonRoot`
+# against a number, and it is the one the chart's `runAsUser` pins.
+USER 65532:65532
 
 ENTRYPOINT ["/usr/local/bin/notify-server"]
 CMD ["--config", "/etc/weebo-notify/config.toml"]

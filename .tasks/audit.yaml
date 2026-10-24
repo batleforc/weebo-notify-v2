@@ -62,8 +62,9 @@ tasks:
     desc: "Scan the repository and Containerfiles for CVEs, misconfigurations and secrets (trivy)."
     # Reads the Containerfiles, not the images (that's `audit:image`, which Che can't run).
     # `charts/` is skipped: its `required` values break trivy's render; `audit:helm` covers it.
+    # `target/` is build output (never committed): `task cover`'s HTML report quotes test tokens.
     cmds:
-      - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity MEDIUM,HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-dirs charts .
+      - trivy fs --scanners vuln,misconfig,secret --exit-code 1 --severity MEDIUM,HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-dirs charts --skip-dirs '**/target' .
 
   helm:
     desc: "Scan charts/weebo-notify for Kubernetes misconfigurations and secrets (trivy config)."

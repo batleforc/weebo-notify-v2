@@ -27,6 +27,9 @@ web/coverage/
 docs/.next/
 docs/out/
 **/node_modules/
+# The web image builds from `web/` as its own context; nothing here reads it, and
+# `web/src-tauri/target/` alone is gigabytes a local build would otherwise send.
+web/
 
 # Version control and tooling state.
 .git/

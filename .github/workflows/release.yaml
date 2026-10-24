@@ -248,9 +248,9 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up QEMU
-        # arm64 on an amd64 runner. Slow, and the alternative is a second runner
-        # nobody has yet — worth naming so the day one exists, this step goes away
-        # rather than being cargo-culted forward.
+        # Only for the web image's arm64 runtime stage (`RUN apk upgrade`): both
+        # builders run on $BUILDPLATFORM and the server cross-compiles, so no code is
+        # compiled under emulation. This goes once that shortcut leaves web/Containerfile.
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Log in to the registry
@@ -276,6 +276,9 @@ jobs:
         with:
           context: .
           file: ./Containerfile
+          # Read-only: a cache written from a tag ref is never readable by a later
+          # run, so releases reuse `publish-main`'s cache from the default branch.
+          cache-from: type=gha,scope=server
           platforms: linux/amd64,linux/arm64
           provenance: mode=max
           sbom: true
@@ -293,6 +296,7 @@ jobs:
         with:
           context: ./web
           file: ./web/Containerfile
+          cache-from: type=gha,scope=web
           platforms: linux/amd64,linux/arm64
           provenance: mode=max
           sbom: true

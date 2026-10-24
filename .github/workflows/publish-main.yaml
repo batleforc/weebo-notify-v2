@@ -433,6 +433,10 @@ jobs:
         with:
           context: .
           file: ./Containerfile
+          # One scope per image, or the two evict each other; `mode=max` keeps the
+          # cargo-chef dependency layer, which is the one worth caching.
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
           sbom: true
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
@@ -446,6 +450,8 @@ jobs:
         with:
           context: ./web
           file: ./web/Containerfile
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
           sbom: true
           outputs: type=image,name=${{ env.IMAGE_NAME }}-web,push-by-digest=true,name-canonical=true,push=true
 

@@ -94,9 +94,3 @@ rust-ini = "=0.21.1"
 
 [dev-dependencies]
 tempfile = "3.27.0"
-
-# Not used directly: caps the version `tauri-plugin-deep-link` resolves on Linux.
-# deep-link 2.6.2 builds `ini::ParseOption` with a struct literal that 0.21.2 broke
-# (two fields added in a patch release). Drop this once deep-link catches up.
-[target.'cfg(target_os = "linux")'.dependencies]
-rust-ini = "=0.21.1"
