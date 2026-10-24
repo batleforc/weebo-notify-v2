@@ -156,11 +156,7 @@ mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
-        use core::fmt::Write as _;
-        bytes.iter().fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
+        base16ct::lower::encode_string(bytes)
     }
 
     /// The known-answer vector device implementations (Kotlin, Swift — outside this

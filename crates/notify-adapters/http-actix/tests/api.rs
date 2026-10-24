@@ -929,7 +929,7 @@ async fn a_stream_frame_says_which_channel_it_belongs_to() {
         .insert_header(AUTH)
         .set_json(json!({ "channel": "ci-infra", "title": "etcd degraded" }))
         .to_request();
-    let _: Value = test::call_and_read_body_json(&app, request).await;
+    let _created: Value = test::call_and_read_body_json(&app, request).await;
 
     let request = test::TestRequest::get()
         .uri("/api/v1/stream")
@@ -977,7 +977,7 @@ async fn a_stream_frame_says_whether_the_reader_was_meant_to_be_left_alone() {
         .insert_header(AUTH)
         .set_json(json!({ "channel": "ci-infra", "title": "etcd degraded" }))
         .to_request();
-    let _: Value = test::call_and_read_body_json(&app, request).await;
+    let _created: Value = test::call_and_read_body_json(&app, request).await;
 
     let request = test::TestRequest::get()
         .uri("/api/v1/stream")
@@ -1013,7 +1013,7 @@ async fn a_stream_frame_outside_a_quiet_period_carries_no_flag_at_all() {
         .insert_header(AUTH)
         .set_json(json!({ "channel": "ci-infra", "title": "etcd degraded" }))
         .to_request();
-    let _: Value = test::call_and_read_body_json(&app, request).await;
+    let _created: Value = test::call_and_read_body_json(&app, request).await;
 
     let request = test::TestRequest::get()
         .uri("/api/v1/stream")

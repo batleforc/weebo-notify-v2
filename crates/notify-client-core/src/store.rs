@@ -494,7 +494,9 @@ mod tests {
     /// A store in a directory only this test will touch.
     fn temp_store(test: &str) -> (Store, PathBuf) {
         let dir = std::env::temp_dir().join(format!("wnk-store-{}-{test}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
         let path = dir.join("store.db");
         (Store::open_at(&path).unwrap(), path)
     }
@@ -537,7 +539,10 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         // WAL and shared-memory siblings go with it, the way `rm store.db*` would.
         for suffix in ["-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            let sibling = PathBuf::from(format!("{}{suffix}", path.display()));
+            if sibling.exists() {
+                std::fs::remove_file(sibling).unwrap();
+            }
         }
 
         let rebuilt = Store::open_at(&path).unwrap();

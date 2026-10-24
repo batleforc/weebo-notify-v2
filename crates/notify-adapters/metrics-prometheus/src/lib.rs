@@ -361,7 +361,10 @@ impl Metrics for PrometheusMetrics {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // `encode` into a `String` cannot fail.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "`encode` into a `String` cannot fail"
+        )]
         let _ = encode(&mut out, &registry);
         out
     }

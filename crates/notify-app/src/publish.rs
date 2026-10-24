@@ -308,12 +308,15 @@ impl PublishNotification {
                 };
                 if published.is_err() {
                     // Nothing was written; otherwise the client's retry gets `InFlight`
-                    // until the claim lapses.
-                    let _ = self
+                    // until the claim lapses — which is what a failed release costs.
+                    if let Err(error) = self
                         .writer
                         .idempotency
                         .release(&principal_ref, &key, now)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(%error, "could not release the idempotency claim of a failed publish; retries see InFlight until it lapses");
+                    }
                 }
                 published
             }

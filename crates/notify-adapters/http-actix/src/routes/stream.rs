@@ -505,7 +505,10 @@ pub(crate) async fn websocket(
             }
         }
 
-        // Bounded too: a peer that stopped reading would hold the close as well.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "bounded too, as a peer that stopped reading would hold the close; the stream ends either way"
+        )]
         let _ = tokio::time::timeout(SEND_TIMEOUT, session.close(None)).await;
     });
 

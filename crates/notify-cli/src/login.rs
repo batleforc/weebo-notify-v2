@@ -102,6 +102,11 @@ pub(crate) async fn run(profile: &str, web_url: &str) -> Result<String, CliError
 
     // The link is printed either way; failing to open a browser isn't worth failing over.
     if std::env::var_os("NO_BROWSER").is_none() {
+        #[expect(
+            clippy::let_underscore_must_use,
+            let_underscore_drop,
+            reason = "the link is printed either way; failing to open a browser is not worth failing over"
+        )]
         let _ = open::that(&target);
     }
 

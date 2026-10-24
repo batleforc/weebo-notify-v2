@@ -130,8 +130,11 @@ async fn pump(
             } else {
                 tracing::error!("the poke pump panicked; resubscribing");
             }
-            // Whatever was published while nobody listened is gone; every stream
-            // re-reads from its own cursor, which is authoritative.
+            #[expect(
+                clippy::let_underscore_must_use,
+                let_underscore_drop,
+                reason = "fails only with no stream open; every stream re-reads from its own cursor, which is authoritative"
+            )]
             let _ = sender.send(Poke::Resync);
 
             if started.elapsed() > STABLE {
@@ -154,8 +157,11 @@ async fn forward(mut stream: BoxStream<'static, Poke>, sender: &broadcast::Sende
     use futures::StreamExt as _;
 
     while let Some(poke) = stream.next().await {
-        // `send` fails only when nobody is listening, which is the normal state of
-        // a replica with no open streams.
+        #[expect(
+            clippy::let_underscore_must_use,
+            let_underscore_drop,
+            reason = "`send` fails only when nobody is listening, the normal state of a replica with no open streams"
+        )]
         let _ = sender.send(poke);
     }
 }

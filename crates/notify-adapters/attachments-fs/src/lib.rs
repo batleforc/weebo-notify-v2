@@ -256,8 +256,10 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         std::fs::rename(&temporary, path)
     })();
     if written.is_err() {
-        // Best effort: a leftover temporary file is not the error worth reporting.
-        let _ = std::fs::remove_file(&temporary);
+        // The write's own error is the one returned; a leftover file is only logged.
+        if let Err(error) = std::fs::remove_file(&temporary) {
+            tracing::warn!(%error, path = ?temporary, "could not remove a temporary attachment file");
+        }
     }
     written?;
 

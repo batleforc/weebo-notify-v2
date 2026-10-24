@@ -168,6 +168,8 @@ lru = "0.19"
 # OS CSPRNG for API-key generation; reading random bytes is all that's needed.
 getrandom = "0.4"
 base64 = "0.23"
+# Hex for digests and MACs; RustCrypto's, constant-time, already in the tree.
+base16ct = { version = "1", features = ["alloc"] }
 # Sealed box (§6.2): X25519 ECDH, HKDF-SHA256, XChaCha20-Poly1305.
 x25519-dalek = { version = "3", features = ["getrandom"] }
 hkdf = "0.13"
@@ -193,6 +195,8 @@ tempfile = "3"
 missing_debug_implementations = "warn"
 unsafe_code = "forbid"
 unreachable_pub = "warn"
+# `let _ =` drops on the spot; with a guard that is a bug, with a `Result` an ignored error.
+let_underscore_drop = "warn"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -200,6 +204,9 @@ pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+# An error is handled, logged with why it is safe to go on, or `#[expect]`ed with the reason.
+let_underscore_must_use = "deny"
+let_underscore_future = "deny"
 # Noise from the pedantic group that fights the domain vocabulary.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"

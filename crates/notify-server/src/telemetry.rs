@@ -59,6 +59,10 @@ pub(crate) fn install(telemetry: Option<&Telemetry>) -> anyhow::Result<Traces> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     // Whether the middleware *reads* it is a separate decision — see
     // `continue_trace`.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "set once at startup; a second `init` (tests) keeps the first value"
+    )]
     let _ = TRUST_INBOUND.set(telemetry.trust_inbound_trace_context);
 
     tracing::info!(
@@ -118,7 +122,10 @@ pub(crate) async fn continue_trace(
         method = %request.method(),
         route = request.match_pattern().unwrap_or_else(|| "unmatched".to_owned()),
     );
-    // Errors only when no subscriber collects spans: not worth reporting.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "errors only when no subscriber collects spans: not worth reporting"
+    )]
     let _ = span.set_parent(parent);
 
     next.call(request).instrument(span).await

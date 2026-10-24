@@ -96,7 +96,6 @@ const FINGERPRINT_HEX: usize = 16;
 /// rotation goes through `[sinks] previous_fingerprint_keys`.
 #[must_use]
 pub fn redact_url(url: &Url, key: &FingerprintKey) -> String {
-    use core::fmt::Write as _;
     use hmac::Mac as _;
 
     let mut mac = key.0.clone();
@@ -104,9 +103,9 @@ pub fn redact_url(url: &Url, key: &FingerprintKey) -> String {
     let digest = mac.finalize().into_bytes();
     let mut out = url[..url::Position::BeforePath].to_owned();
     out.push('#');
-    for byte in digest.iter().take(FINGERPRINT_HEX / 2) {
-        let _ = write!(out, "{byte:02x}");
-    }
+    let mut fingerprint = base16ct::lower::encode_string(&digest);
+    fingerprint.truncate(FINGERPRINT_HEX);
+    out.push_str(&fingerprint);
     out
 }
 

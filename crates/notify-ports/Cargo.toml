@@ -23,6 +23,7 @@ openapi = ["dep:utoipa", "notify-domain/openapi"]
 workspace = true
 
 [dependencies]
+base16ct = { workspace = true }
 notify-domain = { workspace = true }
 
 async-trait = { workspace = true }

@@ -22,6 +22,7 @@ sha2 = { workspace = true }
 x25519-dalek = { workspace = true }
 
 [dev-dependencies]
+base16ct = { workspace = true }
 notify-ports = { workspace = true }
 serde_json = { workspace = true }
 # `static_secrets` stands in for a device keypair in tests; production only seals.

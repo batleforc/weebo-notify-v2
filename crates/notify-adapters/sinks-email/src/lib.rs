@@ -110,6 +110,10 @@ impl EmailSink {
         }
 
         // Spelled via serde so it cannot drift from the API's vocabulary.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "`fmt::Write` into a `String` cannot fail"
+        )]
         let _ = write!(
             out,
             "state: {} · status: {}\nchannel: {}\n",
@@ -121,6 +125,10 @@ impl EmailSink {
         if let Some(base) = &self.permalink_base {
             // The §10.4 web permalink, which also mirrors the desktop deep link.
             if let Ok(link) = base.join(&format!("/n/{}", revision.notification_id)) {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "`fmt::Write` into a `String` cannot fail"
+                )]
                 let _ = write!(out, "\n{link}\n");
             }
         }

@@ -3638,6 +3638,11 @@ mod e2e {
 
     /// The composition root wires one `PgStore` behind every port.
     #[tokio::test]
+    #[expect(
+        clippy::let_underscore_must_use,
+        let_underscore_drop,
+        reason = "each binding is a compile-time check that the store implements the port"
+    )]
     async fn one_store_satisfies_every_port_the_use_cases_ask_for() {
         let store = store!();
         let shared = Arc::new(store);

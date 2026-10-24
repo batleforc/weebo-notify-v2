@@ -3,6 +3,11 @@
 
 /// Hand one arrival to the desktop. Errors are swallowed: no notification daemon (ssh,
 /// containers) is the normal case.
+#[expect(
+    clippy::let_underscore_must_use,
+    let_underscore_drop,
+    reason = "no notification daemon (ssh, containers) is the normal case"
+)]
 pub(crate) fn relay(title: &str, body: &str) {
     let _ = show(title, body);
 }

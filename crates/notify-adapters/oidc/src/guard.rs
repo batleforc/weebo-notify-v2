@@ -302,7 +302,12 @@ mod tests {
         assert!(hasher.verify("right", "$stored$").await.unwrap());
 
         for attempt in 0..(VERIFIED_CAPACITY * 2) {
-            let _ = hasher.verify(&format!("guess-{attempt}"), "$stored$").await;
+            assert!(
+                !hasher
+                    .verify(&format!("guess-{attempt}"), "$stored$")
+                    .await
+                    .unwrap()
+            );
         }
 
         let before = hasher.inner.calls.load(Ordering::Relaxed);
@@ -357,7 +362,12 @@ mod tests {
 
         release.add_permits(held.len() + 1);
         for task in held {
-            let _ = task.await;
+            let verdict = task.await.unwrap();
+            // Admitted calls answer once released; the rest were shed at the gate.
+            assert!(
+                matches!(verdict, Ok(false) | Err(PortError::Unavailable { .. })),
+                "a held call ends in an answer or a refusal: {verdict:?}"
+            );
         }
 
         // And the counter unwinds, so shedding is not a one-way door.

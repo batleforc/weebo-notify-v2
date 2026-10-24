@@ -75,6 +75,10 @@ pub(crate) fn run(expect: Option<u32>, timeout: Option<Duration>) -> anyhow::Res
         }
 
         if let Some(reply) = answer(&message, &mut seen)? {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the caller may have hung up already; the stub daemon keeps serving the others"
+            )]
             let _ = connection.channel().send(reply);
         }
     }
@@ -133,7 +137,9 @@ fn answer(message: &Message, seen: &mut u32) -> anyhow::Result<Option<Message>> 
                 "{}",
                 serde_json::to_string(&delivered).context("rendering the notification as JSON")?
             );
-            let _ = std::io::stdout().flush();
+            std::io::stdout()
+                .flush()
+                .context("flushing the notification to stdout")?;
 
             Ok(Some(message.method_return().append1(*seen)))
         }

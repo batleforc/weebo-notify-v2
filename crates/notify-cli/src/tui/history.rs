@@ -56,6 +56,11 @@ impl History {
 
         // Rewritten whole: at most `CAPACITY` short lines, and that keeps the cap honest.
         if let Some(path) = &self.path {
+            #[expect(
+                clippy::let_underscore_must_use,
+                let_underscore_drop,
+                reason = "history is a convenience: a write that fails must not take the TUI down with it"
+            )]
             let _ = write_private(path, &self.lines);
         }
     }
@@ -127,7 +132,9 @@ mod tests {
 
     fn temp_path(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wnk-history-{}-{test}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
         dir.join("history")
     }
 

@@ -259,8 +259,11 @@ pub fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result
     })();
 
     if written.is_err() {
-        // Ours for certain — `create_new` made it — so removing it cannot hit
-        // somebody else's file.
+        #[expect(
+            clippy::let_underscore_must_use,
+            let_underscore_drop,
+            reason = "best effort, the write error is the one returned; ours for certain, as `create_new` made it"
+        )]
         let _ = std::fs::remove_file(&temporary);
     }
     written

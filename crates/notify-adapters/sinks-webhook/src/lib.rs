@@ -13,7 +13,6 @@
 //! The timestamp is signed so consumers can reject replays ([`verify`]). URLs are operator-written
 //! config, validated at startup, so there is no per-delivery SSRF gate.
 
-use core::fmt::Write as _;
 use std::time::Duration;
 
 use hmac::{Hmac, Mac as _};
@@ -128,12 +127,7 @@ pub fn sign(secret: &[u8], timestamp: i64, body: &[u8]) -> String {
     mac.update(b".");
     mac.update(body);
 
-    let digest = mac.finalize().into_bytes();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    base16ct::lower::encode_string(&mac.finalize().into_bytes())
 }
 
 /// Why a signature was not accepted.

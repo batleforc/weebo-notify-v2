@@ -13,6 +13,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base16ct = { workspace = true }
 notify-ports = { workspace = true }
 
 async-trait = { workspace = true }

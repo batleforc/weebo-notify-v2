@@ -3047,6 +3047,7 @@ name = "notify-attachments-fs"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base16ct",
  "hmac 0.13.0",
  "notify-domain",
  "notify-ports",
@@ -3274,6 +3275,7 @@ name = "notify-ports"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base16ct",
  "futures",
  "hmac 0.13.0",
  "notify-domain",
@@ -3375,6 +3377,7 @@ dependencies = [
 name = "notify-sealed-box"
 version = "0.1.0"
 dependencies = [
+ "base16ct",
  "base64 0.23.1",
  "chacha20poly1305",
  "hkdf",
@@ -3393,6 +3396,7 @@ dependencies = [
  "actix-web",
  "anyhow",
  "async-trait",
+ "base16ct",
  "clap",
  "figment",
  "futures",
@@ -3451,6 +3455,7 @@ name = "notify-sinks-webhook"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base16ct",
  "hmac 0.13.0",
  "notify-ports",
  "reqwest 0.13.5",

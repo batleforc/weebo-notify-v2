@@ -330,9 +330,18 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     // This also releases the leader lock immediately (§11).
     jobs.abort();
     leases.abort();
-    let _ = jobs.await;
+    // Aborted on purpose: the outcome is a cancellation, and shutdown goes on either way.
+    if let Err(error) = jobs.await
+        && !error.is_cancelled()
+    {
+        tracing::error!(%error, "the background jobs ended abnormally");
+    }
     pump.abort();
-    let _ = pump.await;
+    if let Err(error) = pump.await
+        && !error.is_cancelled()
+    {
+        tracing::error!(%error, "the poke pump ended abnormally");
+    }
     store.pool().close().await;
 
     tracing::info!("stopped");

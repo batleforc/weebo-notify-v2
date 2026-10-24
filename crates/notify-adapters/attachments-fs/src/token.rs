@@ -1,8 +1,6 @@
 //! Bearer tokens for the filesystem store's URLs: HMAC-SHA256, hex, constant-time compare,
 //! the same construction as the webhook signer.
 
-use core::fmt::Write as _;
-
 use hmac::{Hmac, Mac as _};
 use notify_domain::AttachmentId;
 use sha2::Sha256;
@@ -54,11 +52,7 @@ pub fn sign(
     let expires_unix = expires_at.unix_timestamp();
     let digest = digest(secret, purpose, id, expires_unix);
 
-    let mut token = format!("{expires_unix}.");
-    for byte in digest {
-        let _ = write!(token, "{byte:02x}");
-    }
-    token
+    format!("{expires_unix}.{}", base16ct::lower::encode_string(&digest))
 }
 
 /// Check that a token names this `id` and `purpose` and has not expired.
@@ -82,10 +76,7 @@ pub fn verify(
     }
 
     let expected = digest(secret, purpose, id, expires_unix);
-    let mut expected_hex = String::with_capacity(expected.len() * 2);
-    for byte in expected {
-        let _ = write!(expected_hex, "{byte:02x}");
-    }
+    let expected_hex = base16ct::lower::encode_string(&expected);
 
     // Constant time: which byte differs must not leak.
     let matched = expected_hex.len() == given_hex.len()

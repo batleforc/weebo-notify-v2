@@ -74,7 +74,9 @@ mod tests {
 
     fn temp_store_path(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wnk-lock-{}-{test}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("store.db")
     }

@@ -90,6 +90,11 @@ const SEED: u64 = 0x5EED_C0FF_EE15_600D;
 const ROUNDS: usize = 20_000;
 
 #[test]
+#[expect(
+    clippy::let_underscore_must_use,
+    let_underscore_drop,
+    reason = "whether each parser returns is under test, not what it returns"
+)]
 fn no_parser_panics_on_anything() {
     let mut rng = Rng::new(SEED);
 
@@ -113,6 +118,10 @@ fn no_parser_panics_on_anything() {
 }
 
 #[test]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "whether matching returns is under test, not what it answers"
+)]
 fn a_pattern_that_parses_never_panics_on_any_candidate() {
     // Both sides get hostile input: the pattern is operator config, the candidate a token claim.
     let mut rng = Rng::new(SEED ^ 0xA5A5);

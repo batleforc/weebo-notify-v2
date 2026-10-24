@@ -38,6 +38,11 @@ impl StreamSignal {
 
         #[cfg(unix)]
         {
+            #[expect(
+                clippy::let_underscore_must_use,
+                let_underscore_drop,
+                reason = "a stale socket from a previous run, if any; `bind` below reports any real problem"
+            )]
             let _ = std::fs::remove_file(&path);
 
             let listener = UnixListener::bind(&path).map_err(|error| ClientError::Store {
@@ -64,10 +69,12 @@ impl StreamSignal {
     pub fn notify(&mut self) {
         #[cfg(unix)]
         {
-            // Accept new readers first so they see this poke.
+            // Accept new readers first so they see this poke. One left blocking would
+            // stall every poke behind it, so it is dropped instead.
             while let Ok((peer, _)) = self.listener.accept() {
-                let _ = peer.set_nonblocking(true);
-                self.peers.push(peer);
+                if peer.set_nonblocking(true).is_ok() {
+                    self.peers.push(peer);
+                }
             }
 
             self.peers.retain_mut(|peer| match peer.write_all(&[1]) {
@@ -87,7 +94,11 @@ impl StreamSignal {
 
 impl Drop for StreamSignal {
     fn drop(&mut self) {
-        // Tidy-up only; `bind` also clears a stale socket.
+        #[expect(
+            clippy::let_underscore_must_use,
+            let_underscore_drop,
+            reason = "tidy-up only; `bind` also clears a stale socket"
+        )]
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -160,9 +171,10 @@ impl StreamWatch {
     fn connect(&mut self) {
         #[cfg(unix)]
         {
-            self.stream = UnixStream::connect(&self.path).ok().inspect(|stream| {
-                let _ = stream.set_nonblocking(true);
-            });
+            // Blocking, it would hang the reader: treat it as not connected.
+            self.stream = UnixStream::connect(&self.path)
+                .ok()
+                .filter(|stream| stream.set_nonblocking(true).is_ok());
         }
     }
 }
@@ -179,7 +191,9 @@ mod tests {
 
     fn temp_store_path(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wnk-signal-{}-{test}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("store.db")
     }

@@ -94,6 +94,11 @@ fn enter() -> Result<ratatui::DefaultTerminal, CliError> {
 }
 
 /// Undo it. Safe to call twice (it runs from the panic hook).
+#[expect(
+    clippy::let_underscore_must_use,
+    let_underscore_drop,
+    reason = "best effort: it also runs from the panic hook, where there is no one to report to"
+)]
 fn leave() {
     let _ = disable_raw_mode();
     let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);

@@ -671,14 +671,7 @@ fn cli_binary(config: &Config) -> anyhow::Result<Option<(actix_web::web::Bytes, 
         use sha2::{Digest as _, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
-        hasher
-            .finalize()
-            .iter()
-            .fold(String::with_capacity(64), |mut out, byte| {
-                use core::fmt::Write as _;
-                let _ = write!(out, "{byte:02x}");
-                out
-            })
+        base16ct::lower::encode_string(&hasher.finalize())
     };
     tracing::info!(
         path = %settings.binary_path.display(),

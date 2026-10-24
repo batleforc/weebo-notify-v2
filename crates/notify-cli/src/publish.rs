@@ -294,6 +294,10 @@ fn render(published: &Published, output: OutputFormat) -> Result<String, CliErro
             if let Some(requested) = &published.retention.clamped_from {
                 use std::fmt::Write as _;
 
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "`fmt::Write` into a `String` cannot fail"
+                )]
                 let _ = write!(
                     out,
                     "\n  ttl       {} — clamped from the {} you asked for",
