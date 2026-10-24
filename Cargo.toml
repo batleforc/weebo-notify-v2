@@ -108,8 +108,12 @@ sqlx = { version = "0.9", default-features = false, features = [
 ] }
 
 # --- Auth ---
-# `rust_crypto`, not `aws_lc_rs`: no C toolchain needed to build the image.
-jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+# `aws_lc_rs`, not `rust_crypto`: the RustCrypto backend signs ES256 (APNs, VAPID) on
+# p256 0.13, whose crypto-bigint 0.5 is not constant-time (RUSTSEC-2026-0387), and
+# pulls `rsa` (RUSTSEC-2023-0071). aws-lc is already built for rustls, so no new toolchain.
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+# Constant-time ECDH/HKDF/AES-GCM for RFC 8291 (notify-push-webpush); already in the tree via rustls.
+aws-lc-rs = "1"
 # Default features: `getrandom` is what gives password-hash an OS-backed salt generator.
 argon2 = "0.6"
 

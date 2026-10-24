@@ -1,6 +1,8 @@
 //! Web Push: RFC 8030 delivery, RFC 8291 encryption, RFC 8292 VAPID (design §6.2, §7.1).
-//! Crypto is `web-push-native` (pure `RustCrypto`, no OpenSSL), pinned to p256 0.13 — upgrade both together.
+//! Encryption is [`encrypt`] on aws-lc; VAPID is signed by `jsonwebtoken` on the same backend.
 //! [`Envelope`] is the wire contract with the service worker: changing it breaks installed clients.
+
+mod encrypt;
 
 use std::time::Duration;
 
@@ -11,7 +13,7 @@ use notify_ports::{
     PortError, PortResult, PushBody, PushDispatcher, PushMessage, PushOutcome, PushTransport,
 };
 use notify_push_http::{PublicOnly, send_retrying};
-use p256::pkcs8::DecodePrivateKey as _;
+use p256::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use serde::Serialize;
 
 /// Max plaintext of the whole serialised [`Envelope`]: RFC 8291's 4096 encrypted octets
@@ -135,18 +137,19 @@ impl WebPush {
     ///
     /// Fails at startup if the key is not a readable P-256 key or the contact scheme is wrong.
     pub fn new(config: &WebPushConfig) -> Result<Self, WebPushSetup> {
-        use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+        use p256::elliptic_curve::sec1::ToSec1Point as _;
 
         if !config.contact.starts_with("mailto:") && !config.contact.starts_with("https://") {
             return Err(WebPushSetup::Contact);
         }
 
-        // Read twice: `jsonwebtoken` signs, `p256` renders the public point.
+        // `p256` reads either PEM form and renders the public point; `jsonwebtoken`
+        // signs from the PKCS#8 it re-encodes, so SEC1 keys work on any backend.
         let secret = read_key(&config.private_key_pem)?;
-        let signing = jsonwebtoken::EncodingKey::from_ec_pem(config.private_key_pem.as_bytes())
-            .map_err(|_| WebPushSetup::Key)?;
+        let pkcs8 = secret.to_pkcs8_der().map_err(|_| WebPushSetup::Key)?;
+        let signing = jsonwebtoken::EncodingKey::from_ec_der(pkcs8.as_bytes());
 
-        let point = secret.public_key().to_encoded_point(false);
+        let point = secret.public_key().to_sec1_point(false);
 
         Ok(Self {
             // SSRF guard: the endpoint is subscriber-chosen, so no redirects and public IPs only (§6.2).
@@ -236,7 +239,7 @@ impl PushTransport for WebPush {
         };
 
         let plaintext = plaintext(message)?;
-        let encrypted = web_push_native::encrypt(plaintext, &subscriber, &secret)
+        let encrypted = encrypt::encrypt(&plaintext, &subscriber, &secret)
             .map_err(|error| PortError::unavailable("push.webpush", error))?;
 
         let now = std::time::SystemTime::now()
@@ -327,17 +330,18 @@ const fn urgency(message: &PushMessage) -> &'static str {
     }
 }
 
-/// A subscriber's `p256dh`: their public key, base64url, uncompressed point.
-fn decode_key(raw: &str) -> Result<p256::PublicKey, ()> {
+/// A subscriber's `p256dh`: their public key, base64url, uncompressed point. Checked on
+/// the curve here, so an unreadable key expires the device instead of failing every push.
+fn decode_key(raw: &str) -> Result<Vec<u8>, ()> {
     let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| ())?;
-    p256::PublicKey::from_sec1_bytes(&bytes).map_err(|_| ())
+    p256::PublicKey::from_sec1_bytes(&bytes).map_err(|_| ())?;
+    Ok(bytes)
 }
 
 /// A subscriber's `auth`: sixteen octets of shared secret, base64url.
-fn decode_auth(raw: &str) -> Result<web_push_native::Auth, ()> {
+fn decode_auth(raw: &str) -> Result<[u8; 16], ()> {
     let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| ())?;
-    let sized: [u8; 16] = bytes.try_into().map_err(|_| ())?;
-    Ok(web_push_native::Auth::from(sized))
+    bytes.try_into().map_err(|_| ())
 }
 
 #[cfg(test)]
@@ -358,11 +362,11 @@ mod tests {
 
     /// A real subscriber `p256dh`, so delivery tests exercise encryption, not the `Expired` shortcut.
     fn subscriber_key() -> String {
-        use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+        use p256::elliptic_curve::sec1::ToSec1Point as _;
         let point = read_key(&test_vapid_key())
             .unwrap()
             .public_key()
-            .to_encoded_point(false);
+            .to_sec1_point(false);
         URL_SAFE_NO_PAD.encode(point.as_bytes())
     }
 
@@ -440,17 +444,34 @@ mod tests {
 
     #[test]
     fn the_signature_is_scoped_to_the_push_services_origin_and_not_the_subscription() {
-        let transport = WebPush::new(&config()).unwrap();
-        let one = transport
-            .authorization(&"https://push.example/abc".parse().unwrap(), 1_785_000_000)
-            .unwrap();
-        let two = transport
-            .authorization(&"https://push.example/zzz".parse().unwrap(), 1_785_000_000)
-            .unwrap();
+        use p256::pkcs8::EncodePublicKey as _;
 
-        assert_eq!(one, two, "RFC 8292 scopes a signature to a push service");
-        assert!(one.starts_with("vapid t="));
-        assert!(one.contains(&format!(", k={}", transport.public_key())));
+        let transport = WebPush::new(&config()).unwrap();
+        // ECDSA here is randomised, so two tokens never match byte for byte: check that
+        // each verifies against the advertised key for the origin, whatever the path.
+        let public = read_key(&test_vapid_key())
+            .unwrap()
+            .public_key()
+            .to_public_key_pem(p256::pkcs8::LineEnding::LF)
+            .unwrap();
+        let key = jsonwebtoken::DecodingKey::from_ec_pem(public.as_bytes()).unwrap();
+        let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+        validation.validate_exp = false;
+        validation.set_audience(&["https://push.example"]);
+
+        for path in ["https://push.example/abc", "https://push.example/zzz"] {
+            let header = transport
+                .authorization(&path.parse().unwrap(), 1_785_000_000)
+                .unwrap();
+            assert!(header.contains(&format!(", k={}", transport.public_key())));
+            let token = header
+                .trim_start_matches("vapid t=")
+                .split(',')
+                .next()
+                .unwrap();
+            jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation)
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+        }
     }
 
     #[test]
@@ -614,8 +635,7 @@ mod tests {
         let subscriber = decode_key(&subscriber_key()).unwrap();
         let secret = decode_auth(AUTH).unwrap();
 
-        let encrypted =
-            web_push_native::encrypt(vec![b'x'; MAX_PLAINTEXT], &subscriber, &secret).unwrap();
+        let encrypted = encrypt::encrypt(&[b'x'; MAX_PLAINTEXT], &subscriber, &secret).unwrap();
 
         assert_eq!(
             encrypted.len(),

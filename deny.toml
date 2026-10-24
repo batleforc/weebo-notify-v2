@@ -11,10 +11,9 @@ all-features = true
 # RustSec advisories. Yanked crates are an error too: a yank usually means the
 # author found something, and pinning to one is a decision, not an accident.
 yanked = "deny"
-# Mirrors `.cargo/audit.toml`, which carries the full reasoning for each.
-# In one line: `rsa` needs an RSA PRIVATE key we do not have (verification only,
-# §5.1).
-ignore = ["RUSTSEC-2023-0071"]
+# Mirrors `.cargo/audit.toml`: empty. RUSTSEC-2023-0071 (`rsa`) left with the
+# RustCrypto JWT backend; `[bans]` below keeps it out.
+ignore = []
 
 [licenses]
 # weebo-notify ships under Apache-2.0 — the licence in `LICENSE.md`, and the one
@@ -73,6 +72,13 @@ allow-wildcard-paths = true
 # Duplicate versions are noise in a young dependency tree; they become an error
 # once the tree settles, rather than training everyone to ignore warnings now.
 skip = []
+# Closed by moving JWT signing and RFC 8291 onto aws-lc (2026-10-24); denied so that
+# turning jsonwebtoken's `rust_crypto` back on, or re-adding `web-push-native`, fails CI.
+deny = [
+    { crate = "crypto-bigint:<0.7.6", reason = "RUSTSEC-2026-0387: not constant-time on secret integers" },
+    { crate = "rsa", reason = "RUSTSEC-2023-0071 (Marvin), no fixed release" },
+    { crate = "web-push-native", reason = "built on p256 0.13 (crypto-bigint 0.5); RFC 8291 is src/encrypt.rs" },
+]
 
 [sources]
 unknown-registry = "deny"

@@ -27,14 +27,6 @@ tasks:
           set -eu
           echo "==> suppressed advisories"
 
-          # RUSTSEC-2023-0071: no fixed `rsa` release exists yet.
-          rsa="$(grep -A1 'name = "rsa"' Cargo.lock | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
-          if [ -n "${rsa:-}" ]; then
-            echo "    rsa $rsa — check https://rustsec.org/advisories/RUSTSEC-2023-0071 for a patched release"
-          else
-            echo "    rsa is no longer in the tree — RUSTSEC-2023-0071 ignore can go"
-          fi
-
           # GHSA-wrw7-89jp-8q8g: pinned by Tauri's GTK3 stack, not by us.
           gtk="$(grep -A1 'name = "gtk"' web/src-tauri/Cargo.lock 2>/dev/null | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
           case "${gtk:-none}" in
