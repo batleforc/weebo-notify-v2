@@ -108,6 +108,15 @@ url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64"
 url_api = "https://api.github.com/repos/jqlang/jq/releases/assets/453012752"
 provenance = "github-attestations"
 
+[[tools.k6]]
+version = "2.1.0"
+backend = "aqua:grafana/k6"
+
+[tools.k6."platforms.linux-x64"]
+checksum = "sha256:295d961ebfca306f295f1133068dcd403a8171c87f387928f5f30b0fbcff858a"
+url = "https://github.com/grafana/k6/releases/download/v2.1.0/k6-v2.1.0-linux-amd64.tar.gz"
+url_api = "https://api.github.com/repos/grafana/k6/releases/assets/461987498"
+
 [[tools.node]]
 version = "26.12.0"
 backend = "core:node"

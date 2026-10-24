@@ -56,6 +56,26 @@ There is no global percentage target: a single number is easy to game with
 assertion-free tests and unfairly punishes adapter code. Instead, a pull request
 fails if the lines it touched fall below 80 % or if domain coverage *drops*.
 
+## Load
+
+k6 scenarios live in `perf/k6/scenarios`. `task perf:stack` serves them: a release
+server on `perf/config.perf.toml`, with its own `weebo_notify_perf` database in the
+`task dev:core` Postgres, and the oidc mock with 200 throwaway `perf-NNN` identities.
+
+```bash
+task dev:core           # Postgres
+task perf:stack         # in another terminal
+task perf:run:publish   # 01 — POST /notifications ramping to 150/s
+task perf:run:fanout    # 02 — 1 000 WebSocket streams under 100 publications/s
+task perf:run:read      # 03 — inbox, unread, sync, channels, ramping to 100 VU
+```
+
+Each `perf:run:<name>` enforces its thresholds; `perf:run:all` only reports. Results
+land in `perf/results/`; copy them to `perf/results/<version>/` at a release and
+compare later runs with `task perf:report:compare BASE=perf/results/<version>`.
+`PERF_USERS` sets the number of identities: each may publish 60/min and hold 20
+streams (§8.2), so it caps the publish rate and the stream count a run can reach.
+
 ## Commits and releases
 
 Commits follow Conventional Commits, verified by cocogitto's `commit-msg` hook. That

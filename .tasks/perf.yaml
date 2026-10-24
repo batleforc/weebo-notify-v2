@@ -1,0 +1,92 @@
+version: "3"
+
+# k6 load scenarios (perf/k6/scenarios). `perf:stack` serves them: a release server on
+# perf/config.perf.toml and the oidc mock with PERF_USERS throwaway identities, against
+# its own database in the Postgres of `task dev:core`.
+
+vars:
+  RESULTS: perf/results
+  PERF_IDENTITIES: target/perf/identities.toml
+  PERF_USERS: '{{.PERF_USERS | default "200"}}'
+
+tasks:
+  identities:
+    desc: "Write PERF_USERS (default 200) perf-NNN identities, group `perf`, for the oidc mock"
+    cmds:
+      - mkdir -p target/perf
+      - cmd: |
+          {
+            echo 'issuer = "http://localhost:9110"'
+            # The client block of the dev identities, with tokens that outlive a run.
+            sed -n '/^\[client\]/,/^\[\[users\]\]/p' dev/oidc-mock/identities.toml | sed '$d' \
+              | sed 's/^access_token_ttl_secs = .*/access_token_ttl_secs = 3600/'
+            for i in $(seq -f '%03g' 1 {{.PERF_USERS}}); do
+              printf '[[users]]\nsub = "perf-%s"\nusername = "perf-%s"\npassword = "weebo-dev"\nname = "Perf %s"\nemail = "perf-%s@weebo.local"\ngroups = ["perf"]\n\n' "$i" "$i" "$i" "$i"
+            done
+          } > {{.PERF_IDENTITIES}}
+
+  stack:
+    desc: "Serve the k6 runs: release server on perf/config.perf.toml + oidc mock with the perf identities (needs `task dev:core`)"
+    deps: [identities]
+    cmds:
+      - sqlx database create --database-url postgres://weebo:weebo@localhost:5432/weebo_notify_perf
+      - cargo build --release -p notify-server -p notify-oidc-mock
+      # Real bash: Task's shell has no `jobs`, so the trap would kill nothing (see test:browser:ci).
+      - cmd: |
+          bash -euo pipefail <<'SH'
+          trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+          ./target/release/oidc-mock --identities {{.PERF_IDENTITIES}} &
+          ./target/release/notify-server --config perf/config.perf.toml &
+          wait -n
+          SH
+
+  run:publish:
+    desc: "k6 scenario 01 — publish burst ramping to 150/s, thresholds enforced"
+    cmds:
+      - mkdir -p {{.RESULTS}}
+      - k6 run --summary-export {{.RESULTS}}/01_publish.json perf/k6/scenarios/01_publish.js
+
+  run:fanout:
+    desc: "k6 scenario 02 — 1 000 WebSocket streams under 100 publications/s, thresholds enforced"
+    cmds:
+      - mkdir -p {{.RESULTS}}
+      - k6 run --summary-export {{.RESULTS}}/02_fanout.json perf/k6/scenarios/02_fanout.js
+
+  run:read:
+    desc: "k6 scenario 03 — inbox, unread, sync and channel reads ramping to 100 VU, thresholds enforced"
+    cmds:
+      - mkdir -p {{.RESULTS}}
+      - k6 run --summary-export {{.RESULTS}}/03_read.json perf/k6/scenarios/03_read.js
+
+  run:all:
+    desc: Run every scenario in sequence; threshold violations are reported but do not stop the suite
+    cmds:
+      - mkdir -p {{.RESULTS}}
+      - for: { var: SCENARIOS }
+        cmd: k6 run --no-thresholds --summary-export {{.RESULTS}}/$(basename {{.ITEM}} .js).json {{.ITEM}}
+    vars:
+      SCENARIOS:
+        sh: ls perf/k6/scenarios/*.js
+
+  report:compare:
+    desc: "Compare each scenario's p95 with a baseline dir — BASE=perf/results/<release> (MARGIN=25 %, FAIL=1 to exit non-zero on a regression)"
+    requires:
+      vars: [BASE]
+    vars:
+      MARGIN: '{{.MARGIN | default "25"}}'
+      FAIL: '{{.FAIL | default "0"}}'
+    cmds:
+      - |
+        regressed=0
+        for cur in {{.RESULTS}}/*.json; do
+          base="{{.BASE}}/$(basename "$cur")"
+          [ -f "$base" ] || { echo "NEW   $(basename "$cur") (no baseline)"; continue; }
+          read -r b c <<<"$(jq -rn --slurpfile b "$base" --slurpfile c "$cur" \
+            '[$b[0], $c[0]] | map(.metrics.http_req_duration["p(95)"]) | @tsv')"
+          if awk -v b="$b" -v c="$c" -v m="{{.MARGIN}}" 'BEGIN{exit !(c > b*(1+m/100))}'; then
+            echo "SLOWER $(basename "$cur") p95 ${b}ms -> ${c}ms"; regressed=1
+          else
+            echo "OK    $(basename "$cur") p95 ${b}ms -> ${c}ms"
+          fi
+        done
+        [ "{{.FAIL}}" != "1" ] || [ "$regressed" = 0 ]

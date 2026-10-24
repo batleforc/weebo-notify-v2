@@ -1,0 +1,40 @@
+# Server configuration for the k6 runs (`task perf:stack`). Same shape as
+# config/e2e.toml, plus one channel every perf-* identity may publish to and read.
+# The identities come from `task perf:identities` (target/perf/identities.toml).
+
+[server]
+bind = "0.0.0.0:8080"
+dev = true
+cors_origins = ["http://localhost:5173"]
+
+[database]
+# Its own database: the reconciler would otherwise archive the dev channels and accounts.
+url = "postgres://weebo:weebo@localhost:5432/weebo_notify_perf"
+
+[oidc]
+issuer = "http://localhost:9110"
+client_id = "weebo-notify"
+
+[admin]
+oidc_groups = ["platform-admins"]
+
+[attachments]
+kind = "filesystem"
+path = "target/perf/attachments"
+public_base_url = "http://localhost:8080"
+token_secret = "perf-only-not-a-secret-0123456789abcdef"
+
+[channels]
+on_removed = "archive"
+
+# The channel quota (600/min by default) lifted: the run measures the server, not §8.2.
+# Each identity keeps its own 60/min (burst 120), hence PERF_USERS >= the publish rate.
+[[channels.managed]]
+id = "perf-load"
+name = "Perf load"
+default_ttl = "1h"
+limits = { publish_per_min = 1000000 }
+
+  [[channels.managed.access]]
+  oidc_group = "perf"
+  scopes = ["publish", "subscribe"]

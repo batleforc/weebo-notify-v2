@@ -35,6 +35,7 @@ trivy = "latest"                 # Containerfile/image + filesystem CVE scan (ta
 awscli = "latest"                # seeds the RustFS bucket in dev/seed/seed.sh
 "cargo:sqlx-cli" = "latest"      # `sqlx migrate` in dev/seed/seed.sh (not in the mise registry)
 helm = "latest"                  # lint/template/package charts/weebo-notify (task helm)
+k6 = "latest"                    # load scenarios in perf/k6 (task perf:run:*)
 # The Tauri CLI — `task tauri:bundle` (the .deb and the AppImage) and
 # `task android:build` (the APK). It started in `mise.android.toml`, on the reasoning
 # that mobile was its only consumer; that stopped being true the moment the desktop

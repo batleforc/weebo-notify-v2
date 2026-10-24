@@ -75,3 +75,6 @@ web/playwright-report/
 
 # Appended by the graphify installer on every `task skills:install`; kept so it stops showing as a diff.
 graphify-out/cache/
+
+# k6 summaries of local runs; per-release baselines go in perf/results/<version>/ and are committed.
+perf/results/*.json
