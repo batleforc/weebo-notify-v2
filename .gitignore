@@ -72,3 +72,6 @@ web/playwright-report/
 # Backups left by tool installers (graphify).
 *.bak
 *.graphify-bak
+
+# Appended by the graphify installer on every `task skills:install`; kept so it stops showing as a diff.
+graphify-out/cache/
