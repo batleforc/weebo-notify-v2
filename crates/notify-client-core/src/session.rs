@@ -43,7 +43,7 @@ impl Deadlines {
     /// The slowest rate an upload is allowed to crawl at — a bad mobile uplink.
     const UPLOAD_RATE: u64 = 64 * 1024;
     /// Past this a "slow upload" is a stuck one, whatever its size.
-    const UPLOAD_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    const UPLOAD_CAP: std::time::Duration = std::time::Duration::from_mins(30);
 
     /// The total bound for uploading `len` bytes: scaled to size, so a large file
     /// on a slow link is not cut off the way a stalled one is.

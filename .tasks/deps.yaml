@@ -1,0 +1,109 @@
+# source: weebo-skillsagent (weebo-deps). Included with `flatten: true`.
+# Drop the `ui` lines when the project has no UI, like weebo-security does.
+version: "3"
+
+vars:
+  # .task/ is gitignored (Task's cache); the snapshots are local scratch.
+  SNAP: .task/deps
+
+tasks:
+  deps:
+    desc: "Dependency health, writes nothing: what is outdated, what is unused, the current advisories"
+    cmds:
+      - task: deps:outdated
+      - task: deps:unused
+      - task: deps:cve:snapshot
+        vars: { LABEL: now }
+      - cat {{.SNAP}}/cve-now.txt
+
+  deps:outdated:
+    desc: "Report what can be bumped: Rust (in-range + majors), UI, mise tools. Never fails"
+    cmds:
+      # --verbose lists the crates held back by a requirement, with the version
+      # available: those are the majors that need a Cargo.toml edit.
+      - cargo update --dry-run --verbose
+      - cmd: cd web && pnpm outdated   # exits 1 when anything is outdated
+        ignore_error: true
+      - mise outdated --bump
+
+  deps:unused:
+    desc: "Gate: fail on a declared dependency nothing uses (cargo machete, knip)"
+    cmds:
+      # A false positive (a crate only used by a macro, a build-time feature
+      # switch) goes in [package.metadata.cargo-machete] ignored = [...] with
+      # the reason in a comment. Check one first with `cargo machete --with-metadata`.
+      - cargo machete
+      # knip is a devDependency of web/, so its version is in the lockfile.
+      - cd web && pnpm exec knip --dependencies
+
+  deps:update:
+    desc: "Bump everything within its range, re-test, then show which advisories the bump closed or opened"
+    cmds:
+      - task: deps:cve:snapshot
+        vars: { LABEL: before }
+      - cargo update
+      - cd web && pnpm update
+      - task: mise:lock:update
+      - task: lint
+      - task: test
+      - task: deps:cve:snapshot
+        vars: { LABEL: after }
+      - task: deps:cve:diff
+
+  deps:cve:snapshot:
+    desc: "Write the current advisories, one `<source> <id> <package>` per line (usage: task deps:cve:snapshot LABEL=before)"
+    requires:
+      vars: [LABEL]
+    cmds:
+      - mkdir -p {{.SNAP}}
+      # Both tools exit non-zero when they find something, so the exit code is
+      # ignored and the JSON is checked instead: a run that failed (no network,
+      # no lockfile) must not pass for "zero advisories".
+      - cargo audit --json > {{.SNAP}}/rust.json || true
+      - jq -e '.vulnerabilities' {{.SNAP}}/rust.json > /dev/null
+      - (cd web && pnpm audit --json) > {{.SNAP}}/ui.json || true
+      - jq -e '.advisories' {{.SNAP}}/ui.json > /dev/null
+      # No version in the line: 1.0 -> 1.1 with the same advisory is not a fix.
+      - |
+        {
+          jq -r '.vulnerabilities.list[] | "rust \(.advisory.id) \(.package.name)"' {{.SNAP}}/rust.json
+          jq -r '.warnings | to_entries[] | .key as $k | .value[] | "rust-\($k) \(.advisory.id // "-") \(.package.name)"' {{.SNAP}}/rust.json
+          jq -r '.advisories[] | "ui-\(.severity) \(.github_advisory_id) \(.module_name)"' {{.SNAP}}/ui.json
+        } | sort -u > {{.SNAP}}/cve-{{.LABEL}}.txt
+
+  deps:cve:branch:
+    desc: "Advisories this branch closed or opened against BASE; what the PR job runs (usage: task deps:cve:branch [BASE=origin/main])"
+    vars:
+      BASE: '{{.BASE | default "origin/main"}}'
+      LOCKS: Cargo.lock web/package.json web/pnpm-lock.yaml
+    preconditions:
+      # The base lockfiles are checked out over the working copy: uncommitted
+      # edits to them would be lost.
+      - sh: git diff --quiet HEAD -- {{.LOCKS}}
+        msg: "commit or stash your changes to {{.LOCKS}} first"
+    cmds:
+      - defer: git checkout HEAD -- {{.LOCKS}}
+      - git checkout {{.BASE}} -- {{.LOCKS}}
+      - task: deps:cve:snapshot
+        vars: { LABEL: base }
+      - git checkout HEAD -- {{.LOCKS}}
+      - task: deps:cve:snapshot
+        vars: { LABEL: branch }
+      - task: deps:cve:diff
+        vars: { FROM: base, TO: branch }
+
+  deps:cve:diff:
+    desc: "Compare two snapshots; fail if the update opened an advisory (usage: task deps:cve:diff [FROM=before] [TO=after])"
+    vars:
+      FROM: '{{.FROM | default "before"}}'
+      TO: '{{.TO | default "after"}}'
+    preconditions:
+      - sh: test -f {{.SNAP}}/cve-{{.FROM}}.txt && test -f {{.SNAP}}/cve-{{.TO}}.txt
+        msg: "missing snapshot: run task deps:cve:snapshot LABEL={{.FROM}} (and LABEL={{.TO}}) first"
+    cmds:
+      - |
+        cd {{.SNAP}}
+        comm -23 cve-{{.FROM}}.txt cve-{{.TO}}.txt | sed 's/^/FIXED      /'
+        comm -13 cve-{{.FROM}}.txt cve-{{.TO}}.txt | sed 's/^/INTRODUCED /'
+        comm -12 cve-{{.FROM}}.txt cve-{{.TO}}.txt | sed 's/^/REMAINING  /'
+        if comm -13 cve-{{.FROM}}.txt cve-{{.TO}}.txt | grep -q .; then exit 1; fi

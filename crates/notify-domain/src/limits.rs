@@ -66,4 +66,4 @@ pub const MAX_KEY_CHARS: usize = 64;
 pub const MAX_EXTERNAL_ID_CHARS: usize = 128;
 
 /// Ceiling on any duration a publisher can name (TTL, silence): ten years.
-pub const MAX_DURATION: Duration = Duration::from_secs(10 * 365 * 24 * 3_600);
+pub const MAX_DURATION: Duration = Duration::from_hours(10 * 365 * 24);

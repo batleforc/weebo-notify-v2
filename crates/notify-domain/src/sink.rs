@@ -114,8 +114,8 @@ impl RetryPolicy {
     /// The published contract (§7.1bis): 30 s doubling to 1 h, abandoned after 24 h.
     pub const CONTRACT: Self = Self {
         first_delay: Duration::from_secs(30),
-        max_delay: Duration::from_secs(3_600),
-        give_up_after: Duration::from_secs(24 * 3_600),
+        max_delay: Duration::from_hours(1),
+        give_up_after: Duration::from_hours(24),
     };
 
     /// How long to wait after `attempts` failed attempts, doubling from

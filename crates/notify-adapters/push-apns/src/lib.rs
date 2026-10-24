@@ -19,10 +19,10 @@ use url::Url;
 const MAX_BODY: usize = 4_096;
 
 /// `apns-expiration` window; same four hours as Web Push's `TTL`.
-const TTL: Duration = Duration::from_secs(4 * 3_600);
+const TTL: Duration = Duration::from_hours(4);
 
 /// Provider token reuse window: Apple accepts ~1h and asks not to mint one per push.
-const TOKEN_TTL: Duration = Duration::from_secs(50 * 60);
+const TOKEN_TTL: Duration = Duration::from_mins(50);
 
 const APNS_PRODUCTION_HOST: &str = "https://api.push.apple.com";
 const APNS_SANDBOX_HOST: &str = "https://api.sandbox.push.apple.com";

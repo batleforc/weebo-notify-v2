@@ -35,8 +35,8 @@ exclude = ["web/src-tauri"]
 # One product version (§3.2bis); `cog bump` syncs it to web/ and tauri.conf.json.
 version = "0.1.0"
 edition = "2024"
-# 1.89 for `std::fs::File::try_lock` (front-end election, §9.3bis).
-rust-version = "1.89"
+# 1.94 for sqlx 0.9.x (1.89 was `std::fs::File::try_lock`, front-end election, §9.3bis).
+rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/batleforc/weebo-notify-v2"
 authors = ["Maxime Leriche <maxleriche.60@gmail.com>"]
@@ -71,14 +71,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 # Writes the client profile (`notify login`, §9.1); figment only reads.
-toml = "0.8"
+toml = "1"
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
 
 # --- Async plumbing (adapters and above only) ---
-tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 async-trait = "0.1"
 futures = "0.3"
 
@@ -87,12 +87,12 @@ futures = "0.3"
 # ingress, which speaks HTTP/1.1 to us. The rest is actix-web's default set.
 actix-web = { version = "4.14", default-features = false, features = ["macros", "compress-brotli", "compress-gzip", "compress-zstd", "cookies", "unicode", "compat", "ws"] }
 actix-cors = "0.7"
-actix-web-lab = "0.26"
+actix-web-lab = "0.29"
 # WebSocket without actors, so SSE and WS share one async loop (§8.1).
 actix-ws = "0.4"
-utoipa = { version = "5.5", features = ["actix_extras", "time", "ulid", "url"] }
-utoipa-actix-web = "0.1"
-utoipa-scalar = { version = "0.3", features = ["actix-web"] }
+utoipa = { version = "6", features = ["actix_extras", "time", "ulid", "url"] }
+utoipa-actix-web = "0.2"
+utoipa-scalar = { version = "0.4", features = ["actix-web"] }
 
 # --- Persistence ---
 sqlx = { version = "0.9", default-features = false, features = [
@@ -109,8 +109,8 @@ sqlx = { version = "0.9", default-features = false, features = [
 # --- Auth ---
 # `rust_crypto`, not `aws_lc_rs`: no C toolchain needed to build the image.
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
-# `std` is what reaches `OsRng` through password-hash: salts come from the OS.
-argon2 = { version = "0.5", features = ["std"] }
+# The default `getrandom` feature is what reaches the OS RNG through password-hash: salts come from the OS.
+argon2 = "0.6"
 
 # --- Config & observability ---
 figment = { version = "0.10", features = ["toml", "env"] }
@@ -118,15 +118,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # OTLP over HTTP+protobuf on rustls only (no tonic, no OpenSSL, §13). Blocking client:
 # the batch span processor runs off-runtime, where async reqwest panics "no reactor running".
-opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
-opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+opentelemetry = "0.33"
+opentelemetry_sdk = "0.33"
+opentelemetry-otlp = { version = "0.33", default-features = false, features = [
     "trace",
     "http-proto",
     "reqwest-blocking-client",
     "reqwest-rustls",
 ] }
-tracing-opentelemetry = { version = "0.33", default-features = false, features = ["tracing-log"] }
+tracing-opentelemetry = { version = "0.34", default-features = false, features = ["tracing-log"] }
 
 # --- CLI ---
 clap = { version = "4.6", features = ["derive", "env"] }
@@ -139,11 +139,11 @@ crossterm = "0.29"
 anyhow = "1"
 
 # --- Client codegen (ADR-0009) ---
-progenitor = "0.14"
-progenitor-client = "0.14"
+progenitor = "0.15"
+progenitor-client = "0.15"
 # Needed by progenitor's output: `chrono` for `date-time`, `regress` for `pattern`.
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
-regress = "0.10"
+regress = "0.12"
 # No default-tls: we link rustls only, so the binaries stay free of OpenSSL.
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
@@ -156,19 +156,19 @@ reqwest = { version = "0.13", default-features = false, features = [
 # --- Cryptography outside the auth adapter ---
 # Real ES256 keys, so tests and the dev IdP exercise the production verification path.
 p256 = { version = "0.14", features = ["ecdsa", "pem"] }
-sha2 = "0.10"
+sha2 = "0.11"
 # Bounded verdict cache in front of the API-key KDF (notify-oidc::guard).
-lru = "0.18"
+lru = "0.19"
 # OS CSPRNG for API-key generation; reading random bytes is all that's needed.
-getrandom = "0.3"
-base64 = "0.22"
+getrandom = "0.4"
+base64 = "0.23"
 # Sealed box (§6.2): X25519 ECDH, HKDF-SHA256, XChaCha20-Poly1305.
 x25519-dalek = { version = "3", features = ["getrandom"] }
-hkdf = "0.12"
+hkdf = "0.13"
 chacha20poly1305 = "0.11"
 
 http = "1"
-rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
+rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
 
 # --- Media (design §2.4, §15) ---
 # Only the formats §2.4 accepts: every decoder is a parser reachable from an upload.

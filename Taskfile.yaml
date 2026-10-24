@@ -18,6 +18,7 @@ includes:
   helm: ./.tasks/helm.yaml
   android: ./.tasks/android.yaml
   ops: ./.tasks/ops.yaml
+  deps: { taskfile: ./.tasks/deps.yaml, flatten: true }
 
 tasks:
   init:

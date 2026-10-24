@@ -65,3 +65,5 @@ web/src-tauri/gen/schemas/
 # Playwright
 web/test-results/
 web/playwright-report/
+
+graphify-out/cache/

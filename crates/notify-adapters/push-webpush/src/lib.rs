@@ -19,10 +19,10 @@ use serde::Serialize;
 const MAX_PLAINTEXT: usize = 3_993;
 
 /// Queue lifetime at the push service; older than this, the inbox shows it on next open anyway.
-const TTL: Duration = Duration::from_secs(4 * 3_600);
+const TTL: Duration = Duration::from_hours(4);
 
 /// VAPID token lifetime: half RFC 8292's 24h cap, so a skewed clock is still accepted.
-const VAPID_VALIDITY: Duration = Duration::from_secs(12 * 3_600);
+const VAPID_VALIDITY: Duration = Duration::from_hours(12);
 
 /// Why a transport could not be built: an operator mistake found at startup (design §11).
 #[derive(Debug, thiserror::Error)]

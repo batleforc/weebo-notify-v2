@@ -124,7 +124,7 @@ impl Mock {
     /// Park a validated `/authorize` request and return the opaque handle the login form posts
     /// back (so the page never reflects attacker-controlled strings).
     pub(crate) fn begin(&self, request: AuthRequest) -> String {
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
         let mut requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
 
         prune(&mut requests, |request| request.expires_at);
@@ -152,7 +152,7 @@ impl Mock {
             .remove(id)
             .filter(|request| request.expires_at > now())?;
 
-        let code = Ulid::new().to_string();
+        let code = Ulid::generate().to_string();
         let mut codes = self.codes.lock().unwrap_or_else(PoisonError::into_inner);
 
         prune(&mut codes, |grant| grant.expires_at);
@@ -246,7 +246,7 @@ impl Mock {
             .split_whitespace()
             .any(|scope| scope == "offline_access")
             .then(|| {
-                let token = Ulid::new().to_string();
+                let token = Ulid::generate().to_string();
                 let mut refresh = self.refresh.lock().unwrap_or_else(PoisonError::into_inner);
 
                 prune(&mut refresh, |grant| grant.expires_at);
@@ -280,7 +280,7 @@ impl Mock {
             "nbf": issued_at,
             "exp": issued_at + ttl,
             "auth_time": grant.auth_time,
-            "jti": Ulid::new().to_string(),
+            "jti": Ulid::generate().to_string(),
             "preferred_username": user.username,
             "name": user.name,
             "email": user.email,

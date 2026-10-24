@@ -45,7 +45,7 @@ const LEASE_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(60);
 /// the lease is extended while the worker lives, so this only bites on a worker
 /// that is wedged rather than slow; the retry then skips the devices already
 /// pushed.
-const ROW_CEILING: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const ROW_CEILING: std::time::Duration = std::time::Duration::from_mins(15);
 
 /// Claims a row gets before it is retired as dead rather than tried again.
 const MAX_ATTEMPTS: u32 = 10;
@@ -1379,7 +1379,7 @@ mod tests {
         let stalls = Stalls {
             store: store.clone(),
             device,
-            stall: std::time::Duration::from_secs(10 * 60),
+            stall: std::time::Duration::from_mins(10),
         };
         let worker = stalling_drain(&store, &clock, stalls);
         let running = tokio::spawn(async move { worker.execute().await });

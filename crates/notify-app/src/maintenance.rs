@@ -482,7 +482,7 @@ mod tests {
         let report = job(&store, &clock, TestLeaderElection::leader())
             .with_audit_retention(
                 Arc::new(store.clone()),
-                std::time::Duration::from_secs(365 * 24 * 3_600),
+                std::time::Duration::from_hours(8760),
             )
             .execute()
             .await

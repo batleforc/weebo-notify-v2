@@ -58,8 +58,8 @@ impl Default for PoolSettings {
         Self {
             max_connections: 16,
             acquire_timeout: Duration::from_secs(5),
-            idle_timeout: Duration::from_secs(10 * 60),
-            max_lifetime: Duration::from_secs(30 * 60),
+            idle_timeout: Duration::from_mins(10),
+            max_lifetime: Duration::from_mins(30),
             statement_timeout: Duration::from_secs(30),
             idle_in_transaction_timeout: Duration::from_secs(60),
         }

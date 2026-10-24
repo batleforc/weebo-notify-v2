@@ -25,7 +25,7 @@ use time::OffsetDateTime;
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The window a consumer should accept a signature in (design §7.1bis); [`verify`] applies it.
-pub const REPLAY_WINDOW: Duration = Duration::from_secs(5 * 60);
+pub const REPLAY_WINDOW: Duration = Duration::from_mins(5);
 
 /// A `SinkDispatcher` that POSTs signed JSON.
 #[derive(Debug, Clone)]
@@ -120,7 +120,7 @@ fn classify(status: reqwest::StatusCode) -> SinkOutcome {
 #[must_use]
 pub fn sign(secret: &[u8], timestamp: i64, body: &[u8]) -> String {
     // HMAC accepts any key length, so the fallback is unreachable (panics are denied here).
-    let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(secret).unwrap_or_else(|_| {
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(secret).unwrap_or_else(|_| {
         <Hmac<Sha256> as hmac::digest::KeyInit>::new(&hmac::digest::Key::<Hmac<Sha256>>::default())
     });
 

@@ -18,7 +18,7 @@
 # moved between two runs of the same pipeline. `bookworm` is not a preference — it
 # has to be the same Debian as the runtime stage below, or the binary links against
 # a glibc the runtime does not have.
-FROM docker.io/library/rust:1.97-slim-bookworm@sha256:96c0af8cf054fd006435089f0076729716784ec9be485bd655de59c55df105ce AS builder
+FROM docker.io/library/rust:1.99-slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be AS builder
 
 WORKDIR /build
 
@@ -52,7 +52,7 @@ RUN cargo build --release --locked -p notify-server -p notify-cli
 #
 # `nonroot` is the tag, not a runtime flag: the image has no shell, no package
 # manager and no root user to drop from.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS runtime
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 
 COPY --from=builder /build/target/release/notify-server /usr/local/bin/notify-server
 

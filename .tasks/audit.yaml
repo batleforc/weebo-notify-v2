@@ -27,13 +27,6 @@ tasks:
           set -eu
           echo "==> suppressed advisories"
 
-          # RUSTSEC-2026-0194/0195: via rust-s3's quick-xml ^0.38 pin; drop when rust-s3 allows >= 0.41.
-          quick_xml="$(grep -A1 'name = "quick-xml"' Cargo.lock | grep version | head -1 | tr -d ' "' | cut -d= -f2)"
-          case "$quick_xml" in
-            0.3*) echo "    quick-xml $quick_xml — still <0.41; RUSTSEC-2026-0194/0195 ignores still needed" ;;
-            *)    echo "    quick-xml $quick_xml — REVISIT: >=0.41 is in the tree, so the two quick-xml ignores can go" ;;
-          esac
-
           # RUSTSEC-2023-0071: no fixed `rsa` release exists yet.
           rsa="$(grep -A1 'name = "rsa"' Cargo.lock | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
           if [ -n "${rsa:-}" ]; then

@@ -116,7 +116,7 @@ tasks:
           # are written into `dist/env.js` by `vite.config.ts` (`desktopEnv`) during
           # the `pnpm build` tauri runs, and pin the CSP below to the same origins.
           : "${WNK_API_BASE_URL:?set WNK_API_BASE_URL (and WNK_OIDC_ISSUER) to the deployment this bundle talks to}"
-          : "${WNK_OIDC_ISSUER:?set WNK_OIDC_ISSUER to the deployment's identity provider}"
+          : "${WNK_OIDC_ISSUER:?set WNK_OIDC_ISSUER to the identity provider of the deployment}"
           export WNK_API_BASE_URL WNK_OIDC_ISSUER
           csp="$(node web/scripts/tauri-csp.ts --updater)"
           cd web/src-tauri && cargo tauri build --config "$csp" {{.CLI_ARGS}}

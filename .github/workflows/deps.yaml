@@ -1,0 +1,87 @@
+# source: weebo-skillsagent (weebo-deps), adapted to web/ and this repository's
+# pinned mise bootstrap (see check.yaml for why it is not `jdx/mise-action`).
+# Runs the same tasks as a developer does: CI and `task deps*` cannot drift.
+# CVE gating against the whole tree stays in audit.yaml; this one answers
+# "did this PR make it better or worse?" and "is everything used?".
+name: Dependency hygiene
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "web/package.json"
+      - "web/pnpm-lock.yaml"
+      - "web/src/**"
+      - "mise.toml"
+      - ".tasks/deps.yaml"
+      - ".github/workflows/deps.yaml"
+  # Weekly: the outdated report lands in the run summary.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The aqua: backend and `mise outdated` resolve versions through the GitHub API:
+  # 60 requests/hour without a token, shared with the whole runner host.
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  unused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - &mise
+        name: Install the toolchain
+        env:
+          MISE_VERSION: "v2026.8.3"
+          MISE_SHA256: "66585ac496c10bf6fbf13272e3e550c1813aed0e1cb780b9bb73c1751de49289"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+      - run: mise install --yes task rust cargo-binstall cargo:cargo-machete node pnpm
+      # knip resolves imports and config plugins from node_modules.
+      - run: pnpm -C web install --frozen-lockfile
+      - run: task deps:unused
+
+  cve-diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # the base commit's lockfiles
+      - *mise
+      - run: mise install --yes task jq rust aqua:rustsec/rustsec/cargo-audit node pnpm
+      - name: Advisories closed / opened by this PR
+        run: |
+          rc=0
+          task deps:cve:branch BASE=${{ github.event.pull_request.base.sha }} > cve.txt 2>&1 || rc=$?
+          cat cve.txt
+          { echo '```'; cat cve.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+  outdated:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - *mise
+      - run: mise install --yes task rust node pnpm
+      # `pnpm outdated` compares against what is installed.
+      - run: pnpm -C web install --frozen-lockfile
+      - name: Outdated report
+        run: |
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          task deps:outdated 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

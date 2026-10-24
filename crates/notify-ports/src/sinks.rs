@@ -75,7 +75,7 @@ impl FingerprintKey {
         if key.len() < Self::MIN_BYTES {
             return None;
         }
-        <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(key)
+        <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(key)
             .ok()
             .map(Self)
     }

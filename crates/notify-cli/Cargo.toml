@@ -19,10 +19,8 @@ path = "src/main.rs"
 [dependencies]
 notify-client-core.workspace = true
 
-anyhow.workspace = true
 # The "arrived late" badge (§7.2), in the date type the client and store already use.
 chrono.workspace = true
-chrono-tz.workspace = true
 # Desktop relay (§9.2). Feature `z` (pure-Rust zbus), not `d` (libdbus C bindings):
 # nothing to link in the image or the published binary.
 notify-rust = { version = "4", default-features = false, features = ["z"] }

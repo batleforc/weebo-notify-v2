@@ -334,10 +334,10 @@
                 "schema": {
                   "oneOf": [
                     {
-                      "type": "null"
+                      "$ref": "#/components/schemas/Reconciliation"
                     },
                     {
-                      "$ref": "#/components/schemas/Reconciliation"
+                      "type": "null"
                     }
                   ]
                 }
@@ -2956,10 +2956,10 @@
                 "schema": {
                   "oneOf": [
                     {
-                      "type": "null"
+                      "$ref": "#/components/schemas/Readership"
                     },
                     {
-                      "$ref": "#/components/schemas/Readership"
+                      "type": "null"
                     }
                   ]
                 }
@@ -3329,10 +3329,10 @@
                 "schema": {
                   "oneOf": [
                     {
-                      "type": "null"
+                      "$ref": "#/components/schemas/Receipt"
                     },
                     {
-                      "$ref": "#/components/schemas/Receipt"
+                      "type": "null"
                     }
                   ]
                 }
@@ -4429,11 +4429,11 @@
               "duration": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/HumanDuration",
                     "description": "How long it lasts. Required for [`SilenceScope::Group`]."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -4756,11 +4756,11 @@
           "channel": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ChannelId",
                 "description": "Which channel it concerned, when it concerned one."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4930,44 +4930,44 @@
           "close_after": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/CloseAfter",
                 "description": "How long a lifecycle notification may stay inactive before the server closes it,\ne.g. `7d`; `\"0\"` turns it off for this channel."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "default_priority": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Priority",
                 "description": "The priority applied when a publisher asks for none."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "default_ttl": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Ttl",
                 "description": "The TTL applied when a publisher asks for none, e.g. `7d`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "max_ttl": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Ttl",
                 "description": "The forced ceiling, e.g. `48h`. `\"0\"` lifts it."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5102,22 +5102,22 @@
           "image": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Image",
                 "description": "Illustration."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "progress": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Progress",
                 "description": "Progress of a long-running operation."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5166,22 +5166,22 @@
           "image": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Image",
                 "description": "See [`Content::image`]."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "progress": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Progress",
                 "description": "See [`Content::progress`]."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5398,11 +5398,11 @@
           "cursor": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Cursor",
                 "description": "How far it has read; `None` means it has never synced."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5434,11 +5434,11 @@
           "public_key": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/DevicePublicKey",
                 "description": "Its X25519 public key, when the transport needs one."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5602,11 +5602,11 @@
           "public_key": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/DevicePublicKey",
                 "description": "The X25519 public key; required for relayed transports, refused otherwise (§6.2)."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -6344,11 +6344,11 @@
           "external_id": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ExternalId",
                 "description": "The publisher's own identifier, when it upserted by one (§2.2)."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -6859,11 +6859,11 @@
           "avatar": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttachmentId",
                 "description": "The object holding their uploaded picture (§2.4). Never synced from OIDC\n`picture`: fetching token-supplied URLs would be an SSRF primitive."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -6959,7 +6959,7 @@
       "PublishBody": {
         "allOf": [
           {
-            "oneOf": [
+            "allOf": [
               {
                 "allOf": [
                   {
@@ -6972,44 +6972,44 @@
                       "priority": {
                         "oneOf": [
                           {
-                            "type": "null"
-                          },
-                          {
                             "$ref": "#/components/schemas/Priority",
                             "description": "Priority."
+                          },
+                          {
+                            "type": "null"
                           }
                         ]
                       },
                       "state": {
                         "oneOf": [
                           {
-                            "type": "null"
-                          },
-                          {
                             "$ref": "#/components/schemas/State",
                             "description": "Lifecycle position; present at creation makes it a lifecycle notification (§2.2)."
+                          },
+                          {
+                            "type": "null"
                           }
                         ]
                       },
                       "status": {
                         "oneOf": [
                           {
-                            "type": "null"
-                          },
-                          {
                             "$ref": "#/components/schemas/Status",
                             "description": "Status."
+                          },
+                          {
+                            "type": "null"
                           }
                         ]
                       },
                       "ttl": {
                         "oneOf": [
                           {
-                            "type": "null"
-                          },
-                          {
                             "$ref": "#/components/schemas/Ttl",
                             "description": "Retention, resolved against the channel policy (§7.2bis)."
+                          },
+                          {
+                            "type": "null"
                           }
                         ]
                       }
@@ -7017,9 +7017,12 @@
                   }
                 ],
                 "description": "A revision as a publisher submits it; absent fields keep the head's value on\nupdate and take channel defaults on creation."
+              },
+              {
+                "type": "object",
+                "description": "The revision itself, flattened into the same object."
               }
-            ],
-            "description": "The revision itself, flattened into the same object."
+            ]
           },
           {
             "type": "object",
@@ -7266,11 +7269,11 @@
           "device": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/DeviceId",
                 "description": "Which device; absent for a service account's logical subscription (§5.2bis)."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7303,11 +7306,11 @@
           "device": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/DeviceId",
                 "description": "Which device saw it, when the client is one."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7393,11 +7396,11 @@
           "record": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/InteractionRecord",
                 "description": "The interaction that now stands; absent on `unchanged`."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -7471,44 +7474,44 @@
               "priority": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/Priority",
                     "description": "Priority."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
               "state": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/State",
                     "description": "Lifecycle position; present at creation makes it a lifecycle notification (§2.2)."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
               "status": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/Status",
                     "description": "Status."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
               "ttl": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/Ttl",
                     "description": "Retention, resolved against the channel policy (§7.2bis)."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               }
@@ -7544,11 +7547,11 @@
           "external_id": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ExternalId",
                 "description": "The publisher's own identifier, when it upserted by one."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7615,11 +7618,11 @@
           "created_by": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/UserId",
                 "description": "Who created it through the API (and may deactivate it); `None` for managed accounts."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7717,11 +7720,11 @@
           "duration": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HumanDuration",
                 "description": "How long, e.g. `2h`. A group-scoped silence must say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7846,11 +7849,11 @@
           "next": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Cursor",
                 "description": "Pass back as `after` for the next page. `None` means fully caught up."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -7938,11 +7941,11 @@
           "max": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HumanDuration",
                 "description": "Forced ceiling. A longer request is clamped down to it."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -7958,11 +7961,11 @@
           "clamped_from": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HumanDuration",
                 "description": "Set when the request exceeded the channel ceiling, so the clamp is visible (T6)."
+              },
+              {
+                "type": "null"
               }
             ]
           },

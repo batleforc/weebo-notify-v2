@@ -29,6 +29,8 @@ cargo-binstall = "latest"        # lets the cargo: backend below fetch prebuilt 
 "aqua:taiki-e/cargo-llvm-cov" = "latest"            # source-based coverage (task cover, CI check)
 "aqua:EmbarkStudios/cargo-deny" = "latest"          # dependency CVE/licence audit (task audit)
 "aqua:rustsec/rustsec/cargo-audit" = "latest"       # RustSec advisories (task audit)
+"cargo:cargo-machete" = "latest"                    # unused Rust dependencies (task deps:unused)
+jq = "latest"                                       # parses the audit JSON (task deps:cve:snapshot)
 trivy = "latest"                 # Containerfile/image + filesystem CVE scan (task audit)
 awscli = "latest"                # seeds the RustFS bucket in dev/seed/seed.sh
 "cargo:sqlx-cli" = "latest"      # `sqlx migrate` in dev/seed/seed.sh (not in the mise registry)
@@ -46,6 +48,8 @@ helm = "latest"                  # lint/template/package charts/weebo-notify (ta
 # binary has to be there anyway. `aqua:` fetches tauri-apps' own signed release rather
 # than compiling `cargo:tauri-cli` from source on every runner.
 "aqua:tauri-apps/tauri/cargo-tauri" = "2"
+"github:batleforc/weebo-skillsagent" = "latest"
+"pipx:graphifyy" = "latest"
 # `yq` used to live here for `task gen:devfile`, which inlined the identity
 # provider's configuration into devfile.yaml. The provider reads the committed file
 # directly now (ADR-0014), so both the step and the tool are gone.

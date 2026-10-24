@@ -27,7 +27,7 @@ macro_rules! ulid_newtype {
             /// Mint a fresh id.
             #[must_use]
             pub fn generate() -> Self {
-                Self(Ulid::new())
+                Self(Ulid::generate())
             }
 
             /// Wrap an existing ULID, for adapters rehydrating from storage.

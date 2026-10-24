@@ -26,8 +26,8 @@ notify-sealed-box = { workspace = true }
 async-trait = { workspace = true }
 # Signs the ES256 provider token.
 jsonwebtoken = { workspace = true }
-# Pinned to 0.13 to match `notify-push-webpush` (`web-push-native`).
-p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+# On the workspace's 0.14; `notify-push-webpush` stays on 0.13 for `web-push-native`.
+p256 = { version = "0.14", features = ["pem", "pkcs8"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

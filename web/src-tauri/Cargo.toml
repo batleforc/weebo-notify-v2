@@ -86,5 +86,11 @@ tokio = { version = "1", default-features = false, features = ["time", "rt"] }
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 
+# shortcut: tauri-plugin-deep-link 2.6.2 builds `ini::ParseOption` without the fields
+# rust-ini 0.21.2 added, so it fails to compile on Linux; drop this pin when a
+# deep-link release sets them (or uses `..Default::default()`).
+[target.'cfg(target_os = "linux")'.dependencies]
+rust-ini = "=0.21.1"
+
 [dev-dependencies]
 tempfile = "3.27.0"
