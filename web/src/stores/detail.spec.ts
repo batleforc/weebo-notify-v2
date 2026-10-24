@@ -236,3 +236,41 @@ describe("switching rows while one is loading", () => {
     expect(detail.notification?.id).toBe("ntf_2");
   });
 });
+
+describe("opening while the stream keeps talking", () => {
+  it("folds in a revision that lands before the load answers", async () => {
+    let answer: (value: { data: Notification }) => void = () => {};
+    getOneMock.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    revisionsMock.mockResolvedValue({ data: { items: [], next: null } });
+    listInteractionsMock.mockResolvedValue({ data: [] });
+    readershipMock.mockResolvedValue({ data: null });
+    const detail = useDetail();
+
+    const opening = detail.open("ntf_1");
+    detail.ingest({
+      cursor: "evt_2",
+      audience: "channel",
+      channel_id: "ci-infra",
+      logged_at: "2026-08-01T10:05:00Z",
+      event: "revision",
+      notification_id: "ntf_1",
+      seq: 2,
+      state: "closed",
+      status: "success",
+      priority: "default",
+      author: { kind: "user", id: "usr_1", display_name: "Alice" },
+      created_at: "2026-08-01T10:00:00Z",
+      revised_at: "2026-08-01T10:05:00Z",
+      payload: { title: "etcd recovered" },
+    });
+    answer({ data: NOTIFICATION });
+    await opening;
+
+    expect(detail.notification?.head.state).toBe("closed");
+    expect(detail.revisions.map((one) => one.seq)).toEqual([2]);
+  });
+});

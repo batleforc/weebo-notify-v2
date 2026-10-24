@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use notify_app::{
     Authorizer, Caller, DeactivateServiceAccount, EnrolDevice, Fanout, GetNotification, Grant,
-    ListApiKeys, ListDevices, ListServiceAccounts, PostReceipt, ReadAvatar, RevokeApiKey,
-    RevokeDevice, SearchUsers, SilenceNotification,
+    ListApiKeys, ListChannels, ListDevices, ListServiceAccounts, PostReceipt, ReadAvatar,
+    RevokeApiKey, RevokeDevice, SearchUsers, SilenceNotification, SyncBacklog, SyncRequest,
 };
 use notify_domain::{
     ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, AttachmentId, Author, Channel, ChannelId,
@@ -657,4 +657,78 @@ async fn the_avatar_route_does_not_serve_an_attachment() {
             .expect("a lookup")
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn a_publish_only_key_reads_nothing_through_sync() {
+    // The escalation: the store reads "no channels" as "all of them", so a CI key that
+    // may only publish replays every event its owner can see.
+    let alice = user();
+    let (store, _, _, _) = alice_reading_one_notification(&alice).await;
+    let sync = SyncBacklog::new(
+        Arc::new(store.clone()),
+        Arc::new(store.clone()),
+        Arc::new(store.clone()),
+        Authorizer::new(Arc::new(store)),
+        Arc::new(TestClock::new()),
+    );
+    let read = |caller: Caller, channels: Vec<ChannelId>| {
+        let sync = sync.clone();
+        async move {
+            sync.execute(
+                &caller,
+                SyncRequest {
+                    channels,
+                    ..SyncRequest::default()
+                },
+            )
+            .await
+            .expect("a page")
+            .events
+            .len()
+        }
+    };
+
+    let key = api_key(alice.clone(), vec![Scope::Publish], vec!["ci-infra"]);
+    assert_eq!(
+        read(key, Vec::new()).await,
+        0,
+        "a publish key replayed the log"
+    );
+    assert_eq!(
+        read(Caller::member(alice.clone()), vec![channel_id("payroll")]).await,
+        0,
+        "narrowing to an unreadable channel widened to all of them"
+    );
+    assert!(read(Caller::member(alice), Vec::new()).await > 0);
+}
+
+#[tokio::test]
+async fn a_publish_only_key_cannot_list_its_owners_channels() {
+    // The escalation: the listing shows members and group bindings of every channel.
+    let alice = user();
+    let store = InMemory::new();
+    store.seed_channel(channel_with(
+        "ci-infra",
+        &alice,
+        vec![Scope::Publish, Scope::Subscribe],
+    ));
+    store.seed_channel(channel_with("payroll", &alice, vec![Scope::Subscribe]));
+    let list = ListChannels::new(Arc::new(store.clone()), Authorizer::new(Arc::new(store)));
+    let listed = |caller: Caller| {
+        let list = list.clone();
+        async move {
+            list.execute(&caller, notify_ports::PageRequest::first())
+                .await
+                .expect("a page")
+                .items
+                .len()
+        }
+    };
+
+    let publish = api_key(alice.clone(), vec![Scope::Publish], vec!["ci-infra"]);
+    assert_eq!(listed(publish).await, 0);
+    let reader = api_key(alice.clone(), vec![Scope::Subscribe], vec!["ci-infra"]);
+    assert_eq!(listed(reader).await, 1, "only the key's own channel");
+    assert_eq!(listed(Caller::member(alice)).await, 2);
 }

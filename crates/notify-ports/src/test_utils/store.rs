@@ -121,6 +121,8 @@ struct OutboxRow {
     pending: PendingFanout,
     queued_at: OffsetDateTime,
     leased_until: Option<OffsetDateTime>,
+    /// Backing off after a failure: not claimable, but not held either.
+    retry_at: Option<OffsetDateTime>,
     dead: bool,
 }
 
@@ -212,6 +214,7 @@ impl State {
                 },
                 queued_at: revision.received_at,
                 leased_until: None,
+                retry_at: None,
                 dead: false,
             });
         }
@@ -800,6 +803,23 @@ impl NotificationRepository for InMemory {
         }))
     }
 
+    async fn attachment_in_channel(
+        &self,
+        attachment: &AttachmentId,
+        channel: &ChannelId,
+        deleted_after: OffsetDateTime,
+    ) -> PortResult<bool> {
+        let state = self.state();
+        Ok(state.revisions.iter().any(|row| {
+            attachment_of(&row.value) == Some(*attachment)
+                && state.notifications.iter().any(|owner| {
+                    owner.value.id == row.value.notification_id
+                        && owner.value.channel == *channel
+                        && owner.value.deleted_at.is_none_or(|at| at > deleted_after)
+                })
+        }))
+    }
+
     async fn orphaned_attachments(
         &self,
         deleted_before: OffsetDateTime,
@@ -866,12 +886,17 @@ impl crate::AttachmentRegistry for InMemory {
         Ok(())
     }
 
-    async fn signed_for(&self, id: AttachmentId, channel: &ChannelId) -> PortResult<bool> {
+    async fn signed_for(
+        &self,
+        id: AttachmentId,
+        channel: &ChannelId,
+        signed_after: OffsetDateTime,
+    ) -> PortResult<bool> {
         Ok(self
             .state()
             .presigns
             .iter()
-            .any(|(known, signed, _)| *known == id && signed == channel))
+            .any(|(known, signed, at)| *known == id && signed == channel && *at > signed_after))
     }
 
     async fn unreferenced(
@@ -1535,6 +1560,16 @@ impl UserRepository for InMemory {
             .cloned())
     }
 
+    async fn get_many(&self, ids: &[UserId]) -> PortResult<Vec<User>> {
+        Ok(self
+            .state()
+            .users
+            .iter()
+            .filter(|user| ids.contains(&user.id))
+            .cloned()
+            .collect())
+    }
+
     async fn find_by_subject(&self, subject: &str) -> PortResult<Option<User>> {
         Ok(self
             .state()
@@ -1592,10 +1627,28 @@ impl UserRepository for InMemory {
             .iter_mut()
             .find(|existing| existing.id == user.id)
         {
-            Some(existing) => *existing = user.clone(),
+            // As the SQL adapter: the avatar has its own writer.
+            Some(existing) => {
+                let avatar = existing.profile.avatar;
+                *existing = user.clone();
+                existing.profile.avatar = avatar;
+            }
             None => state.users.push(user.clone()),
         }
         Ok(())
+    }
+
+    async fn set_avatar(
+        &self,
+        user: UserId,
+        avatar: AttachmentId,
+    ) -> PortResult<Option<AttachmentId>> {
+        Ok(self
+            .state()
+            .users
+            .iter_mut()
+            .find(|existing| existing.id == user)
+            .and_then(|existing| existing.profile.avatar.replace(avatar)))
     }
 }
 
@@ -1987,19 +2040,34 @@ impl FanoutOutbox for InMemory {
         too_old: OffsetDateTime,
     ) -> PortResult<Vec<PendingFanout>> {
         let mut state = self.state();
+        // As the SQL claim: not while another row of the same notification is held.
+        let held: Vec<(NotificationId, Cursor)> = state
+            .fanout_outbox
+            .iter()
+            .filter(|row| !row.dead && row.leased_until.is_some_and(|until| until > now))
+            .map(|row| (row.pending.notification, row.pending.cursor))
+            .collect();
         let mut claimed = Vec::new();
         for row in &mut state.fanout_outbox {
-            if row.dead || row.leased_until.is_some_and(|until| until > now) {
+            if row.dead
+                || row.leased_until.is_some_and(|until| until > now)
+                || row.retry_at.is_some_and(|at| at > now)
+            {
                 continue;
             }
             if row.pending.attempts >= max_attempts || row.queued_at < too_old {
                 row.dead = true;
                 continue;
             }
-            if claimed.len() >= limit as usize {
+            if claimed.len() >= limit as usize
+                || held.iter().any(|(notification, cursor)| {
+                    *notification == row.pending.notification && *cursor != row.pending.cursor
+                })
+            {
                 continue;
             }
             row.leased_until = Some(lease_until);
+            row.retry_at = None;
             row.pending.attempts += 1;
             claimed.push(row.pending.clone());
         }
@@ -2077,7 +2145,8 @@ impl FanoutOutbox for InMemory {
     ) -> PortResult<()> {
         for row in &mut self.state().fanout_outbox {
             if row.pending.cursor == cursor {
-                row.leased_until = Some(retry_at);
+                row.leased_until = None;
+                row.retry_at = Some(retry_at);
             }
         }
         Ok(())

@@ -101,9 +101,12 @@ impl StreamSlots {
         let Some((leases, replica)) = &self.cluster else {
             return Ok(());
         };
-        let live = leases.renew(replica).await?;
+        // A snapshot: a lease granted while the renew runs is not in it, so it is
+        // neither renewed early nor mistaken for one disconnected elsewhere.
+        let held: Vec<String> = self.local_leases().keys().cloned().collect();
+        let live = leases.renew(replica, &held).await?;
         for (id, kicked) in self.local_leases().iter() {
-            if !live.contains(id) {
+            if held.contains(id) && !live.contains(id) {
                 kicked.notify_one();
             }
         }

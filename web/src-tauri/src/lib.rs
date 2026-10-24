@@ -522,7 +522,7 @@ pub fn run() {
                         // the window's own token into it.
                         app.manage(credential.clone());
 
-                        if let Some(daemon) = open_daemon() {
+                        {
                             let daemon_session = credential.clone();
                             // Its own OS thread with its own current-thread runtime,
                             // not `tauri::async_runtime::spawn` — `Store` wraps a
@@ -535,7 +535,17 @@ pub fn run() {
                             // it rather than fighting the same constraint twice.
                             let _ = std::thread::Builder::new()
                                 .name("weebo-notify-daemon".to_owned())
-                                .spawn(move || run_daemon(daemon_session, daemon));
+                                .spawn(move || {
+                                    // Retried, not tried once: the TUI holding the stream
+                                    // now may close later, and whoever is left takes over.
+                                    let daemon = loop {
+                                        if let Some(daemon) = open_daemon() {
+                                            break daemon;
+                                        }
+                                        std::thread::sleep(POLL);
+                                    };
+                                    run_daemon(daemon_session, daemon);
+                                });
                         }
 
                         tauri::async_runtime::spawn(poll_loop(
@@ -839,15 +849,9 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 #[cfg(desktop)]
 async fn write_dnd(session: &Session, preset: DndPreset) -> Result<(), ClientError> {
     let current = session.dnd().await?;
-    // The preference's own zone, not this machine's (§7.4): somebody travelling
-    // keeps their own mornings. A preference with no schedule has no zone to
-    // borrow, and UTC is the honest answer rather than a guess from the laptop —
-    // the same fallback `notify-cli`'s `dnd on --until-morning` uses.
-    let timezone = current
-        .quiet_hours
-        .first()
-        .map_or("UTC", |window| window.timezone.as_str());
-    let until = preset.until(now_utc()?, timezone)?;
+    // The same zone `notify dnd on --until-morning` uses (see `Session::morning_zone`).
+    let timezone = session.morning_zone(&current.quiet_hours).await?;
+    let until = preset.until(now_utc()?, &timezone)?;
 
     session
         .set_dnd(&DndDraft {

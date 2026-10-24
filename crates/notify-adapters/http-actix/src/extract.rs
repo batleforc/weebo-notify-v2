@@ -51,11 +51,12 @@ pub(crate) fn authenticate(
 /// told apart by our minted `wnk_` prefix so a JWT is never mistaken for a key.
 pub(crate) fn credential_from(header: Option<&str>) -> Result<Credential, DomainError> {
     let raw = header.ok_or(DomainError::InvalidCredential)?;
-    let token = raw
-        .strip_prefix("Bearer ")
-        .or_else(|| raw.strip_prefix("bearer "))
-        .ok_or(DomainError::InvalidCredential)?
-        .trim();
+    // The scheme is case-insensitive (RFC 7235 §2.1): `BEARER x` is the same header.
+    let (scheme, token) = raw.split_once(' ').ok_or(DomainError::InvalidCredential)?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err(DomainError::InvalidCredential);
+    }
+    let token = token.trim();
 
     if token.is_empty() {
         return Err(DomainError::InvalidCredential);
@@ -120,6 +121,11 @@ mod tests {
 
         let token = credential_from(Some("Bearer eyJhbGciOiJFUzI1NiJ9.e30.sig")).unwrap();
         assert!(matches!(token, Credential::Bearer(_)));
+        let shouted = credential_from(Some("BEARER eyJhbGciOiJFUzI1NiJ9.e30.sig")).unwrap();
+        assert!(
+            matches!(shouted, Credential::Bearer(_)),
+            "the scheme ignores case"
+        );
     }
 
     #[test]

@@ -832,8 +832,40 @@ impl Config {
     }
 
     /// Sections that differ in the file but a reload cannot adopt (§11), so the operator is told.
+    /// Every issuer a trust policy or a channel's publishers name, once each: the
+    /// federation verifiers are built for these.
+    pub(crate) fn federation_issuers(&self) -> Vec<String> {
+        let global = self.trust_policy.iter().map(|policy| &policy.issuer);
+        let scoped = self
+            .channels
+            .managed
+            .iter()
+            .flat_map(|channel| channel.publishers.iter())
+            .map(|publisher| &publisher.issuer);
+
+        let mut issuers: Vec<String> = Vec::new();
+        for issuer in global.chain(scoped) {
+            if !issuer.is_empty() && !issuers.contains(issuer) {
+                issuers.push(issuer.clone());
+            }
+        }
+        issuers
+    }
+
     pub(crate) fn unreloadable(&self, file: &Self) -> Vec<String> {
         let mut moved = Vec::new();
+
+        let known = self.federation_issuers();
+        if file
+            .federation_issuers()
+            .iter()
+            .any(|issuer| !known.contains(issuer))
+        {
+            moved.push(
+                "a new trust-policy issuer — its token verifier is built at boot; restart"
+                    .to_owned(),
+            );
+        }
 
         if self.server.bind != file.server.bind {
             moved.push("[server] bind — the socket is bound at boot".to_owned());
@@ -952,11 +984,8 @@ impl Config {
 
         self.validate_smtp()?;
 
+        self.validate_managed_ids()?;
         for channel in &self.channels.managed {
-            anyhow::ensure!(
-                !channel.id.is_empty(),
-                "a [[channels.managed]] entry has no id"
-            );
             // Zero would refuse every publish with a misleading `429`; omit `limits` for the default (§8.2).
             anyhow::ensure!(
                 channel
@@ -990,6 +1019,35 @@ impl Config {
             }
         }
 
+        Ok(())
+    }
+
+    /// Managed channel and service-account ids parse, and name one thing each. Checked
+    /// here so a typo fails the load (and a SIGHUP keeps the running file) rather than
+    /// every reconciliation pass after it; `CI` and `ci` would otherwise be one channel.
+    fn validate_managed_ids(&self) -> anyhow::Result<()> {
+        let mut channels = std::collections::HashSet::new();
+        for channel in &self.channels.managed {
+            let id = notify_domain::ChannelId::parse(&channel.id).map_err(|error| {
+                anyhow::anyhow!("[[channels.managed]] id `{}`: {error}", channel.id)
+            })?;
+            anyhow::ensure!(
+                channels.insert(id),
+                "[[channels.managed]] id `{}` is declared twice",
+                channel.id
+            );
+        }
+        let mut accounts = std::collections::HashSet::new();
+        for account in &self.service_accounts {
+            let id = notify_domain::ServiceAccountId::parse(&account.id).map_err(|error| {
+                anyhow::anyhow!("[[service_accounts]] id `{}`: {error}", account.id)
+            })?;
+            anyhow::ensure!(
+                accounts.insert(id),
+                "[[service_accounts]] id `{}` is declared twice",
+                account.id
+            );
+        }
         Ok(())
     }
 
@@ -1360,6 +1418,21 @@ mod tests {
 
         assert_eq!(attachments.kind, AttachmentsBackend::Filesystem);
         assert_eq!(attachments.path, "/data/attachments");
+    }
+
+    #[test]
+    fn a_managed_id_that_cannot_be_one_fails_the_load() {
+        for (name, file) in [
+            ("bad-channel", "[[channels.managed]]\nid = \"-ci\"\n"),
+            (
+                "twin-channel",
+                "[[channels.managed]]\nid = \"ci\"\n\n[[channels.managed]]\nid = \"CI\"\n",
+            ),
+            ("bad-account", "[[service_accounts]]\nid = \"-bot\"\n"),
+        ] {
+            let path = with_config(name, file);
+            assert!(load_isolated(&path).is_err(), "{name} loaded");
+        }
     }
 
     #[test]
@@ -1759,10 +1832,27 @@ mod tests {
             moved.iter().any(|line| line.contains("database")),
             "{moved:?}"
         );
-        // Trust policies are adopted, so they must not warn.
+        // Trust policies are adopted, so they must not warn — but a new issuer needs a
+        // verifier only boot builds, and a token from it would be refused until then.
         assert!(
             !moved.iter().any(|line| line.contains("trust_policy")),
             "{moved:?}"
+        );
+        assert!(
+            moved.iter().any(|line| line.contains("issuer")),
+            "{moved:?}"
+        );
+
+        // A changed policy on a known issuer is adopted silently.
+        let known = Config {
+            trust_policy: file.trust_policy.clone(),
+            ..Config::default()
+        };
+        assert!(
+            !known
+                .unreloadable(&file)
+                .iter()
+                .any(|line| line.contains("issuer"))
         );
     }
 

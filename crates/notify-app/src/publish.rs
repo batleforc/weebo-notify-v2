@@ -115,13 +115,23 @@ impl Writer {
         channel: &notify_domain::Channel,
         draft: &RevisionDraft,
     ) -> Result<(), Failure> {
+        use crate::maintenance::{PRESIGN_GRACE, SWEEP_MARGIN, TOMBSTONE_GRACE};
+
         let Some(Image::Attachment { reference }) = draft.content.image else {
             return Ok(());
         };
-        if self.registry.signed_for(reference, &channel.id).await?
+        // Both bounds stay a margin inside the sweeps' cutoffs, so the object cannot be
+        // collected between this check and the revision that keeps it.
+        let now = self.clock.now();
+        let signed_after = now.saturating_sub(PRESIGN_GRACE.saturating_sub(SWEEP_MARGIN));
+        let deleted_after = now.saturating_sub(TOMBSTONE_GRACE.saturating_sub(SWEEP_MARGIN));
+        if self
+            .registry
+            .signed_for(reference, &channel.id, signed_after)
+            .await?
             || self
                 .notifications
-                .attachment_is_visible(&reference, core::slice::from_ref(&channel.id))
+                .attachment_in_channel(&reference, &channel.id, deleted_after)
                 .await?
         {
             return Ok(());
@@ -1081,12 +1091,12 @@ mod tests {
     // --- A thumbnail is derived eagerly, never at the cost of the write ---
 
     /// What `PresignAttachment` leaves behind for this channel.
-    async fn signed(store: &InMemory, reference: notify_domain::AttachmentId) {
+    async fn signed(fixture: &Fixture, reference: notify_domain::AttachmentId) {
         notify_ports::AttachmentRegistry::record(
-            store,
+            &fixture.store,
             reference,
             &channel_id(),
-            OffsetDateTime::UNIX_EPOCH,
+            fixture.clock.now(),
         )
         .await
         .unwrap();
@@ -1108,7 +1118,7 @@ mod tests {
         let fixture = fixture(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
         let reference = notify_domain::AttachmentId::generate();
-        signed(&fixture.store, reference).await;
+        signed(&fixture, reference).await;
         notify_ports::AttachmentStore::put(
             &fixture.attachments,
             reference,
@@ -1141,7 +1151,7 @@ mod tests {
         let fixture = fixture(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
         let never_uploaded = notify_domain::AttachmentId::generate();
-        signed(&fixture.store, never_uploaded).await;
+        signed(&fixture, never_uploaded).await;
 
         let published = fixture
             .publish
@@ -1163,7 +1173,7 @@ mod tests {
         let fixture = fixture_refusing_thumbnails(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
         let reference = notify_domain::AttachmentId::generate();
-        signed(&fixture.store, reference).await;
+        signed(&fixture, reference).await;
         notify_ports::AttachmentStore::put(
             &fixture.attachments,
             reference,
@@ -1215,13 +1225,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_upload_old_enough_for_the_sweep_is_refused() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let reference = notify_domain::AttachmentId::generate();
+        signed(&fixture, reference).await;
+        // The sweep collects at a day; within the last hour of that it may be mid-delete.
+        fixture
+            .clock
+            .advance(Duration::hours(23) + Duration::minutes(30));
+
+        assert!(
+            fixture
+                .publish
+                .execute(&caller, request_with_attachment(reference))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn an_attachment_already_shown_here_may_be_named_again() {
         // Once a revision names it, the registry row is forgotten (`forget_referenced`).
         let fixture = fixture(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
         let reference = notify_domain::AttachmentId::generate();
-        signed(&fixture.store, reference).await;
-        fixture
+        signed(&fixture, reference).await;
+        let first = fixture
             .publish
             .execute(&caller, request_with_attachment(reference))
             .await
@@ -1229,6 +1259,14 @@ mod tests {
         notify_ports::AttachmentRegistry::forget_referenced(&fixture.store, 10)
             .await
             .unwrap();
+        // Even once that notification is gone: its object stays until the purge.
+        NotificationRepository::mark_deleted(
+            &fixture.store,
+            first.notification.id,
+            fixture.clock.now(),
+        )
+        .await
+        .unwrap();
 
         assert!(
             fixture

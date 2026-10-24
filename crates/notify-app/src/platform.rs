@@ -201,6 +201,8 @@ pub struct SelfJoin {
     channels: Arc<dyn ChannelRepository>,
     audit: Arc<dyn AuditLog>,
     clock: Arc<dyn notify_ports::Clock>,
+    /// See [`crate::ManageMembers::with_bus`].
+    bus: Option<Arc<dyn notify_ports::EventBus>>,
 }
 
 impl core::fmt::Debug for SelfJoin {
@@ -220,7 +222,15 @@ impl SelfJoin {
             channels,
             audit,
             clock,
+            bus: None,
         }
+    }
+
+    /// See [`crate::ManageMembers::with_bus`].
+    #[must_use]
+    pub fn with_bus(mut self, bus: Arc<dyn notify_ports::EventBus>) -> Self {
+        self.bus = Some(bus);
+        self
     }
 
     /// Join a channel as the calling admin, and record it. Subscribe only: the role is
@@ -228,19 +238,32 @@ impl SelfJoin {
     pub async fn execute(&self, caller: &Caller, id: &ChannelId) -> Result<(), Failure> {
         caller.ensure_platform_admin()?;
 
-        let mut channel = self
+        let channel = self
             .channels
             .get(id)
             .await?
             .ok_or(notify_domain::DomainError::NotificationGone)?;
 
         // A managed channel is joined too; the reconciler removes it again (§11), and the
-        // audit entry still records the look.
-        channel.upsert_member(notify_domain::Membership::new(
-            caller.principal.clone(),
-            vec![notify_domain::Scope::Subscribe],
-        )?);
-        self.channels.upsert(&channel).await?;
+        // audit entry still records the look. An existing membership is kept as it is: a
+        // manager joining must not demote themselves. One row, not the whole channel, so a
+        // concurrent member edit survives.
+        if !channel
+            .members
+            .iter()
+            .any(|member| member.principal == caller.principal)
+        {
+            self.channels
+                .put_member(
+                    id,
+                    &notify_domain::Membership::new(
+                        caller.principal.clone(),
+                        vec![notify_domain::Scope::Subscribe],
+                    )?,
+                )
+                .await?;
+            crate::channels::announce_membership(self.bus.as_deref(), &caller.principal).await;
+        }
 
         self.audit
             .record(&AuditEntry {
@@ -423,6 +446,38 @@ mod tests {
                 .any(|entry| entry.action.as_str() == "platform.channel.self_join"),
             "reading somebody's channel has to leave a trace a later reader can find"
         );
+    }
+
+    #[tokio::test]
+    async fn a_manager_who_self_joins_keeps_managing() {
+        let store = seeded();
+        let admin = admin();
+        let id = ChannelId::parse("cluster-ovh-1").unwrap();
+        ChannelRepository::put_member(
+            &store,
+            &id,
+            &Membership::new(
+                admin.principal.clone(),
+                vec![Scope::Subscribe, Scope::Manage],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let join = SelfJoin::new(
+            Arc::new(store.clone()),
+            Arc::new(store.clone()),
+            Arc::new(TestClock::new()),
+        );
+
+        join.execute(&admin, &id).await.unwrap();
+
+        let channel = ChannelRepository::get(&store, &id).await.unwrap().unwrap();
+        assert!(
+            channel.allows(&admin.principal, &[], Scope::Manage),
+            "joining demoted the manager"
+        );
+        assert_eq!(channel.members.len(), 2, "the other member is still there");
     }
 
     #[tokio::test]

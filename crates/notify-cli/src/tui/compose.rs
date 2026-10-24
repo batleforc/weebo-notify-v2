@@ -175,7 +175,11 @@ impl ComposeForm {
             FieldRef::Tags => {
                 if self.editing {
                     let tag = self.tag_draft.trim();
-                    if !tag.is_empty() {
+                    if tag.is_empty() {
+                        // An empty line is "done": the only way out, since Esc and every
+                        // letter are part of the edit.
+                        self.editing = false;
+                    } else {
                         self.tags.push(tag.to_owned());
                         self.tag_draft.clear();
                     }
@@ -186,7 +190,10 @@ impl ComposeForm {
             FieldRef::Actions => {
                 if self.editing {
                     let candidate = self.action_draft.trim();
-                    if !candidate.is_empty() {
+                    if candidate.is_empty() {
+                        // As for tags: an empty line leaves the field.
+                        self.editing = false;
+                    } else {
                         // Validated with `publish::parse_action` itself, so a typo is caught without losing the draft.
                         if let Err(error) = publish::parse_action(candidate) {
                             return ComposeActivation::Rejected(error.to_string());
@@ -471,6 +478,22 @@ mod tests {
         assert_eq!(form.tags, ["a"]);
         assert_eq!(form.tag_draft, "");
         assert!(form.is_editing(), "still editing — ready for the next tag");
+    }
+
+    #[test]
+    fn an_empty_line_leaves_a_list_field() {
+        for field in [3, 4] {
+            let mut form = ComposeForm::new(1, 0);
+            form.move_focus(field); // Tags, then Actions
+            form.activate(); // start editing
+
+            form.activate(); // nothing typed: done
+
+            assert!(
+                !form.is_editing(),
+                "field {field} kept the keyboard for ever"
+            );
+        }
     }
 
     #[test]

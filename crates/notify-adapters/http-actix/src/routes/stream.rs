@@ -210,30 +210,48 @@ impl Connection {
                     && self.readable.contains(id)
                     && (self.channels.is_empty() || self.channels.contains(id))
             }
-            Poke::User { id, cursor } => {
-                *cursor > self.cursor && self.caller.principal == Principal::User { id: *id }
-            }
+            // Rare (a preference, a membership), and a membership carries no event to
+            // compare a cursor with: always worth a read.
+            Poke::User { id, .. } => self.is_me(*id),
+        }
+    }
+
+    fn is_me(&self, id: notify_domain::UserId) -> bool {
+        self.caller.principal == Principal::User { id }
+    }
+
+    /// Re-read what the caller may read, after a membership changed. A failure keeps the
+    /// old set: the re-authentication tick tries again.
+    async fn refresh_readable(&mut self) {
+        match self.sync.readable_channels(&self.caller).await {
+            Ok(readable) => self.readable = readable,
+            Err(error) => tracing::warn!(%error, "could not refresh a stream's channels"),
         }
     }
 
     /// Wait for a poke worth reading, then swallow those already queued behind it: a
     /// burst of publications costs one read, not one per publication. `None` when the
-    /// bus is gone.
-    async fn next_wake(&self, pokes: &mut futures::stream::BoxStream<'static, Poke>) -> Option<()> {
-        loop {
+    /// bus is gone; otherwise whether one of them was addressed to this user, which may
+    /// mean a channel to add (see [`Self::refresh_readable`]).
+    async fn next_wake(
+        &self,
+        pokes: &mut futures::stream::BoxStream<'static, Poke>,
+    ) -> Option<bool> {
+        let mine = |poke: &Poke| matches!(poke, Poke::User { id, .. } if self.is_me(*id));
+        let mut addressed = loop {
             let poke = pokes.next().await?;
             if self.wants(&poke) {
-                break;
+                break mine(&poke);
             }
-        }
+        };
         // Bounded, so a bus that never goes quiet cannot keep this from yielding.
         for _ in 0..DRAIN {
             match pokes.next().now_or_never() {
-                Some(queued) => queued?,
+                Some(queued) => addressed |= mine(&queued?),
                 None => break,
-            };
+            }
         }
-        Some(())
+        Some(addressed)
     }
 
     /// One page after the current cursor, advancing it; `true` when more follow. Callers
@@ -418,8 +436,9 @@ pub(crate) async fn stream(
                     more = connection.readable.iter().any(|channel| !before.contains(channel));
                 }
                 woke = connection.next_wake(&mut pokes) => {
-                    if woke.is_none() {
-                        return;
+                    let Some(addressed) = woke else { return };
+                    if addressed {
+                        connection.refresh_readable().await;
                     }
                     more = true;
                 }
@@ -561,8 +580,9 @@ pub(crate) async fn websocket(
                     more = connection.readable.iter().any(|channel| !before.contains(channel));
                 }
                 woke = connection.next_wake(&mut pokes) => {
-                    if woke.is_none() {
-                        break;
+                    let Some(addressed) = woke else { break };
+                    if addressed {
+                        connection.refresh_readable().await;
                     }
                     more = true;
                 }
@@ -599,7 +619,11 @@ mod tests {
     }
 
     fn connection(user: UserId) -> Connection {
-        let store = InMemory::new();
+        connection_on(&InMemory::new(), user)
+    }
+
+    fn connection_on(store: &InMemory, user: UserId) -> Connection {
+        let store = store.clone();
         Connection {
             sync: SyncBacklog::new(
                 Arc::new(store.clone()),
@@ -642,7 +666,10 @@ mod tests {
             !connection.wants(&user(UserId::generate(), 11)),
             "somebody else"
         );
-        assert!(!connection.wants(&user(me, 9)), "already read");
+        assert!(
+            connection.wants(&user(me, 9)),
+            "a membership carries no event: its poke wakes whatever the cursor"
+        );
     }
 
     #[test]
@@ -675,5 +702,40 @@ mod tests {
 
         assert!(connection.next_wake(&mut pokes).await.is_some());
         assert!(pokes.next().now_or_never().flatten().is_none(), "drained");
+    }
+
+    #[tokio::test]
+    async fn a_poke_addressed_to_the_reader_brings_in_a_channel_joined_since() {
+        let me = UserId::generate();
+        let store = InMemory::new();
+        let mut connection = connection_on(&store, me);
+        let joined = ChannelId::parse("payroll").unwrap();
+        let mut channel = notify_domain::Channel::dynamic(joined.clone(), None).unwrap();
+        channel.upsert_member(
+            notify_domain::Membership::new(
+                Principal::User { id: me },
+                vec![notify_domain::Scope::Subscribe],
+            )
+            .unwrap(),
+        );
+        store.seed_channel(channel);
+        let mut pokes = futures::stream::iter([Poke::User {
+            id: me,
+            cursor: Cursor::START,
+        }])
+        .chain(futures::stream::pending())
+        .boxed();
+
+        let addressed = connection.next_wake(&mut pokes).await;
+        assert_eq!(addressed, Some(true));
+        connection.refresh_readable().await;
+
+        assert!(
+            connection.wants(&Poke::Channel {
+                id: joined,
+                cursor: Cursor::from_sequence(11),
+            }),
+            "the new channel's events would wait for the next re-authentication"
+        );
     }
 }

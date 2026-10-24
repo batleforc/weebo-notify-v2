@@ -536,7 +536,9 @@ impl App {
             }
             Message::RunCommand => {
                 let line = self.command.take().unwrap_or_default();
-                self.history.push(&line);
+                if worth_remembering(&line) {
+                    self.history.push(&line);
+                }
                 self.output = Some(run_command(&line, &self.profile, session).await);
                 // The server may now disagree with the screen.
                 self.refresh(session, store).await;
@@ -1063,6 +1065,14 @@ fn parse_command(line: &str) -> Result<Option<crate::Cli>, String> {
 }
 
 /// Parse a `:` line and run it through [`crate::execute`], returning what the shell would print (§9.3).
+/// Whether a `:` line may go to the history file: not one carrying a credential, which
+/// would sit there in clear long after the token it exchanged has expired.
+fn worth_remembering(line: &str) -> bool {
+    !line
+        .split_whitespace()
+        .any(|word| word.eq_ignore_ascii_case("token"))
+}
+
 pub(crate) async fn run_command(line: &str, profile: &str, session: &Session) -> String {
     let parsed = match parse_command(line) {
         Ok(None) => return String::new(),
@@ -1113,6 +1123,13 @@ fn shell_split(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use notify_client_core::types::ChoiceOption;
+
+    #[test]
+    fn a_line_carrying_a_token_is_not_written_to_the_history() {
+        assert!(!worth_remembering("token exchange eyJhbGciOi"));
+        assert!(!worth_remembering("--profile work TOKEN exchange eyJ"));
+        assert!(worth_remembering("ls --channel ci-infra"));
+    }
 
     use super::*;
 

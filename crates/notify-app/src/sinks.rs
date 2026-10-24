@@ -157,37 +157,47 @@ impl DrainSinks {
     /// The pass itself, under a lock `execute` took and will release.
     async fn drain(&self, guard: &dyn LeaderGuard) -> Result<DrainReport, Failure> {
         let started = std::time::Instant::now();
-        let now = self.clock.now();
         let mut report = DrainReport {
             led: true,
             ..DrainReport::default()
         };
 
-        // One lane per sink, in claim order — see `CONCURRENCY`.
-        let mut lanes: Vec<Vec<SinkDelivery>> = Vec::new();
-        for delivery in self
-            .queue
-            .claim_due(now, BATCH, now.saturating_add(LEASE))
-            .await?
-        {
-            match lanes.iter_mut().find(|lane| {
-                lane.first().is_some_and(|first| {
-                    first.channel == delivery.channel && first.sink == delivery.sink
-                })
-            }) {
-                Some(lane) => lane.push(delivery),
-                None => lanes.push(vec![delivery]),
-            }
-        }
+        // Batch after batch while they come back full: one batch per tick would cap the
+        // whole instance at `BATCH` per `SINK_INTERVAL` and let a burst's backlog grow.
+        loop {
+            let now = self.clock.now();
+            let claimed = self
+                .queue
+                .claim_due(now, BATCH, now.saturating_add(LEASE))
+                .await?;
+            let full = claimed.len() >= BATCH as usize;
 
-        let outcomes: Vec<Result<DrainReport, Failure>> = futures::stream::iter(lanes)
-            .map(|lane| self.lane(lane, guard, started))
-            .buffer_unordered(CONCURRENCY)
-            .collect()
-            .await;
-        // Every lane finishes before the first error is reported, so nothing is abandoned.
-        for outcome in outcomes {
-            report.absorb(outcome?);
+            // One lane per sink, in claim order — see `CONCURRENCY`.
+            let mut lanes: Vec<Vec<SinkDelivery>> = Vec::new();
+            for delivery in claimed {
+                match lanes.iter_mut().find(|lane| {
+                    lane.first().is_some_and(|first| {
+                        first.channel == delivery.channel && first.sink == delivery.sink
+                    })
+                }) {
+                    Some(lane) => lane.push(delivery),
+                    None => lanes.push(vec![delivery]),
+                }
+            }
+
+            let outcomes: Vec<Result<DrainReport, Failure>> = futures::stream::iter(lanes)
+                .map(|lane| self.lane(lane, guard, started))
+                .buffer_unordered(CONCURRENCY)
+                .collect()
+                .await;
+            // Every lane finishes before the first error is reported, so nothing is abandoned.
+            for outcome in outcomes {
+                report.absorb(outcome?);
+            }
+
+            if !full || started.elapsed() > PASS_BUDGET || !guard.is_held().await {
+                break;
+            }
         }
 
         if let Some(retention) = self.dead_letter_retention
@@ -602,6 +612,18 @@ mod tests {
                 .is_empty(),
             "an accepted delivery is done with"
         );
+    }
+
+    #[tokio::test]
+    async fn a_backlog_bigger_than_one_batch_drains_in_one_pass() {
+        let fixture = fixture();
+        for _ in 0..BATCH + 5 {
+            queue_one(&fixture).await;
+        }
+
+        let report = fixture.drain.execute().await.unwrap();
+
+        assert_eq!(report.delivered, u64::from(BATCH) + 5);
     }
 
     #[tokio::test]

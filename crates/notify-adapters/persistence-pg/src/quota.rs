@@ -173,13 +173,14 @@ impl StreamLeases for PgStore {
         Ok(())
     }
 
-    async fn renew(&self, replica: &str) -> PortResult<Vec<String>> {
+    async fn renew(&self, replica: &str, held: &[String]) -> PortResult<Vec<String>> {
         let fail = |e| fail("stream lease", e);
         let live: Vec<(String,)> = sqlx::query_as(
             "UPDATE stream_leases SET expires_at = now() + interval '90 seconds'
-             WHERE replica = $1 RETURNING id::text",
+             WHERE replica = $1 AND id::text = ANY($2) RETURNING id::text",
         )
         .bind(replica)
+        .bind(held)
         .fetch_all(self.pool())
         .await
         .map_err(fail)?;

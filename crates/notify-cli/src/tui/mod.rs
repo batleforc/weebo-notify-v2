@@ -25,6 +25,10 @@ pub(crate) use app::{ActionItem, App, Message, Pane};
 /// How long the loop waits for a key before ticking (the tick advances the clock and polls the store).
 const TICK: Duration = Duration::from_millis(250);
 
+/// How often an idle window asks the server again — the desktop tray's pace. Without it a
+/// window left open shows nothing new (and relays nothing) until somebody presses a key.
+const REFRESH_EVERY: Duration = Duration::from_secs(20);
+
 /// Open the interface.
 pub(crate) fn run(profile_name: &str, notify_send: bool) -> Result<(), CliError> {
     if !std::io::stdout().is_terminal() {
@@ -121,6 +125,7 @@ fn event_loop(
     // First paint from the server: a blank inbox that fills later reads as broken.
     runtime.block_on(app.refresh(session, store));
     poke(&mut front, &mut app);
+    let mut refreshed = std::time::Instant::now();
 
     loop {
         terminal
@@ -138,6 +143,9 @@ fn event_loop(
             // The tick also covers a missing socket: the loop still repaints and `r` still works.
             let message = if front.watch.as_mut().is_some_and(StreamWatch::poked) {
                 Message::StoreChanged
+            } else if refreshed.elapsed() >= REFRESH_EVERY {
+                refreshed = std::time::Instant::now();
+                Message::Refresh
             } else {
                 Message::Tick
             };

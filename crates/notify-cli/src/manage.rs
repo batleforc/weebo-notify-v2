@@ -429,14 +429,10 @@ pub(crate) async fn dnd(
                     )
                 })?,
                 (None, None, true) => {
-                    // The preference's zone, not this machine's (§7.4); UTC when there is none.
-                    let timezone = current
-                        .quiet_hours
-                        .first()
-                        .map_or("UTC", |window| window.timezone.as_str());
+                    let timezone = session.morning_zone(&current.quiet_hours).await?;
 
                     notify_client_core::DndPreset::UntilMorning
-                        .until(notify_client_core::now_utc()?, timezone)?
+                        .until(notify_client_core::now_utc()?, &timezone)?
                         .ok_or_else(|| {
                             CliError::Usage("`--until-morning` produced no deadline".to_owned())
                         })?

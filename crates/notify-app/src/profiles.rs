@@ -123,8 +123,11 @@ impl SetAvatar {
             .put(id, &processed.content_type, processed.bytes)
             .await?;
 
-        let previous = user.profile.avatar.replace(id);
-        self.users.upsert(&user).await?;
+        // Its own write, returning what it replaced: the profile read above may be
+        // stale by now (decoding and storing take a while), and two uploads at once
+        // must each delete what they actually replaced.
+        let previous = self.users.set_avatar(user.id, id).await?;
+        user.profile.avatar = Some(id);
 
         // The old object goes only after the new one is stored and referenced: at worst an orphan.
         if let Some(previous) = previous

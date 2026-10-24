@@ -273,6 +273,29 @@ impl Session {
         Ok(response.into_inner())
     }
 
+    /// Which zone "until morning" means: the quiet hours' own, else the person's profile
+    /// (their zone, not this machine's: somebody travelling keeps their mornings, §7.4),
+    /// and UTC only when neither says.
+    ///
+    /// # Errors
+    ///
+    /// When the profile cannot be read.
+    pub async fn morning_zone(
+        &self,
+        quiet_hours: &[notify_client_api::types::QuietHours],
+    ) -> Result<String, ClientError> {
+        if let Some(window) = quiet_hours.first() {
+            return Ok(window.timezone.clone());
+        }
+        let profile = self
+            .api
+            .read_profile()
+            .await
+            .map_err(ClientError::from)?
+            .into_inner();
+        Ok(profile.timezone.unwrap_or_else(|| "UTC".to_owned()))
+    }
+
     /// `PUT /preferences/dnd` — replace it whole (§7.4); callers changing one thing read first.
     pub async fn set_dnd(&self, wanted: &DndDraft) -> Result<Dnd, ClientError> {
         let response = self.api.set_dnd(wanted).await.map_err(ClientError::from)?;
@@ -485,6 +508,30 @@ mod tests {
         read_request(&stream);
         std::thread::sleep(WITHIN * 2);
         drop(stream);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn until_morning_without_quiet_hours_uses_the_persons_zone() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let session = session(&listener, Deadlines::DEFAULT);
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&stream);
+            let body = r#"{"timezone":"Europe/Paris","overridden":[]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+
+        let zone = session.morning_zone(&[]).await.unwrap();
+
+        assert_eq!(
+            zone, "Europe/Paris",
+            "not UTC: 08:00 UTC is 04:00 in New York"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

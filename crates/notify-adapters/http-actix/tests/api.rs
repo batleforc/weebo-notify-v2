@@ -215,7 +215,7 @@ impl Harness {
                 Arc::new(clock.clone()),
             ),
             stream_start: ResolveStreamStart::new(Arc::new(store.clone()), Arc::new(store.clone())),
-            channels: ListChannels::new(Arc::new(store.clone())),
+            channels: ListChannels::new(Arc::new(store.clone()), authorizer.clone()),
             read_channel: ReadChannel::new(authorizer.clone()),
             create_channel: CreateChannel::new(
                 Arc::new(store.clone()),

@@ -375,14 +375,20 @@ impl ReadReceipts {
         Ok(Some(roll))
     }
 
-    /// Attach display names to the people in the roll (§2.4); one read per person, the
-    /// roll being bounded by who opened one notification.
+    /// Attach display names to the people in the roll (§2.4), in one read: a channel
+    /// bound to a large group can have hundreds of readers per notification.
     async fn name(&self, roll: &mut Readership) -> Result<(), Failure> {
+        let ids: Vec<_> = roll
+            .seen
+            .iter()
+            .filter_map(|sighting| sighting.author.principal.as_user())
+            .collect();
+        let users = self.users.get_many(&ids).await?;
         for sighting in &mut roll.seen {
             let Some(id) = sighting.author.principal.as_user() else {
                 continue;
             };
-            let Some(user) = self.users.get(id).await? else {
+            let Some(user) = users.iter().find(|user| user.id == id) else {
                 // A receipt outliving its user keeps its reference.
                 continue;
             };

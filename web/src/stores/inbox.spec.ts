@@ -132,6 +132,17 @@ describe("folding stream events into the inbox", () => {
     expect(inbox.pendingCount).toBe(0);
   });
 
+  it("announces one arrival once, however many revisions it gets before reveal", async () => {
+    const inbox = await loadedWith([notification("ntf_1")]);
+
+    inbox.ingest(revision("ntf_2", { seq: 1, title: "deploy started" }));
+    inbox.ingest(revision("ntf_2", { seq: 2, title: "deploy finished" }));
+    inbox.ingest(revision("ntf_2", { seq: 1, title: "a late replay" }));
+
+    expect(inbox.pendingCount).toBe(1);
+    expect(inbox.pending[0]?.head.content.title).toBe("deploy finished");
+  });
+
   it("updates a row already on screen in place — that is the revision model", async () => {
     const inbox = await loadedWith([notification("ntf_1")]);
 

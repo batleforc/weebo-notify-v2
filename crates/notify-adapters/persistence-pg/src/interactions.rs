@@ -172,7 +172,8 @@ impl InteractionRepository for PgStore {
 }
 
 impl PgStore {
-    /// Every silence in force for a user, read inside the caller's transaction.
+    /// Every silence in force for a user, read inside the caller's transaction. Lapsed
+    /// ones are left out: each preference event carries this list to every device.
     pub(crate) async fn silences_for(
         &self,
         transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -180,7 +181,8 @@ impl PgStore {
     ) -> PortResult<Vec<Silence>> {
         let rows = sqlx::query(
             "SELECT user_id, target, since, until FROM silences
-             WHERE user_id = $1 ORDER BY target_ref",
+             WHERE user_id = $1 AND (until IS NULL OR until > now())
+             ORDER BY target_ref",
         )
         .bind(user.to_string())
         .fetch_all(&mut **transaction)
@@ -188,6 +190,36 @@ impl PgStore {
         .map_err(|error| fail("silence", error))?;
 
         rows.iter().map(hydrate_silence).collect()
+    }
+}
+
+impl PgStore {
+    /// Delete up to `limit` silences that can no longer apply: lapsed ones, and those on
+    /// a notification whose row is gone. Without it the table only grows.
+    ///
+    /// # Errors
+    ///
+    /// When the database refuses the delete.
+    pub async fn purge_silences(&self, now: OffsetDateTime, limit: u32) -> PortResult<u64> {
+        let deleted = sqlx::query(
+            "DELETE FROM silences
+             WHERE (user_id, target_ref) IN (
+                 SELECT s.user_id, s.target_ref FROM silences s
+                 WHERE s.until < $1
+                    OR (s.target->>'scope' = 'notification'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM notifications n WHERE n.id = s.target->>'id'
+                        ))
+                 LIMIT $2
+             )",
+        )
+        .bind(now)
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("silence", error))?;
+
+        Ok(deleted.rows_affected())
     }
 }
 

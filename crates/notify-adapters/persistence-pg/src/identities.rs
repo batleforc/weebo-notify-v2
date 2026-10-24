@@ -26,6 +26,22 @@ impl UserRepository for PgStore {
         self.one_user("WHERE id = $1", &id.to_string()).await
     }
 
+    async fn get_many(&self, ids: &[UserId]) -> PortResult<Vec<User>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        let rows = sqlx::query(
+            "SELECT id, oidc_subject, email, display_name, timezone, locale, \
+             overridden_fields, avatar, created_at FROM users WHERE id = ANY($1)",
+        )
+        .bind(&ids)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("user", error))?;
+        rows.iter().map(hydrate_user).collect()
+    }
+
     async fn find_by_subject(&self, subject: &str) -> PortResult<Option<User>> {
         // The lookup every authenticated request makes, hence the unique index.
         self.one_user("WHERE oidc_subject = $1", subject).await
@@ -100,8 +116,7 @@ impl UserRepository for PgStore {
                    display_name      = EXCLUDED.display_name,
                    timezone          = EXCLUDED.timezone,
                    locale            = EXCLUDED.locale,
-                   overridden_fields = EXCLUDED.overridden_fields,
-                   avatar            = EXCLUDED.avatar",
+                   overridden_fields = EXCLUDED.overridden_fields",
         )
         .bind(user.id.to_string())
         .bind(&user.oidc_subject)
@@ -116,6 +131,31 @@ impl UserRepository for PgStore {
         .await
         .map_err(|error| fail("user", error))
         .map(|_| ())
+    }
+
+    async fn set_avatar(
+        &self,
+        user: UserId,
+        avatar: AttachmentId,
+    ) -> PortResult<Option<AttachmentId>> {
+        // `previous` is read before the row changes, under its lock: a concurrent upload
+        // waits, then reads our value as the one it replaces.
+        let previous: Option<(Option<String>,)> = sqlx::query_as(
+            "UPDATE users u SET avatar = $2
+             FROM (SELECT id, avatar FROM users WHERE id = $1 FOR UPDATE) previous
+             WHERE u.id = previous.id
+             RETURNING previous.avatar",
+        )
+        .bind(user.to_string())
+        .bind(avatar.to_string())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|error| fail("user", error))?;
+
+        previous
+            .and_then(|(previous,)| previous)
+            .map(|id| parse("user.avatar", &id, str::parse::<AttachmentId>))
+            .transpose()
     }
 }
 

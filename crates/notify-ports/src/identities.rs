@@ -27,6 +27,9 @@ pub trait UserRepository: Send + Sync {
     /// Fetch by our own id.
     async fn get(&self, id: UserId) -> PortResult<Option<User>>;
 
+    /// Fetch several in one read, in no particular order; unknown ids are left out.
+    async fn get_many(&self, ids: &[UserId]) -> PortResult<Vec<User>>;
+
     /// Fetch by OIDC subject — the lookup every authenticated request makes.
     async fn find_by_subject(&self, subject: &str) -> PortResult<Option<User>>;
 
@@ -43,7 +46,18 @@ pub trait UserRepository: Send + Sync {
     /// Up to `limit` users whose name or email contains `text`, case-insensitively.
     async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>>;
 
+    /// The avatar of an existing user is left alone: it has its own writer,
+    /// [`Self::set_avatar`], so a profile edit racing an upload cannot put back an
+    /// avatar whose object was just deleted.
     async fn upsert(&self, user: &User) -> PortResult<()>;
+
+    /// Point `user`'s avatar at `avatar` and return the one it replaced, in one write:
+    /// the caller deletes exactly what this replaced, so two uploads at once leak nothing.
+    async fn set_avatar(
+        &self,
+        user: UserId,
+        avatar: AttachmentId,
+    ) -> PortResult<Option<AttachmentId>>;
 }
 
 /// Service accounts.

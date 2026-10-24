@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use notify_domain::{DomainError, PresentedApiKey, Principal, User, UserId};
 use notify_ports::{
-    ApiKeyRepository, Clock, DeviceRepository, Failure, FederationVerifier, SecretHasher,
-    ServiceAccountRepository, TokenRejection, TokenVerifier, UserRepository,
+    ApiKeyRepository, Clock, DeviceRepository, Failure, FederationVerifier, PortError,
+    SecretHasher, ServiceAccountRepository, TokenRejection, TokenVerifier, UserRepository,
 };
 use time::OffsetDateTime;
 
@@ -138,7 +138,8 @@ impl Authenticate {
         // First login creates the account; later logins refresh what the provider owns (§2.4).
         // Conditional write: bearer auth runs on every request.
         let existing = self.users.find_by_subject(&claims.subject).await?;
-        let (user, changed) = match existing {
+        let first_login = existing.is_none();
+        let (mut user, changed) = match existing {
             Some(mut found) => {
                 let changed = found.sync_from_claims(
                     claims.email.as_deref(),
@@ -159,7 +160,19 @@ impl Authenticate {
             ),
         };
         if changed {
-            self.users.upsert(&user).await?;
+            match self.users.upsert(&user).await {
+                Ok(()) => {}
+                // The first requests after a login arrive together, each minting its own
+                // id; the subject is unique, so all but one collide. Theirs is the account.
+                Err(PortError::Conflict { .. }) if first_login => {
+                    user = self
+                        .users
+                        .find_by_subject(&claims.subject)
+                        .await?
+                        .ok_or(PortError::Conflict { what: "user" })?;
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
 
         // Groups are a claim of this token, not stored: the next token may differ (§11).
@@ -345,6 +358,10 @@ mod tests {
             UserRepository::get(&self.inner, id).await
         }
 
+        async fn get_many(&self, ids: &[UserId]) -> notify_ports::PortResult<Vec<User>> {
+            self.inner.get_many(ids).await
+        }
+
         async fn find_by_subject(&self, subject: &str) -> notify_ports::PortResult<Option<User>> {
             self.inner.find_by_subject(subject).await
         }
@@ -371,6 +388,14 @@ mod tests {
             self.writes
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             UserRepository::upsert(&self.inner, user).await
+        }
+
+        async fn set_avatar(
+            &self,
+            user: UserId,
+            avatar: notify_domain::AttachmentId,
+        ) -> notify_ports::PortResult<Option<notify_domain::AttachmentId>> {
+            self.inner.set_avatar(user, avatar).await
         }
     }
 
@@ -429,6 +454,82 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.display_name.as_deref(), Some("Alice"));
+    }
+
+    #[tokio::test]
+    async fn two_first_requests_at_once_end_on_the_same_account() {
+        // The other request wins the race to create the row; ours collides on the subject.
+        #[derive(Clone)]
+        struct Raced(InMemory);
+
+        #[async_trait::async_trait]
+        impl UserRepository for Raced {
+            async fn get(&self, id: UserId) -> notify_ports::PortResult<Option<User>> {
+                UserRepository::get(&self.0, id).await
+            }
+            async fn get_many(&self, ids: &[UserId]) -> notify_ports::PortResult<Vec<User>> {
+                self.0.get_many(ids).await
+            }
+            async fn find_by_subject(
+                &self,
+                subject: &str,
+            ) -> notify_ports::PortResult<Option<User>> {
+                self.0.find_by_subject(subject).await
+            }
+            async fn find_by_email(
+                &self,
+                email: &str,
+            ) -> notify_ports::PortResult<notify_ports::EmailMatch> {
+                self.0.find_by_email(email).await
+            }
+            async fn lookup(&self, text: &str, limit: u32) -> notify_ports::PortResult<Vec<User>> {
+                self.0.lookup(text, limit).await
+            }
+            async fn is_avatar(
+                &self,
+                avatar: notify_domain::AttachmentId,
+            ) -> notify_ports::PortResult<bool> {
+                self.0.is_avatar(avatar).await
+            }
+            async fn upsert(&self, user: &User) -> notify_ports::PortResult<()> {
+                let mut winner = user.clone();
+                winner.id = UserId::generate();
+                UserRepository::upsert(&self.0, &winner).await?;
+                Err(PortError::Conflict { what: "user" })
+            }
+            async fn set_avatar(
+                &self,
+                user: UserId,
+                avatar: notify_domain::AttachmentId,
+            ) -> notify_ports::PortResult<Option<notify_domain::AttachmentId>> {
+                self.0.set_avatar(user, avatar).await
+            }
+        }
+
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let verifier = StaticTokenVerifier::with_clock(Arc::new(clock.clone()));
+        let auth = Authenticate::new(
+            Arc::new(verifier.clone()),
+            Arc::new(Raced(store.clone())),
+            Arc::new(store.clone()),
+            Arc::new(store.clone()),
+            Arc::new(store.clone()),
+            Arc::new(StubSecretHasher),
+            Arc::new(clock.clone()),
+        );
+        verifier.register(
+            "first",
+            claims("ak-user-7", clock.now() + Duration::hours(1)),
+        );
+
+        let caller = auth
+            .execute(Credential::Bearer("first".to_owned()))
+            .await
+            .expect("a lost race is not the caller's error");
+
+        let winner = store.find_by_subject("ak-user-7").await.unwrap().unwrap();
+        assert_eq!(caller.principal, winner.principal());
     }
 
     #[tokio::test]

@@ -39,7 +39,11 @@ pub const EVENT_RETENTION: Duration = Duration::days(30);
 
 /// How long a signed upload may sit unreferenced before it is collected (§7.2bis).
 /// Covers the gap between signing and publishing; the URL itself lives 5 minutes.
-const PRESIGN_GRACE: Duration = Duration::days(1);
+pub(crate) const PRESIGN_GRACE: Duration = Duration::days(1);
+
+/// How far from a sweep's cutoff a publish must stay to name an object: a row closer to
+/// it than this may be collected while the publish commits.
+pub(crate) const SWEEP_MARGIN: Duration = Duration::hours(1);
 
 /// Expired rows claimed per transaction, whatever `batch` says: each row costs three
 /// round trips while the event watermark waits (cf. `CloseStale`'s 200).

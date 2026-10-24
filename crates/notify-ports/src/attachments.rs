@@ -102,9 +102,15 @@ pub trait AttachmentRegistry: Send + Sync {
         at: OffsetDateTime,
     ) -> PortResult<()>;
 
-    /// Whether an upload of `id` was signed for `channel` and not forgotten yet: a
-    /// publish may only name an object its own channel asked to upload.
-    async fn signed_for(&self, id: AttachmentId, channel: &ChannelId) -> PortResult<bool>;
+    /// Whether an upload of `id` was signed for `channel` after `signed_after` and not
+    /// forgotten yet: a publish may only name an object its own channel asked to upload,
+    /// and not one the orphan sweep is about to collect.
+    async fn signed_for(
+        &self,
+        id: AttachmentId,
+        channel: &ChannelId,
+        signed_after: OffsetDateTime,
+    ) -> PortResult<bool>;
 
     /// Ids signed before `older_than` that no live revision references. The age
     /// bound protects uploads whose notification is not published yet.

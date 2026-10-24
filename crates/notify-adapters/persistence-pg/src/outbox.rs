@@ -116,10 +116,11 @@ impl FanoutOutbox for PgStore {
 
         let rows = sqlx::query(
             "UPDATE fanout_outbox
-                SET leased_until = $3, attempts = attempts + 1
+                SET leased_until = $3, retry_at = NULL, attempts = attempts + 1
               WHERE cursor_seq IN (
                     SELECT cursor_seq FROM fanout_outbox o
                      WHERE dead_at IS NULL AND (leased_until IS NULL OR leased_until <= $1)
+                       AND (retry_at IS NULL OR retry_at <= $1)
                        -- Not while another replica pushes this notification: its older
                        -- head could otherwise reach the phone after ours.
                        AND NOT EXISTS (
@@ -254,7 +255,8 @@ impl FanoutOutbox for PgStore {
         retry_at: OffsetDateTime,
     ) -> PortResult<()> {
         sqlx::query(
-            "UPDATE fanout_outbox SET leased_until = $2, last_error = $3 WHERE cursor_seq = $1",
+            "UPDATE fanout_outbox SET leased_until = NULL, retry_at = $2, last_error = $3
+              WHERE cursor_seq = $1",
         )
         .bind(sequence(at))
         .bind(retry_at)

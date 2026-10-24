@@ -167,6 +167,16 @@ pub trait NotificationRepository: Send + Sync {
         channels: &[ChannelId],
     ) -> PortResult<bool>;
 
+    /// Whether a revision in `channel` names this attachment, on a notification live or
+    /// deleted after `deleted_after`: its object is kept for that row, so a later publish
+    /// in the same channel may name it again. Liveness does not matter, purge does.
+    async fn attachment_in_channel(
+        &self,
+        attachment: &AttachmentId,
+        channel: &ChannelId,
+        deleted_after: OffsetDateTime,
+    ) -> PortResult<bool>;
+
     /// Attachment ids referenced **only** by rows due for purge (§7.2bis); call before
     /// [`Self::purge`]. Never returns an id a live revision still uses.
     async fn orphaned_attachments(

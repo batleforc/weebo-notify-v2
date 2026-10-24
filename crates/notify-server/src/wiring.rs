@@ -314,7 +314,8 @@ impl Application {
 
             audit: BrowseAudit::new(repository.clone()),
             inventory: ChannelInventory::new(repository.clone()),
-            self_join: SelfJoin::new(repository.clone(), repository.clone(), clock.clone()),
+            self_join: SelfJoin::new(repository.clone(), repository.clone(), clock.clone())
+                .with_bus(bus.clone()),
             trust_policies: ListTrustPolicies::new(console_policies),
             reconciliation: ReadReconciliation::new(reconciliation_log.clone()),
             dlq: ListDeadLetters::new(repository.clone()),
@@ -354,7 +355,7 @@ impl Application {
             ),
             stream_start: ResolveStreamStart::new(repository.clone(), repository.clone()),
 
-            channels: ListChannels::new(repository.clone()),
+            channels: ListChannels::new(repository.clone(), authorizer.clone()),
             read_channel: ReadChannel::new(authorizer.clone()),
             create_channel: CreateChannel::new(
                 repository.clone(),
@@ -378,7 +379,8 @@ impl Application {
                 authorizer.clone(),
                 repository.clone(),
                 clock.clone(),
-            ),
+            )
+            .with_bus(bus.clone()),
 
             create_key: CreateApiKey::new(
                 repository.clone(),
@@ -628,20 +630,7 @@ fn federation_tokens(
         )
     })?;
 
-    let global = config.trust_policy.iter().map(|policy| &policy.issuer);
-    let scoped = config
-        .channels
-        .managed
-        .iter()
-        .flat_map(|channel| channel.publishers.iter())
-        .map(|publisher| &publisher.issuer);
-
-    let mut issuers: Vec<String> = Vec::new();
-    for issuer in global.chain(scoped) {
-        if !issuer.is_empty() && !issuers.contains(issuer) {
-            issuers.push(issuer.clone());
-        }
-    }
+    let issuers = config.federation_issuers();
 
     Ok(Some(Arc::new(FederationTokens::new(
         &pem,

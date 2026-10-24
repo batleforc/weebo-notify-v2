@@ -121,9 +121,11 @@ pub trait StreamLeases: Send + Sync {
     async fn acquire(&self, request: &LeaseRequest, max: usize) -> PortResult<Acquired>;
     /// Give one back.
     async fn release(&self, lease: &str) -> PortResult<()>;
-    /// Extend every lease `replica` holds, drop what expired anywhere, and return the
-    /// ids `replica` still holds — any other was disconnected and must close.
-    async fn renew(&self, replica: &str) -> PortResult<Vec<String>>;
+    /// Extend the leases in `held` — the ones `replica` still has open, so one whose
+    /// release failed lapses instead of living as long as the process — drop what
+    /// expired anywhere, and return which of `held` still exist: any other was
+    /// disconnected and must close.
+    async fn renew(&self, replica: &str, held: &[String]) -> PortResult<Vec<String>>;
     /// The principal's live connections, oldest first.
     async fn list(&self, principal: &str) -> PortResult<Vec<Lease>>;
     /// Drop one of the principal's leases and keep its credential off realtime until

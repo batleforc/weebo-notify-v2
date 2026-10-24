@@ -393,21 +393,30 @@ impl Reconciling {
     async fn on_hangup(&mut self) -> bool {
         match config::Config::load(&self.path) {
             Ok(file) => {
+                let pending = self.config.unreloadable(&file);
+                let candidate = self.config.reloaded_from(file);
+                // Built before the swap: the pass journals the file's policies, so adopting a
+                // file whose policies are not enforced would audit a removal that never took
+                // effect. All of the reload, or none of it.
+                let policies = match wiring::trust_policies(&candidate) {
+                    Ok(policies) => policies,
+                    Err(error) => {
+                        tracing::warn!(
+                            ?error,
+                            "SIGHUP: the trust policies did not build; keeping the running configuration"
+                        );
+                        // As for a file that does not load: the running one is re-applied.
+                        self.owed = true;
+                        return self.pass(notify_app::Trigger::Sighup).await;
+                    }
+                };
                 // Named before anything is applied, so the operator learns it was ignored.
-                for pending in self.config.unreloadable(&file) {
+                for pending in pending {
                     tracing::warn!(%pending, "changed in the file, not adopted by a reload");
                 }
-                self.config = self.config.reloaded_from(file);
-
+                self.config = candidate;
                 // Swapped before the pass, so the journal dates the change correctly (§13).
-                match wiring::trust_policies(&self.config) {
-                    Ok(policies) => self.policies.adopt(policies),
-                    // The rest of the reload still stands.
-                    Err(error) => tracing::warn!(
-                        ?error,
-                        "SIGHUP: the trust policies did not build; keeping the running set"
-                    ),
-                }
+                self.policies.adopt(policies);
 
                 // The sinks, on the same terms: all of them or none, and a sink
                 // that does not build (a `secret_ref` nobody mounted) keeps the
@@ -454,7 +463,12 @@ impl Reconciling {
         let full = self.owed || trigger != notify_app::Trigger::Timer;
 
         // One pass at a time across the deployment.
-        let Some(guard) = lead_reconciliation(self.election.as_ref(), full).await else {
+        let Ok(led) = lead_reconciliation(self.election.as_ref(), full).await else {
+            // The database did not answer: not "somebody else leads". `/readyz` stays at
+            // `startup`, and the next tick retries the whole file (still owed).
+            return false;
+        };
+        let Some(guard) = led else {
             if trigger == notify_app::Trigger::Boot {
                 // Somebody else held it for the whole wait — a long pass on another
                 // replica. Serving is still right: the database is in whatever
@@ -487,7 +501,9 @@ impl Reconciling {
 
         let ok = match self.reconciler.execute(&self.config).await {
             Ok(report) => {
-                self.owed = false;
+                // Refused removals stay in the snapshot, so `is_current` answers false on
+                // every replica: still owed, or the timer would stand aside until a SIGHUP.
+                self.owed = report.refused > 0;
                 self.started.finish();
                 // Recorded only on success, keeping the last good pass on the console.
                 self.log
@@ -523,22 +539,22 @@ impl Reconciling {
 async fn lead_reconciliation(
     election: &dyn notify_ports::LeaderElection,
     wait: bool,
-) -> Option<Box<dyn notify_ports::LeaderGuard>> {
+) -> Result<Option<Box<dyn notify_ports::LeaderGuard>>, ()> {
     let attempts = if wait { 60 } else { 1 };
     for attempt in 0..attempts {
         if attempt > 0 {
             actix_web::rt::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         match election.try_acquire("reconcile").await {
-            Ok(Some(guard)) => return Some(guard),
+            Ok(Some(guard)) => return Ok(Some(guard)),
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(?error, "could not ask for the reconcile lock");
-                return None;
+                return Err(());
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// An interval that, after a stall, waits a full period rather than firing every
@@ -726,15 +742,36 @@ async fn supervise<F, Fut, E>(
     }
 }
 
-/// One pass, its error or panic logged and turned into `false`.
+/// How long one background pass may run before it is dropped. Each stage has its own
+/// budget well under this; a pass still running here is stuck (a query on a connection
+/// that died silently), and dropping it also drops its leader lock.
+const PASS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
+
+/// One pass, its error, panic or hang logged and turned into `false`.
 async fn guarded<Fut, E>(job: &'static str, pass: Fut) -> bool
+where
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: core::fmt::Debug,
+{
+    guarded_within(job, PASS_TIMEOUT, pass).await
+}
+
+/// [`guarded`] with its own limit, so a test need not wait five minutes.
+async fn guarded_within<Fut, E>(job: &'static str, limit: std::time::Duration, pass: Fut) -> bool
 where
     Fut: std::future::Future<Output = Result<(), E>>,
     E: core::fmt::Debug,
 {
     use futures::FutureExt as _;
 
-    match std::panic::AssertUnwindSafe(pass).catch_unwind().await {
+    let Ok(outcome) =
+        actix_web::rt::time::timeout(limit, std::panic::AssertUnwindSafe(pass).catch_unwind())
+            .await
+    else {
+        tracing::error!(job, ?limit, "background pass stuck; dropped it");
+        return false;
+    };
+    match outcome {
         Ok(Ok(())) => true,
         Ok(Err(error)) => {
             tracing::warn!(job, ?error, "background pass failed; retrying");
@@ -799,6 +836,12 @@ async fn housekeep(
     {
         Ok(backlog) => metrics.retention_backlog(&backlog),
         Err(error) => tracing::warn!(?error, "could not measure the retention backlog"),
+    }
+
+    match store.purge_silences(now, 1_000).await {
+        Ok(0) => {}
+        Ok(purged) => tracing::info!(purged, "silences that can no longer apply deleted"),
+        Err(error) => tracing::warn!(?error, "could not purge silences"),
     }
 
     // Dead letters are kept as long as events, for an operator to read; bounded per pass.
@@ -875,6 +918,18 @@ async fn reconcile_loop(
 #[cfg(test)]
 mod tests {
     use actix_web::{App, HttpResponse, test, web};
+
+    #[actix_web::test]
+    async fn a_stuck_pass_is_dropped_and_counted_as_failed() {
+        let stuck = std::future::pending::<Result<(), ()>>();
+
+        let ok = super::guarded_within("test", std::time::Duration::from_millis(50), stuck).await;
+
+        assert!(
+            !ok,
+            "a hung pass must end, or its loop and leader lock hang with it"
+        );
+    }
 
     #[actix_web::test]
     async fn responses_carry_the_security_headers_without_overriding_a_route() {

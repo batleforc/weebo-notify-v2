@@ -127,6 +127,12 @@ impl PgStore {
                 "idle_in_transaction_session_timeout",
                 format!("{}ms", settings.idle_in_transaction_timeout.as_millis()),
             ),
+            // The server notices a client cut off by a partition in about a minute
+            // rather than the kernel's two hours: a dead leader's advisory lock is
+            // released, so another replica can lead.
+            ("tcp_keepalives_idle", "30".to_owned()),
+            ("tcp_keepalives_interval", "10".to_owned()),
+            ("tcp_keepalives_count", "3".to_owned()),
         ]);
 
         let pool = PgPoolOptions::new()

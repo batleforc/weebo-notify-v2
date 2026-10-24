@@ -115,17 +115,16 @@ impl Store {
 
         let connection = Connection::open(path).map_err(|error| store_failure(&error))?;
 
-        // WAL: readers and the writer don't block each other (TUI streams while `notify ls` reads).
+        // Wait out a concurrent writer instead of failing with "database is locked" —
+        // first, so switching to WAL below waits too when another process is mid-open.
         connection
-            .pragma_update(None, "journal_mode", "WAL")
+            .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|error| store_failure(&error))?;
+        // WAL: readers and the writer don't block each other (TUI streams while `notify ls` reads).
+        use_wal(&connection)?;
         // NORMAL, not FULL: a lost tail is re-fetched from the cursor.
         connection
             .pragma_update(None, "synchronous", "NORMAL")
-            .map_err(|error| store_failure(&error))?;
-        // Wait out a concurrent writer instead of failing with "database is locked".
-        connection
-            .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|error| store_failure(&error))?;
 
         let store = Self {
@@ -138,6 +137,27 @@ impl Store {
 
     /// Create the schema, or refuse a file from the future.
     fn migrate(&self) -> Result<(), ClientError> {
+        // One IMMEDIATE transaction around the whole upgrade, version read and write
+        // included: two processes opening an old store at once take turns (the busy
+        // timeout) instead of both adding the same column, and a crash half way leaves
+        // the old schema rather than a half-new one that no open can get past.
+        self.connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| store_failure(&error))?;
+        let upgraded = self.upgrade();
+        let end = if upgraded.is_ok() {
+            "COMMIT"
+        } else {
+            "ROLLBACK"
+        };
+        self.connection
+            .execute_batch(end)
+            .map_err(|error| store_failure(&error))?;
+        upgraded
+    }
+
+    /// The schema steps of [`Self::migrate`], inside its transaction.
+    fn upgrade(&self) -> Result<(), ClientError> {
         let found: i64 = self
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -155,8 +175,7 @@ impl Store {
 
         self.connection
             .execute_batch(
-                "BEGIN;
-                 CREATE TABLE IF NOT EXISTS meta (
+                "CREATE TABLE IF NOT EXISTS meta (
                      key   TEXT PRIMARY KEY,
                      value TEXT NOT NULL
                  );
@@ -171,8 +190,7 @@ impl Store {
                      payload    TEXT NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS notifications_by_time
-                     ON notifications (received_at DESC);
-                 COMMIT;",
+                     ON notifications (received_at DESC);",
             )
             .map_err(|error| store_failure(&error))?;
 
@@ -180,12 +198,10 @@ impl Store {
             // Schema 2 (§7.2): existing rows get "" rather than a made-up arrival time.
             self.connection
                 .execute_batch(
-                    "BEGIN;
-                     ALTER TABLE notifications
+                    "ALTER TABLE notifications
                          ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
                      ALTER TABLE notifications
-                         ADD COLUMN delivered_at TEXT NOT NULL DEFAULT '';
-                     COMMIT;",
+                         ADD COLUMN delivered_at TEXT NOT NULL DEFAULT '';",
                 )
                 .map_err(|error| store_failure(&error))?;
         }
@@ -227,6 +243,24 @@ impl Store {
     /// Fails if the store cannot be written.
     pub fn set_cursor(&self, cursor: &str) -> Result<(), ClientError> {
         self.set_meta("cursor", cursor)
+    }
+
+    /// The server this cache was filled from, once anything synced into it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store cannot be read.
+    pub fn server(&self) -> Result<Option<String>, ClientError> {
+        self.meta("server")
+    }
+
+    /// Record which server fills this cache.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store cannot be written.
+    pub fn set_server(&self, server: &str) -> Result<(), ClientError> {
+        self.set_meta("server", server)
     }
 
     /// The device this profile enrolled, if any (one per profile, not per front end).
@@ -482,6 +516,40 @@ fn timestamp(raw: &str) -> Option<DateTime<Utc>> {
         .map(|at| at.with_timezone(&Utc))
 }
 
+/// Switch to WAL unless the file already is (the mode persists). Switching needs the
+/// file to itself and SQLite answers "busy" without waiting when another process is
+/// creating it at the same moment, so a bounded retry instead of the busy timeout.
+fn use_wal(connection: &Connection) -> Result<(), ClientError> {
+    const ATTEMPTS: u32 = 50;
+    let mut attempt = 0;
+    loop {
+        let mode = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .and_then(|mode| {
+                if mode.eq_ignore_ascii_case("wal") {
+                    Ok(mode)
+                } else {
+                    connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+                }
+            });
+        match mode {
+            Ok(_) => return Ok(()),
+            Err(error) if attempt < ATTEMPTS && is_busy(&error) => {
+                attempt = attempt.saturating_add(1);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => return Err(store_failure(&error)),
+        }
+    }
+}
+
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
 fn store_failure(error: &rusqlite::Error) -> ClientError {
     ClientError::Store {
         detail: error.to_string(),
@@ -500,6 +568,27 @@ mod tests {
         }
         let path = dir.join("store.db");
         (Store::open_at(&path).unwrap(), path)
+    }
+
+    #[test]
+    fn processes_opening_a_fresh_store_at_once_all_succeed() {
+        let dir = std::env::temp_dir().join(format!("wnk-store-{}-race", std::process::id()));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        let path = dir.join("store.db");
+
+        let opened: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || Store::open_at(&path).map(|_| ()))
+            })
+            .collect();
+
+        for opening in opened {
+            opening.join().unwrap().unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

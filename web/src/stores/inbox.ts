@@ -281,6 +281,16 @@ export const useInbox = defineStore("inbox", () => {
     }
 
     const row = rowFrom(event, channel);
+    // Not indexed until revealed: a second revision of the same arrival replaces the
+    // first instead of announcing one more notification.
+    const waiting = pending.value.findIndex((held) => held.id === row.id);
+    if (waiting !== -1) {
+      const held = pending.value[waiting];
+      if (held && event.seq < held.last_seq) {
+        return;
+      }
+      pending.value.splice(waiting, 1);
+    }
     // Revealed by the separator, so the list never jumps (§10.5).
     pending.value.unshift(row);
   }

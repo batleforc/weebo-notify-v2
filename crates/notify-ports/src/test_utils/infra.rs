@@ -708,10 +708,10 @@ impl StreamLeases for TestStreamLeases {
         Ok(())
     }
 
-    async fn renew(&self, replica: &str) -> PortResult<Vec<String>> {
+    async fn renew(&self, replica: &str, held: &[String]) -> PortResult<Vec<String>> {
         Ok(lock(&self.held)
             .iter()
-            .filter(|(r, _)| r.replica == replica)
+            .filter(|(r, l)| r.replica == replica && held.contains(&l.id))
             .map(|(_, l)| l.id.clone())
             .collect())
     }

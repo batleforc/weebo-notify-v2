@@ -8,12 +8,13 @@ use notify_ports::{
     AuditEntry, AuditLog, ChannelRepository, Clock, Failure, Page, PageRequest, actions,
 };
 
-use crate::authz::{Authorizer, Caller};
+use crate::authz::{Authorizer, Caller, Grant};
 
 /// `GET /api/v1/channels` — the channels a caller can see (design §8).
 #[derive(Clone)]
 pub struct ListChannels {
     channels: Arc<dyn ChannelRepository>,
+    authorizer: Authorizer,
 }
 
 impl core::fmt::Debug for ListChannels {
@@ -24,8 +25,11 @@ impl core::fmt::Debug for ListChannels {
 
 impl ListChannels {
     #[must_use]
-    pub fn new(channels: Arc<dyn ChannelRepository>) -> Self {
-        Self { channels }
+    pub const fn new(channels: Arc<dyn ChannelRepository>, authorizer: Authorizer) -> Self {
+        Self {
+            channels,
+            authorizer,
+        }
     }
 
     /// List the channels the caller may read.
@@ -34,10 +38,41 @@ impl ListChannels {
         caller: &Caller,
         page: PageRequest,
     ) -> Result<Page<Channel>, Failure> {
-        Ok(self
+        let mut listed = self
             .channels
             .list_for(&caller.principal, &caller.groups, Scope::Subscribe, page)
-            .await?)
+            .await?;
+        // A key or CI token acts as its owner here, but reads only what its own grant
+        // covers: otherwise a publish-only key lists every member of every owner channel.
+        if caller.grant != Grant::Membership {
+            let readable = self.authorizer.readable_channels(caller).await?;
+            listed
+                .items
+                .retain(|channel| readable.contains(&channel.id));
+        }
+        Ok(listed)
+    }
+}
+
+/// Wake `member`'s live streams so they re-read what they may read: a membership writes
+/// no event, so no channel poke would reach a stream that does not know the channel yet.
+/// No event behind it either, hence the start cursor; streams wake on it regardless.
+pub(crate) async fn announce_membership(
+    bus: Option<&dyn notify_ports::EventBus>,
+    member: &Principal,
+) {
+    let (Some(bus), Principal::User { id }) = (bus, member) else {
+        return;
+    };
+    let poke = notify_ports::Poke::User {
+        id: *id,
+        cursor: notify_domain::Cursor::START,
+    };
+    if let Err(error) = bus.publish(&poke).await {
+        tracing::warn!(
+            ?error,
+            "could not tell a new member's streams; they catch up within a minute"
+        );
     }
 }
 
@@ -149,6 +184,8 @@ pub struct ManageMembers {
     authorizer: Authorizer,
     audit: Arc<dyn AuditLog>,
     clock: Arc<dyn Clock>,
+    /// Tells a new member's open streams to re-read what they may read.
+    bus: Option<Arc<dyn notify_ports::EventBus>>,
 }
 
 impl core::fmt::Debug for ManageMembers {
@@ -170,7 +207,16 @@ impl ManageMembers {
             authorizer,
             audit,
             clock,
+            bus: None,
         }
+    }
+
+    /// Announce memberships to the member's live streams, which otherwise learn of a
+    /// joined channel only when they next re-authenticate.
+    #[must_use]
+    pub fn with_bus(mut self, bus: Arc<dyn notify_ports::EventBus>) -> Self {
+        self.bus = Some(bus);
+        self
     }
 
     /// Add a member or change their scopes.
@@ -194,6 +240,7 @@ impl ManageMembers {
         // One row, so a concurrent manager's addition is not dropped.
         self.channels.put_member(channel_id, &membership).await?;
         channel.upsert_member(membership);
+        announce_membership(self.bus.as_deref(), &principal).await;
 
         self.audit
             .record(&AuditEntry {
@@ -405,7 +452,10 @@ mod tests {
         let authorizer = Authorizer::new(Arc::new(store.clone()));
 
         Fixture {
-            list: ListChannels::new(Arc::new(store.clone())),
+            list: ListChannels::new(
+                Arc::new(store.clone()),
+                Authorizer::new(Arc::new(store.clone())),
+            ),
             create: CreateChannel::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -416,7 +466,8 @@ mod tests {
                 authorizer.clone(),
                 Arc::new(store.clone()),
                 Arc::new(clock.clone()),
-            ),
+            )
+            .with_bus(Arc::new(store.clone())),
             update: UpdateChannel::new(
                 Arc::new(store.clone()),
                 authorizer.clone(),
@@ -560,6 +611,14 @@ mod tests {
             audit
                 .iter()
                 .any(|entry| entry.action.as_str() == "channel.member_added")
+        ); // Bob's open streams are told, so the channel reaches them without waiting.
+        let bob_id = bob.as_user().expect("built as a user above");
+        assert!(
+            fixture
+                .store
+                .pokes()
+                .iter()
+                .any(|poke| matches!(poke, notify_ports::Poke::User { id, .. } if *id == bob_id))
         );
     }
 

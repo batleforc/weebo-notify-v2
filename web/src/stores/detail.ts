@@ -73,6 +73,13 @@ export const useDetail = defineStore("detail", () => {
   /** Only the latest `open`/`close` may write; comparing ids misses A→B→A. */
   let generation = 0;
 
+  /**
+   * Events that arrived while the notification was loading: folded in once it has,
+   * or the response would overwrite them. Bounded: a load is one round trip.
+   */
+  let held: StreamEvent[] = [];
+  const MAX_HELD = 500;
+
   /** Open a notification. Safe to call with the same id twice. */
   async function open(next: string): Promise<void> {
     if (id.value === next && notification.value) {
@@ -81,6 +88,7 @@ export const useDetail = defineStore("detail", () => {
     const mine = ++generation;
     id.value = next;
     reset();
+    held = [];
     loading.value = true;
 
     try {
@@ -103,6 +111,12 @@ export const useDetail = defineStore("detail", () => {
       revisions.value = [...history.data.items].sort((a, b) => a.seq - b.seq);
       interactions.value = answered.data;
       readership.value = read.data ?? null;
+      loading.value = false;
+      const late = held;
+      held = [];
+      for (const event of late) {
+        ingest(event);
+      }
     } catch (caught) {
       if (mine !== generation) {
         return;
@@ -218,6 +232,12 @@ export const useDetail = defineStore("detail", () => {
   function ingest(event: StreamEvent): void {
     const current = id.value;
     if (!current) {
+      return;
+    }
+    if (loading.value) {
+      if (held.length < MAX_HELD) {
+        held.push(event);
+      }
       return;
     }
 

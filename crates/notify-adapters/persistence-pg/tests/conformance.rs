@@ -1735,10 +1735,32 @@ mod e2e {
         // `/avatars/{id}` serves only what some user references as an avatar.
         let avatar = notify_domain::AttachmentId::generate();
         assert!(!store.is_avatar(avatar).await.unwrap());
-        let mut with_avatar = stored;
-        with_avatar.profile.avatar = Some(avatar);
-        users(&store).upsert(&with_avatar).await.unwrap();
+        assert_eq!(
+            users(&store).set_avatar(stored.id, avatar).await.unwrap(),
+            None
+        );
         assert!(store.is_avatar(avatar).await.unwrap());
+
+        // The avatar has one writer: a stale profile written back does not undo it, and
+        // the next upload is told exactly what it replaced.
+        users(&store).upsert(&stored).await.unwrap();
+        assert!(
+            store.is_avatar(avatar).await.unwrap(),
+            "a stale upsert put the old avatar back"
+        );
+        let next = notify_domain::AttachmentId::generate();
+        assert_eq!(
+            users(&store).set_avatar(stored.id, next).await.unwrap(),
+            Some(avatar)
+        );
+
+        // The receipts roll names its readers in one read; unknown ids are left out.
+        let named = users(&store)
+            .get_many(&[stored.id, UserId::generate()])
+            .await
+            .unwrap();
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].id, stored.id);
     }
 
     #[tokio::test]
@@ -3684,8 +3706,36 @@ mod e2e {
                 .await
                 .unwrap(),
         );
-        let live = StreamLeases::renew(&store, "replica-a").await.unwrap();
+        let live = StreamLeases::renew(&store, "replica-a", core::slice::from_ref(&a))
+            .await
+            .unwrap();
         assert!(!live.contains(&a), "the replica learns its lease is gone");
+
+        // A lease the replica no longer holds open (its release failed) is not renewed:
+        // it lapses instead of counting against its owner for as long as the pod lives.
+        let ghost = granted(
+            StreamLeases::acquire(&store, &ask(&me, "replica-a", "t6"), 3)
+                .await
+                .unwrap(),
+        );
+        sqlx::query(
+            "UPDATE stream_leases SET expires_at = now() + interval '1 second' WHERE id::text = $1",
+        )
+        .bind(&ghost)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        StreamLeases::renew(&store, "replica-a", &[]).await.unwrap();
+        let expires: OffsetDateTime =
+            sqlx::query_scalar("SELECT expires_at FROM stream_leases WHERE id::text = $1")
+                .bind(&ghost)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert!(
+            expires < now() + Duration::seconds(5),
+            "a ghost lease was renewed"
+        );
 
         // A replica that died stops renewing: its leases lapse and free the slots.
         sqlx::query("UPDATE stream_leases SET expires_at = now() - interval '1 second' WHERE principal = $1")
@@ -3693,7 +3743,7 @@ mod e2e {
             .execute(store.pool())
             .await
             .unwrap();
-        StreamLeases::renew(&store, "replica-z").await.unwrap();
+        StreamLeases::renew(&store, "replica-z", &[]).await.unwrap();
         granted(
             StreamLeases::acquire(&store, &ask(&me, "replica-a", "t5"), 1)
                 .await
@@ -4127,9 +4177,16 @@ mod e2e {
             !claim(now()).await,
             "replica B must not race A's older head"
         );
-        outbox.complete_fanout(first).await.unwrap();
-        assert!(claim(now()).await, "owed again once A is done");
+
+        // A failing earlier revision backing off is not "being pushed": it must not
+        // hold the newer one back for its whole retry chain.
+        outbox
+            .retry_fanout(first, "relay down", now() + Duration::minutes(5))
+            .await
+            .unwrap();
+        assert!(claim(now()).await, "blocked behind a backoff");
         outbox.complete_fanout(second).await.unwrap();
+        outbox.complete_fanout(first).await.unwrap();
     }
 
     #[tokio::test]
@@ -4645,13 +4702,75 @@ mod e2e {
         let id = AttachmentId::generate();
         registry(&store).record(id, &channel, now()).await.unwrap();
 
-        assert!(registry(&store).signed_for(id, &channel).await.unwrap());
-        assert!(!registry(&store).signed_for(id, &other).await.unwrap());
+        let recent = now() - Duration::hours(1);
         assert!(
-            !registry(&store)
-                .signed_for(AttachmentId::generate(), &channel)
+            registry(&store)
+                .signed_for(id, &channel, recent)
                 .await
                 .unwrap()
+        );
+        assert!(
+            !registry(&store)
+                .signed_for(id, &other, recent)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !registry(&store)
+                .signed_for(AttachmentId::generate(), &channel, recent)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !registry(&store)
+                .signed_for(id, &channel, now() + Duration::hours(1))
+                .await
+                .unwrap(),
+            "too old: the sweep may be collecting it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_attachment_stays_nameable_in_its_channel_until_its_rows_near_purge() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let other = seeded_channel(&store, &alice).await;
+        let image = AttachmentId::generate();
+        let (shown, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    image: Some(Image::Attachment { reference: image }),
+                    ..ContentDraft::titled("screenshot")
+                },
+            ),
+            None,
+            now(),
+        )
+        .await;
+        store.mark_deleted(shown.id, now()).await.unwrap();
+
+        let named = |channel: ChannelId, deleted_after: OffsetDateTime| {
+            let store = store.clone();
+            async move {
+                notifications(&store)
+                    .attachment_in_channel(&image, &channel, deleted_after)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert!(
+            named(channel.clone(), now() - Duration::days(6)).await,
+            "deleted, but its object is kept"
+        );
+        assert!(!named(other, now() - Duration::days(6)).await);
+        assert!(
+            !named(channel, now() + Duration::hours(1)).await,
+            "too close to purge"
         );
     }
 
@@ -4798,6 +4917,64 @@ mod e2e {
             .filter(|id| my_accounts.contains(id))
             .collect();
         assert_eq!(mine, my_accounts);
+    }
+
+    #[tokio::test]
+    async fn silences_that_can_no_longer_apply_are_purged_and_live_ones_kept() {
+        let store = store!();
+        let (alice_id, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let (shown, _) = publish(&store, &channel, &alice, "still here").await;
+        let silence = |target, until| Silence {
+            user: alice_id,
+            target,
+            until,
+            since: now() - Duration::days(2),
+        };
+        for silenced in [
+            silence(
+                SilenceTarget::Group {
+                    key: "lapsed".to_owned(),
+                },
+                Some(now() - Duration::hours(1)),
+            ),
+            silence(
+                SilenceTarget::Group {
+                    key: "running".to_owned(),
+                },
+                Some(now() + Duration::hours(1)),
+            ),
+            silence(SilenceTarget::Notification { id: shown.id }, None),
+            silence(
+                SilenceTarget::Notification {
+                    id: NotificationId::generate(),
+                },
+                None,
+            ),
+        ] {
+            store.silence(&silenced).await.unwrap();
+        }
+
+        // Others' rows share the database: drain, then look at ours.
+        while store.purge_silences(now(), 1_000).await.unwrap() > 0 {}
+
+        let left: Vec<String> = sqlx::query_scalar(
+            "SELECT target_ref FROM silences WHERE user_id = $1 ORDER BY target_ref",
+        )
+        .bind(alice_id.to_string())
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(
+            left.iter().any(|target| target.contains("running")),
+            "{left:?}"
+        );
+        assert!(
+            left.iter()
+                .any(|target| target.contains(&shown.id.to_string())),
+            "{left:?}"
+        );
     }
 
     #[tokio::test]

@@ -102,6 +102,7 @@ impl SyncBacklog {
         // The cursor is device-wide: only an unfiltered membership sync may move it.
         let complete = request.channels.is_empty() && caller.grant == Grant::Membership;
 
+        let narrowed = !request.channels.is_empty();
         let readable = self.authorizer.readable_channels(caller).await?;
         let channels = if request.channels.is_empty() {
             readable
@@ -113,6 +114,13 @@ impl SyncBacklog {
                 .filter(|channel| readable.contains(channel))
                 .collect()
         };
+
+        // The store reads an empty list as "every channel the user subscribes to", which
+        // is only this caller's set for an unnarrowed session: a publish-only key, or a
+        // `?channels=` naming nothing readable, must get nothing rather than everything.
+        if channels.is_empty() && (narrowed || caller.grant != Grant::Membership) {
+            return Ok(SyncPage::caught_up());
+        }
 
         let mut page = self
             .events

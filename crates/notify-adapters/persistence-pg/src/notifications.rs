@@ -697,6 +697,33 @@ impl NotificationRepository for PgStore {
         Ok(visible)
     }
 
+    async fn attachment_in_channel(
+        &self,
+        attachment: &AttachmentId,
+        channel: &ChannelId,
+        deleted_after: OffsetDateTime,
+    ) -> PortResult<bool> {
+        let (named,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (
+                 SELECT 1
+                 FROM revisions r
+                 JOIN notifications n ON n.id = r.notification_id
+                 WHERE r.content->'image'->>'kind' = 'attachment'
+                   AND r.content->'image'->>'ref' = $1
+                   AND n.channel_id = $2
+                   AND (n.deleted_at IS NULL OR n.deleted_at > $3)
+             )",
+        )
+        .bind(attachment.to_string())
+        .bind(channel.as_str())
+        .bind(deleted_after)
+        .fetch_one(self.pool())
+        .await
+        .map_err(|error| fail("notification", error))?;
+
+        Ok(named)
+    }
+
     async fn orphaned_attachments(
         &self,
         deleted_before: OffsetDateTime,

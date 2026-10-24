@@ -64,6 +64,23 @@ impl Session {
         channels: Option<&str>,
         device: Option<&str>,
     ) -> Result<SyncOutcome, ClientError> {
+        // A cursor, a device and cached rows belong to one server: the desktop shell and
+        // the CLI share this store, and may be signed in to different ones.
+        let server = self.base_url().trim_end_matches('/');
+        match store.server()? {
+            None => store.set_server(server)?,
+            Some(owner) if owner == server => {}
+            Some(owner) => {
+                return Err(ClientError::Invalid {
+                    detail: format!(
+                        "this profile's cache holds {owner}'s notifications, not {server}'s; \
+                         use another --profile for that server, or delete {} to start over",
+                        store.path().display()
+                    ),
+                });
+            }
+        }
+
         let mut outcome = SyncOutcome::default();
         let mut cursor = store.cursor()?;
         let mut first_page = true;
@@ -110,7 +127,12 @@ impl Session {
                 }
             }
 
-            if let Some(last) = &cursor {
+            // Only an unfiltered sync owns the shared cursor: a channel-narrowed one moving
+            // it would skip, for good, every other channel's events (the server keeps the
+            // same rule for the device cursor).
+            if channels.is_none()
+                && let Some(last) = &cursor
+            {
                 store.set_cursor(last)?;
             }
 
@@ -281,5 +303,74 @@ mod tests {
             }
             .is_quiet()
         );
+    }
+
+    /// Serve one canned `/sync` page on a local port; returns the profile pointing at it.
+    fn one_page(body: &'static str) -> crate::Profile {
+        use std::io::{BufRead as _, BufReader, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        crate::Profile {
+            url: format!("http://127.0.0.1:{port}").parse().unwrap(),
+            token: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_channel_narrowed_sync_leaves_the_shared_cursor_alone() {
+        let dir = std::env::temp_dir().join(format!("wnk-sync-{}", std::process::id()));
+        let store = Store::open_at(&dir.join("store.db")).unwrap();
+        let session =
+            Session::open(&one_page(r#"{"events":[{"cursor":"42"}],"next":null}"#)).unwrap();
+
+        session
+            .sync_into(&store, Some("ci-infra"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.cursor().unwrap(),
+            None,
+            "the other channels' events would never be fetched"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cache_filled_from_one_server_refuses_another() {
+        let dir = std::env::temp_dir().join(format!("wnk-sync-{}-owner", std::process::id()));
+        let store = Store::open_at(&dir.join("store.db")).unwrap();
+        store
+            .set_server("https://notify.elsewhere.example")
+            .unwrap();
+        // Never asked: the refusal comes before any request.
+        let session = Session::open(&crate::Profile {
+            url: "https://notify.example".parse().unwrap(),
+            token: None,
+        })
+        .unwrap();
+
+        let refused = session.sync_into(&store, None, None).await;
+
+        assert!(
+            matches!(refused, Err(ClientError::Invalid { .. })),
+            "{refused:?}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

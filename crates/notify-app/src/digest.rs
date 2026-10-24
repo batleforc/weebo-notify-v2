@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt as _;
+
 use notify_domain::Principal;
 use notify_ports::{
     Clock, DeviceRepository, Failure, LeaderElection, PreferenceRepository, PushMessage,
@@ -12,6 +14,9 @@ use crate::fanout::Fanout;
 
 /// How many tallies to consider per pass; bounded so a lost lock is noticed.
 const BATCH: u32 = 200;
+
+/// People whose digest goes out at once; as many as one notification's fan-out pushes to.
+const CONCURRENCY: usize = 16;
 
 /// What one pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -80,38 +85,34 @@ impl SendDndDigests {
             let full = page.len() >= BATCH as usize;
             after = page.last().map(|tally| tally.dnd.user);
 
+            let mut due = Vec::new();
             for tally in page {
-                // Re-checked per user: a partition mid-pass must stop this replica (T22).
-                if !guard.is_held().await {
-                    tracing::warn!("lost leadership mid-digest; stopping");
-                    break 'pages;
-                }
-
                 if tally.dnd.is_active(now) {
                     // Still quiet: the tally keeps counting.
                     report.still_quiet = report.still_quiet.saturating_add(1);
-                    continue;
+                } else {
+                    due.push(tally);
                 }
+            }
 
-                let message = PushMessage::Digest {
-                    total: tally.total,
-                    failures: tally.failures,
-                };
-                let owner = Principal::User { id: tally.dnd.user };
-
-                for device in self.devices.list_for(&owner).await? {
-                    if !device.is_active() {
-                        continue;
-                    }
-                    self.fanout.push_digest(&device, &message).await;
+            // Several people at once: a shared quiet period ends for everyone at the same
+            // minute, and one push after another would make the last digest minutes late.
+            let outcomes: Vec<Result<bool, Failure>> = futures::stream::iter(due)
+                .map(|tally| self.send(guard.as_ref(), tally))
+                .buffer_unordered(CONCURRENCY)
+                .collect()
+                .await;
+            let mut led = true;
+            for outcome in outcomes {
+                if outcome? {
+                    report.sent = report.sent.saturating_add(1);
+                } else {
+                    led = false;
                 }
-
-                // Cleared whether or not a device took it: re-sending each tick would be the burst
-                // this exists to prevent (§7.4).
-                self.preferences
-                    .clear_deferred(tally.dnd.user, tally.total, tally.failures)
-                    .await?;
-                report.sent = report.sent.saturating_add(1);
+            }
+            if !led {
+                tracing::warn!("lost leadership mid-digest; stopping");
+                break 'pages;
             }
 
             if !full {
@@ -121,6 +122,38 @@ impl SendDndDigests {
 
         guard.release().await;
         Ok(report)
+    }
+
+    /// Send one person's digest and clear their tally; `false` when leadership was lost
+    /// first, so nothing was sent.
+    async fn send(
+        &self,
+        guard: &dyn notify_ports::LeaderGuard,
+        tally: notify_ports::DeferredTally,
+    ) -> Result<bool, Failure> {
+        // Re-checked per user: a partition mid-pass must stop this replica (T22).
+        if !guard.is_held().await {
+            return Ok(false);
+        }
+
+        let message = PushMessage::Digest {
+            total: tally.total,
+            failures: tally.failures,
+        };
+        let owner = Principal::User { id: tally.dnd.user };
+        for device in self.devices.list_for(&owner).await? {
+            if !device.is_active() {
+                continue;
+            }
+            self.fanout.push_digest(&device, &message).await;
+        }
+
+        // Cleared whether or not a device took it: re-sending each tick would be the burst
+        // this exists to prevent (§7.4).
+        self.preferences
+            .clear_deferred(tally.dnd.user, tally.total, tally.failures)
+            .await?;
+        Ok(true)
     }
 }
 
