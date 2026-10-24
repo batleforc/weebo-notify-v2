@@ -8,26 +8,28 @@ const TARGET_VERSION: &str = "3.0.3";
 
 /// Rewrite `document` in place, returning how many nodes changed (so a no-op is visible).
 pub(crate) fn to_openapi_30(document: &mut Value) -> usize {
-    let mut changes = 0;
+    let mut changes = 0_usize;
 
     if let Some(object) = document.as_object_mut() {
         object.insert("openapi".to_owned(), Value::from(TARGET_VERSION));
-        changes += 1;
+        changes = changes.saturating_add(1);
         // `$schema` and `webhooks` are 3.1-only top-level keys with no 3.0 meaning.
         for key in ["$schema", "webhooks"] {
             if object.remove(key).is_some() {
-                changes += 1;
+                changes = changes.saturating_add(1);
             }
         }
     }
 
-    changes + walk(document) + unnullify_parameters(document)
+    changes
+        .saturating_add(walk(document))
+        .saturating_add(unnullify_parameters(document))
 }
 
 /// Drop `nullable` from parameter schemas: progenitor would generate an uncompilable
 /// `Option<Option<&str>>`, and `required: false` already says it.
 fn unnullify_parameters(document: &mut Value) -> usize {
-    let mut changes = 0;
+    let mut changes = 0_usize;
 
     let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
         return 0;
@@ -50,7 +52,7 @@ fn unnullify_parameters(document: &mut Value) -> usize {
                     .and_then(Value::as_object_mut)
                     .and_then(|schema| schema.remove("nullable"));
                 if removed.is_some() {
-                    changes += 1;
+                    changes = changes.saturating_add(1);
                 }
             }
         }
@@ -63,11 +65,11 @@ fn walk(node: &mut Value) -> usize {
     match node {
         Value::Object(object) => {
             let mut changes = lower_nullable_type(object)
-                + lower_nullable_composition(object)
-                + lower_const(object)
-                + lower_exclusive_bounds(object);
+                .saturating_add(lower_nullable_composition(object))
+                .saturating_add(lower_const(object))
+                .saturating_add(lower_exclusive_bounds(object));
             for value in object.values_mut() {
-                changes += walk(value);
+                changes = changes.saturating_add(walk(value));
             }
             changes
         }
@@ -152,7 +154,7 @@ fn lower_const(object: &mut Map<String, Value>) -> usize {
 /// 3.1 makes the exclusive bounds numeric (`exclusiveMinimum: 3`); 3.0 makes them
 /// booleans qualifying `minimum`/`maximum`.
 fn lower_exclusive_bounds(object: &mut Map<String, Value>) -> usize {
-    let mut changes = 0;
+    let mut changes = 0_usize;
     for (exclusive, inclusive) in [
         ("exclusiveMinimum", "minimum"),
         ("exclusiveMaximum", "maximum"),
@@ -166,7 +168,7 @@ fn lower_exclusive_bounds(object: &mut Map<String, Value>) -> usize {
         };
         object.insert(inclusive.to_owned(), bound);
         object.insert(exclusive.to_owned(), Value::Bool(true));
-        changes += 1;
+        changes = changes.saturating_add(1);
     }
     changes
 }

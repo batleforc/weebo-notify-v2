@@ -1,5 +1,10 @@
 //! Doubles for the stateless infrastructure ports.
 
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "in-memory test doubles: counters and clock steps on small, known values"
+)]
+
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use notify_domain::{

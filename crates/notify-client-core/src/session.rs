@@ -49,7 +49,9 @@ impl Deadlines {
     /// on a slow link is not cut off the way a stalled one is.
     fn upload(self, len: usize) -> std::time::Duration {
         let transfer = u64::try_from(len).unwrap_or(u64::MAX) / Self::UPLOAD_RATE;
-        (self.upload_floor + std::time::Duration::from_secs(transfer)).min(Self::UPLOAD_CAP)
+        self.upload_floor
+            .saturating_add(std::time::Duration::from_secs(transfer))
+            .min(Self::UPLOAD_CAP)
     }
 }
 
@@ -436,6 +438,11 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::time::{Duration, Instant};

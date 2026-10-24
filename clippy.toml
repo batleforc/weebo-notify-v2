@@ -42,6 +42,10 @@ allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 allow-dbg-in-tests = true
 
-# The gap between two instants always fits in a `Duration` (time's ±9999-year range):
+# The gap between two instants always fits in a duration (time's ±9999-year range,
+# chrono's `signed_duration_since`):
 # subtracting them cannot overflow, so `arithmetic_side_effects` has nothing to guard.
-arithmetic-side-effects-allowed-binary = [["time::OffsetDateTime", "time::OffsetDateTime"]]
+arithmetic-side-effects-allowed-binary = [
+    ["time::OffsetDateTime", "time::OffsetDateTime"],
+    ["chrono::DateTime", "chrono::DateTime"],
+]

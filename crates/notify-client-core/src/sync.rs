@@ -97,13 +97,13 @@ impl Session {
                                 .iter()
                                 .any(|id| id.as_str() == notification_id.as_str()),
                         })?;
-                        outcome.stored += 1;
+                        outcome.stored = outcome.stored.saturating_add(1);
                     }
                     Ok(Event::Tombstone {
                         notification_id, ..
                     }) => {
                         store.remove(&notification_id)?;
-                        outcome.removed += 1;
+                        outcome.removed = outcome.removed.saturating_add(1);
                     }
                     // Other kinds don't change the cache; unreadable ones are newer kinds.
                     Ok(_) | Err(_) => {}

@@ -164,8 +164,8 @@ impl StreamSlots {
             return None;
         }
 
-        held.insert(principal.clone(), count + 1);
-        *total += 1;
+        held.insert(principal.clone(), count.saturating_add(1));
+        *total = total.saturating_add(1);
         drop(total);
         drop(held);
 
@@ -195,7 +195,7 @@ impl StreamSlots {
         *total = total.saturating_sub(1);
         drop(total);
         if let Some(count) = held.get_mut(principal) {
-            *count -= 1;
+            *count = count.saturating_sub(1);
             if *count == 0 {
                 // Otherwise the map leaks one entry per principal ever connected.
                 held.remove(principal);

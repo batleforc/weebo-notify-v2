@@ -150,7 +150,9 @@ impl Menu {
         *cursor = if delta.is_negative() {
             cursor.saturating_sub(delta.unsigned_abs() as usize)
         } else {
-            (*cursor + delta.unsigned_abs() as usize).min(len - 1)
+            cursor
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(len.saturating_sub(1))
         };
     }
 

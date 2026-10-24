@@ -650,14 +650,19 @@ impl App {
             self.selected_action = Some(if delta.is_negative() {
                 selected.saturating_sub(delta.unsigned_abs() as usize)
             } else {
-                (selected + delta.unsigned_abs() as usize).min(len - 1)
+                selected
+                    .saturating_add(delta.unsigned_abs() as usize)
+                    .min(len.saturating_sub(1))
             });
             return;
         }
 
         let (index, len) = match self.focus {
             // `+ 1` for the "Tous" row; never touches `applied_channel`.
-            Pane::Channels => (&mut self.selected_channel, self.channels.len() + 1),
+            Pane::Channels => (
+                &mut self.selected_channel,
+                self.channels.len().saturating_add(1),
+            ),
             Pane::Inbox => (&mut self.selected_row, self.inbox.len()),
             // Détail focused: scroll the body instead of moving the inbox selection (§9.2).
             // The upper bound is clamped when drawn (`render::detail`).
@@ -681,7 +686,9 @@ impl App {
         *index = if delta.is_negative() {
             index.saturating_sub(delta.unsigned_abs() as usize)
         } else {
-            (*index + delta.unsigned_abs() as usize).min(len - 1)
+            index
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(len.saturating_sub(1))
         };
 
         // A different notification: reset the scroll.

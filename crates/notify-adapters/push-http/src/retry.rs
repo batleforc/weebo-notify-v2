@@ -66,7 +66,7 @@ pub fn delay(attempt: u32, retry_after: Option<Duration>, waited: Duration) -> O
     }
     let wait = retry_after.unwrap_or_else(|| {
         let step = BASE.saturating_mul(1 << attempt.min(8));
-        step + jitter(step / 2)
+        step.saturating_add(jitter(step.checked_div(2).unwrap_or_default()))
     });
     (waited.saturating_add(wait) <= MAX_TOTAL_WAIT).then_some(wait)
 }
@@ -80,7 +80,7 @@ fn jitter(span: Duration) -> Duration {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |now| now.subsec_nanos());
     let span = u64::try_from(span.as_millis()).unwrap_or(u64::MAX).max(1);
-    Duration::from_millis(u64::from(nanos) % span)
+    Duration::from_millis(u64::from(nanos).checked_rem(span).unwrap_or(0))
 }
 
 #[cfg(test)]

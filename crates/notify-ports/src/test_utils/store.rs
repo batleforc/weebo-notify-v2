@@ -1,6 +1,11 @@
 //! One in-memory store behind every repository port; a single shared state keeps
 //! the cursor sequence coherent across repositories (ADR-0012).
 
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "in-memory test doubles: counters and clock steps on small, known values"
+)]
+
 use core::cmp::Reverse;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 

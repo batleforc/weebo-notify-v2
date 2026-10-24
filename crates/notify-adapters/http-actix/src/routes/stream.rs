@@ -470,7 +470,9 @@ pub(crate) async fn websocket(
                     }
                 }
             }
-            last_heard += draining.elapsed();
+            last_heard = last_heard
+                .checked_add(draining.elapsed())
+                .unwrap_or(last_heard);
 
             tokio::select! {
                 // Read incoming frames to learn the client left.

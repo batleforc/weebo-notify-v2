@@ -126,6 +126,11 @@ impl SendDndDigests {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use notify_domain::{
         Channel, ChannelId, Device, DeviceId, Dnd, Membership, NotificationId, Scope, Status,
         UserId,

@@ -136,7 +136,9 @@ impl ComposeForm {
         self.focused = if delta.is_negative() {
             self.focused.saturating_sub(delta.unsigned_abs() as usize)
         } else {
-            (self.focused + delta.unsigned_abs() as usize).min(FIELDS.len() - 1)
+            self.focused
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(FIELDS.len().saturating_sub(1))
         };
     }
 
@@ -341,7 +343,9 @@ fn cycle_index(index: &mut usize, delta: i32, len: usize) {
     *index = if delta.is_negative() {
         index.saturating_sub(delta.unsigned_abs() as usize)
     } else {
-        (*index + delta.unsigned_abs() as usize).min(len - 1)
+        index
+            .saturating_add(delta.unsigned_abs() as usize)
+            .min(len.saturating_sub(1))
     };
 }
 
@@ -350,8 +354,8 @@ fn cycle_option(index: &mut Option<usize>, delta: i32, len: usize) {
     if len == 0 {
         return;
     }
-    let mut position = index.map_or(0, |value| value + 1);
-    cycle_index(&mut position, delta, len + 1);
+    let mut position = index.map_or(0, |value| value.saturating_add(1));
+    cycle_index(&mut position, delta, len.saturating_add(1));
     *index = position.checked_sub(1);
 }
 

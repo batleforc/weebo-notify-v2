@@ -33,7 +33,7 @@ impl IdempotencyStore for PgStore {
         .bind(principal_ref)
         .bind(key)
         .bind(now)
-        .bind(now + IN_FLIGHT)
+        .bind(now.saturating_add(IN_FLIGHT))
         .fetch_optional(self.pool())
         .await
         .map_err(|error| fail("idempotency", error))?;

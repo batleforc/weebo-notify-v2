@@ -237,7 +237,7 @@ impl Reconciler {
                     disabled_at: None,
                 })
                 .await?;
-            report.accounts += 1;
+            report.accounts = report.accounts.saturating_add(1);
         }
 
         let declared_accounts: Vec<ServiceAccountId> = config
@@ -256,7 +256,7 @@ impl Reconciler {
         for managed in &config.channels.managed {
             let channel = self.build(managed, &mut report).await?;
             self.channels.upsert(&channel).await?;
-            report.channels += 1;
+            report.channels = report.channels.saturating_add(1);
         }
 
         let departed_channels: Vec<Channel> = self
@@ -278,7 +278,9 @@ impl Reconciler {
             })
             .collect();
 
-        let removals = departed_channels.len() + departed_accounts.len();
+        let removals = departed_channels
+            .len()
+            .saturating_add(departed_accounts.len());
         let guard = config.reconcile;
         let refused = removals > usize::try_from(guard.max_removals).unwrap_or(usize::MAX)
             && !guard.allow_mass_removal;
@@ -295,8 +297,9 @@ impl Reconciler {
             self.metrics.reconcile_removals_refused();
             report.refused = removals;
         } else {
-            report.removed = self.drop_departed(config, departed_channels).await?
-                + self.retire_departed_accounts(departed_accounts).await?;
+            let dropped = self.drop_departed(config, departed_channels).await?;
+            let retired = self.retire_departed_accounts(departed_accounts).await?;
+            report.removed = dropped.saturating_add(retired);
         }
 
         // Journal after the writes: better applied-but-unannounced (re-diffed next pass) than the reverse.
@@ -325,7 +328,7 @@ impl Reconciler {
     /// so the next pass still sees them pending.
     async fn journal(&self, config: &Config, removals_refused: bool) -> anyhow::Result<usize> {
         let at = self.clock.now();
-        let mut written = 0;
+        let mut written = 0_usize;
 
         for (kind, declarations, vocabulary) in [
             (
@@ -372,7 +375,7 @@ impl Reconciler {
                     at,
                 )
                 .await?;
-                written += 1;
+                written = written.saturating_add(1);
             }
             for change in &changes.changed {
                 self.record(
@@ -384,7 +387,7 @@ impl Reconciler {
                     at,
                 )
                 .await?;
-                written += 1;
+                written = written.saturating_add(1);
             }
             for removed in &changes.removed {
                 if held {
@@ -394,7 +397,7 @@ impl Reconciler {
                 if let Some(action) = vocabulary.removed {
                     self.record(&action, kind, &removed.key, &removed.snapshot, None, at)
                         .await?;
-                    written += 1;
+                    written = written.saturating_add(1);
                 }
             }
 
@@ -543,7 +546,7 @@ impl Reconciler {
         config: &Config,
         departed: Vec<Channel>,
     ) -> anyhow::Result<usize> {
-        let mut removed = 0;
+        let mut removed = 0_usize;
         for channel in &departed {
             match config.channels.on_removed {
                 OnRemoved::Delete => {
@@ -561,7 +564,7 @@ impl Reconciler {
                     );
                 }
             }
-            removed += 1;
+            removed = removed.saturating_add(1);
         }
 
         Ok(removed)
@@ -573,7 +576,7 @@ impl Reconciler {
         &self,
         departed: Vec<ServiceAccount>,
     ) -> anyhow::Result<usize> {
-        let mut retired = 0;
+        let mut retired = 0_usize;
 
         for mut account in departed {
             let now = self.clock.now();
@@ -598,7 +601,7 @@ impl Reconciler {
                 keys_revoked = revoked,
                 "disabled: it left the configuration, so it is no longer managed"
             );
-            retired += 1;
+            retired = retired.saturating_add(1);
         }
 
         Ok(retired)

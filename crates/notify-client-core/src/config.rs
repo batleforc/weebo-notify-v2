@@ -231,7 +231,7 @@ pub fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result
     // entry — a symlink included, dangling or not, so no `O_NOFOLLOW` is needed on
     // top — and the random suffix keeps a squatter from turning that refusal into
     // a denial of service. A collision just draws again.
-    let mut attempts = 0;
+    let mut attempts = 0_u32;
     let (temporary, mut handle) = loop {
         let mut temporary = path.as_os_str().to_owned();
         temporary.push(format!(".{:016x}.tmp", random_suffix()));
@@ -246,7 +246,7 @@ pub fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result
         match options.open(&temporary) {
             Ok(handle) => break (temporary, handle),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempts < 8 => {
-                attempts += 1;
+                attempts = attempts.saturating_add(1);
             }
             Err(error) => return Err(error),
         }

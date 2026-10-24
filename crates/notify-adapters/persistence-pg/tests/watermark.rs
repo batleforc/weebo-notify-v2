@@ -8,6 +8,10 @@
 //! open on purpose, which delays every other test's reads while it does.
 
 #![expect(
+    clippy::arithmetic_side_effects,
+    reason = "test arithmetic on small, known values"
+)]
+#![expect(
     clippy::unwrap_used,
     clippy::expect_used,
     reason = "a failing assertion is a failing test"

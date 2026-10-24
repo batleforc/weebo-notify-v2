@@ -218,6 +218,12 @@ undocumented_unsafe_blocks = "deny"
 # Every escape hatch carries its justification and dies with the code it excused.
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+# Overflow (LANG-ARITH): checked_ (an error), saturating_ (a clamp) or wrapping_ (a hash);
+# instant − instant is allowed in clippy.toml, since it cannot overflow.
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
 # Noise from the pedantic group that fights the domain vocabulary.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"

@@ -74,7 +74,7 @@ impl RateLimiter for PgStore {
         let ceiling = ceiling(quota, configured);
         if count > ceiling {
             // Seconds until the window rolls, for an exact `Retry-After`.
-            let retry_after = (start + WINDOW - now).whole_seconds().max(1);
+            let retry_after = (start.saturating_add(WINDOW) - now).whole_seconds().max(1);
 
             return Ok(Allowance::Limited {
                 retry_after_seconds: u32::try_from(retry_after).unwrap_or(60),
@@ -82,7 +82,7 @@ impl RateLimiter for PgStore {
         }
 
         Ok(Allowance::Allowed {
-            remaining: u32::try_from(ceiling - count).unwrap_or(0),
+            remaining: u32::try_from(ceiling.saturating_sub(count)).unwrap_or(0),
         })
     }
 }
@@ -95,7 +95,7 @@ impl PgStore {
     /// Fails when the database cannot be reached.
     pub async fn prune_rate_limits(&self, now: OffsetDateTime) -> PortResult<u64> {
         let pruned = sqlx::query("DELETE FROM rate_limits WHERE window_start < $1")
-            .bind(now - WINDOW * 2)
+            .bind(now.saturating_sub(WINDOW.saturating_mul(2)))
             .execute(self.pool())
             .await
             .map_err(|error| fail("rate_limit", error))?;

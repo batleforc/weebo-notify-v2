@@ -50,7 +50,7 @@ impl History {
 
         self.lines.push(line.to_owned());
         if self.lines.len() > CAPACITY {
-            let excess = self.lines.len() - CAPACITY;
+            let excess = self.lines.len().saturating_sub(CAPACITY);
             self.lines.drain(..excess);
         }
 
@@ -72,9 +72,8 @@ impl History {
         }
 
         let next = match self.at {
-            None => self.lines.len() - 1,
-            Some(0) => 0,
-            Some(current) => current - 1,
+            None => self.lines.len().saturating_sub(1),
+            Some(current) => current.saturating_sub(1),
         };
         self.at = Some(next);
         self.lines.get(next).map(String::as_str)
@@ -82,14 +81,14 @@ impl History {
 
     /// The next line, walking forwards; `None` once back on the line being typed (clear it).
     pub(crate) fn next(&mut self) -> Option<&str> {
-        let current = self.at?;
-        if current + 1 >= self.lines.len() {
+        let following = self.at?.saturating_add(1);
+        if following >= self.lines.len() {
             self.at = None;
             return None;
         }
 
-        self.at = Some(current + 1);
-        self.lines.get(current + 1).map(String::as_str)
+        self.at = Some(following);
+        self.lines.get(following).map(String::as_str)
     }
 }
 

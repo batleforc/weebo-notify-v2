@@ -51,17 +51,17 @@ impl Coverage {
     /// Ratio of covered lines across files whose path contains a needle; `None` when nothing
     /// matched (an absent measurement is not 0 %).
     fn ratio_for(&self, needles: &[&str]) -> Option<(u64, u64)> {
-        let mut total = 0;
-        let mut covered = 0;
+        let mut total = 0_u64;
+        let mut covered = 0_u64;
 
         for (path, lines) in &self.files {
             if !needles.iter().any(|needle| path.contains(needle)) {
                 continue;
             }
             for hits in lines.values() {
-                total += 1;
+                total = total.saturating_add(1);
                 if *hits > 0 {
-                    covered += 1;
+                    covered = covered.saturating_add(1);
                 }
             }
         }
@@ -71,8 +71,8 @@ impl Coverage {
 
     /// Coverage restricted to the lines listed in `touched`, keyed by repo-relative path.
     fn ratio_for_touched(&self, touched: &BTreeMap<String, BTreeSet<u32>>) -> Option<(u64, u64)> {
-        let mut total = 0;
-        let mut covered = 0;
+        let mut total = 0_u64;
+        let mut covered = 0_u64;
 
         for (path, wanted) in touched {
             // LCOV paths may be absolute; match on the suffix so both forms work.
@@ -86,9 +86,9 @@ impl Coverage {
             for line in wanted {
                 // No LCOV entry means not executable (comment, blank, `}`); it can't count against us.
                 if let Some(hits) = lines.get(line) {
-                    total += 1;
+                    total = total.saturating_add(1);
                     if *hits > 0 {
-                        covered += 1;
+                        covered = covered.saturating_add(1);
                     }
                 }
             }
@@ -155,7 +155,7 @@ fn touched_lines(base: &str) -> anyhow::Result<BTreeMap<String, BTreeSet<u32>>> 
             touched
                 .entry(current.clone())
                 .or_default()
-                .extend(start..start + count);
+                .extend(start..start.saturating_add(count));
         }
     }
 

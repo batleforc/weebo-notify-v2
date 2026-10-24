@@ -193,7 +193,7 @@ impl WebPush {
 
         let claims = Vapid {
             aud: format!("{}://{host}", endpoint.scheme()),
-            exp: now + VAPID_VALIDITY.as_secs(),
+            exp: now.saturating_add(VAPID_VALIDITY.as_secs()),
             sub: &self.contact,
         };
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
@@ -346,6 +346,11 @@ fn decode_auth(raw: &str) -> Result<[u8; 16], ()> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use notify_domain::{DeviceId, Principal, UserId};
     use time::OffsetDateTime;
 

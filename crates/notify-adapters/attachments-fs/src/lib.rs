@@ -281,7 +281,7 @@ fn type_path(object_path: &Path) -> PathBuf {
 impl AttachmentStore for FsAttachments {
     async fn presign_upload(&self, request: &UploadRequest) -> PortResult<PresignedUpload> {
         let id = AttachmentId::generate();
-        let expires_at = OffsetDateTime::now_utc() + UPLOAD_TTL;
+        let expires_at = OffsetDateTime::now_utc().saturating_add(UPLOAD_TTL);
         let url = self.url_for(
             Purpose::Upload {
                 content_type: &request.content_type,
@@ -309,7 +309,7 @@ impl AttachmentStore for FsAttachments {
     }
 
     async fn presign_download(&self, id: AttachmentId) -> PortResult<PresignedDownload> {
-        let expires_at = OffsetDateTime::now_utc() + PRESIGN_TTL;
+        let expires_at = OffsetDateTime::now_utc().saturating_add(PRESIGN_TTL);
         let url = self.url_for(Purpose::Download, id, expires_at)?;
 
         Ok(PresignedDownload { url, expires_at })

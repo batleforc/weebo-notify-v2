@@ -148,7 +148,7 @@ impl Keys {
 
     /// Mint a new signing key and retire the current one (exposed over HTTP for rotation tests, T29).
     pub(crate) fn rotate(&mut self) -> Result<&str, KeyError> {
-        self.generation += 1;
+        self.generation = self.generation.saturating_add(1);
         let fresh = Signer::derive(&format!("{KID_PREFIX}{}", self.generation))?;
         self.retired
             .push(std::mem::replace(&mut self.active, fresh));

@@ -99,7 +99,7 @@ pub(crate) async fn disconnect_stream(
         .disconnect(
             &caller.0.principal,
             &id,
-            OffsetDateTime::now_utc() + BLOCK_FOR,
+            OffsetDateTime::now_utc().saturating_add(BLOCK_FOR),
         )
         .await
         .map_err(notify_ports::Failure::from)?;

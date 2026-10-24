@@ -960,6 +960,11 @@ mod tests {
 
 #[cfg(test)]
 mod last_used_tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use super::*;
 
     fn at(seconds: i64) -> OffsetDateTime {

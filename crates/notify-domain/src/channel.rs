@@ -498,6 +498,11 @@ mod group_access_tests {
 /// Policy edits (`PATCH /channels/{id}`).
 #[cfg(test)]
 mod policy_tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use super::*;
 
     fn channel() -> Channel {

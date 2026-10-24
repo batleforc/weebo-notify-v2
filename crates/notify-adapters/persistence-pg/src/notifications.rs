@@ -236,7 +236,7 @@ impl NotificationRepository for PgStore {
         .await
         .map_err(|error| fail("notification", error))?;
         if !current.is_some_and(|(last_seq, live)| {
-            live && i64::from(last_seq) + 1 == i64::from(revision.seq)
+            live && i64::from(last_seq).saturating_add(1) == i64::from(revision.seq)
         }) {
             return Err(notify_ports::PortError::Conflict {
                 what: "notification.revision",
@@ -329,7 +329,7 @@ impl NotificationRepository for PgStore {
         .bind(&query.tags)
         .bind(query.has_actions)
         .bind(query.page.after.map(sequence))
-        .bind(i64::from(limit) + 1)
+        .bind(i64::from(limit).saturating_add(1))
         .fetch_all(self.pool())
         .await
         .map_err(|error| fail("notification", error))?;
@@ -394,7 +394,7 @@ impl NotificationRepository for PgStore {
         )
         .bind(id.to_string())
         .bind(page.after.map(sequence))
-        .bind(i64::from(limit) + 1)
+        .bind(i64::from(limit).saturating_add(1))
         .fetch_all(self.pool())
         .await
         .map_err(|error| fail("revision", error))?;
@@ -424,7 +424,7 @@ impl NotificationRepository for PgStore {
         .bind(OffsetDateTime::now_utc())
         .bind(&query.text)
         .bind(query.page.after.map(sequence))
-        .bind(i64::from(limit) + 1)
+        .bind(i64::from(limit).saturating_add(1))
         .fetch_all(self.pool())
         .await
         .map_err(|error| fail("notification", error))?;

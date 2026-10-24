@@ -3,6 +3,10 @@
 //! A stable-toolchain floor until `cargo-fuzz` targets exist.
 
 #![expect(
+    clippy::arithmetic_side_effects,
+    reason = "test arithmetic on small, known values"
+)]
+#![expect(
     clippy::indexing_slicing,
     reason = "a failing assertion is a failing test, and the panic message names the input that caused it — which is the whole value of a randomised suite"
 )]

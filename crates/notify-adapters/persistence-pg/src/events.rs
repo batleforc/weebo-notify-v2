@@ -131,7 +131,7 @@ impl EventStore for PgStore {
             .bind(after)
             .bind(&visible)
             .bind(&user_ref)
-            .bind(i64::from(limit) + 1)
+            .bind(i64::from(limit).saturating_add(1))
             .fetch_all(self.pool())
             .await
             .map_err(|error| fail("event", error))?;
@@ -218,7 +218,9 @@ impl PgStore {
                 break;
             }
             tokio::time::sleep(pause).await;
-            pause = (pause * 2).min(std::time::Duration::from_millis(50));
+            pause = pause
+                .saturating_mul(2)
+                .min(std::time::Duration::from_millis(50));
             watermark = sqlx::query_scalar("SELECT events_watermark()")
                 .fetch_one(self.pool())
                 .await

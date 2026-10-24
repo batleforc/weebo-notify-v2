@@ -72,7 +72,11 @@ fn assemble(
         )
         .unwrap();
 
-    let mut sealed = Vec::with_capacity(EPHEMERAL_KEY_LEN + NONCE_LEN + ciphertext.len());
+    let mut sealed = Vec::with_capacity(
+        EPHEMERAL_KEY_LEN
+            .saturating_add(NONCE_LEN)
+            .saturating_add(ciphertext.len()),
+    );
     sealed.extend_from_slice(our_public.as_bytes());
     sealed.extend_from_slice(nonce);
     sealed.extend_from_slice(&ciphertext);

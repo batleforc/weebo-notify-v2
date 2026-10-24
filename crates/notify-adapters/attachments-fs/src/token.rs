@@ -123,6 +123,11 @@ fn digest(secret: &[u8], purpose: Purpose<'_>, id: AttachmentId, expires_unix: i
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use super::*;
 
     const SECRET: &[u8] = b"shh";

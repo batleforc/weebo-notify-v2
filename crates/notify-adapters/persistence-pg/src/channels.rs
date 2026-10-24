@@ -71,7 +71,7 @@ impl ChannelRepository for PgStore {
         .bind(groups)
         .bind(enum_to_text("scope", &scope)?)
         .bind(page.after.map(sequence))
-        .bind(i64::from(limit) + 1)
+        .bind(i64::from(limit).saturating_add(1))
         .fetch_all(self.pool())
         .await
         .map_err(|error| fail("channel", error))?;

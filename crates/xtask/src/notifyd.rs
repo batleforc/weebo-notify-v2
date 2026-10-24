@@ -131,7 +131,7 @@ fn answer(message: &Message, seen: &mut u32) -> anyhow::Result<Option<Message>> 
                 expire_timeout,
             };
 
-            *seen += 1;
+            *seen = seen.saturating_add(1);
             // Flushed per line for callers reading it as a stream.
             println!(
                 "{}",

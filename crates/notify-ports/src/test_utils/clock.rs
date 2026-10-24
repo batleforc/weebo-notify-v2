@@ -1,5 +1,10 @@
 //! A clock a test drives.
 
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "in-memory test doubles: counters and clock steps on small, known values"
+)]
+
 use std::sync::{Arc, Mutex, PoisonError};
 
 use time::{Duration, OffsetDateTime};

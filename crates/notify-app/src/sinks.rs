@@ -55,6 +55,18 @@ pub struct DrainReport {
 }
 
 impl DrainReport {
+    /// Whether the pass moved anything; `led` only says which replica drained.
+    #[must_use]
+    pub const fn moved(&self) -> bool {
+        self.delivered > 0
+            || self.retried > 0
+            || self.buried > 0
+            || self.orphaned > 0
+            || self.pruned > 0
+    }
+}
+
+impl DrainReport {
     fn absorb(&mut self, other: Self) {
         self.delivered = self.delivered.saturating_add(other.delivered);
         self.retried = self.retried.saturating_add(other.retried);
@@ -461,6 +473,16 @@ mod tests {
     };
     use time::OffsetDateTime;
     use url::Url;
+
+    #[test]
+    fn leading_a_pass_that_moved_nothing_is_not_movement() {
+        let idle = DrainReport {
+            led: true,
+            ..DrainReport::default()
+        };
+        assert!(!idle.moved(), "only the counts say something happened");
+        assert!(DrainReport { pruned: 1, ..idle }.moved());
+    }
 
     use super::*;
 

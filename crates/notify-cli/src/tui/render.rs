@@ -65,7 +65,7 @@ fn channels(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut items = vec![channel_row(0, app, &all_label)];
     items.extend(app.channels.iter().enumerate().map(|(position, channel)| {
-        let index = position + 1;
+        let index = position.saturating_add(1);
         // Digits, not a dot (§9.2); absent from the map means nothing unread.
         let label = match app.unread.get(channel.id.as_str()) {
             Some(unread) => format!("{} ({unread})", sanitise(channel.id.as_str())),
@@ -239,16 +239,16 @@ fn detail_scroll(
     let mut scroll = requested_scroll.min(max_scroll);
 
     if let Some(selected) = selected_action {
-        let item_line = (action_start + selected).min(lines.len());
+        let item_line = action_start.saturating_add(selected).min(lines.len());
         // Both bounds are clamped to `lines.len()` above, so `get` always answers.
         let start_row = lines.get(..item_line).map_or(0, row_count);
         let end_row = lines
-            .get(..(item_line + 1).min(lines.len()))
+            .get(..item_line.saturating_add(1).min(lines.len()))
             .map_or(0, row_count);
 
         if start_row < scroll {
             scroll = start_row;
-        } else if end_row > scroll + visible_height {
+        } else if end_row > scroll.saturating_add(visible_height) {
             scroll = end_row.saturating_sub(visible_height);
         }
         scroll = scroll.min(max_scroll);
@@ -359,7 +359,7 @@ fn command_suggestions(frame: &mut Frame, command: &str, area: Rect) {
     let region = Rect {
         x: area.x,
         // Two footer rows below: the hint bar and the `:` line.
-        y: area.height.saturating_sub(2 + height),
+        y: area.height.saturating_sub(height.saturating_add(2)),
         width,
         height,
     };
@@ -387,8 +387,10 @@ fn menu(frame: &mut Frame, menu: &Menu, area: Rect) {
         .saturating_add(2)
         .min(area.height.saturating_sub(4));
     let region = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
         width,
         height,
     };
@@ -421,8 +423,10 @@ fn compose(frame: &mut Frame, app: &App, form: &ComposeForm, area: Rect) {
         .saturating_add(2)
         .min(area.height.saturating_sub(4));
     let region = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
         width,
         height,
     };
@@ -462,8 +466,10 @@ fn popup(frame: &mut Frame, area: Rect, title: &str, body: &str) {
     let width = area.width.saturating_sub(10).clamp(20, 80);
     let height = area.height.saturating_sub(6).clamp(6, 20);
     let region = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
         width,
         height,
     };

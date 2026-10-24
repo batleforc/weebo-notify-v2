@@ -155,6 +155,11 @@ impl CloseStale {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use notify_domain::{
         Author, Channel, ChannelPolicy, CloseAfter, ContentDraft, HumanDuration, Notification,
         NotificationId, Principal, RevisionDraft, State, Status, UserId,

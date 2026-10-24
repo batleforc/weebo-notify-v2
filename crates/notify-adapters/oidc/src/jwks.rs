@@ -157,7 +157,7 @@ async fn capped_json<T: serde::de::DeserializeOwned>(
         .await
         .map_err(|error| PortError::unavailable(DEPENDENCY, error))?
     {
-        if body.len() + chunk.len() > MAX_BODY_BYTES {
+        if body.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
             return Err(PortError::unavailable(
                 DEPENDENCY,
                 DiscoveryError::TooLarge(what),

@@ -72,7 +72,7 @@ fn decode_capped(bytes: &[u8], max_source_pixels: u64) -> Result<DynamicImage, I
 
     // Header only: must run before the pixels are allocated.
     let (width, height) = reader.into_dimensions().map_err(|error| rejected(&error))?;
-    if u64::from(width) * u64::from(height) > max_source_pixels {
+    if u64::from(width).saturating_mul(u64::from(height)) > max_source_pixels {
         return Err(ImageRejection::TooLarge);
     }
 

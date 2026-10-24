@@ -51,8 +51,8 @@ async fn retrying(request: reqwest::RequestBuilder) -> reqwest::Result<reqwest::
             return result;
         };
         tokio::time::sleep(wait).await;
-        waited += wait;
-        attempt += 1;
+        waited = waited.saturating_add(wait);
+        attempt = attempt.saturating_add(1);
     }
 }
 

@@ -623,7 +623,7 @@ async fn background(
     // The sinks of §7.1bis; logged only when something moved.
     let draining = supervise("sink-drain", SINK_INTERVAL, metrics, move || async move {
         let report = drain.execute().await?;
-        if report.delivered + report.retried + report.buried + report.orphaned + report.pruned > 0 {
+        if report.moved() {
             tracing::info!(
                 delivered = report.delivered,
                 retried = report.retried,
@@ -775,7 +775,9 @@ async fn housekeep(
         Err(error) => tracing::warn!(?error, "could not prune federation replay ids"),
     }
 
-    let before = now - credential_window;
+    // A window past what `time` represents keeps every revoked credential, which is safe.
+    let window = time::Duration::try_from(credential_window).unwrap_or(time::Duration::MAX);
+    let before = now.saturating_sub(window);
     match store.prune_revoked_credentials(before).await {
         Ok((0, 0)) => {}
         Ok((devices, keys)) => {
@@ -787,8 +789,8 @@ async fn housekeep(
     match store
         .retention_backlog(
             now,
-            now - notify_app::EVENT_RETENTION,
-            now - notify_app::TOMBSTONE_GRACE,
+            now.saturating_sub(notify_app::EVENT_RETENTION),
+            now.saturating_sub(notify_app::TOMBSTONE_GRACE),
         )
         .await
     {

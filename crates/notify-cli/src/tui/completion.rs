@@ -62,7 +62,8 @@ pub(crate) fn complete(line: &str) -> Option<String> {
         return None;
     }
 
-    let head = &line[..line.len() - typed.len()];
+    // `typed` is the line's last word, so the line ends with it.
+    let head = line.strip_suffix(typed).unwrap_or(line);
     let completed = format!("{head}{shared}");
     // A single candidate gets the trailing space for the next word.
     Some(if candidates.len() == 1 {

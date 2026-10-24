@@ -243,6 +243,11 @@ impl TtlPolicy {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use time::Duration as TimeDuration;
 
     use super::CloseAfter::Never;

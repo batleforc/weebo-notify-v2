@@ -1,6 +1,10 @@
 //! The HTTP surface end to end against the in-memory doubles: status codes, problem
 //! bodies, query parsing, and that nothing reaches a use case without a caller.
 
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "test arithmetic on small, known values"
+)]
 #![expect(clippy::unwrap_used, reason = "a failing assertion is a failing test")]
 
 use std::sync::Arc;

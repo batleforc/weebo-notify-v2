@@ -536,10 +536,15 @@ pub(crate) struct Access {
 impl Access {
     /// How many subjects this binding names. Anything but one is a config mistake.
     pub(crate) fn subjects(&self) -> usize {
-        usize::from(self.oidc_group.is_some())
-            + usize::from(self.oidc_sub.is_some())
-            + usize::from(self.email.is_some())
-            + usize::from(self.service_account.is_some())
+        [
+            self.oidc_group.is_some(),
+            self.oidc_sub.is_some(),
+            self.email.is_some(),
+            self.service_account.is_some(),
+        ]
+        .into_iter()
+        .filter(|named| *named)
+        .count()
     }
 }
 

@@ -64,7 +64,12 @@ impl DndPreset {
     ) -> Result<Option<DateTime<Utc>>, ClientError> {
         match self {
             Self::Off => return Ok(None),
-            Self::OneHour => return Ok(Some(now + chrono::Duration::hours(1))),
+            Self::OneHour => {
+                let later = now
+                    .checked_add_signed(chrono::Duration::hours(1))
+                    .unwrap_or(DateTime::<Utc>::MAX_UTC);
+                return Ok(Some(later));
+            }
             Self::UntilMorning => {}
         }
 

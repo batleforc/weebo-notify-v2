@@ -591,11 +591,12 @@ fn now_plus(duration: &str) -> Result<chrono::DateTime<chrono::Utc>, CliError> {
         .parse()
         .map_err(|_| CliError::Usage(format!("`{duration}` is not a duration, e.g. `2h`")))?;
 
+    let too_long = || CliError::Usage(format!("`{duration}` is too long"));
     let seconds = match unit {
         "s" => value,
-        "m" => value * 60,
-        "h" => value * 3_600,
-        "d" => value * 86_400,
+        "m" => value.checked_mul(60).ok_or_else(too_long)?,
+        "h" => value.checked_mul(3_600).ok_or_else(too_long)?,
+        "d" => value.checked_mul(86_400).ok_or_else(too_long)?,
         other => {
             return Err(CliError::Usage(format!(
                 "`{other}` is not a unit — expected s, m, h or d"

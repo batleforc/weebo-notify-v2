@@ -184,7 +184,7 @@ impl AttachmentStore for S3Attachments {
                 ("if-none-match".to_owned(), "*".to_owned()),
             ]
             .into(),
-            expires_at: OffsetDateTime::now_utc() + UPLOAD_TTL,
+            expires_at: OffsetDateTime::now_utc().saturating_add(UPLOAD_TTL),
         })
     }
 
@@ -198,7 +198,7 @@ impl AttachmentStore for S3Attachments {
 
         Ok(PresignedDownload {
             url: Url::parse(&url).map_err(|error| PortError::corrupt("attachment.url", error))?,
-            expires_at: OffsetDateTime::now_utc() + PRESIGN_TTL,
+            expires_at: OffsetDateTime::now_utc().saturating_add(PRESIGN_TTL),
         })
     }
 
@@ -307,7 +307,7 @@ where
                 let delay = backoff(retry);
                 tracing::debug!(%error, ?delay, "the object store failed transiently; retrying");
                 tokio::time::sleep(delay).await;
-                retry += 1;
+                retry = retry.saturating_add(1);
             }
             outcome => return outcome,
         }
@@ -334,7 +334,9 @@ fn backoff(retry: u32) -> std::time::Duration {
     let spread = u32::try_from(base.as_millis() / 2)
         .unwrap_or(u32::MAX)
         .max(1);
-    base + std::time::Duration::from_millis(u64::from(nanos % spread))
+    base.saturating_add(std::time::Duration::from_millis(u64::from(
+        nanos.checked_rem(spread).unwrap_or(0),
+    )))
 }
 
 #[cfg(test)]

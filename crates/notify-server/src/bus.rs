@@ -143,7 +143,7 @@ async fn pump(
         }
 
         actix_web::rt::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(MAX_BACKOFF);
+        backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
 
         match inner.subscribe().await {
             Ok(stream) => subscription = Some(stream),
@@ -278,6 +278,11 @@ fn async_stream(receiver: broadcast::Receiver<Poke>) -> impl futures::Stream<Ite
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use notify_domain::{ChannelId, Cursor};
     use notify_ports::test_utils::InMemory;
 

@@ -63,7 +63,7 @@ impl AuditLog for PgStore {
         .bind(query.since)
         .bind(query.until)
         .bind(query.page.after.map(sequence))
-        .bind(i64::from(limit) + 1)
+        .bind(i64::from(limit).saturating_add(1))
         .fetch_all(self.pool())
         .await
         .map_err(|error| fail("audit", error))?;

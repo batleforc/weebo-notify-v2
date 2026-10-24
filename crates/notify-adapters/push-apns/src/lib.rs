@@ -319,7 +319,10 @@ impl PushTransport for Apns {
                 .header("apns-topic", &self.topic)
                 .header("apns-push-type", "alert")
                 .header("apns-priority", apns_priority(message))
-                .header("apns-expiration", (now + TTL.as_secs()).to_string())
+                .header(
+                    "apns-expiration",
+                    now.saturating_add(TTL.as_secs()).to_string(),
+                )
                 .header("content-type", "application/json")
                 .body(body.clone())
         };

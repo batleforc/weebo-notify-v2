@@ -165,7 +165,7 @@ impl Mock {
                 redirect_uri: request.redirect_uri.clone(),
                 challenge: request.challenge.clone(),
                 auth_time: now(),
-                expires_at: now() + CODE_TTL_SECS,
+                expires_at: now().saturating_add(CODE_TTL_SECS),
             },
         );
 
@@ -257,7 +257,7 @@ impl Mock {
                 refresh.insert(
                     token.clone(),
                     Grant {
-                        expires_at: issued_at + client.refresh_token_ttl_secs,
+                        expires_at: issued_at.saturating_add(client.refresh_token_ttl_secs),
                         ..grant.clone()
                     },
                 );
@@ -282,7 +282,7 @@ impl Mock {
             "aud": self.identities.client.id,
             "iat": issued_at,
             "nbf": issued_at,
-            "exp": issued_at + ttl,
+            "exp": issued_at.saturating_add(ttl),
             "auth_time": grant.auth_time,
             "jti": Ulid::generate().to_string(),
             "preferred_username": user.username,
@@ -320,7 +320,7 @@ impl Mock {
 
 /// When a login page rendered now stops being usable.
 pub(crate) fn request_deadline() -> i64 {
-    now() + REQUEST_TTL_SECS
+    now().saturating_add(REQUEST_TTL_SECS)
 }
 
 /// The S256 challenge a verifier produces (RFC 7636 §4.2).
@@ -360,7 +360,7 @@ mod tests {
             nonce: Some("once".to_owned()),
             challenge: challenge.to_owned(),
             scope: "openid profile email groups offline_access".to_owned(),
-            expires_at: now() + REQUEST_TTL_SECS,
+            expires_at: now().saturating_add(REQUEST_TTL_SECS),
         }
     }
 

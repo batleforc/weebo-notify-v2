@@ -110,7 +110,11 @@ impl OidcVerifier {
                 // not: refusing logins is the lesser failure next to accepting a
                 // key the issuer took back.
                 if cache.last_success.is_some_and(|at| {
-                    now - at >= self.config.key_max_age + self.config.stale_key_grace
+                    now - at
+                        >= self
+                            .config
+                            .key_max_age
+                            .saturating_add(self.config.stale_key_grace)
                 }) && !cache.keys.is_empty()
                 {
                     tracing::error!(%error, "the issuer key set is past its grace; dropping it");
@@ -133,8 +137,9 @@ impl OidcVerifier {
     /// Whether `nbf` is still ahead of the injected clock, past the leeway.
     fn not_yet_valid(&self, nbf: Option<i64>) -> bool {
         nbf.is_some_and(|nbf| {
-            OffsetDateTime::from_unix_timestamp(nbf)
-                .map_or(true, |nbf| nbf - self.config.leeway > self.clock.now())
+            OffsetDateTime::from_unix_timestamp(nbf).map_or(true, |nbf| {
+                nbf.saturating_sub(self.config.leeway) > self.clock.now()
+            })
         })
     }
 
@@ -163,7 +168,15 @@ impl OidcVerifier {
             // the attempt is in flight would stretch the withdrawn-key window.
             let refreshed = match self.refreshing.try_lock() {
                 Ok(guard) => Some(self.refresh_holding(now, guard).await),
-                Err(_) if age < self.config.key_max_age + self.config.stale_key_grace => None,
+                Err(_)
+                    if age
+                        < self
+                            .config
+                            .key_max_age
+                            .saturating_add(self.config.stale_key_grace) =>
+                {
+                    None
+                }
                 Err(_) => Some(self.refresh_if_due(now).await),
             };
             if let Some(Err(error)) = refreshed {
@@ -220,7 +233,7 @@ impl OidcVerifier {
         // keeps passing — and so how long the replay guard must remember the `jti`.
         // Remembering it only until `exp` let the same token be exchanged again for
         // the length of the leeway once the purge had swept the id.
-        claims.accepted_until += self.config.leeway;
+        claims.accepted_until = claims.accepted_until.saturating_add(self.config.leeway);
         if claims.accepted_until < self.clock.now() {
             return Ok(Err(TokenRejection::Expired));
         }
@@ -270,7 +283,7 @@ impl TokenVerifier for OidcVerifier {
             Err(error) => return Ok(Err(rejection_for(error.kind()))),
         };
 
-        if claims.expires_at + self.config.leeway < self.clock.now() {
+        if claims.expires_at.saturating_add(self.config.leeway) < self.clock.now() {
             return Ok(Err(TokenRejection::Expired));
         }
 
@@ -393,6 +406,11 @@ fn rejection_for(kind: &jsonwebtoken::errors::ErrorKind) -> TokenRejection {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic on small, known values"
+    )]
+
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use notify_ports::test_utils::TestClock;

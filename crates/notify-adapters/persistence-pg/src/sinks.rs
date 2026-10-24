@@ -332,13 +332,14 @@ impl SinkQueue for PgStore {
                 "UPDATE sink_queue SET sink = $2 WHERE sink = $1",
                 "UPDATE sink_dead_letters SET sink = $2 WHERE sink = $1",
             ] {
-                moved += sqlx::query(statement)
+                let affected = sqlx::query(statement)
                     .bind(&old)
                     .bind(new.as_str())
                     .execute(self.pool())
                     .await
                     .map_err(|error| fail("sink.queue", error))?
                     .rows_affected();
+                moved = moved.saturating_add(affected);
             }
         }
         Ok(moved)
