@@ -33,3 +33,7 @@ doc-valid-idents = [
     "X25519",
     "XChaCha20",
 ]
+
+# weebo-good-practice: a failing test should fail loudly, so tests may index directly;
+# `indexing_slicing` (denied workspace-wide) applies to everything else.
+allow-indexing-slicing-in-tests = true

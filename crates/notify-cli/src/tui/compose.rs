@@ -124,7 +124,11 @@ impl ComposeForm {
     }
 
     fn field(&self) -> FieldRef {
-        FIELDS[self.focused]
+        // `focused` is clamped to the table by `move_focus`; Submit is the safe fallback.
+        FIELDS
+            .get(self.focused)
+            .copied()
+            .unwrap_or(FieldRef::Submit)
     }
 
     /// Move focus between fields (never wraps).
@@ -264,11 +268,15 @@ impl ComposeForm {
             publish::Content {
                 title: Some(self.title.clone()),
                 body: (!self.body.is_empty()).then(|| self.body.clone()),
-                state: self.state.map(|index| StateArg::value_variants()[index]),
-                status: self.status.map(|index| StatusArg::value_variants()[index]),
+                state: self
+                    .state
+                    .and_then(|index| StateArg::value_variants().get(index).copied()),
+                status: self
+                    .status
+                    .and_then(|index| StatusArg::value_variants().get(index).copied()),
                 priority: self
                     .priority
-                    .map(|index| PriorityArg::value_variants()[index]),
+                    .and_then(|index| PriorityArg::value_variants().get(index).copied()),
                 ttl: None,
                 tags: self.tags.clone(),
                 actions: self.actions.clone(),

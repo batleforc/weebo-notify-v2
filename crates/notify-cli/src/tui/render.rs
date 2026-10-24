@@ -14,25 +14,25 @@ use super::menu::{Menu, MenuItem};
 use super::{ActionItem, App, Pane, completion, sanitise};
 
 pub(crate) fn draw(frame: &mut Frame, app: &App) {
-    let rows = Layout::default()
+    let [main, bottom] = Layout::default()
         .direction(Direction::Vertical)
         // Two rows: the hint row alone often outgrows 80 columns.
         .constraints([Constraint::Min(1), Constraint::Length(2)])
-        .split(frame.area());
+        .areas(frame.area());
 
-    let columns = Layout::default()
+    let [left, middle, right] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(24),
             Constraint::Min(30),
             Constraint::Length(40),
         ])
-        .split(rows[0]);
+        .areas(main);
 
-    channels(frame, app, columns[0]);
-    inbox(frame, app, columns[1]);
-    detail(frame, app, columns[2]);
-    footer(frame, app, rows[1]);
+    channels(frame, app, left);
+    inbox(frame, app, middle);
+    detail(frame, app, right);
+    footer(frame, app, bottom);
 
     if app.show_help {
         help(frame, frame.area());
@@ -240,8 +240,11 @@ fn detail_scroll(
 
     if let Some(selected) = selected_action {
         let item_line = (action_start + selected).min(lines.len());
-        let start_row = row_count(&lines[..item_line]);
-        let end_row = row_count(&lines[..(item_line + 1).min(lines.len())]);
+        // Both bounds are clamped to `lines.len()` above, so `get` always answers.
+        let start_row = lines.get(..item_line).map_or(0, row_count);
+        let end_row = lines
+            .get(..(item_line + 1).min(lines.len()))
+            .map_or(0, row_count);
 
         if start_row < scroll {
             scroll = start_row;
@@ -256,17 +259,17 @@ fn detail_scroll(
 
 /// Two rows: a contextual key-hint row (§9.2), and below it the status line or the `:` line.
 fn footer(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::default()
+    let [hints, line] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(area);
+        .areas(area);
 
-    hint_bar(frame, app, rows[0]);
+    hint_bar(frame, app, hints);
 
     if let Some(command) = &app.command {
-        command_line(frame, rows[1], command, app.reply_for.is_some());
+        command_line(frame, line, command, app.reply_for.is_some());
     } else {
-        status_bar(frame, app, rows[1]);
+        status_bar(frame, app, line);
     }
 }
 

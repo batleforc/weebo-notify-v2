@@ -5,6 +5,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::indexing_slicing,
     reason = "a failing assertion is a failing test"
 )]
 #![allow(

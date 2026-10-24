@@ -207,6 +207,8 @@ panic = "deny"
 # An error is handled, logged with why it is safe to go on, or `#[expect]`ed with the reason.
 let_underscore_must_use = "deny"
 let_underscore_future = "deny"
+# A malformed index is a panic too; tests are exempt (clippy.toml).
+indexing_slicing = "deny"
 # Noise from the pedantic group that fights the domain vocabulary.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"

@@ -118,7 +118,14 @@ fn lower_nullable_composition(object: &mut Map<String, Value>) -> usize {
             continue;
         };
 
-        let survivor = branches[1 - position].clone();
+        // Two branches, one of them null: the other is the survivor.
+        let Some(survivor) = branches
+            .iter()
+            .enumerate()
+            .find_map(|(index, branch)| (index != position).then(|| branch.clone()))
+        else {
+            continue;
+        };
         object.remove(keyword);
 
         // 3.0 tooling ignores `$ref` siblings, so the branch is inlined wholesale.

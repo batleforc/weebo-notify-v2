@@ -77,7 +77,7 @@ fn common_prefix(candidates: &[String]) -> Option<String> {
     let first = candidates.first()?;
     let mut length = first.len();
 
-    for candidate in &candidates[1..] {
+    for candidate in candidates.iter().skip(1) {
         length = length.min(
             first
                 .chars()

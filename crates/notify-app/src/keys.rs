@@ -481,8 +481,10 @@ fn random_string(len: usize) -> String {
             if out.len() == len {
                 break;
             }
-            if byte < CEILING {
-                out.push(char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]));
+            if byte < CEILING
+                && let Some(&symbol) = ALPHABET.get(usize::from(byte) % ALPHABET.len())
+            {
+                out.push(char::from(symbol));
             }
         }
     }

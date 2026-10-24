@@ -5,6 +5,7 @@
 #![allow(
     clippy::expect_used,
     clippy::panic,
+    clippy::indexing_slicing,
     reason = "a failing assertion is a failing test, and the panic message names the input that caused it — which is the whole value of a randomised suite"
 )]
 

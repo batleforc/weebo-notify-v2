@@ -223,13 +223,17 @@ impl Mock {
         let issued_at = now();
 
         let mut access = self.claims(user, grant, issued_at, client.access_token_ttl_secs);
-        access["scope"] = json!(grant.scope);
-        access["azp"] = json!(client.id);
+        if let Some(object) = access.as_object_mut() {
+            object.insert("scope".to_owned(), json!(grant.scope));
+            object.insert("azp".to_owned(), json!(client.id));
+        }
 
         let mut id_token = self.claims(user, grant, issued_at, client.id_token_ttl_secs);
-        if let Some(nonce) = &grant.nonce {
-            // Binds the id token to the browser session that started the flow.
-            id_token["nonce"] = json!(nonce);
+        // Binds the id token to the browser session that started the flow.
+        if let Some(nonce) = &grant.nonce
+            && let Some(object) = id_token.as_object_mut()
+        {
+            object.insert("nonce".to_owned(), json!(nonce));
         }
 
         let access_token = signer.sign(&access).map_err(|error| {
@@ -288,8 +292,10 @@ impl Mock {
         });
 
         // Absent, not empty: the server must survive a provider with no groups mapping (T29).
-        if !user.groups.is_empty() {
-            claims["groups"] = json!(user.groups);
+        if !user.groups.is_empty()
+            && let Some(object) = claims.as_object_mut()
+        {
+            object.insert("groups".to_owned(), json!(user.groups));
         }
 
         claims

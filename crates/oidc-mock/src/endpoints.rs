@@ -308,8 +308,10 @@ fn as_token_response(tokens: Tokens) -> HttpResponse {
         "expires_in": tokens.expires_in,
         "scope": tokens.scope,
     });
-    if let Some(refresh) = tokens.refresh_token {
-        body["refresh_token"] = json!(refresh);
+    if let Some(refresh) = tokens.refresh_token
+        && let Some(object) = body.as_object_mut()
+    {
+        object.insert("refresh_token".to_owned(), json!(refresh));
     }
 
     HttpResponse::Ok()

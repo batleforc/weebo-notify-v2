@@ -213,15 +213,15 @@ impl InteractionLog {
             recorded_at: now,
         };
 
-        match existing {
+        match existing.and_then(|index| self.records.get_mut(index)) {
             // Acknowledging twice is the same acknowledgement.
-            Some(index) if record.interaction.kind() == ActionKind::Ack => {
-                Ok(Recorded::Unchanged(self.records[index].id))
+            Some(slot) if record.interaction.kind() == ActionKind::Ack => {
+                Ok(Recorded::Unchanged(slot.id))
             }
             // Changing your mind replaces the pick.
-            Some(index) => {
-                let previous = self.records[index].id;
-                self.records[index] = record.clone();
+            Some(slot) => {
+                let previous = slot.id;
+                *slot = record.clone();
                 Ok(Recorded::Replaced { record, previous })
             }
             None => {

@@ -95,9 +95,13 @@ impl PushMessage {
                     "channel": channel,
                     "notification_id": notification_id,
                 });
-                if let PushBody::Payload { bytes, .. } = body {
-                    value["content"] =
-                        serde_json::from_slice(bytes).unwrap_or(serde_json::Value::Null);
+                if let PushBody::Payload { bytes, .. } = body
+                    && let Some(object) = value.as_object_mut()
+                {
+                    object.insert(
+                        "content".to_owned(),
+                        serde_json::from_slice(bytes).unwrap_or(serde_json::Value::Null),
+                    );
                 }
                 value
             }
