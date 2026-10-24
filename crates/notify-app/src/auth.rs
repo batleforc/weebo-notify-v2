@@ -254,7 +254,7 @@ impl Authenticate {
         let owner_groups = match &principal {
             Principal::User { .. } => {
                 self.devices
-                    .remembered_groups(&principal, now - self.group_snapshot_ttl)
+                    .remembered_groups(&principal, now.saturating_sub(self.group_snapshot_ttl))
                     .await?
             }
             _ => Vec::new(),

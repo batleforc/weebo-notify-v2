@@ -113,8 +113,10 @@ impl fmt::Display for HumanDuration {
             (MINUTE, 'm'),
             (SECOND, 's'),
         ] {
-            if seconds.is_multiple_of(unit_seconds) {
-                return write!(f, "{}{suffix}", seconds / unit_seconds);
+            if seconds.is_multiple_of(unit_seconds)
+                && let Some(count) = seconds.checked_div(unit_seconds)
+            {
+                return write!(f, "{count}{suffix}");
             }
         }
         write!(f, "{seconds}s")

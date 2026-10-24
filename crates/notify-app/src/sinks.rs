@@ -56,11 +56,11 @@ pub struct DrainReport {
 
 impl DrainReport {
     fn absorb(&mut self, other: Self) {
-        self.delivered += other.delivered;
-        self.retried += other.retried;
-        self.buried += other.buried;
-        self.orphaned += other.orphaned;
-        self.pruned += other.pruned;
+        self.delivered = self.delivered.saturating_add(other.delivered);
+        self.retried = self.retried.saturating_add(other.retried);
+        self.buried = self.buried.saturating_add(other.buried);
+        self.orphaned = self.orphaned.saturating_add(other.orphaned);
+        self.pruned = self.pruned.saturating_add(other.pruned);
     }
 }
 
@@ -153,7 +153,11 @@ impl DrainSinks {
 
         // One lane per sink, in claim order — see `CONCURRENCY`.
         let mut lanes: Vec<Vec<SinkDelivery>> = Vec::new();
-        for delivery in self.queue.claim_due(now, BATCH, now + LEASE).await? {
+        for delivery in self
+            .queue
+            .claim_due(now, BATCH, now.saturating_add(LEASE))
+            .await?
+        {
             match lanes.iter_mut().find(|lane| {
                 lane.first().is_some_and(|first| {
                     first.channel == delivery.channel && first.sink == delivery.sink
@@ -179,7 +183,7 @@ impl DrainSinks {
         {
             report.pruned = self
                 .queue
-                .prune_dead_letters(self.clock.now() - retention, PRUNE_BATCH)
+                .prune_dead_letters(self.clock.now().saturating_sub(retention), PRUNE_BATCH)
                 .await?;
         }
 
@@ -215,7 +219,10 @@ impl DrainSinks {
                 // The endpoint itself is down or slow. Every other delivery in this
                 // lane would wait out the same timeout, so they are released to be
                 // tried after the first backoff rather than one by one now.
-                let later = self.clock.now() + to_time(self.policy.backoff(1));
+                let later = self
+                    .clock
+                    .now()
+                    .saturating_add(to_time(self.policy.backoff(1)));
                 self.release(rest, later).await?;
                 break;
             }
@@ -270,20 +277,20 @@ impl DrainSinks {
         match outcome {
             SinkOutcome::Delivered => {
                 self.queue.complete(&delivery.delivery_id).await?;
-                report.delivered += 1;
+                report.delivered = report.delivered.saturating_add(1);
             }
             SinkOutcome::Rejected { reason } => {
                 // It will keep failing (e.g. `410 Gone`): bury now.
                 self.queue.bury(&attempted, &reason, now).await?;
-                report.buried += 1;
+                report.buried = report.buried.saturating_add(1);
             }
             SinkOutcome::Retry { reason } => {
                 let failing_since = attempted.first_failed_at.unwrap_or(now);
                 if self.policy.is_exhausted(failing_since, now) {
                     self.queue.bury(&attempted, &reason, now).await?;
-                    report.buried += 1;
+                    report.buried = report.buried.saturating_add(1);
                 } else {
-                    let next = now + to_time(self.policy.backoff(attempted.attempts));
+                    let next = now.saturating_add(to_time(self.policy.backoff(attempted.attempts)));
                     self.queue
                         .enqueue(
                             &SinkDelivery {
@@ -293,7 +300,7 @@ impl DrainSinks {
                             next,
                         )
                         .await?;
-                    report.retried += 1;
+                    report.retried = report.retried.saturating_add(1);
                 }
                 return Ok(Endpoint::Failing);
             }
@@ -331,7 +338,7 @@ impl DrainSinks {
                     now,
                 )
                 .await?;
-            report.buried += 1;
+            report.buried = report.buried.saturating_add(1);
         } else {
             tracing::info!(
                 delivery = %delivery.delivery_id,
@@ -345,10 +352,10 @@ impl DrainSinks {
                         first_failed_at: Some(since),
                         ..delivery.clone()
                     },
-                    now + ORPHAN_RECHECK,
+                    now.saturating_add(ORPHAN_RECHECK),
                 )
                 .await?;
-            report.orphaned += 1;
+            report.orphaned = report.orphaned.saturating_add(1);
         }
         Ok(())
     }

@@ -89,7 +89,7 @@ impl SendDndDigests {
 
                 if tally.dnd.is_active(now) {
                     // Still quiet: the tally keeps counting.
-                    report.still_quiet += 1;
+                    report.still_quiet = report.still_quiet.saturating_add(1);
                     continue;
                 }
 
@@ -111,7 +111,7 @@ impl SendDndDigests {
                 self.preferences
                     .clear_deferred(tally.dnd.user, tally.total, tally.failures)
                     .await?;
-                report.sent += 1;
+                report.sent = report.sent.saturating_add(1);
             }
 
             if !full {

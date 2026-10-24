@@ -99,7 +99,7 @@ impl CloseStale {
             if closed.is_empty() {
                 break;
             }
-            report.closed += closed.len() as u64;
+            report.closed = report.closed.saturating_add(closed.len() as u64);
 
             // So connected clients mark their copy closed. One poke per channel per batch: a
             // poke means "read from your cursor".

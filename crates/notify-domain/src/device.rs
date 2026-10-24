@@ -50,9 +50,9 @@ impl DevicePublicKey {
         }
 
         let mut bytes = [0_u8; 32];
-        for (index, byte) in bytes.iter_mut().enumerate() {
-            let start = index * 2;
-            let pair = raw.get(start..start + 2).ok_or(malformed.clone())?;
+        let (pairs, _) = raw.as_bytes().as_chunks::<2>();
+        for (byte, pair) in bytes.iter_mut().zip(pairs) {
+            let pair = core::str::from_utf8(pair).map_err(|_| malformed.clone())?;
             *byte = u8::from_str_radix(pair, 16).map_err(|_| malformed.clone())?;
         }
         // One rendering only: refuse uppercase.

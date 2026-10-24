@@ -41,3 +41,7 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 allow-dbg-in-tests = true
+
+# The gap between two instants always fits in a `Duration` (time's ±9999-year range):
+# subtracting them cannot overflow, so `arithmetic_side_effects` has nothing to guard.
+arithmetic-side-effects-allowed-binary = [["time::OffsetDateTime", "time::OffsetDateTime"]]

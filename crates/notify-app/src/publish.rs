@@ -141,7 +141,7 @@ impl Writer {
                 principal_ref,
                 key,
                 claimed_at: now,
-                expires_at: now + IDEMPOTENCY_WINDOW,
+                expires_at: now.saturating_add(IDEMPOTENCY_WINDOW),
                 encode: Box::new(move |cursor| {
                     serde_json::to_string(&Published {
                         notification: notification.clone(),

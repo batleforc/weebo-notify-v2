@@ -70,9 +70,9 @@ impl RecordInteraction {
 
         // Read-decide-write races (a double-clicked ack): the loser hits the unique index
         // and re-reads, so the domain decides again against the winner.
-        let mut attempts = 0;
+        let mut attempts = 0_u32;
         loop {
-            attempts += 1;
+            attempts = attempts.saturating_add(1);
             let existing = self.interactions.list_for(notification_id).await?;
             let mut log = InteractionLog::from_records(existing);
 

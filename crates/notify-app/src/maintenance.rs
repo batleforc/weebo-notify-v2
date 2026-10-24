@@ -167,7 +167,9 @@ impl PurgeExpired {
 
         let now = self.clock.now();
         let batch = self.limits.batch;
-        let deadline = std::time::Instant::now() + self.limits.budget;
+        // An unrepresentable budget leaves a deadline already passed: one batch, then stop.
+        let started = std::time::Instant::now();
+        let deadline = started.checked_add(self.limits.budget).unwrap_or(started);
         let mut report = PurgeReport {
             led: true,
             ..PurgeReport::default()
@@ -176,7 +178,7 @@ impl PurgeExpired {
         let mut first = true;
         while Self::next_batch(guard.as_ref(), deadline, &mut first).await {
             let claimed = self.notifications.claim_expired(now, batch).await?;
-            report.expired += claimed.len() as u64;
+            report.expired = report.expired.saturating_add(claimed.len() as u64);
 
             // So connected clients drop what expired.
             for expired in &claimed {
@@ -195,14 +197,14 @@ impl PurgeExpired {
             }
         }
 
-        let cutoff = now - TOMBSTONE_GRACE;
+        let cutoff = now.saturating_sub(TOMBSTONE_GRACE);
 
         // Objects before rows (§7.2bis, §6.1): the rows are the only record of which object
         // belongs to what, and a bucket outage just leaves them for the next pass.
         let mut first = true;
         while Self::next_batch(guard.as_ref(), deadline, &mut first).await {
             let swept = self.sweep_attachments(cutoff).await?;
-            report.attachments_deleted += swept.deleted;
+            report.attachments_deleted = report.attachments_deleted.saturating_add(swept.deleted);
 
             // Only once the bucket is clean, or the failed object becomes unfindable.
             if swept.failed > 0 {
@@ -213,7 +215,7 @@ impl PurgeExpired {
                 break;
             }
             let purged = self.notifications.purge(cutoff, batch).await?;
-            report.purged += purged;
+            report.purged = report.purged.saturating_add(purged);
             if purged < u64::from(batch) {
                 break;
             }
@@ -222,8 +224,10 @@ impl PurgeExpired {
         // The other half: objects that never had a reference, which only the registry knows.
         let mut first = true;
         while Self::next_batch(guard.as_ref(), deadline, &mut first).await {
-            let (collected, seen) = self.collect_unreferenced(now - PRESIGN_GRACE).await?;
-            report.presigns_collected += collected;
+            let (collected, seen) = self
+                .collect_unreferenced(now.saturating_sub(PRESIGN_GRACE))
+                .await?;
+            report.presigns_collected = report.presigns_collected.saturating_add(collected);
             // A failed delete comes back first next time; looping now would spin on it.
             if seen < batch as usize || collected < seen as u64 {
                 break;
@@ -243,8 +247,11 @@ impl PurgeExpired {
         // Not gated on the sweep: a bucket outage must not stop event pruning.
         let mut first = true;
         while Self::next_batch(guard.as_ref(), deadline, &mut first).await {
-            let pruned = self.events.prune(now - EVENT_RETENTION, batch).await?;
-            report.events_pruned += pruned;
+            let pruned = self
+                .events
+                .prune(now.saturating_sub(EVENT_RETENTION), batch)
+                .await?;
+            report.events_pruned = report.events_pruned.saturating_add(pruned);
             if pruned < u64::from(batch) {
                 break;
             }
@@ -256,11 +263,14 @@ impl PurgeExpired {
         // Last on purpose: it is opt-in, and a database that refuses it — a role
         // without `EXECUTE` on the purge function — must not cost the stages above.
         if let Some((audit, keep)) = &self.audit {
-            let cutoff = now - *keep;
+            // Clamped, not refused: the floor was checked at boot, and a `keep` past what
+            // `time` can represent simply means nothing is old enough to purge.
+            let keep = time::Duration::try_from(*keep).unwrap_or(time::Duration::MAX);
+            let cutoff = now.saturating_sub(keep);
             let mut first = true;
             while Self::next_batch(guard.as_ref(), deadline, &mut first).await {
                 let purged = audit.purge_older_than(cutoff, batch).await?;
-                report.audit_purged += purged;
+                report.audit_purged = report.audit_purged.saturating_add(purged);
                 if purged < u64::from(batch) {
                     break;
                 }
@@ -282,9 +292,9 @@ impl PurgeExpired {
         let mut swept = Swept::default();
         for id in orphaned {
             match self.attachments.store.delete(id).await {
-                Ok(()) => swept.deleted += 1,
+                Ok(()) => swept.deleted = swept.deleted.saturating_add(1),
                 Err(error) => {
-                    swept.failed += 1;
+                    swept.failed = swept.failed.saturating_add(1);
                     tracing::warn!(
                         %error,
                         attachment = %id,

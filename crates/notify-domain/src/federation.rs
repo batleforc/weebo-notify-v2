@@ -85,7 +85,7 @@ impl Pattern {
         match self.raw.split_once('*') {
             None => self.raw == candidate,
             Some((prefix, suffix)) => {
-                candidate.len() >= prefix.len() + suffix.len()
+                candidate.len() >= prefix.len().saturating_add(suffix.len())
                     && candidate.starts_with(prefix)
                     && candidate.ends_with(suffix)
             }

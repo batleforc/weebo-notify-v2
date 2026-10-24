@@ -63,7 +63,11 @@ impl WallClock {
                 reason: "not a time of day, expected `HH:MM` between 00:00 and 23:59",
             });
         }
-        Ok(Self(hour as u16 * 60 + minute as u16))
+        Ok(Self(
+            (hour as u16)
+                .saturating_mul(60)
+                .saturating_add(minute as u16),
+        ))
     }
 
     /// Minutes since local midnight — the form every comparison here wants.
@@ -170,7 +174,9 @@ impl QuietHours {
             return false;
         };
         let local = now.to_offset(offset);
-        let minutes = u16::from(local.hour()) * 60 + u16::from(local.minute());
+        let minutes = u16::from(local.hour())
+            .saturating_mul(60)
+            .saturating_add(u16::from(local.minute()));
         let today = Day::from(local.weekday());
 
         if self.start.minutes() < self.end.minutes() {

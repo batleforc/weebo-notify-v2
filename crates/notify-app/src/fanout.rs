@@ -467,9 +467,9 @@ impl DrainFanout {
                 .claim_fanout(
                     now,
                     OUTBOX_BATCH,
-                    now + OUTBOX_LEASE,
+                    now.saturating_add(OUTBOX_LEASE),
                     MAX_ATTEMPTS,
-                    now - OUTBOX_MAX_AGE,
+                    now.saturating_sub(OUTBOX_MAX_AGE),
                 )
                 .await;
             match claimed {
@@ -482,7 +482,7 @@ impl DrainFanout {
             }
         });
 
-        let (mut done, mut failure) = (0, None);
+        let (mut done, mut failure) = (0_usize, None);
         batches
             .flat_map(|batch| {
                 let items: Vec<_> = match batch {
@@ -494,7 +494,7 @@ impl DrainFanout {
             .for_each_concurrent(OUTBOX_BATCH as usize, |group| {
                 let rows = match group {
                     Ok(rows) => {
-                        done += rows.len();
+                        done = done.saturating_add(rows.len());
                         Some(rows)
                     }
                     Err(error) => {
@@ -521,7 +521,7 @@ impl DrainFanout {
         let heartbeat = async {
             loop {
                 tokio::time::sleep(LEASE_HEARTBEAT).await;
-                let until = self.fanout.clock.now() + OUTBOX_LEASE;
+                let until = self.fanout.clock.now().saturating_add(OUTBOX_LEASE);
                 if let Err(error) = self.outbox.extend_fanout(&cursors, until).await {
                     tracing::warn!(?error, "fan-out lease not extended; it may be pushed twice");
                 }
@@ -552,7 +552,9 @@ impl DrainFanout {
                         error,
                         "fan-out row not finished; it will be retried"
                     );
-                    let retry_at = now + RETRY_STEP * row.attempts;
+                    let step =
+                        RETRY_STEP.saturating_mul(i32::try_from(row.attempts).unwrap_or(i32::MAX));
+                    let retry_at = now.saturating_add(step);
                     self.outbox.retry_fanout(row.cursor, error, retry_at).await
                 }
             };
@@ -1258,9 +1260,9 @@ mod tests {
                 .claim_fanout(
                     now,
                     OUTBOX_BATCH,
-                    now + OUTBOX_LEASE,
+                    now.saturating_add(OUTBOX_LEASE),
                     MAX_ATTEMPTS,
-                    now - OUTBOX_MAX_AGE,
+                    now.saturating_sub(OUTBOX_MAX_AGE),
                 )
                 .await
                 .unwrap();
@@ -1389,9 +1391,9 @@ mod tests {
             .claim_fanout(
                 now,
                 OUTBOX_BATCH,
-                now + OUTBOX_LEASE,
+                now.saturating_add(OUTBOX_LEASE),
                 MAX_ATTEMPTS,
-                now - OUTBOX_MAX_AGE,
+                now.saturating_sub(OUTBOX_MAX_AGE),
             )
             .await
             .unwrap();

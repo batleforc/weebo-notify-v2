@@ -296,7 +296,11 @@ impl Notification {
         let revision = Revision {
             id: RevisionId::generate(),
             notification_id: self.id,
-            seq: self.last_seq + 1,
+            // Already bounded by MAX_REVISIONS above; checked so it can never wrap.
+            seq: self
+                .last_seq
+                .checked_add(1)
+                .ok_or(DomainError::RevisionLimitReached { max: MAX_REVISIONS })?,
             author,
             received_at: now,
             state: draft.state.unwrap_or(self.head.state),
