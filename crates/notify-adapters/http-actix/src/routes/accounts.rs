@@ -3,11 +3,13 @@
 
 use actix_web::{delete, get, post, web};
 use notify_domain::{ServiceAccount, ServiceAccountId, User};
+use notify_ports::Page;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::extract::Authenticated;
+use crate::extract::{Authenticated, page};
 use crate::problem::{ApiError, Problem};
+use crate::routes::notifications::PageParams;
 use crate::state::ApiState;
 
 /// What it takes to create one.
@@ -80,8 +82,9 @@ pub(crate) async fn search_users(
     get,
     path = "/serviceaccounts",
     tag = "identity",
+    params(PageParams),
     responses(
-        (status = 200, description = "The accounts, deactivated ones included", body = Vec<ServiceAccount>),
+        (status = 200, description = "A page of accounts, deactivated ones included", body = Page<ServiceAccount>),
         (status = 401, description = "No usable credential", body = Problem),
     ),
     security(("bearer" = []))
@@ -90,8 +93,11 @@ pub(crate) async fn search_users(
 pub(crate) async fn list_accounts(
     state: web::Data<ApiState>,
     caller: Authenticated,
-) -> Result<web::Json<Vec<ServiceAccount>>, ApiError> {
-    Ok(web::Json(state.accounts.execute(&caller.0).await?))
+    params: web::Query<PageParams>,
+) -> Result<web::Json<Page<ServiceAccount>>, ApiError> {
+    let params = params.into_inner();
+    let page = page(params.cursor.as_deref(), params.limit)?;
+    Ok(web::Json(state.accounts.execute(&caller.0, page).await?))
 }
 
 /// Create one, owned by the caller — a platform admin (§5.4).

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+    <title>$title</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+</head>
+<body>
+<script id="api-reference" type="application/json">
+    $spec
+</script>
+<!-- Pinned and integrity-checked (ADR-0023 §7). Bump both together: the hash is
+     `openssl dgst -sha384 -binary standalone.js | openssl base64 -A` of the npm tarball. -->
+<script
+        src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.73.1/dist/browser/standalone.js"
+        integrity="sha384-kYDGzV91Jnn3TbHINV3nt54riK2uMJDfN5Al8dAkz4FssELTBWbD8rgw32sTKfOi"
+        crossorigin="anonymous"></script>
+</body>
+</html>

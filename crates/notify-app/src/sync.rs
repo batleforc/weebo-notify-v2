@@ -67,17 +67,32 @@ impl SyncBacklog {
         caller: &Caller,
         request: SyncRequest,
     ) -> Result<SyncPage, Failure> {
-        let Principal::User { id: user } = caller.principal else {
-            return Err(DomainError::ScopeMissing { scope: "subscribe" }.into());
-        };
+        self.remember_groups(caller).await?;
+        self.page(caller, request).await
+    }
 
-        // Refresh the group snapshot on every session, bounding how stale a group-derived
-        // push target gets (§11). Membership only: a key's empty groups would erase it.
+    /// Refresh the group snapshot on every session, bounding how stale a group-derived
+    /// push target gets (§11). Membership only: a key's empty groups would erase it.
+    /// A live stream calls this once when it opens, then reads with [`Self::page`].
+    pub async fn remember_groups(&self, caller: &Caller) -> Result<(), Failure> {
         if caller.grant == Grant::Membership {
             self.devices
                 .remember_groups(&caller.principal, &caller.groups, self.clock.now())
                 .await?;
         }
+        Ok(())
+    }
+
+    /// Every channel the caller may read: what a live stream filters its pokes by.
+    pub async fn readable_channels(&self, caller: &Caller) -> Result<Vec<ChannelId>, Failure> {
+        self.authorizer.readable_channels(caller).await
+    }
+
+    /// [`Self::execute`] without refreshing the group snapshot.
+    pub async fn page(&self, caller: &Caller, request: SyncRequest) -> Result<SyncPage, Failure> {
+        let Principal::User { id: user } = caller.principal else {
+            return Err(DomainError::ScopeMissing { scope: "subscribe" }.into());
+        };
 
         // A stranger's device id is treated as no device at all.
         let device = match request.device {

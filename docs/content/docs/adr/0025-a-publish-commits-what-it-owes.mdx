@@ -100,6 +100,6 @@ committed and did not reach, or whose worker died.
 - ~~The row deadline is fixed, not scaled with the device count~~ — closed
   (2026-10-10): the lease is extended while the worker pushes, and a retried row
   pushes only the devices it has not reached yet.
-- Dead rows are kept for an operator and deleted by hand (runbooks).
+- Dead rows are kept for an operator for 30 days, then deleted by the purge (runbooks).
 - A publish dropped *before* its commit still leaves the key claimed until the claim
   lapses (5 min), answered `409` meanwhile — never a duplicate.

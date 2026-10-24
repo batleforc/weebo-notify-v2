@@ -272,7 +272,8 @@ published by the leader only — read the max across replicas.
 
 A row is retired as dead after ten claims that did not finish, when it cannot be
 decoded, or once it has waited an hour (a push that late is noise; the inbox holds
-the notification). Dead rows are never retried on their own — read why, then delete:
+the notification). Dead rows are never retried on their own, and the purge deletes
+them 30 days after they died (as long as events are kept). Read why, then delete:
 
 ```sql
 SELECT cursor_seq, notification->>'id' AS notification, attempts, last_error, queued_at

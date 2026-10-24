@@ -238,6 +238,35 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn a_read_held_back_too_long_serves_the_safe_prefix_after_its_wait() {
+        let store = store!(4);
+        let reader = UserId::generate();
+        let channel = channel_for(&store, reader).await;
+
+        let mut first = store.pool().begin().await.unwrap();
+        let served_already = append(&mut first, &channel).await;
+        first.commit().await.unwrap();
+        eventually(&store, reader, served_already - 1, |seqs| !seqs.is_empty()).await;
+
+        let mut holding = store.pool().begin().await.unwrap();
+        append(&mut holding, &channel).await;
+        let mut behind = store.pool().begin().await.unwrap();
+        append(&mut behind, &channel).await;
+        behind.commit().await.unwrap();
+
+        let started = std::time::Instant::now();
+        let seqs = served(&store, reader, served_already).await;
+        let waited = started.elapsed();
+
+        assert!(seqs.is_empty(), "nothing past the held row: {seqs:?}");
+        assert!(
+            waited >= Duration::from_millis(4_500) && waited < Duration::from_secs(15),
+            "waited {waited:?}, not about the 5 s the read allows itself"
+        );
+        holding.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_held_back_row_is_measured() {
         let store = store!(4);
         let reader = UserId::generate();

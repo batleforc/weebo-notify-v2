@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use notify_domain::{DomainError, Origin, Principal, ServiceAccount, ServiceAccountId, User};
 use notify_ports::{
-    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, ServiceAccountRepository,
-    UserRepository, actions,
+    ApiKeyRepository, AuditEntry, AuditLog, Clock, Failure, Page, PageRequest,
+    ServiceAccountRepository, UserRepository, actions,
 };
 
 use crate::authz::Caller;
@@ -33,8 +33,13 @@ impl ListServiceAccounts {
 
     /// Every service account, deactivated ones included. Unfiltered: a service account
     /// is a public identity (its name authors revisions), and carries no secret.
-    pub async fn execute(&self, _caller: &Caller) -> Result<Vec<ServiceAccount>, Failure> {
-        Ok(self.accounts.list().await?)
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        page: PageRequest,
+    ) -> Result<Page<ServiceAccount>, Failure> {
+        caller.ensure_session()?;
+        Ok(self.accounts.list_page(page).await?)
     }
 }
 
@@ -61,9 +66,8 @@ impl SearchUsers {
 
     /// Users whose name or email contains `text`; fewer than two characters matches nobody.
     pub async fn execute(&self, caller: &Caller, text: &str) -> Result<Vec<User>, Failure> {
-        if !matches!(caller.principal, Principal::User { .. }) {
-            return Err(Failure::Domain(DomainError::NotAPerson));
-        }
+        // A session, not a personal key: a leaked key must not page through the directory.
+        caller.ensure_person()?;
         let text = text.trim();
         if text.chars().count() < 2 {
             return Ok(Vec::new());
@@ -458,6 +462,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_listing_pages_through_every_account_once() {
+        let fixture = fixture();
+        for name in ["bot-a", "bot-b", "bot-c"] {
+            fixture
+                .create
+                .execute(&admin(fixture.alice), name, None, None)
+                .await
+                .unwrap();
+        }
+
+        let mut seen = Vec::new();
+        let mut page = PageRequest::of_size(2);
+        loop {
+            let listed = fixture
+                .list
+                .execute(&caller(fixture.bob), page)
+                .await
+                .unwrap();
+            seen.extend(
+                listed
+                    .items
+                    .into_iter()
+                    .map(|account| account.id.to_string()),
+            );
+            let Some(next) = listed.next else { break };
+            page = page.after(next);
+        }
+
+        assert_eq!(seen, ["bot-a", "bot-b", "bot-c"]);
+    }
+
+    #[tokio::test]
     async fn the_listing_shows_every_account_and_no_secret() {
         let fixture = fixture();
         fixture
@@ -467,7 +503,12 @@ mod tests {
             .unwrap();
 
         // A service account is a public identity on this instance.
-        let listed = fixture.list.execute(&caller(fixture.bob)).await.unwrap();
+        let listed = fixture
+            .list
+            .execute(&caller(fixture.bob), PageRequest::first())
+            .await
+            .unwrap()
+            .items;
 
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].display_name.as_deref(), Some("ArgoCD"));

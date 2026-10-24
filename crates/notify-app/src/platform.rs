@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use notify_domain::{ChannelId, Scope};
-use notify_ports::{AuditEntry, AuditLog, AuditQuery, ChannelRepository, Failure, Page, actions};
+use notify_ports::{
+    AuditEntry, AuditLog, AuditQuery, ChannelRepository, Failure, Page, PageRequest, actions,
+};
 use time::OffsetDateTime;
 
 use crate::authz::Caller;
@@ -58,25 +60,30 @@ impl ChannelInventory {
         Self { channels }
     }
 
-    /// Every channel on the instance, as record cards.
-    pub async fn execute(&self, caller: &Caller) -> Result<Vec<ChannelCard>, Failure> {
+    /// One page of the channels on the instance, as record cards.
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        page: PageRequest,
+    ) -> Result<Page<ChannelCard>, Failure> {
         caller.ensure_platform_admin()?;
 
-        let mut cards = Vec::new();
-        for id in self.channels.all_ids().await? {
-            let Some(channel) = self.channels.get(&id).await? else {
-                // Deleted between the two reads: an inventory is a snapshot, skip it.
-                continue;
-            };
-            cards.push(ChannelCard {
+        let channels = self.channels.list_all(page).await?;
+        let cards = channels
+            .items
+            .into_iter()
+            .map(|channel| ChannelCard {
                 id: channel.id,
                 origin_managed: channel.origin.is_managed(),
                 members: channel.members.len(),
                 group_bindings: channel.group_access.len(),
                 receipts_enabled: channel.policy.receipts_enabled,
-            });
-        }
-        Ok(cards)
+            })
+            .collect();
+        Ok(match channels.next {
+            Some(next) => Page::more(cards, next),
+            None => Page::last(cards),
+        })
     }
 }
 
@@ -350,7 +357,11 @@ mod tests {
         let audit = BrowseAudit::new(Arc::new(store));
 
         assert_eq!(
-            inventory.execute(&ordinary()).await.unwrap_err().code(),
+            inventory
+                .execute(&ordinary(), PageRequest::first())
+                .await
+                .unwrap_err()
+                .code(),
             Some("platform.role_required")
         );
         assert_eq!(
@@ -370,7 +381,11 @@ mod tests {
         let store = seeded();
         let inventory = ChannelInventory::new(Arc::new(store));
 
-        let cards = inventory.execute(&admin()).await.unwrap();
+        let cards = inventory
+            .execute(&admin(), PageRequest::first())
+            .await
+            .unwrap()
+            .items;
 
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].id, ChannelId::parse("cluster-ovh-1").unwrap());

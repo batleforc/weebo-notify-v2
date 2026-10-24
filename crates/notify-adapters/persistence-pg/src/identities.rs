@@ -6,15 +6,17 @@ use notify_domain::{
     Profile, ProfileField, Scope, ServiceAccount, ServiceAccountId, User, UserId,
 };
 use notify_ports::{
-    ApiKeyRepository, EmailMatch, PortResult, ServiceAccountRepository, StoredApiKey,
-    UserRepository,
+    ApiKeyRepository, EmailMatch, Page, PageRequest, PortResult, ServiceAccountRepository,
+    StoredApiKey, UserRepository,
 };
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 
 use crate::PgStore;
-use crate::mapping::{enum_from_text, enum_to_text, fail, from_json, parse, to_json};
+use crate::mapping::{
+    cursor, enum_from_text, enum_to_text, fail, from_json, parse, sequence, to_json,
+};
 
 // --- Users -----------------------------------------------------------------
 
@@ -217,6 +219,42 @@ impl ServiceAccountRepository for PgStore {
         .map_err(|error| fail("service_account", error))?;
 
         rows.iter().map(hydrate_service_account).collect()
+    }
+
+    async fn list_page(&self, page: PageRequest) -> PortResult<Page<ServiceAccount>> {
+        let limit = page.effective_limit();
+        // One more than asked for: the extra row says whether a next page exists.
+        let mut rows = sqlx::query(
+            "SELECT id, display_name, description, origin, created_by, created_at, disabled_at, seq
+             FROM service_accounts
+             WHERE ($1::bigint IS NULL OR seq > $1)
+             ORDER BY seq
+             LIMIT $2",
+        )
+        .bind(page.after.map(sequence))
+        .bind(i64::from(limit).saturating_add(1))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("service_account", error))?;
+
+        let has_more = rows.len() > limit as usize;
+        rows.truncate(limit as usize);
+        let next = match rows.last().filter(|_| has_more) {
+            Some(row) => Some(cursor(
+                row.try_get::<i64, _>("seq")
+                    .map_err(|error| fail("service_account", error))?,
+            )),
+            None => None,
+        };
+        let accounts = rows
+            .iter()
+            .map(hydrate_service_account)
+            .collect::<PortResult<Vec<_>>>()?;
+
+        Ok(match next {
+            Some(next) => Page::more(accounts, next),
+            None => Page::last(accounts),
+        })
     }
 
     async fn upsert(&self, account: &ServiceAccount) -> PortResult<()> {

@@ -285,7 +285,10 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
 
         // Unmounted rather than `401`, which would confirm it exists.
         if serve_docs {
-            app.service(utoipa_scalar::Scalar::with_url("/api/docs", api))
+            app.service(
+                utoipa_scalar::Scalar::with_url("/api/docs", api)
+                    .custom_html(include_str!("scalar.html")),
+            )
         } else {
             app
         }
@@ -796,6 +799,16 @@ async fn housekeep(
     {
         Ok(backlog) => metrics.retention_backlog(&backlog),
         Err(error) => tracing::warn!(?error, "could not measure the retention backlog"),
+    }
+
+    // Dead letters are kept as long as events, for an operator to read; bounded per pass.
+    match store
+        .purge_dead_fanout(now.saturating_sub(notify_app::EVENT_RETENTION), 1_000)
+        .await
+    {
+        Ok(0) => {}
+        Ok(purged) => tracing::info!(purged, "old dead-lettered fan-out rows deleted"),
+        Err(error) => tracing::warn!(?error, "could not purge dead-lettered fan-out rows"),
     }
 
     match store.fanout_backlog(now).await {

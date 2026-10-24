@@ -72,9 +72,8 @@ async fn administers_key(
     }
     match &key.owner {
         ApiKeyOwner::User { .. } => Ok(false),
-        ApiKeyOwner::Channel { id } => {
-            manages_all(authorizer, caller, core::slice::from_ref(id)).await
-        }
+        ApiKeyOwner::Channel { id } => Ok(caller.platform_admin
+            || manages_all(authorizer, caller, core::slice::from_ref(id)).await?),
         ApiKeyOwner::ServiceAccount { id } => match accounts.get(id).await? {
             Some(account) => administers_account(authorizer, caller, &account, &key.channels).await,
             None => Ok(caller.platform_admin),
@@ -189,7 +188,14 @@ impl CreateApiKey {
                 }
                 true
             }
-            ApiKeyOwner::Channel { .. } => true,
+            // Its owner must be among the channels checked below, or a manager of one
+            // channel would mint a key no manager of its owner can see or revoke.
+            ApiKeyOwner::Channel { id } => {
+                if !request.channels.contains(id) {
+                    return Err(refuse());
+                }
+                true
+            }
         };
 
         for channel in &request.channels {
@@ -289,6 +295,14 @@ impl ListApiKeys {
         }
         if caller.grant == Grant::Membership {
             for account in self.accounts.list().await? {
+                // Somebody else's account: none of its keys are ours, so skip their lookups.
+                if !caller.platform_admin
+                    && account
+                        .created_by
+                        .is_some_and(|creator| caller.principal != Principal::User { id: creator })
+                {
+                    continue;
+                }
                 for key in self.keys.list_for(&account.principal()).await? {
                     if administers_account(&self.authorizer, caller, &account, &key.channels)
                         .await?
@@ -655,6 +669,31 @@ mod tests {
                 .is_err(),
             "a channel key is administrative, not personal"
         );
+    }
+
+    #[tokio::test]
+    async fn a_channel_key_must_name_its_owner_among_its_channels() {
+        let fixture = fixture(vec![Scope::Publish, Scope::Manage]);
+        let caller = Caller::member(fixture.alice.clone());
+
+        for owner in ["payroll", "nonexistent"] {
+            assert!(
+                fixture
+                    .create
+                    .execute(
+                        &caller,
+                        request(
+                            ApiKeyOwner::Channel {
+                                id: ChannelId::parse(owner).unwrap()
+                            },
+                            vec![Scope::Publish]
+                        ),
+                    )
+                    .await
+                    .is_err(),
+                "a key owned by {owner} would be invisible to ci-infra's managers"
+            );
+        }
     }
 
     #[tokio::test]

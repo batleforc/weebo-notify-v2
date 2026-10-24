@@ -8,6 +8,7 @@ use notify_domain::{
 use time::OffsetDateTime;
 
 use crate::error::PortResult;
+use crate::pagination::{Page, PageRequest};
 
 /// What looking a user up by email found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,8 +52,11 @@ pub trait ServiceAccountRepository: Send + Sync {
     /// Fetch one.
     async fn get(&self, id: &ServiceAccountId) -> PortResult<Option<ServiceAccount>>;
 
-    /// Every service account, for `GET /serviceaccounts` and the console.
+    /// Every service account, for the key listing's ownership checks.
     async fn list(&self) -> PortResult<Vec<ServiceAccount>>;
+
+    /// One page of them, in creation order, for `GET /serviceaccounts` and the console.
+    async fn list_page(&self, page: PageRequest) -> PortResult<Page<ServiceAccount>>;
 
     /// Create or update one.
     async fn upsert(&self, account: &ServiceAccount) -> PortResult<()>;

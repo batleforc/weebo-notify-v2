@@ -7,8 +7,9 @@ use notify_ports::{AuditEntry, AuditQuery, DeadLetter, Page};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-use crate::extract::Authenticated;
+use crate::extract::{Authenticated, page};
 use crate::problem::{ApiError, Problem};
+use crate::routes::notifications::PageParams;
 use crate::state::ApiState;
 
 /// Filters for the audit log — the after-incident questions (design §13).
@@ -75,8 +76,9 @@ pub(crate) async fn audit(
     get,
     path = "/admin/channels",
     tag = "admin",
+    params(PageParams),
     responses(
-        (status = 200, description = "Every channel, as metadata", body = Vec<ChannelCard>),
+        (status = 200, description = "A page of channels, as metadata", body = Page<ChannelCard>),
         (status = 401, description = "No usable credential", body = Problem),
         (status = 403, description = "Not a platform admin", body = Problem),
     ),
@@ -86,8 +88,11 @@ pub(crate) async fn audit(
 pub(crate) async fn inventory(
     state: web::Data<ApiState>,
     caller: Authenticated,
-) -> Result<web::Json<Vec<ChannelCard>>, ApiError> {
-    Ok(web::Json(state.inventory.execute(&caller.0).await?))
+    params: web::Query<PageParams>,
+) -> Result<web::Json<Page<ChannelCard>>, ApiError> {
+    let params = params.into_inner();
+    let page = page(params.cursor.as_deref(), params.limit)?;
+    Ok(web::Json(state.inventory.execute(&caller.0, page).await?))
 }
 
 /// Join a channel as the calling admin — the audited way to content (design §5.4).

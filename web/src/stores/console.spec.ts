@@ -76,7 +76,7 @@ beforeEach(() => {
 
 describe("who may see the console", () => {
   it("asks the server once rather than trusting a local flag", async () => {
-    inventoryMock.mockResolvedValue({ data: [CARD] });
+    inventoryMock.mockResolvedValue({ data: { items: [CARD] } });
     const platform = useConsole();
 
     await platform.probe();
@@ -115,7 +115,7 @@ describe("who may see the console", () => {
 describe("what it shows", () => {
   it("loads the four panels in one go", async () => {
     dlqMock.mockResolvedValue({ data: [DEAD_LETTER] });
-    inventoryMock.mockResolvedValue({ data: [CARD] });
+    inventoryMock.mockResolvedValue({ data: { items: [CARD] } });
     trustPoliciesMock.mockResolvedValue({
       data: [
         {
@@ -163,7 +163,7 @@ describe("what it shows", () => {
 
   it("never receives the event a dead letter failed to deliver", async () => {
     // §5.4: a dead letter carries no payload.
-    inventoryMock.mockResolvedValue({ data: [CARD] });
+    inventoryMock.mockResolvedValue({ data: { items: [CARD] } });
     trustPoliciesMock.mockResolvedValue({ data: [] });
     auditMock.mockResolvedValue({ data: { items: [], next: null } });
     reconciliationMock.mockResolvedValue({ data: null });
@@ -176,7 +176,7 @@ describe("what it shows", () => {
   });
 
   it("reloads after a requeue, because the audit entry is the point", async () => {
-    inventoryMock.mockResolvedValue({ data: [CARD] });
+    inventoryMock.mockResolvedValue({ data: { items: [CARD] } });
     trustPoliciesMock.mockResolvedValue({ data: [] });
     auditMock.mockResolvedValue({ data: { items: [], next: null } });
     reconciliationMock.mockResolvedValue({ data: null });
@@ -204,7 +204,7 @@ describe("what it shows", () => {
   it("says 'no pass' rather than zeroes when none has finished", async () => {
     // Zeroes would render as a healthy instance that has applied its
     // configuration, which is the opposite of what `null` means here.
-    inventoryMock.mockResolvedValue({ data: [CARD] });
+    inventoryMock.mockResolvedValue({ data: { items: [CARD] } });
     trustPoliciesMock.mockResolvedValue({ data: [] });
     auditMock.mockResolvedValue({ data: { items: [], next: null } });
     reconciliationMock.mockResolvedValue({ data: null });
@@ -217,7 +217,7 @@ describe("what it shows", () => {
   });
 
   it("reloads after a self-join, because the audit entry is the point", async () => {
-    inventoryMock.mockResolvedValue({ data: [CARD] });
+    inventoryMock.mockResolvedValue({ data: { items: [CARD] } });
     trustPoliciesMock.mockResolvedValue({ data: [] });
     auditMock.mockResolvedValue({ data: { items: [], next: null } });
     reconciliationMock.mockResolvedValue({ data: null });

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use notify_domain::ChannelId;
 use notify_ports::{
     AuditLog, Clock, EventStore, Failure, IdempotencyStore, LeaderElection, NotificationRepository,
     Poke,
@@ -39,6 +40,10 @@ pub const EVENT_RETENTION: Duration = Duration::days(30);
 /// How long a signed upload may sit unreferenced before it is collected (§7.2bis).
 /// Covers the gap between signing and publishing; the URL itself lives 5 minutes.
 const PRESIGN_GRACE: Duration = Duration::days(1);
+
+/// Expired rows claimed per transaction, whatever `batch` says: each row costs three
+/// round trips while the event watermark waits (cf. `CloseStale`'s 200).
+const EXPIRE_BATCH: u32 = 100;
 
 /// What one pass did, for the log and for the tests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -177,22 +182,15 @@ impl PurgeExpired {
 
         let mut first = true;
         while Self::next_batch(guard.as_ref(), deadline, &mut first).await {
-            let claimed = self.notifications.claim_expired(now, batch).await?;
+            // Capped below `batch`: the claim holds the event watermark for its whole
+            // transaction, and every stream's `settle()` waits on it.
+            let expire_batch = batch.min(EXPIRE_BATCH);
+            let claimed = self.notifications.claim_expired(now, expire_batch).await?;
             report.expired = report.expired.saturating_add(claimed.len() as u64);
 
-            // So connected clients drop what expired.
-            for expired in &claimed {
-                let cursor = self.events.head().await?;
-                let poke = Poke::Channel {
-                    id: expired.channel.clone(),
-                    cursor,
-                };
-                if let Err(error) = self.bus.publish(&poke).await {
-                    tracing::warn!(?error, "could not announce an expiry");
-                }
-            }
+            self.announce_expired(&claimed).await?;
 
-            if claimed.len() < batch as usize {
+            if claimed.len() < expire_batch as usize {
                 break;
             }
         }
@@ -279,6 +277,32 @@ impl PurgeExpired {
 
         guard.release().await;
         Ok(report)
+    }
+
+    /// So connected clients drop what expired. One poke per channel per batch, as
+    /// `CloseStale` does: a poke means "read from your cursor".
+    async fn announce_expired(
+        &self,
+        claimed: &[notify_ports::ExpiredNotification],
+    ) -> Result<(), Failure> {
+        if claimed.is_empty() {
+            return Ok(());
+        }
+        let cursor = self.events.head().await?;
+        let mut channels: Vec<&ChannelId> =
+            claimed.iter().map(|expired| &expired.channel).collect();
+        channels.sort_unstable();
+        channels.dedup();
+        for channel in channels {
+            let poke = Poke::Channel {
+                id: channel.clone(),
+                cursor,
+            };
+            if let Err(error) = self.bus.publish(&poke).await {
+                tracing::warn!(?error, "could not announce an expiry");
+            }
+        }
+        Ok(())
     }
 
     /// Delete the objects that only rows due for purge still reference. A failed delete

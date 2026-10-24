@@ -384,4 +384,76 @@ mod tests {
 
         assert_eq!(store.pokes().len(), 1);
     }
+
+    /// One event appended inside `transaction`, as the repositories do.
+    async fn append(transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>, channel: &str) {
+        sqlx::query(
+            "INSERT INTO events (audience_kind, channel_id, recorded_at, kind, payload)
+             VALUES ('channel', $1, now(), 'closure', '{}'::jsonb)",
+        )
+        .bind(channel)
+        .execute(&mut **transaction)
+        .await
+        .unwrap();
+    }
+
+    /// A row held back past a whole tick, then released, gets the `Resync` nothing
+    /// else would send. Needs Postgres; runs alone (`.config/nextest.toml`).
+    #[actix_web::test]
+    async fn watch_watermark_resyncs_streams_once_a_long_hold_ends() {
+        use futures::StreamExt as _;
+        use notify_ports::ChannelRepository as _;
+
+        let Ok(url) = std::env::var("WNK_TEST_DATABASE_URL") else {
+            assert!(
+                std::env::var_os("WNK_TEST_REQUIRE_DB").is_none(),
+                "WNK_TEST_REQUIRE_DB is set but WNK_TEST_DATABASE_URL is not — refusing to skip"
+            );
+            return;
+        };
+        let store = notify_persistence_pg::PgStore::connect(&url, 4)
+            .await
+            .unwrap();
+        store.migrate().await.unwrap();
+        let channel = ChannelId::parse(&format!(
+            "t-{}",
+            notify_domain::NotificationId::generate()
+                .to_string()
+                .trim_start_matches("ntf_")
+                .to_lowercase()
+        ))
+        .unwrap();
+        store
+            .upsert(&notify_domain::Channel::dynamic(channel.clone(), None).unwrap())
+            .await
+            .unwrap();
+        let bus = InMemory::new();
+        let mut pokes = bus.subscribe().await.unwrap();
+        let mut holding = store.pool().begin().await.unwrap();
+        append(&mut holding, channel.as_str()).await;
+        let mut behind = store.pool().begin().await.unwrap();
+        append(&mut behind, channel.as_str()).await;
+        behind.commit().await.unwrap();
+
+        let watcher = {
+            let (store, bus) = (store.clone(), bus.clone());
+            actix_web::rt::spawn(async move {
+                watch_watermark(&store, &bus, &notify_ports::NoMetrics).await;
+            })
+        };
+        // Two ticks: the hold has to outlive one to arm the watcher.
+        actix_web::rt::time::sleep(WATERMARK_TICK * 3).await;
+        holding.rollback().await.unwrap();
+
+        let resynced = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while let Some(poke) = pokes.next().await {
+                if poke == Poke::Resync {
+                    return;
+                }
+            }
+        })
+        .await;
+        watcher.abort();
+        assert!(resynced.is_ok(), "the release was never announced");
+    }
 }

@@ -111,19 +111,13 @@ pub(crate) fn review(config: &Config) -> Vec<Finding> {
     // ── Attachments ──────────────────────────────────────────────────────────
     match &config.attachments {
         Some(attachments) if attachments.kind == AttachmentsBackend::Filesystem => {
-            let secret = attachments.token_secret.expose().trim();
-            if secret.is_empty() {
+            if attachments.token_secret.expose().len() < notify_ports::FingerprintKey::MIN_BYTES {
                 // Refused at startup; listed so `doctor` explains why.
                 findings.push(Finding::warn(
-                    "[attachments] token_secret is empty: every presigned attachment URL would \
-                     be unsigned, which is an open directory",
-                    "set WNK_ATTACHMENTS__TOKEN_SECRET from a Secret (server.attachments.existingSecret)",
-                ));
-            } else if looks_like_a_placeholder(secret) {
-                findings.push(Finding::warn(
-                    "[attachments] token_secret looks like a placeholder, so attachment URLs are \
-                     signed with a value anybody reading this chart can guess",
-                    "generate one: `openssl rand -base64 48`",
+                    "[attachments] token_secret is too short: presigned attachment URLs signed \
+                     with it could be forged",
+                    "generate one (`openssl rand -base64 48`) into WNK_ATTACHMENTS__TOKEN_SECRET \
+                     from a Secret (server.attachments.existingSecret)",
                 ));
             }
             if attachments.public_base_url.starts_with("http://") {
@@ -187,26 +181,6 @@ fn is_loopback_host(host: &str) -> bool {
             .trim_end_matches(']')
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
-}
-
-/// Whether a secret looks like something copied out of an example.
-fn looks_like_a_placeholder(secret: &str) -> bool {
-    const TELLS: &[&str] = &[
-        "changeme",
-        "change-me",
-        "placeholder",
-        "example",
-        "secret",
-        "password",
-        "xxxx",
-        "todo",
-        "dev",
-        "test",
-    ];
-
-    let lowered = secret.to_ascii_lowercase();
-    // Short enough to guess is a tell on its own, whatever it says.
-    secret.len() < 16 || TELLS.iter().any(|tell| lowered == *tell)
 }
 
 /// Log the review at boot.
@@ -324,18 +298,5 @@ mod tests {
                 .iter()
                 .any(|f| f.what.contains("no encryption at rest"))
         );
-    }
-
-    #[test]
-    fn a_short_or_obvious_token_secret_is_a_placeholder() {
-        for tell in ["", "changeme", "dev", "secret", "short"] {
-            assert!(
-                looks_like_a_placeholder(tell),
-                "`{tell}` should not pass as a signing secret"
-            );
-        }
-        assert!(!looks_like_a_placeholder(
-            "0G0m0hQ7pQm8kZ0h3sVJ2tYqLxN4rW6uB1cD8eF0aI2="
-        ));
     }
 }

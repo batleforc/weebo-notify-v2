@@ -156,8 +156,10 @@ impl GetNotification {
         }
     }
 
-    /// Fetch, checking the caller may read its channel. `notification.gone` only after
-    /// the channel check, so strangers cannot probe ids.
+    /// Fetch, checking the caller may read its channel. An id with no row at all is
+    /// `notification.gone` before any channel check, so a stranger holding an id can tell
+    /// "purged or never existed" (`409`) from "exists elsewhere" (`403`). Accepted: ids
+    /// are unguessable ULIDs, and a reader of a purged notification must see `gone`.
     pub async fn execute(
         &self,
         caller: &Caller,

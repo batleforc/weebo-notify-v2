@@ -197,7 +197,9 @@ impl TrustPolicies {
             .policies
             .iter()
             .filter(|policy| {
-                policy.issuer == claims.issuer && policy.subject.matches(&claims.subject)
+                // As the verifier does: a trailing slash is not a different issuer.
+                policy.issuer.trim_end_matches('/') == claims.issuer.trim_end_matches('/')
+                    && policy.subject.matches(&claims.subject)
             })
             .collect();
 
@@ -260,6 +262,15 @@ mod tests {
             jti: Some("tok-1".to_owned()),
             accepted_until: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
         }
+    }
+
+    #[test]
+    fn a_trailing_slash_on_either_side_is_the_same_issuer() {
+        let mut claims = claims("repo:weebo/notify");
+        claims.issuer.push('/');
+        let policies = TrustPolicies::new(vec![policy("repo:weebo/notify", &["ci-*"])]);
+
+        assert!(policies.decide(&claims, US).is_ok());
     }
 
     // --- T11 · the anchored glob ------------------------------------------

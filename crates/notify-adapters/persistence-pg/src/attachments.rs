@@ -31,6 +31,19 @@ impl AttachmentRegistry for PgStore {
         Ok(())
     }
 
+    async fn signed_for(&self, id: AttachmentId, channel: &ChannelId) -> PortResult<bool> {
+        let (signed,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM attachment_presigns WHERE id = $1 AND channel_id = $2)",
+        )
+        .bind(id.to_string())
+        .bind(channel.as_str())
+        .fetch_one(self.pool())
+        .await
+        .map_err(|error| fail("attachment_presign", error))?;
+
+        Ok(signed)
+    }
+
     async fn unreferenced(
         &self,
         older_than: OffsetDateTime,

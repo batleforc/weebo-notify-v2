@@ -22,7 +22,16 @@ import type {
   Reconciliation,
   TrustPolicyCard,
 } from "@/api/generated/types.gen";
+import { allPages } from "@/api/pages";
 import { failureOf } from "@/api/problem";
+
+/** Every channel card, across pages. */
+async function everyCard(): Promise<ChannelCard[]> {
+  return allPages(async (query) => {
+    const answer = await fetchInventory({ query, throwOnError: true });
+    return answer.data;
+  });
+}
 
 export const useConsole = defineStore("console", () => {
   /** `null` until probed, so the nav waits rather than flickers. */
@@ -47,8 +56,7 @@ export const useConsole = defineStore("console", () => {
       return;
     }
     try {
-      const answer = await fetchInventory({ throwOnError: true });
-      channels.value = answer.data;
+      channels.value = await everyCard();
       allowed.value = true;
     } catch (caught) {
       const failure = failureOf(caught);
@@ -71,13 +79,13 @@ export const useConsole = defineStore("console", () => {
         gitopsAnswer,
         dlqAnswer,
       ] = await Promise.all([
-        fetchInventory({ throwOnError: true }),
+        everyCard(),
         fetchTrustPolicies({ throwOnError: true }),
         fetchAudit({ query: { limit: 50 }, throwOnError: true }),
         fetchReconciliation({ throwOnError: true }),
         fetchDlq({ throwOnError: true }),
       ]);
-      channels.value = inventoryAnswer.data;
+      channels.value = inventoryAnswer;
       policies.value = policyAnswer.data;
       entries.value = auditAnswer.data.items;
       gitops.value = gitopsAnswer.data ?? null;

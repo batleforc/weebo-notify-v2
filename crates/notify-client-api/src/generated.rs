@@ -2608,6 +2608,14 @@ Resolved from the token's `groups` claim at request time, never stored per user.
     }
     ///What a caller gets.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageChannelCard {
+        ///The rows, in the ordering of the endpoint.
+        pub items: ::std::vec::Vec<ChannelCard>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub next: ::std::option::Option<Cursor>,
+    }
+    ///What a caller gets.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct PageNotification {
         ///The rows, in the ordering of the endpoint.
         pub items: ::std::vec::Vec<Notification>,
@@ -2619,6 +2627,14 @@ Resolved from the token's `groups` claim at request time, never stored per user.
     pub struct PageRevision {
         ///The rows, in the ordering of the endpoint.
         pub items: ::std::vec::Vec<Revision>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub next: ::std::option::Option<Cursor>,
+    }
+    ///What a caller gets.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PageServiceAccount {
+        ///The rows, in the ordering of the endpoint.
+        pub items: ::std::vec::Vec<ServiceAccount>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
@@ -4114,13 +4130,15 @@ Arguments:
 
 Sends a `GET` request to `/api/v1/admin/channels`
 
+Arguments:
+- `cursor`: Opaque page cursor.
+- `limit`: Page size, clamped server-side.
 */
     pub async fn inventory<'a>(
         &'a self,
-    ) -> Result<
-        ResponseValue<::std::vec::Vec<types::ChannelCard>>,
-        Error<types::Problem>,
-    > {
+        cursor: Option<&'a str>,
+        limit: Option<i32>,
+    ) -> Result<ResponseValue<types::PageChannelCard>, Error<types::Problem>> {
         let url = format!("{}/api/v1/admin/channels", self.baseurl,);
         let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
         header_map
@@ -4136,6 +4154,8 @@ Sends a `GET` request to `/api/v1/admin/channels`
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {
@@ -6663,13 +6683,15 @@ Arguments:
 
 Sends a `GET` request to `/api/v1/serviceaccounts`
 
+Arguments:
+- `cursor`: Opaque page cursor.
+- `limit`: Page size, clamped server-side.
 */
     pub async fn list_accounts<'a>(
         &'a self,
-    ) -> Result<
-        ResponseValue<::std::vec::Vec<types::ServiceAccount>>,
-        Error<types::Problem>,
-    > {
+        cursor: Option<&'a str>,
+        limit: Option<i32>,
+    ) -> Result<ResponseValue<types::PageServiceAccount>, Error<types::Problem>> {
         let url = format!("{}/api/v1/serviceaccounts", self.baseurl,);
         let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
         header_map
@@ -6685,6 +6707,8 @@ Sends a `GET` request to `/api/v1/serviceaccounts`
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {

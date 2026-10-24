@@ -19,14 +19,30 @@ fn show(
 ) -> Result<notify_rust::NotificationHandle, notify_rust::error::Error> {
     notify_rust::Notification::new()
         .summary(title)
-        .body(body)
+        .body(&plain(body))
         .appname("weebo-notify")
         .show()
+}
+
+/// A publisher's text as text: daemons read the body as markup, where `<a>` or `<img>`
+/// would turn a notification into a link or a remote fetch.
+fn plain(body: &str) -> String {
+    body.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markup_in_a_body_reaches_the_daemon_as_text() {
+        assert_eq!(
+            plain(r#"<img src="https://x/y.png"> & <b>"#),
+            r#"&lt;img src="https://x/y.png"&gt; &amp; &lt;b&gt;"#
+        );
+    }
 
     /// Deliver to a real notification daemon over a real session bus; skipped unless
     /// `DBUS_SESSION_BUS_ADDRESS` is set (`task desktop:check` provides one).

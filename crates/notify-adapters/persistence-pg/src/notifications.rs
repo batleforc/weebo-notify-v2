@@ -719,6 +719,10 @@ impl NotificationRepository for PgStore {
                    WHERE others.content->'image'->>'kind' = 'attachment'
                      AND others.content->'image'->>'ref' = mine.content->'image'->>'ref'
                      AND others.notification_id NOT IN (SELECT id FROM doomed)
+               )
+               -- Same bucket, same ids: never delete somebody's avatar.
+               AND NOT EXISTS (
+                   SELECT 1 FROM users WHERE avatar = mine.content->'image'->>'ref'
                )",
         )
         .bind(deleted_before)

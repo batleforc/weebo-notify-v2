@@ -53,8 +53,16 @@ impl Signer {
 
     /// Sign an arbitrary claim set.
     pub(crate) fn sign(&self, claims: &serde_json::Value) -> String {
+        self.sign_typed(None, claims)
+    }
+
+    /// Sign with this `typ` in the header (`None` leaves the library's `JWT`).
+    pub(crate) fn sign_typed(&self, typ: Option<&str>, claims: &serde_json::Value) -> String {
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.kid.clone());
+        if let Some(typ) = typ {
+            header.typ = Some(typ.to_owned());
+        }
         jsonwebtoken::encode(&header, claims, &self.encoding).expect("signing a test token")
     }
 

@@ -125,8 +125,13 @@ impl ExchangeToken {
         }
 
         // Only after the policy matched, so a non-matching token cannot burn a real job's id.
-        let jti = claims.jti.as_deref().unwrap_or_default();
-        if !self.replay.remember(jti, claims.accepted_until).await? {
+        // Per issuer: a `jti` is only unique within the issuer that minted it.
+        let jti = format!(
+            "{}|{}",
+            claims.issuer.trim_end_matches('/'),
+            claims.jti.as_deref().unwrap_or_default()
+        );
+        if !self.replay.remember(&jti, claims.accepted_until).await? {
             tracing::info!(subject = %claims.subject, "ci token replayed");
             return Err(DomainError::InvalidCredential.into());
         }

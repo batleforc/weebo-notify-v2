@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use notify_domain::{
-    AttachmentId, Cursor, Device, DeviceId, Image, Notification, Principal, PushTransport, Revision,
+    AttachmentId, Cursor, Device, DeviceId, Image, Notification, PushTransport, Revision, UserId,
 };
 use notify_ports::{
     AfterWrite, AttachmentStore, AttachmentThumbnailer, Clock, DeviceRepository, EventBus,
@@ -241,14 +241,33 @@ impl Fanout {
         };
         targets.retain(|device| !already.contains(&device.id));
 
+        // Once per person, not per device: silences and do-not-disturb are theirs.
+        let mut owners: Vec<UserId> = targets
+            .iter()
+            .filter_map(|device| device.owner.as_user())
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        let quiet: Vec<UserId> = futures::stream::iter(owners)
+            .map(
+                |owner| async move { self.stays_quiet(owner, notification).await.then_some(owner) },
+            )
+            .buffer_unordered(PUSH_CONCURRENCY)
+            .filter_map(core::future::ready)
+            .collect()
+            .await;
+
         // One message for all; each transport degrades to a poke on its own (§6.3).
         let message = Self::message_for(notification, self.payload_budget);
         futures::stream::iter(targets)
+            .filter(|device| {
+                core::future::ready(device.owner.as_user().is_none_or(|owner| !quiet.contains(&owner)))
+            })
             .for_each_concurrent(PUSH_CONCURRENCY, |device| {
                 let message = &message;
                 async move {
                     let id = device.id;
-                    if !self.push_one(device, notification, message).await {
+                    if !self.push_one(device, message).await {
                         return;
                     }
                     // Recorded per send, so a row that dies half way keeps what it did.
@@ -264,17 +283,8 @@ impl Fanout {
             .await;
     }
 
-    /// Push to one device, unless its owner asked for quiet, and say whether the
-    /// relay took it.
-    async fn push_one(
-        &self,
-        device: Device,
-        notification: &Notification,
-        message: &PushMessage,
-    ) -> bool {
-        if self.stays_quiet(&device, notification).await {
-            return false;
-        }
+    /// Push to one device and say whether the relay took it.
+    async fn push_one(&self, device: Device, message: &PushMessage) -> bool {
         // A device with no push transport is reachable only while its client holds
         // a stream, which the bus poke already covered.
         if matches!(device.transport, PushTransport::Stream) {
@@ -301,13 +311,10 @@ impl Fanout {
         false
     }
 
-    /// Whether the device's owner asked not to be bothered: a silence (§2.3) or a
-    /// do-not-disturb (§7.4). Only the push is suppressed.
-    async fn stays_quiet(&self, device: &Device, notification: &Notification) -> bool {
-        // Both are per user; a service account has no attention to protect (§5.2bis).
-        let Principal::User { id } = device.owner else {
-            return false;
-        };
+    /// Whether a person asked not to be bothered: a silence (§2.3) or a do-not-disturb
+    /// (§7.4). Only the push is suppressed. Both are per user; a service account has no
+    /// attention to protect (§5.2bis).
+    async fn stays_quiet(&self, id: UserId, notification: &Notification) -> bool {
         let now = self.clock.now();
 
         match self.interactions.active_silences(id, now).await {
@@ -619,7 +626,7 @@ fn by_notification(batch: Vec<PendingFanout>) -> Vec<Vec<PendingFanout>> {
 mod tests {
     use notify_domain::{
         Channel, ChannelId, ChannelPolicy, ContentDraft, DeviceId, Dnd, HumanDuration, Membership,
-        NotificationId, RevisionDraft, Scope, Silence, SilenceTarget, State, UserId,
+        NotificationId, Principal, RevisionDraft, Scope, Silence, SilenceTarget, State, UserId,
     };
     use notify_ports::NotificationRepository;
     use notify_ports::test_utils::{InMemory, TestClock};

@@ -157,7 +157,7 @@ server:
     # This server's external origin (filesystem presigns against itself); defaults to
     # `https://<server.ingress.host>` when enabled.
     publicBaseUrl: ""
-    # Secret key signing the presigned URLs (WNK_ATTACHMENTS__TOKEN_SECRET); empty means open.
+    # Secret key signing the presigned URLs (WNK_ATTACHMENTS__TOKEN_SECRET); at least 32 bytes, or the server refuses to start.
     tokenSecretKey: token-secret
     persistence:
       # A chart-owned PVC (enabled), an existingClaim, or a `server.extraVolumes` entry named `attachments`.

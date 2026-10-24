@@ -30,7 +30,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
 # Only for the SSE channel; actix brings the runtime.
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 # `ReaderStream`, to stream a filesystem attachment's download off its file handle.
 # Already in the tree under actix and hyper.
 tokio-util = { version = "0.7", features = ["io"] }
@@ -46,4 +46,4 @@ notify-ports = { workspace = true, features = ["openapi", "test-utils"] }
 # Builds the JPEG fixtures that prove the server re-encodes avatars.
 image = { workspace = true, features = ["jpeg"] }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

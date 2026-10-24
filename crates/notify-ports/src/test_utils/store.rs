@@ -824,6 +824,10 @@ impl NotificationRepository for InMemory {
             if let Some(id) = attachment_of(&row.value)
                 && !surviving.contains(&id)
                 && !orphaned.contains(&id)
+                && !state
+                    .users
+                    .iter()
+                    .any(|user| user.profile.avatar == Some(id))
             {
                 orphaned.push(id);
             }
@@ -860,6 +864,14 @@ impl crate::AttachmentRegistry for InMemory {
             state.presigns.push((id, channel.clone(), at));
         }
         Ok(())
+    }
+
+    async fn signed_for(&self, id: AttachmentId, channel: &ChannelId) -> PortResult<bool> {
+        Ok(self
+            .state()
+            .presigns
+            .iter()
+            .any(|(known, signed, _)| *known == id && signed == channel))
     }
 
     async fn unreferenced(
@@ -1090,6 +1102,16 @@ impl ChannelRepository for InMemory {
             .filter(|row| row.value.origin.is_managed())
             .map(|row| row.value.clone())
             .collect())
+    }
+
+    async fn list_all(&self, page: PageRequest) -> PortResult<Page<Channel>> {
+        let state = self.state();
+        let mut matched: Vec<&Row<Channel>> = state.channels.iter().collect();
+        matched.sort_by_key(|row| row.cursor);
+        if let Some(after) = page.after {
+            matched.retain(|row| row.cursor > after);
+        }
+        Ok(paginate(&matched, page.effective_limit()))
     }
 
     async fn all_ids(&self) -> PortResult<Vec<ChannelId>> {
@@ -1590,6 +1612,22 @@ impl ServiceAccountRepository for InMemory {
 
     async fn list(&self) -> PortResult<Vec<ServiceAccount>> {
         Ok(self.state().service_accounts.clone())
+    }
+
+    async fn list_page(&self, page: PageRequest) -> PortResult<Page<ServiceAccount>> {
+        // Insertion order stands in for the SQL sequence: position + 1 is the cursor.
+        let accounts = self.state().service_accounts.clone();
+        let start = page.after.map_or(0, |after| {
+            usize::try_from(after.sequence()).unwrap_or(usize::MAX)
+        });
+        let limit = page.effective_limit() as usize;
+        let items: Vec<ServiceAccount> = accounts.iter().skip(start).take(limit).cloned().collect();
+        let end = start.saturating_add(items.len());
+        Ok(if end < accounts.len() {
+            Page::more(items, Cursor::from_sequence(end as u64))
+        } else {
+            Page::last(items)
+        })
     }
 
     async fn upsert(&self, account: &ServiceAccount) -> PortResult<()> {

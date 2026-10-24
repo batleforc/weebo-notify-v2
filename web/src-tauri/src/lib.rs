@@ -209,6 +209,7 @@ fn credential_session(
     app: AppHandle,
     token: Option<String>,
     name: Option<String>,
+    url: String,
 ) -> Result<(), String> {
     let Some(credential) = app.try_state::<Credential>() else {
         return Err("the shell has no credential slot".to_owned());
@@ -219,15 +220,30 @@ fn credential_session(
         return Ok(());
     };
 
-    // The profile is reloaded rather than captured: it carries the server URL, and
-    // a token must never be paired with a stale one — that is the same reasoning
-    // `notify login` states when it keeps the existing `url` and changes only the
-    // credential.
-    let mut profile = Profile::load(DEFAULT_PROFILE).map_err(|error| error.to_string())?;
-    profile.token = Some(token);
+    // The webview's own API URL, never the CLI profile's: a token must only go to
+    // the server that issued the session (the profile defaults to localhost:8080).
+    let profile = session_profile(&url, token)?;
     let session = Session::open(&profile).map_err(|error| error.to_string())?;
     credential.set(Some(session), name);
     Ok(())
+}
+
+/// The profile a session token runs on: `https`, or `http` on loopback for `task dev:run`.
+#[cfg(desktop)]
+fn session_profile(url: &str, token: String) -> Result<Profile, String> {
+    let profile = Profile {
+        url: url.parse().map_err(|error| format!("{error}"))?,
+        token: Some(token),
+    };
+    let loopback = matches!(
+        profile.url.host_str(),
+        Some("localhost" | "127.0.0.1" | "[::1]")
+    );
+    match profile.url.scheme() {
+        "https" => Ok(profile),
+        "http" if loopback => Ok(profile),
+        scheme => Err(format!("refusing to send a session token over {scheme}://")),
+    }
 }
 
 /// How often the tray re-reads the server. See the module doc: this stands in for
@@ -901,7 +917,17 @@ fn tray_now(unread: u64, quiet: bool, connected: bool) -> Tray {
 
 #[cfg(all(test, desktop))]
 mod tests {
-    use super::identity_line;
+    use super::{identity_line, session_profile};
+
+    #[test]
+    fn a_session_token_goes_over_https_or_to_loopback_only() {
+        let token = || "access".to_owned();
+        assert!(session_profile("https://notify.example", token()).is_ok());
+        assert!(session_profile("http://localhost:8080", token()).is_ok());
+        assert!(session_profile("http://127.0.0.1:8080", token()).is_ok());
+        assert!(session_profile("http://notify.example", token()).is_err());
+        assert!(session_profile("not a url", token()).is_err());
+    }
 
     /// The header says who, and stays useful when nobody has said so yet.
     #[test]

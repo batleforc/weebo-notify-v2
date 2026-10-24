@@ -102,6 +102,7 @@ impl Harness {
             publish: PublishNotification::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
+                Arc::new(store.clone()),
                 Arc::new(limiter.clone()),
                 Arc::new(clock.clone()),
                 authorizer.clone(),
@@ -109,6 +110,7 @@ impl Harness {
                 attribution.clone(),
             ),
             upsert: UpsertNotification::new(
+                Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(limiter.clone()),
@@ -1350,7 +1352,7 @@ async fn a_service_account_is_created_listed_and_deactivated() {
         .insert_header(AUTH)
         .to_request();
     let listed: Value = test::call_and_read_body_json(&app, request).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
 
     // The same name twice is refused rather than adopted.
     let request = test::TestRequest::post()
@@ -1378,7 +1380,7 @@ async fn a_service_account_is_created_listed_and_deactivated() {
         .insert_header(AUTH)
         .to_request();
     let listed: Value = test::call_and_read_body_json(&app, request).await;
-    assert!(listed[0]["disabled_at"].is_string(), "{listed}");
+    assert!(listed["items"][0]["disabled_at"].is_string(), "{listed}");
 }
 
 #[actix_web::test]
@@ -2528,4 +2530,129 @@ async fn alertmanager_opens_then_closes_one_notification_per_fingerprint() {
     assert_eq!(head["state"], "closed");
     assert_eq!(head["status"], "success");
     assert_eq!(head["priority"], "urgent");
+}
+
+#[actix_web::test]
+async fn the_platform_console_refuses_a_plain_session_and_any_key() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    harness.alice_as_platform_admin();
+    let app = service!(state);
+
+    // Minted by an admin session: a key still never carries the platform role.
+    let request = test::TestRequest::post()
+        .uri("/api/v1/apikeys")
+        .insert_header(ADMIN_AUTH)
+        .set_json(json!({
+            "owner": { "owner": "user", "id": harness.alice.to_string() },
+            "scopes": ["publish", "subscribe", "manage"],
+            "channels": ["ci-infra"],
+        }))
+        .to_request();
+    let minted: Value = test::call_and_read_body_json(&app, request).await;
+    let key = format!("Bearer {}", minted["secret"].as_str().unwrap());
+
+    let dead_letter = notify_domain::DeliveryId::generate();
+    for (method, uri) in [
+        ("GET", "/api/v1/admin/audit".to_owned()),
+        ("GET", "/api/v1/admin/channels".to_owned()),
+        ("POST", "/api/v1/admin/channels/ci-infra/join".to_owned()),
+        ("GET", "/api/v1/admin/trust-policies".to_owned()),
+        ("GET", "/api/v1/admin/dlq".to_owned()),
+        ("POST", format!("/api/v1/admin/dlq/{dead_letter}/requeue")),
+        ("GET", "/api/v1/admin/reconciliation".to_owned()),
+    ] {
+        for credential in ["Bearer alice-token", key.as_str()] {
+            let request = match method {
+                "GET" => test::TestRequest::get(),
+                _ => test::TestRequest::post(),
+            }
+            .uri(&uri)
+            .insert_header(("Authorization", credential))
+            .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {uri} with {credential:.20}"
+            );
+        }
+    }
+}
+
+#[actix_web::test]
+async fn a_revoked_key_is_refused_at_once_and_its_stream_closes() {
+    // Virtual time, so the stream's periodic re-check comes without waiting for it.
+    tokio::time::pause();
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/apikeys")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "owner": { "owner": "user", "id": harness.alice.to_string() },
+            "scopes": ["publish", "subscribe"],
+            "channels": ["ci-infra"],
+        }))
+        .to_request();
+    let minted: Value = test::call_and_read_body_json(&app, request).await;
+    let key = format!("Bearer {}", minted["secret"].as_str().unwrap());
+    let id = minted["id"].as_str().unwrap().to_owned();
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/stream")
+        .insert_header(("Authorization", key.as_str()))
+        .to_request();
+    let stream = test::call_service(&app, request).await;
+    assert_eq!(stream.status(), StatusCode::OK);
+
+    let request = test::TestRequest::delete()
+        .uri(&format!("/api/v1/apikeys/{id}"))
+        .insert_header(AUTH)
+        .to_request();
+    assert!(
+        test::call_service(&app, request)
+            .await
+            .status()
+            .is_success()
+    );
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/notifications")
+        .insert_header(("Authorization", key.as_str()))
+        .set_json(json!({ "channel": "ci-infra", "title": "after revocation" }))
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        actix_web::body::to_bytes(stream.into_body()),
+    )
+    .await
+    .expect("the stream outlived its key's revocation")
+    .unwrap();
+}
+
+#[actix_web::test]
+async fn an_oversized_idempotency_key_is_refused_before_it_is_stored() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("ci-infra").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::post()
+        .uri("/api/v1/notifications")
+        .insert_header(AUTH)
+        .insert_header(("Idempotency-Key", "k".repeat(256)))
+        .set_json(json!({ "channel": "ci-infra", "title": "Deploy started" }))
+        .to_request();
+
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }

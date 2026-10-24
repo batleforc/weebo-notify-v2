@@ -104,6 +104,13 @@ impl Store {
             std::fs::create_dir_all(parent).map_err(|error| ClientError::Store {
                 detail: format!("cannot create {}: {error}", parent.display()),
             })?;
+            // The cache holds notification bodies; like the config and credential, owner only.
+            // On the directory, so the `-wal` and `-shm` files SQLite adds are covered too.
+            #[cfg(unix)]
+            std::fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                .map_err(|error| ClientError::Store {
+                detail: format!("cannot restrict {}: {error}", parent.display()),
+            })?;
         }
 
         let connection = Connection::open(path).map_err(|error| store_failure(&error))?;
@@ -493,6 +500,17 @@ mod tests {
         }
         let path = dir.join("store.db");
         (Store::open_at(&path).unwrap(), path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cache_directory_is_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_store, path) = temp_store("mode");
+        let parent = path.parent().unwrap();
+
+        let mode = std::fs::metadata(parent).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
     }
 
     #[test]

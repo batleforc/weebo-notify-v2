@@ -30,7 +30,7 @@ macro_rules! candidates {
                  SELECT seq, audience_kind, channel_id, user_id, recorded_at, kind,
                         notification_id, payload
                  FROM events
-                 WHERE ($1::bigint IS NULL OR seq > $1)
+                 WHERE ($1::bigint IS NULL OR seq > $1) AND seq <= events_watermark()
                    AND kind <> 'expired_unseen'
                    AND (
                          (audience_kind = 'channel' AND channel_id = ANY ($2))
@@ -220,7 +220,7 @@ impl PgStore {
             tokio::time::sleep(pause).await;
             pause = pause
                 .saturating_mul(2)
-                .min(std::time::Duration::from_millis(50));
+                .min(std::time::Duration::from_millis(100));
             watermark = sqlx::query_scalar("SELECT events_watermark()")
                 .fetch_one(self.pool())
                 .await
@@ -302,7 +302,7 @@ impl PgStore {
             "SELECT channel_id, count(*)
              FROM events
              WHERE kind = $1
-               AND ($2::bigint IS NULL OR seq > $2)
+               AND ($2::bigint IS NULL OR seq > $2) AND seq <= events_watermark()
                AND channel_id = ANY ($3)
              GROUP BY channel_id
              ORDER BY channel_id",

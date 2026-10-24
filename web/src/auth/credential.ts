@@ -1,3 +1,5 @@
+import { apiBaseUrl } from "@/config";
+
 /**
  * Desktop refresh-token storage in the OS vault (§10bis.2), which also lets the
  * shell start in the tray with a session. Tauri is imported dynamically to keep it
@@ -24,12 +26,13 @@ export async function clearCredential(): Promise<void> {
 
 /**
  * Hand the access token and display name to the Rust tray/poll loop, which would
- * otherwise only see `notify login`'s token. `null`/`null` on sign-out.
+ * otherwise only see `notify login`'s token. `null`/`null` on sign-out. The API URL
+ * goes with it: the token is for this server, not whatever the CLI profile names.
  */
 export async function shareSessionToken(
   token: string | null,
   name: string | null,
 ): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("credential_session", { token, name });
+  await invoke("credential_session", { token, name, url: apiBaseUrl });
 }

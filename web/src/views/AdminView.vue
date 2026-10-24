@@ -19,6 +19,7 @@ import {
   setKeyLimit,
 } from "@/api/generated";
 import type { ApiKey, Device, ServiceAccount } from "@/api/generated/types.gen";
+import { allPages } from "@/api/pages";
 import { failureOf } from "@/api/problem";
 import ChannelAdmin from "@/components/admin/ChannelAdmin.vue";
 import { Badge } from "@/components/ui/badge";
@@ -59,12 +60,15 @@ async function load(): Promise<void> {
     const [device, key, account] = await Promise.all([
       listDevices({ throwOnError: true }),
       listKeys({ throwOnError: true }),
-      listAccounts({ throwOnError: true }),
+      allPages(async (query) => {
+        const answer = await listAccounts({ query, throwOnError: true });
+        return answer.data;
+      }),
       channels.load(),
     ]);
     devices.value = device.data;
     keys.value = key.data;
-    accounts.value = account.data;
+    accounts.value = account;
   } catch (caught) {
     error.value = failureOf(caught).message;
   }

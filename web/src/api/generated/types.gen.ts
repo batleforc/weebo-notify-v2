@@ -1259,6 +1259,20 @@ export type PageChannel = {
 /**
  * What a caller gets.
  */
+export type PageChannelCard = {
+    /**
+     * The rows, in the ordering of the endpoint.
+     */
+    items: Array<ChannelCard>;
+    /**
+     * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
+     */
+    next?: null | Cursor;
+};
+
+/**
+ * What a caller gets.
+ */
 export type PageNotification = {
     /**
      * The rows, in the ordering of the endpoint.
@@ -1278,6 +1292,20 @@ export type PageRevision = {
      * The rows, in the ordering of the endpoint.
      */
     items: Array<Revision>;
+    /**
+     * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
+     */
+    next?: null | Cursor;
+};
+
+/**
+ * What a caller gets.
+ */
+export type PageServiceAccount = {
+    /**
+     * The rows, in the ordering of the endpoint.
+     */
+    items: Array<ServiceAccount>;
     /**
      * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
      */
@@ -2226,7 +2254,16 @@ export type AuditResponse = AuditResponses[keyof AuditResponses];
 export type InventoryData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Opaque page cursor.
+         */
+        cursor?: string;
+        /**
+         * Page size, clamped server-side.
+         */
+        limit?: number;
+    };
     url: '/api/v1/admin/channels';
 };
 
@@ -2245,9 +2282,9 @@ export type InventoryError = InventoryErrors[keyof InventoryErrors];
 
 export type InventoryResponses = {
     /**
-     * Every channel, as metadata
+     * A page of channels, as metadata
      */
-    200: Array<ChannelCard>;
+    200: PageChannelCard;
 };
 
 export type InventoryResponse = InventoryResponses[keyof InventoryResponses];
@@ -4088,7 +4125,16 @@ export type SearchResponse = SearchResponses[keyof SearchResponses];
 export type ListAccountsData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Opaque page cursor.
+         */
+        cursor?: string;
+        /**
+         * Page size, clamped server-side.
+         */
+        limit?: number;
+    };
     url: '/api/v1/serviceaccounts';
 };
 
@@ -4103,9 +4149,9 @@ export type ListAccountsError = ListAccountsErrors[keyof ListAccountsErrors];
 
 export type ListAccountsResponses = {
     /**
-     * The accounts, deactivated ones included
+     * A page of accounts, deactivated ones included
      */
-    200: Array<ServiceAccount>;
+    200: PageServiceAccount;
 };
 
 export type ListAccountsResponse = ListAccountsResponses[keyof ListAccountsResponses];

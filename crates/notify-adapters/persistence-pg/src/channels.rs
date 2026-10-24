@@ -194,6 +194,23 @@ impl ChannelRepository for PgStore {
         Ok(channels)
     }
 
+    async fn list_all(&self, page: PageRequest) -> PortResult<Page<Channel>> {
+        let limit = page.effective_limit();
+        let rows = sqlx::query(
+            "SELECT id, display_name, origin, policy, seq FROM channels
+             WHERE ($1::bigint IS NULL OR seq > $1)
+             ORDER BY seq
+             LIMIT $2",
+        )
+        .bind(page.after.map(sequence))
+        .bind(i64::from(limit).saturating_add(1))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| fail("channel", error))?;
+
+        self.paginate(rows, limit).await
+    }
+
     async fn all_ids(&self) -> PortResult<Vec<ChannelId>> {
         // Ids only, for pattern matching (§5.3).
         let rows = sqlx::query_scalar::<_, String>("SELECT id FROM channels ORDER BY id")

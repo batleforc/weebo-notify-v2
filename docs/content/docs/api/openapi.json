@@ -107,16 +107,35 @@
         ],
         "summary": "The channel inventory — record cards, never inboxes.",
         "operationId": "inventory",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque page cursor.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped server-side.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Every channel, as metadata",
+            "description": "A page of channels, as metadata",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ChannelCard"
-                  }
+                  "$ref": "#/components/schemas/Page_ChannelCard"
                 }
               }
             }
@@ -3451,16 +3470,35 @@
         ],
         "summary": "Every service account on this instance.",
         "operationId": "list_accounts",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque page cursor.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped server-side.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The accounts, deactivated ones included",
+            "description": "A page of accounts, deactivated ones included",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ServiceAccount"
-                  }
+                  "$ref": "#/components/schemas/Page_ServiceAccount"
                 }
               }
             }
@@ -6540,6 +6578,33 @@
           }
         }
       },
+      "Page_ChannelCard": {
+        "type": "object",
+        "description": "What a caller gets.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelCard"
+            },
+            "description": "The rows, in the ordering of the endpoint."
+          },
+          "next": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Cursor"
+              }
+            ],
+            "description": "Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short."
+          }
+        }
+      },
       "Page_Notification": {
         "type": "object",
         "description": "What a caller gets.",
@@ -6578,6 +6643,33 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Revision"
+            },
+            "description": "The rows, in the ordering of the endpoint."
+          },
+          "next": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Cursor"
+              }
+            ],
+            "description": "Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short."
+          }
+        }
+      },
+      "Page_ServiceAccount": {
+        "type": "object",
+        "description": "What a caller gets.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceAccount"
             },
             "description": "The rows, in the ordering of the endpoint."
           },

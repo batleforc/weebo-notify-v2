@@ -31,7 +31,7 @@
 //! `127.0.0.1` and never `0.0.0.0`: the second would accept an authorization code
 //! from anything that can route to this machine.
 
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
@@ -194,7 +194,8 @@ fn serve(mut stream: TcpStream) -> Result<Option<String>, String> {
         .try_clone()
         .map_err(|error| format!("could not read the request: {error}"))?;
     let mut request_line = String::new();
-    BufReader::new(peer)
+    // Bounded: a local process sending one endless line must not grow this without limit.
+    BufReader::new(peer.take(8 * 1024))
         .read_line(&mut request_line)
         .map_err(|error| format!("could not read the request: {error}"))?;
 
@@ -251,7 +252,6 @@ const NOT_FOUND: &str = "<!doctype html><html lang=fr><meta charset=utf-8>\
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
 
     /// Drive one real connection through [`serve`] and return what it decided,
     /// alongside what the browser on the other end was told.

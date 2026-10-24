@@ -377,6 +377,66 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn an_expired_holder_of_the_external_id_is_retired_even_while_the_sweep_has_it() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let external = ExternalId::parse("run-expired").unwrap();
+        let (stale, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft {
+                ttl: Some(Ttl::For(HumanDuration::parse("1h", "ttl").unwrap())),
+                // Closed, so its retention clock runs.
+                ..RevisionDraft::lifecycle(State::Closed, ContentDraft::titled("old run"))
+            },
+            Some(external.clone()),
+            now() - Duration::days(30),
+        )
+        .await;
+
+        // The sweep's lock, as `claim_expired` takes it, held across the publish.
+        let mut sweep = store.pool().begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM notifications WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(stale.id.to_string())
+            .execute(&mut *sweep)
+            .await
+            .unwrap();
+        let (fresh, written) = Notification::create(
+            NotificationId::generate(),
+            channel.clone(),
+            Some(external.clone()),
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("new run")),
+            author(&alice),
+            now(),
+            &ChannelPolicy::default(),
+        )
+        .unwrap();
+        let publishing = {
+            let (store, fresh, revision) = (store.clone(), fresh.clone(), written.revision.clone());
+            tokio::spawn(async move { notifications(&store).insert(&fresh, &revision).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !publishing.is_finished(),
+            "waits for the sweep, never steps over it"
+        );
+        sweep.rollback().await.unwrap();
+
+        publishing
+            .await
+            .unwrap()
+            .expect("the stale row no longer blocks the id");
+        let found = store
+            .find_by_external_id(&channel, &external)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, fresh.id);
+    }
+
+    #[tokio::test]
     async fn the_inbox_narrows_on_every_filter_it_offers() {
         let store = store!();
         let (_, alice) = user();
@@ -691,6 +751,51 @@ mod e2e {
             "somebody has it on screen and needs to drop it"
         );
         assert_eq!(page.expired, [] as [notify_ports::ExpiredWhileAway; 0]);
+    }
+
+    #[tokio::test]
+    async fn the_expiry_sweep_skips_a_row_a_receipt_is_being_written_against() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let (published, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft {
+                state: Some(State::Closed),
+                ttl: Some(Ttl::For(HumanDuration::parse("1h", "ttl").unwrap())),
+                ..RevisionDraft::simple(ContentDraft::titled("in flight"))
+            },
+            None,
+            now() - Duration::days(30),
+        )
+        .await;
+
+        // What `receipts::record` and `interactions` take first.
+        let mut receipt = store.pool().begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM notifications WHERE id = $1 FOR SHARE")
+            .bind(published.id.to_string())
+            .execute(&mut *receipt)
+            .await
+            .unwrap();
+        let claimed = store.claim_expired(now(), 1_000).await.unwrap();
+        assert!(
+            claimed.iter().all(|expired| expired.id != published.id),
+            "claimed under a reader's lock: the receipt would count it unseen"
+        );
+        receipt.rollback().await.unwrap();
+
+        // Released: the next sweep takes it. Others' rows may be ahead in the shared database.
+        let mut taken = false;
+        for _ in 0..10 {
+            let claimed = store.claim_expired(now(), 1_000).await.unwrap();
+            taken = claimed.iter().any(|expired| expired.id == published.id);
+            if taken || claimed.is_empty() {
+                break;
+            }
+        }
+        assert!(taken);
     }
 
     #[tokio::test]
@@ -3975,6 +4080,94 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn a_later_revision_waits_while_another_worker_pushes_the_earlier_one() {
+        let store = store!();
+        let (id, first) = owed_fanout(&store).await;
+        let outbox: &dyn notify_ports::FanoutOutbox = &store;
+        // Leased by "replica A".
+        outbox
+            .extend_fanout(&[first], now() + Duration::minutes(1))
+            .await
+            .unwrap();
+
+        let (_, alice) = user();
+        let mut notification = notifications(&store).get(id).await.unwrap().unwrap();
+        let written = notification
+            .revise(
+                RevisionDraft::simple(ContentDraft::titled("etcd recovered")),
+                author(&alice),
+                now(),
+                &ChannelPolicy::default(),
+            )
+            .unwrap();
+        let after = notify_ports::AfterWrite {
+            fanout: true,
+            ..notify_ports::AfterWrite::default()
+        };
+        let second = notifications(&store)
+            .append_revision_with(&notification, &written.revision, &after)
+            .await
+            .unwrap();
+
+        let claim = |at: OffsetDateTime| async move {
+            outbox
+                .claim_fanout(
+                    at,
+                    1_000,
+                    at + Duration::seconds(1),
+                    10,
+                    at - Duration::hours(1),
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .any(|row| row.cursor == second)
+        };
+        assert!(
+            !claim(now()).await,
+            "replica B must not race A's older head"
+        );
+        outbox.complete_fanout(first).await.unwrap();
+        assert!(claim(now()).await, "owed again once A is done");
+        outbox.complete_fanout(second).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_old_dead_letter_is_purged_and_a_recent_one_kept() {
+        let store = store!();
+        let (_, old) = owed_fanout(&store).await;
+        let (_, recent) = owed_fanout(&store).await;
+        for (cursor, dead_at) in [(old, now() - Duration::days(40)), (recent, now())] {
+            sqlx::query("UPDATE fanout_outbox SET dead_at = $2 WHERE cursor_seq = $1")
+                .bind(i64::try_from(cursor.sequence()).unwrap())
+                .bind(dead_at)
+                .execute(store.pool())
+                .await
+                .unwrap();
+        }
+
+        // Others' old dead rows may sit in this shared database: drain them too.
+        while store
+            .purge_dead_fanout(now() - Duration::days(30), 1_000)
+            .await
+            .unwrap()
+            > 0
+        {}
+
+        let left: Vec<i64> =
+            sqlx::query_scalar("SELECT cursor_seq FROM fanout_outbox WHERE cursor_seq = ANY($1)")
+                .bind(
+                    [old, recent]
+                        .map(|cursor| i64::try_from(cursor.sequence()).unwrap())
+                        .to_vec(),
+                )
+                .fetch_all(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(left, [i64::try_from(recent.sequence()).unwrap()]);
+    }
+
+    #[tokio::test]
     async fn an_undecodable_fanout_row_is_dead_lettered_without_failing_the_claim() {
         let store = store!();
         // Below every real cursor, so it is claimed first: the worst place for it.
@@ -4441,6 +4634,170 @@ mod e2e {
             1,
             "an upload on its way in keeps its row"
         );
+    }
+
+    #[tokio::test]
+    async fn an_upload_is_signed_for_the_channel_that_asked_and_no_other() {
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let other = seeded_channel(&store, &alice).await;
+        let id = AttachmentId::generate();
+        registry(&store).record(id, &channel, now()).await.unwrap();
+
+        assert!(registry(&store).signed_for(id, &channel).await.unwrap());
+        assert!(!registry(&store).signed_for(id, &other).await.unwrap());
+        assert!(
+            !registry(&store)
+                .signed_for(AttachmentId::generate(), &channel)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn somebodys_avatar_is_never_an_orphan_of_a_purged_notification() {
+        let store = store!();
+        let (alice_id, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let avatar = AttachmentId::generate();
+        let mut profile = User::from_claims(
+            alice_id,
+            &format!("oidc-{}", ulid_slug()),
+            None,
+            None,
+            now(),
+        )
+        .unwrap();
+        profile.profile.avatar = Some(avatar);
+        users(&store).upsert(&profile).await.unwrap();
+
+        let (named_it, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(
+                State::Open,
+                ContentDraft {
+                    image: Some(Image::Attachment { reference: avatar }),
+                    ..ContentDraft::titled("borrowed a face")
+                },
+            ),
+            None,
+            now(),
+        )
+        .await;
+        store
+            .mark_deleted(named_it.id, now() - Duration::days(10))
+            .await
+            .unwrap();
+
+        let orphaned = store
+            .orphaned_attachments(now() - Duration::days(7), 1_000)
+            .await
+            .unwrap();
+        assert!(
+            !orphaned.contains(&avatar),
+            "deleting it would break /avatars"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_leader_whose_connection_dies_knows_it_no_longer_leads() {
+        const JOB: &str = "conformance-lost-leader";
+        let store = store!();
+        let election = PgLeaderElection::new(store.pool().clone());
+
+        let guard = election
+            .try_acquire(JOB)
+            .await
+            .unwrap()
+            .expect("nobody else leads");
+        assert!(guard.is_held().await);
+
+        // The lock's key, as `leader.rs` derives it (FNV-1a), split the way `pg_locks` shows it.
+        let mut key: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in JOB.as_bytes() {
+            key ^= u64::from(*byte);
+            key = key.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let killed: Vec<(bool,)> = sqlx::query_as(
+            "SELECT pg_terminate_backend(pid) FROM pg_locks
+             WHERE locktype = 'advisory' AND objsubid = 1
+               AND classid::bigint = $1 AND objid::bigint = $2",
+        )
+        .bind(i64::try_from(key >> 32).unwrap())
+        .bind(i64::try_from(key & 0xffff_ffff).unwrap())
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(killed.len(), 1, "found the leader's connection");
+
+        assert!(!guard.is_held().await);
+        assert!(
+            election.try_acquire(JOB).await.unwrap().is_some(),
+            "the lock went with the connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_platform_lists_page_without_skipping_or_repeating() {
+        let store = store!();
+        let (_, alice) = user();
+        let mut my_channels = Vec::new();
+        for _ in 0..3 {
+            my_channels.push(seeded_channel(&store, &alice).await);
+        }
+        let mut my_accounts = Vec::new();
+        for _ in 0..3 {
+            let id = ServiceAccountId::parse(&format!("bot-{}", ulid_slug())).unwrap();
+            ServiceAccountRepository::upsert(
+                &store,
+                &ServiceAccount::new(
+                    id.clone(),
+                    None,
+                    None,
+                    notify_domain::Origin::Dynamic,
+                    None,
+                    now(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            my_accounts.push(id);
+        }
+
+        // Others' rows share the database: walk every page, then look for ours, in order.
+        let mut page = PageRequest::of_size(2);
+        let mut seen_channels = Vec::new();
+        loop {
+            let listed = channels(&store).list_all(page).await.unwrap();
+            seen_channels.extend(listed.items.into_iter().map(|channel| channel.id));
+            let Some(next) = listed.next else { break };
+            page = page.after(next);
+        }
+        let mut page = PageRequest::of_size(2);
+        let mut seen_accounts = Vec::new();
+        loop {
+            let listed = accounts(&store).list_page(page).await.unwrap();
+            seen_accounts.extend(listed.items.into_iter().map(|account| account.id));
+            let Some(next) = listed.next else { break };
+            page = page.after(next);
+        }
+
+        let mine = |seen: &[ChannelId]| -> Vec<ChannelId> {
+            seen.iter()
+                .filter(|id| my_channels.contains(id))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(mine(&seen_channels), my_channels);
+        let mine: Vec<ServiceAccountId> = seen_accounts
+            .into_iter()
+            .filter(|id| my_accounts.contains(id))
+            .collect();
+        assert_eq!(mine, my_accounts);
     }
 
     #[tokio::test]

@@ -6,12 +6,12 @@
 use std::sync::Arc;
 
 use notify_domain::{
-    ChannelId, Cursor, ExternalId, Notification, NotificationId, Revision, RevisionDraft, Scope,
-    TtlResolution,
+    ChannelId, Cursor, DomainError, ExternalId, Image, Notification, NotificationId, Revision,
+    RevisionDraft, Scope, TtlResolution,
 };
 use notify_ports::{
-    Allowance, Claim, Clock, Failure, IdempotencyStore, IdempotentReply, NotificationRepository,
-    PortError, Quota, RateLimiter,
+    Allowance, AttachmentRegistry, Claim, Clock, Failure, IdempotencyStore, IdempotentReply,
+    NotificationRepository, PortError, Quota, RateLimiter,
 };
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
@@ -46,6 +46,7 @@ pub struct Published {
 #[derive(Clone)]
 struct Writer {
     notifications: Arc<dyn NotificationRepository>,
+    registry: Arc<dyn AttachmentRegistry>,
     idempotency: Arc<dyn IdempotencyStore>,
     limiter: Arc<dyn RateLimiter>,
     clock: Arc<dyn Clock>,
@@ -106,6 +107,32 @@ impl Writer {
         Ok(())
     }
 
+    /// Refuse an attachment this channel never uploaded and no live notification of it
+    /// already shows: avatars and other channels' uploads share the bucket and the id
+    /// space, so naming one would read it from here and later purge it.
+    async fn check_image(
+        &self,
+        channel: &notify_domain::Channel,
+        draft: &RevisionDraft,
+    ) -> Result<(), Failure> {
+        let Some(Image::Attachment { reference }) = draft.content.image else {
+            return Ok(());
+        };
+        if self.registry.signed_for(reference, &channel.id).await?
+            || self
+                .notifications
+                .attachment_is_visible(&reference, core::slice::from_ref(&channel.id))
+                .await?
+        {
+            return Ok(());
+        }
+        Err(DomainError::Malformed {
+            field: "image.ref",
+            reason: "no upload was signed for this attachment in this channel",
+        }
+        .into())
+    }
+
     /// Record a first revision, then fan it out.
     ///
     /// `claimed` is the `Idempotency-Key` this answers, as `(principal_ref, key)`
@@ -119,6 +146,7 @@ impl Writer {
         now: OffsetDateTime,
         claimed: Option<(String, String)>,
     ) -> Result<Published, Failure> {
+        self.check_image(channel, &draft).await?;
         let author = self.attribution.author(&caller.principal).await;
         let (notification, written) = Notification::create(
             NotificationId::generate(),
@@ -178,6 +206,7 @@ impl Writer {
         draft: RevisionDraft,
         now: OffsetDateTime,
     ) -> Result<Published, Failure> {
+        self.check_image(channel, &draft).await?;
         let author = self.attribution.author(&caller.principal).await;
         let written = notification.revise(draft, author, now, &channel.policy)?;
 
@@ -225,8 +254,13 @@ pub struct PublishRequest {
 
 impl PublishNotification {
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one per collaborator, each a different port; a struct would only rename them"
+    )]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
+        registry: Arc<dyn AttachmentRegistry>,
         idempotency: Arc<dyn IdempotencyStore>,
         limiter: Arc<dyn RateLimiter>,
         clock: Arc<dyn Clock>,
@@ -237,6 +271,7 @@ impl PublishNotification {
         Self {
             writer: Writer {
                 notifications,
+                registry,
                 idempotency,
                 limiter,
                 clock,
@@ -344,8 +379,13 @@ pub struct UpsertRequest {
 
 impl UpsertNotification {
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one per collaborator, each a different port; a struct would only rename them"
+    )]
     pub fn new(
         notifications: Arc<dyn NotificationRepository>,
+        registry: Arc<dyn AttachmentRegistry>,
         idempotency: Arc<dyn IdempotencyStore>,
         limiter: Arc<dyn RateLimiter>,
         clock: Arc<dyn Clock>,
@@ -356,6 +396,7 @@ impl UpsertNotification {
         Self {
             writer: Writer {
                 notifications,
+                registry,
                 idempotency,
                 limiter,
                 clock,
@@ -531,6 +572,7 @@ mod tests {
             publish: PublishNotification::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
+                Arc::new(store.clone()),
                 Arc::new(limiter.clone()),
                 Arc::new(clock.clone()),
                 authorizer.clone(),
@@ -538,6 +580,7 @@ mod tests {
                 Attribution::new(Arc::new(store.clone()), Arc::new(store.clone())),
             ),
             upsert: UpsertNotification::new(
+                Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(limiter.clone()),
@@ -1037,6 +1080,18 @@ mod tests {
 
     // --- A thumbnail is derived eagerly, never at the cost of the write ---
 
+    /// What `PresignAttachment` leaves behind for this channel.
+    async fn signed(store: &InMemory, reference: notify_domain::AttachmentId) {
+        notify_ports::AttachmentRegistry::record(
+            store,
+            reference,
+            &channel_id(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .await
+        .unwrap();
+    }
+
     fn request_with_attachment(reference: notify_domain::AttachmentId) -> PublishRequest {
         PublishRequest {
             channel: channel_id(),
@@ -1053,6 +1108,7 @@ mod tests {
         let fixture = fixture(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
         let reference = notify_domain::AttachmentId::generate();
+        signed(&fixture.store, reference).await;
         notify_ports::AttachmentStore::put(
             &fixture.attachments,
             reference,
@@ -1085,6 +1141,7 @@ mod tests {
         let fixture = fixture(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
         let never_uploaded = notify_domain::AttachmentId::generate();
+        signed(&fixture.store, never_uploaded).await;
 
         let published = fixture
             .publish
@@ -1106,6 +1163,7 @@ mod tests {
         let fixture = fixture_refusing_thumbnails(ChannelPolicy::default());
         let caller = Caller::member(fixture.alice.clone());
         let reference = notify_domain::AttachmentId::generate();
+        signed(&fixture.store, reference).await;
         notify_ports::AttachmentStore::put(
             &fixture.attachments,
             reference,
@@ -1127,6 +1185,57 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_attachment_this_channel_never_uploaded_is_refused() {
+        // Someone's avatar, or an upload learnt in another channel: same bucket, same ids.
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let elsewhere = notify_domain::AttachmentId::generate();
+        notify_ports::AttachmentRegistry::record(
+            &fixture.store,
+            elsewhere,
+            &ChannelId::parse("payroll").unwrap(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .await
+        .unwrap();
+
+        for reference in [notify_domain::AttachmentId::generate(), elsewhere] {
+            assert!(
+                fixture
+                    .publish
+                    .execute(&caller, request_with_attachment(reference))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_attachment_already_shown_here_may_be_named_again() {
+        // Once a revision names it, the registry row is forgotten (`forget_referenced`).
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let reference = notify_domain::AttachmentId::generate();
+        signed(&fixture.store, reference).await;
+        fixture
+            .publish
+            .execute(&caller, request_with_attachment(reference))
+            .await
+            .unwrap();
+        notify_ports::AttachmentRegistry::forget_referenced(&fixture.store, 10)
+            .await
+            .unwrap();
+
+        assert!(
+            fixture
+                .publish
+                .execute(&caller, request_with_attachment(reference))
+                .await
+                .is_ok()
         );
     }
 
@@ -1215,6 +1324,7 @@ mod tests {
         };
         let publish = |fanout: Fanout| {
             PublishNotification::new(
+                Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
                 Arc::new(TestRateLimiter::new()),

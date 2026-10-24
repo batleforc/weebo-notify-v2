@@ -52,6 +52,10 @@ pub trait ChannelRepository: Send + Sync {
     /// Every GitOps-managed channel, for reconciliation (§11, T21).
     async fn list_managed(&self) -> PortResult<Vec<Channel>>;
 
+    /// One page of every channel on the instance, in creation order, for the platform
+    /// inventory (§5.4). Unscoped: the caller checks the platform role first.
+    async fn list_all(&self, page: PageRequest) -> PortResult<Page<Channel>>;
+
     /// Every channel id on the instance, ordered, for the federation exchange (§5.3).
     /// Unscoped: never an authorisation path, never hand it to a caller.
     async fn all_ids(&self) -> PortResult<Vec<ChannelId>>;

@@ -107,6 +107,9 @@ pub struct SearchParams {
     pub limit: Option<u32>,
 }
 
+/// The longest `Idempotency-Key` kept; a UUID is 36.
+const IDEMPOTENCY_KEY_MAX: usize = 255;
+
 /// Publish a notification.
 #[utoipa::path(
     post,
@@ -141,6 +144,17 @@ pub(crate) async fn publish(
         .get("Idempotency-Key")
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
+    // Stored as a primary key for a day: bounded like any other field.
+    if let Some(key) = &idempotency_key
+        && key.len() > IDEMPOTENCY_KEY_MAX
+    {
+        return Err(notify_domain::DomainError::TooLong {
+            field: "Idempotency-Key",
+            max: IDEMPOTENCY_KEY_MAX,
+            actual: key.len(),
+        }
+        .into());
+    }
 
     let published = state
         .publish

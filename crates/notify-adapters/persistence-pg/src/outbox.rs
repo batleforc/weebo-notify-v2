@@ -118,8 +118,16 @@ impl FanoutOutbox for PgStore {
             "UPDATE fanout_outbox
                 SET leased_until = $3, attempts = attempts + 1
               WHERE cursor_seq IN (
-                    SELECT cursor_seq FROM fanout_outbox
+                    SELECT cursor_seq FROM fanout_outbox o
                      WHERE dead_at IS NULL AND (leased_until IS NULL OR leased_until <= $1)
+                       -- Not while another replica pushes this notification: its older
+                       -- head could otherwise reach the phone after ours.
+                       AND NOT EXISTS (
+                           SELECT 1 FROM fanout_outbox held
+                            WHERE held.notification ->> 'id' = o.notification ->> 'id'
+                              AND held.cursor_seq <> o.cursor_seq
+                              AND held.dead_at IS NULL AND held.leased_until > $1
+                       )
                      ORDER BY cursor_seq
                      LIMIT $2
                      FOR UPDATE SKIP LOCKED
@@ -281,6 +289,35 @@ fn decode(row: &sqlx::postgres::PgRow) -> PortResult<PendingFanout> {
 }
 
 impl PgStore {
+    /// Delete up to `limit` dead-lettered rows retired before `dead_before`: an operator
+    /// has had that long to read them, and the table stays small enough to count.
+    ///
+    /// # Errors
+    ///
+    /// When the database refuses the delete.
+    pub async fn purge_dead_fanout(
+        &self,
+        dead_before: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<u64> {
+        let deleted = sqlx::query(
+            "DELETE FROM fanout_outbox
+              WHERE cursor_seq IN (
+                    SELECT cursor_seq FROM fanout_outbox
+                     WHERE dead_at < $1
+                     ORDER BY dead_at
+                     LIMIT $2
+              )",
+        )
+        .bind(dead_before)
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("fanout", error))?;
+
+        Ok(deleted.rows_affected())
+    }
+
     /// Measure the outbox. One scan of a table that is empty when things are well.
     ///
     /// # Errors

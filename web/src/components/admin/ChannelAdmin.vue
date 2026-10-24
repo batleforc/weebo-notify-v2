@@ -23,6 +23,7 @@ import type {
   ServiceAccount,
   UserCard,
 } from "@/api/generated/types.gen";
+import { allPages } from "@/api/pages";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,8 +89,16 @@ function setKind(kind: "user" | "service_account"): void {
 }
 
 onMounted(async () => {
-  const accounts = await listAccounts();
-  bots.value = (accounts.data ?? []).filter((a) => !a.disabled_at);
+  try {
+    const accounts = await allPages(async (query) => {
+      const answer = await listAccounts({ query, throwOnError: true });
+      return answer.data;
+    });
+    bots.value = accounts.filter((a) => !a.disabled_at);
+  } catch (caught) {
+    // The picker just offers no bots; members can still be added by user.
+    console.error("weebo-notify: could not list service accounts", caught);
+  }
 });
 
 function toggle(channel: Channel): void {

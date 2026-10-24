@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use notify_app::{
     Authorizer, Caller, DeactivateServiceAccount, EnrolDevice, Fanout, GetNotification, Grant,
-    ListApiKeys, ListDevices, PostReceipt, ReadAvatar, RevokeApiKey, RevokeDevice,
-    SilenceNotification,
+    ListApiKeys, ListDevices, ListServiceAccounts, PostReceipt, ReadAvatar, RevokeApiKey,
+    RevokeDevice, SearchUsers, SilenceNotification,
 };
 use notify_domain::{
     ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, AttachmentId, Author, Channel, ChannelId,
@@ -21,7 +21,7 @@ use notify_domain::{
 };
 use notify_ports::test_utils::{InMemory, InMemoryAttachments, TestClock};
 use notify_ports::{
-    AttachmentStore as _, Clock as _, DeviceRepository, NotificationRepository,
+    AttachmentStore as _, Clock as _, DeviceRepository, NotificationRepository, PageRequest,
     ServiceAccountRepository, StoredApiKey,
 };
 
@@ -414,6 +414,31 @@ async fn a_key_cannot_list_or_revoke_its_owners_other_keys() {
     own_key.key.id = own;
     store.seed_api_key(own_key);
     assert!(revoke.execute(&key, own).await.expect("self-revocation"));
+}
+
+#[tokio::test]
+async fn a_key_cannot_page_through_the_directory() {
+    // The escalation: a leaked publish key walks `?q=aa`, `?q=ab`… for every name and email.
+    let (_, session, key) = alice_and_her_key();
+    let store = InMemory::new();
+    let search = SearchUsers::new(Arc::new(store.clone()));
+    assert!(
+        search.execute(&key, "aa").await.is_err(),
+        "a key searched the directory"
+    );
+    assert!(search.execute(&session, "aa").await.is_ok());
+
+    let accounts = ListServiceAccounts::new(Arc::new(store));
+    assert!(
+        accounts.execute(&key, PageRequest::first()).await.is_err(),
+        "a key listed the service accounts"
+    );
+    assert!(
+        accounts
+            .execute(&session, PageRequest::first())
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]

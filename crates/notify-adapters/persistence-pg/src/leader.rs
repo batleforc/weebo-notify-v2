@@ -11,6 +11,10 @@ use tokio::sync::Mutex;
 
 use crate::mapping::fail;
 
+/// How long a lock query may take before the leader presumes itself partitioned. Without
+/// it a silently dropped TCP connection hangs until the kernel gives up, with no leader.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Leadership over a Postgres advisory lock.
 #[derive(Debug, Clone)]
 pub struct PgLeaderElection {
@@ -35,11 +39,23 @@ impl LeaderElection for PgLeaderElection {
             .map_err(|error| fail("leader", error))?;
 
         // Non-blocking, so followers keep serving immediately.
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(lock_key(job))
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(|error| fail("leader", error))?;
+        let Ok(acquired) = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
+                .bind(lock_key(job))
+                .fetch_one(&mut *connection),
+        )
+        .await
+        else {
+            // It may have been granted: closing the connection is what releases it.
+            tracing::warn!(
+                job,
+                "the leader lock query timed out; not leading this round"
+            );
+            connection.close_on_drop();
+            return Ok(None);
+        };
+        let acquired = acquired.map_err(|error| fail("leader", error))?;
 
         if !acquired {
             // Somebody else leads: a normal answer.
@@ -78,15 +94,21 @@ impl LeaderGuard for PgLeaderGuard {
         };
 
         // The connection is the lock: checked between batches so a partitioned leader stops (T22).
-        match sqlx::query_scalar::<_, i32>("SELECT 1")
-            .fetch_one(&mut **connection)
-            .await
-        {
-            Ok(_) => true,
-            Err(error) => {
+        let probe = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&mut **connection),
+        )
+        .await;
+        match probe {
+            Ok(Ok(_)) => true,
+            Ok(Err(error)) => {
                 tracing::warn!(job = self.job, %error, "lost the leader connection");
-                // Dropped, never handed back to the pool.
-                held.take();
+                lose(&mut held);
+                false
+            }
+            Err(_) => {
+                tracing::warn!(job = self.job, "the leader connection stopped answering");
+                lose(&mut held);
                 false
             }
         }
@@ -98,14 +120,22 @@ impl LeaderGuard for PgLeaderGuard {
         };
 
         // Explicit so a SIGTERM drain hands over leadership immediately (§11).
-        if let Err(error) = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(lock_key(self.job))
-            .execute(&mut *connection)
-            .await
-        {
-            tracing::warn!(job = self.job, %error, "could not release the leader lock");
-        } else {
+        let unlocked = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(lock_key(self.job))
+                .execute(&mut *connection),
+        )
+        .await;
+        if let Ok(Ok(_)) = unlocked {
             tracing::debug!(job = self.job, "released the leader lock");
+        } else {
+            // Possibly still locked: back in the pool, an unrelated query would be leading.
+            tracing::warn!(
+                job = self.job,
+                "could not release the leader lock; closing its connection"
+            );
+            connection.close_on_drop();
         }
     }
 }
@@ -118,6 +148,13 @@ impl Drop for PgLeaderGuard {
         {
             connection.close_on_drop();
         }
+    }
+}
+
+/// Give up a lock connection without handing it back to the pool, which closing does.
+fn lose(held: &mut Option<PoolConnection<Postgres>>) {
+    if let Some(mut connection) = held.take() {
+        connection.close_on_drop();
     }
 }
 

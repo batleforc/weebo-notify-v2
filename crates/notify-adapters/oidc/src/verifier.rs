@@ -888,6 +888,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_symmetric_algorithm_naming_a_published_asymmetric_key_is_refused() {
+        // Algorithm confusion: HMAC keyed with what the issuer published, under its `kid`.
+        let fixture = Fixture::new();
+        let mut header = jsonwebtoken::Header::new(Algorithm::HS256);
+        header.kid = Some("key-1".to_owned());
+        let published = serde_json::to_vec(&jwk_set(&[&fixture.signer])).unwrap();
+        let forged = jsonwebtoken::encode(
+            &header,
+            &fixture.valid_claims(),
+            &jsonwebtoken::EncodingKey::from_secret(&published),
+        )
+        .unwrap();
+
+        assert!(fixture.verifier.verify(&forged).await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_token_naming_a_published_key_is_refused() {
+        use base64::Engine as _;
+        let fixture = Fixture::new();
+        let encode = |value: &serde_json::Value| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
+        };
+        let unsigned = format!(
+            "{}.{}.",
+            encode(&json!({ "alg": "none", "kid": "key-1", "typ": "JWT" })),
+            encode(&fixture.valid_claims())
+        );
+
+        assert!(fixture.verifier.verify(&unsigned).await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn another_kind_of_jwt_is_not_an_access_token() {
+        let fixture = Fixture::new();
+        for typ in ["logout+jwt", "dpop+jwt"] {
+            let token = fixture
+                .signer
+                .sign_typed(Some(typ), &fixture.valid_claims());
+            assert_eq!(
+                fixture.verifier.verify(&token).await.unwrap().unwrap_err(),
+                TokenRejection::Malformed,
+                "{typ}"
+            );
+        }
+        for typ in ["JWT", "at+jwt", "application/at+jwt"] {
+            let token = fixture
+                .signer
+                .sign_typed(Some(typ), &fixture.valid_claims());
+            assert!(
+                fixture.verifier.verify(&token).await.unwrap().is_ok(),
+                "{typ}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kid_still_missing_after_a_refresh_is_refused() {
+        let fixture = Fixture::new();
+        let stranger = Signer::generate("key-9");
+
+        let rejected = fixture
+            .verifier
+            .verify(&stranger.sign(&fixture.valid_claims()))
+            .await
+            .unwrap();
+
+        assert!(rejected.is_err());
+        assert_eq!(fixture.source.fetches(), 1, "looked once, then gave up");
+    }
+
+    #[tokio::test]
     async fn something_that_is_not_a_jwt_is_malformed_and_costs_nothing() {
         let fixture = Fixture::new();
 

@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use actix_web::{HttpRequest, HttpResponse, get, web};
 use actix_web_lab::sse;
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use notify_app::{Caller, Credential, SyncBacklog, SyncRequest};
-use notify_domain::{ChannelId, Cursor, DeviceId};
-use notify_ports::{Event, PageRequest};
+use notify_domain::{ChannelId, Cursor, DeviceId, Principal};
+use notify_ports::{Event, PageRequest, Poke};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
@@ -24,8 +24,12 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 const BACKPRESSURE: u32 = 64;
 
 /// How often a live connection re-checks its credential (revocation, membership);
-/// expiry is handled separately at `expires_at`.
-const REAUTHENTICATE: Duration = Duration::from_secs(300);
+/// expiry is handled separately at `expires_at`. Bounds how long a revoked key's open
+/// stream outlives its revocation (ADR-0023).
+const REAUTHENTICATE: Duration = Duration::from_secs(60);
+
+/// The most queued pokes one wake swallows; whatever is left wakes the next read.
+const DRAIN: usize = 1_024;
 
 /// How long one write may wait on a client that stopped reading; past it the client is
 /// dropped, so it cannot hold a slot (or a revoked credential) by not reading.
@@ -155,6 +159,9 @@ struct Connection {
     channels: Vec<ChannelId>,
     device: Option<DeviceId>,
     cursor: Cursor,
+    /// What the caller may read, so a poke elsewhere costs nothing; refreshed on
+    /// re-authentication.
+    readable: Vec<ChannelId>,
 }
 
 impl Connection {
@@ -180,6 +187,9 @@ impl Connection {
             .transpose()?;
 
         let cursor = state.stream_start.execute(&caller, resume, device).await?;
+        // Once per connection, not per page: every poke would otherwise write it again.
+        state.sync.remember_groups(&caller).await?;
+        let readable = state.sync.readable_channels(&caller).await?;
 
         Ok(Self {
             sync: state.sync.clone(),
@@ -187,7 +197,43 @@ impl Connection {
             channels,
             device,
             cursor,
+            readable,
         })
+    }
+
+    /// Whether `poke` may carry something this connection has not read yet.
+    fn wants(&self, poke: &Poke) -> bool {
+        match poke {
+            Poke::Resync => true,
+            Poke::Channel { id, cursor } => {
+                *cursor > self.cursor
+                    && self.readable.contains(id)
+                    && (self.channels.is_empty() || self.channels.contains(id))
+            }
+            Poke::User { id, cursor } => {
+                *cursor > self.cursor && self.caller.principal == Principal::User { id: *id }
+            }
+        }
+    }
+
+    /// Wait for a poke worth reading, then swallow those already queued behind it: a
+    /// burst of publications costs one read, not one per publication. `None` when the
+    /// bus is gone.
+    async fn next_wake(&self, pokes: &mut futures::stream::BoxStream<'static, Poke>) -> Option<()> {
+        loop {
+            let poke = pokes.next().await?;
+            if self.wants(&poke) {
+                break;
+            }
+        }
+        // Bounded, so a bus that never goes quiet cannot keep this from yielding.
+        for _ in 0..DRAIN {
+            match pokes.next().now_or_never() {
+                Some(queued) => queued?,
+                None => break,
+            };
+        }
+        Some(())
     }
 
     /// One page after the current cursor, advancing it; `true` when more follow. Callers
@@ -195,7 +241,7 @@ impl Connection {
     async fn page(&mut self) -> Result<(Vec<Event>, bool), ApiError> {
         let page = self
             .sync
-            .execute(
+            .page(
                 &self.caller,
                 SyncRequest {
                     cursor: Some(self.cursor),
@@ -232,6 +278,16 @@ impl Connection {
     async fn still_authorised(&mut self, state: &ApiState, credential: &Credential) -> bool {
         match state.authenticate.execute(credential.clone()).await {
             Ok(caller) => {
+                // Membership may have changed: a channel joined since must wake us too.
+                let readable = match self.sync.readable_channels(&caller).await {
+                    Ok(readable) => readable,
+                    Err(error) => {
+                        // Ends the stream; the client reconnects and re-reads from its cursor.
+                        tracing::warn!(%error, "could not refresh a stream's channels");
+                        return false;
+                    }
+                };
+                self.readable = readable;
                 self.caller = caller;
                 true
             }
@@ -354,12 +410,15 @@ pub(crate) async fn stream(
                 () = connected.slot.kicked() => return,
                 () = connection.expired(&state) => return,
                 _ = reauthenticate.tick() => {
+                    let before = connection.readable.clone();
                     if !connection.still_authorised(&state, &credential).await {
                         return;
                     }
+                    // A channel joined since may already hold events no poke will repeat.
+                    more = connection.readable.iter().any(|channel| !before.contains(channel));
                 }
-                poke = pokes.next() => {
-                    if poke.is_none() {
+                woke = connection.next_wake(&mut pokes) => {
+                    if woke.is_none() {
                         return;
                     }
                     more = true;
@@ -494,12 +553,15 @@ pub(crate) async fn websocket(
                 () = connection.expired(&state) => break,
                 () = connected.slot.kicked() => break,
                 _ = reauthenticate.tick() => {
+                    let before = connection.readable.clone();
                     if !connection.still_authorised(&state, &credential).await {
                         break;
                     }
+                    // A channel joined since may already hold events no poke will repeat.
+                    more = connection.readable.iter().any(|channel| !before.contains(channel));
                 }
-                poke = pokes.next() => {
-                    if poke.is_none() {
+                woke = connection.next_wake(&mut pokes) => {
+                    if woke.is_none() {
                         break;
                     }
                     more = true;
@@ -520,4 +582,98 @@ pub(crate) async fn websocket(
 /// An event we cannot serialise is our bug, not the caller's.
 fn port_error(error: serde_json::Error) -> ApiError {
     notify_ports::PortError::corrupt("event.payload", error).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use notify_app::Authorizer;
+    use notify_domain::UserId;
+    use notify_ports::test_utils::{InMemory, TestClock};
+
+    use super::*;
+
+    fn ci() -> ChannelId {
+        ChannelId::parse("ci-infra").unwrap()
+    }
+
+    fn connection(user: UserId) -> Connection {
+        let store = InMemory::new();
+        Connection {
+            sync: SyncBacklog::new(
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Arc::new(store.clone()),
+                Authorizer::new(Arc::new(store)),
+                Arc::new(TestClock::new()),
+            ),
+            caller: Caller::member(Principal::User { id: user }),
+            channels: Vec::new(),
+            device: None,
+            cursor: Cursor::from_sequence(10),
+            readable: vec![ci()],
+        }
+    }
+
+    #[test]
+    fn only_a_poke_that_can_carry_something_unread_wakes_a_stream() {
+        let me = UserId::generate();
+        let connection = connection(me);
+        let channel = |id: ChannelId, at| Poke::Channel {
+            id,
+            cursor: Cursor::from_sequence(at),
+        };
+        let user = |id, at| Poke::User {
+            id,
+            cursor: Cursor::from_sequence(at),
+        };
+
+        assert!(connection.wants(&channel(ci(), 11)));
+        assert!(connection.wants(&user(me, 11)));
+        assert!(connection.wants(&Poke::Resync));
+
+        assert!(!connection.wants(&channel(ci(), 10)), "already read");
+        assert!(
+            !connection.wants(&channel(ChannelId::parse("payroll").unwrap(), 11)),
+            "not readable"
+        );
+        assert!(
+            !connection.wants(&user(UserId::generate(), 11)),
+            "somebody else"
+        );
+        assert!(!connection.wants(&user(me, 9)), "already read");
+    }
+
+    #[test]
+    fn a_narrowed_stream_ignores_its_other_readable_channels() {
+        let mut connection = connection(UserId::generate());
+        connection
+            .readable
+            .push(ChannelId::parse("payroll").unwrap());
+        connection.channels = vec![ci()];
+
+        assert!(!connection.wants(&Poke::Channel {
+            id: ChannelId::parse("payroll").unwrap(),
+            cursor: Cursor::from_sequence(11),
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_pokes_is_one_wake() {
+        let connection = connection(UserId::generate());
+        let burst: Vec<Poke> = (11..20)
+            .map(|at| Poke::Channel {
+                id: ci(),
+                cursor: Cursor::from_sequence(at),
+            })
+            .collect();
+        // A live bus never ends; `pending` keeps the tail open as it would.
+        let mut pokes = futures::stream::iter(burst)
+            .chain(futures::stream::pending())
+            .boxed();
+
+        assert!(connection.next_wake(&mut pokes).await.is_some());
+        assert!(pokes.next().now_or_never().flatten().is_none(), "drained");
+    }
 }

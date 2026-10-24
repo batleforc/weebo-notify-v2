@@ -937,17 +937,20 @@ impl Config {
                          — the address this server presigns its own upload/download \
                          URLs against"
                     );
+                    // Same floor as the fingerprint keys: shorter makes the URLs forgeable.
+                    let min = notify_ports::FingerprintKey::MIN_BYTES;
                     anyhow::ensure!(
-                        !attachments.token_secret.expose().is_empty(),
-                        "[attachments] kind = \"filesystem\" requires `token_secret` \
-                         — it signs the URLs presign hands out, and an empty one would \
-                         mean an unsigned, open directory"
+                        attachments.token_secret.expose().len() >= min,
+                        "[attachments] kind = \"filesystem\" requires a `token_secret` of at \
+                         least {min} bytes, as it signs presigned URLs (`openssl rand -base64 48`)"
                     );
                 }
             }
         }
 
         self.validate_fingerprint_keys()?;
+
+        self.validate_smtp()?;
 
         for channel in &self.channels.managed {
             anyhow::ensure!(
@@ -987,6 +990,28 @@ impl Config {
             }
         }
 
+        Ok(())
+    }
+
+    /// lettre reads `smtp://host` with no `?tls=` as plaintext, without STARTTLS: relay
+    /// credentials need `smtps://` or `?tls=required`.
+    fn validate_smtp(&self) -> anyhow::Result<()> {
+        if let Some(smtp) = &self.sinks.smtp
+            && smtp.username.is_some()
+        {
+            let encrypted = url::Url::parse(&smtp.url).is_ok_and(|url| {
+                url.scheme() == "smtps"
+                    || url
+                        .query_pairs()
+                        .any(|(key, value)| key == "tls" && value == "required")
+            });
+            anyhow::ensure!(
+                encrypted,
+                "[sinks.smtp] sends `username` and its password in clear over `{}`; use \
+             `smtps://` or `smtp://…?tls=required`",
+                smtp.url
+            );
+        }
         Ok(())
     }
 
@@ -1327,7 +1352,7 @@ mod tests {
              kind = \"filesystem\"\n\
              path = \"/data/attachments\"\n\
              public_base_url = \"https://notify.weebo.poc\"\n\
-             token_secret = \"correct-horse-battery-staple\"\n",
+             token_secret = \"correct-horse-battery-staple-and-then-some\"\n",
         );
 
         let config = load_isolated(&path).expect("a complete filesystem config validates");
@@ -1335,6 +1360,39 @@ mod tests {
 
         assert_eq!(attachments.kind, AttachmentsBackend::Filesystem);
         assert_eq!(attachments.path, "/data/attachments");
+    }
+
+    #[test]
+    fn smtp_credentials_need_an_encrypted_relay() {
+        let relay = |url: &str| {
+            with_config(
+                &format!("smtp-{}", url.len()),
+                &format!(
+                    "[sinks.smtp]\nurl = \"{url}\"\nfrom = \"notify@weebo.poc\"\nusername = \"notify\"\n"
+                ),
+            )
+        };
+
+        assert!(load_isolated(&relay("smtp://relay:25")).is_err());
+        assert!(load_isolated(&relay("smtp://relay:587?tls=required")).is_ok());
+        assert!(load_isolated(&relay("smtps://relay:465")).is_ok());
+    }
+
+    #[test]
+    fn a_short_filesystem_token_secret_is_refused() {
+        let path = with_config(
+            "fs-short-secret",
+            "[attachments]\n\
+             kind = \"filesystem\"\n\
+             path = \"/data/attachments\"\n\
+             public_base_url = \"https://notify.weebo.poc\"\n\
+             token_secret = \"changeme\"\n",
+        );
+
+        assert!(
+            load_isolated(&path).is_err(),
+            "a guessable key signs forgeable URLs"
+        );
     }
 
     #[test]

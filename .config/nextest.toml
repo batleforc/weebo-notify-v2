@@ -86,5 +86,5 @@ threads-required = "num-test-threads"
 # The event watermark (ADR-0028) is cluster-wide: these hold a transaction open on
 # purpose, which holds back every other test's reads while they do. Run alone;
 # they assert eventual delivery, so other traffic on the server cannot fail them.
-filter = 'package(notify-persistence-pg) & binary(watermark)'
+filter = '(package(notify-persistence-pg) & binary(watermark)) | (package(notify-server) & test(watch_watermark))'
 threads-required = "num-test-threads"
