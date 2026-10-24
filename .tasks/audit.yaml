@@ -16,7 +16,8 @@ tasks:
     cmds:
       - cargo audit
       - cargo deny check
-      - cargo audit --file web/src-tauri/Cargo.lock
+      # From its own directory, so it reads web/src-tauri/.cargo/audit.toml.
+      - cmd: cd web/src-tauri && cargo audit
       - cargo deny --manifest-path web/src-tauri/Cargo.toml check licenses sources
 
   suppressions:
@@ -26,6 +27,32 @@ tasks:
       - cmd: |
           set -eu
           echo "==> suppressed advisories"
+
+          # RUSTSEC-2026-0370..0372 (deny.toml): zbus 5 through notify-rust and secret-service.
+          # Removable once neither pulls `zvariant`; the network check only says when to try.
+          if ! grep -q '^name = "zvariant"$' Cargo.lock; then
+            echo "    zvariant is no longer in Cargo.lock — the three zbus ignores in deny.toml can go"
+          else
+            for crate in notify-rust secret-service; do
+              req="$(curl -fsS -A weebo-notify-audit "https://crates.io/api/v1/crates/$crate" 2>/dev/null \
+                | jq -r '.crate.max_stable_version' 2>/dev/null \
+                | xargs -I{} curl -fsS -A weebo-notify-audit "https://crates.io/api/v1/crates/$crate/{}/dependencies" 2>/dev/null \
+                | jq -r '.dependencies[] | select(.crate_id == "zbus") | .req' 2>/dev/null || true)"
+              case "${req:-unknown}" in
+                ^5*|5*|=5*) echo "    $crate latest still on zbus ${req} — the zbus ignores still apply" ;;
+                unknown) echo "    $crate: crates.io not reachable — check its zbus requirement by hand" ;;
+                *)       echo "    $crate latest is on zbus ${req} — REVISIT: bump it, then drop the zbus ignores" ;;
+              esac
+            done
+          fi
+
+          # RUSTSEC-2026-0367..0369 (web/src-tauri/.cargo/audit.toml): zip 4 under the updater.
+          zip="$(grep -A1 '^name = "zip"$' web/src-tauri/Cargo.lock | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
+          case "${zip:-none}" in
+            none)      echo "    zip is no longer in web/src-tauri/Cargo.lock — the zip ignores can go" ;;
+            [0-8].*)   echo "    zip ${zip} — still under tauri-plugin-updater; the zip ignores still apply" ;;
+            *)         echo "    zip ${zip} — REVISIT: past the fix, so the zip ignores can go" ;;
+          esac
 
           # GHSA-wrw7-89jp-8q8g: pinned by Tauri's GTK3 stack, not by us.
           gtk="$(grep -A1 'name = "gtk"' web/src-tauri/Cargo.lock 2>/dev/null | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"

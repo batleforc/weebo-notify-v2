@@ -11,9 +11,21 @@ all-features = true
 # RustSec advisories. Yanked crates are an error too: a yank usually means the
 # author found something, and pinning to one is a decision, not an accident.
 yanked = "deny"
-# Mirrors `.cargo/audit.toml`: empty. RUSTSEC-2023-0071 (`rsa`) left with the
+# `.cargo/audit.toml` is empty: cargo-audit only warns on unmaintained crates, so the
+# entries below exist for cargo-deny alone. RUSTSEC-2023-0071 (`rsa`) left with the
 # RustCrypto JWT backend; `[bans]` below keeps it out.
-ignore = []
+#
+# Unmaintained, not vulnerable (checked 2026-10-24): zbus 6 absorbed these three crates,
+# and the CLI reaches zbus 5 through `notify-rust` 4.18.2 (desktop notifications) and
+# `keyring` → `secret-service` 5.2.0 (the token store), both at their latest with no
+# zbus 6 release. The alternatives cost more than the signal: a hand-written D-Bus
+# client, or a kernel keyring that forgets the token on reboot. `task
+# audit:suppressions` reports the day either one moves; that release deletes these.
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus 6; reached via notify-rust/secret-service on zbus 5, no upgrade yet" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus 6; same path, same retirement" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus 6; same path, same retirement" },
+]
 
 [licenses]
 # weebo-notify ships under Apache-2.0 — the licence in `LICENSE.md`, and the one
