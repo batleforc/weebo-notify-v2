@@ -67,3 +67,11 @@ web/test-results/
 web/playwright-report/
 
 graphify-out/cache/
+
+# Symlinks created by `wska install` from .claude/wska.toml (absolute, machine-local).
+.claude/skills/*
+!.claude/skills/graphify/
+.claude/agents/
+# Backups left by tool installers (graphify).
+*.bak
+*.graphify-bak
