@@ -4,11 +4,10 @@
 # wired yet` and a tag produced nothing anybody could run. That is the hole D17
 # names, and it is wider than the CSP headers that led to finding it.
 #
-# NOT VERIFIED HERE. This repository is developed in an Eclipse Che workspace with
-# no container engine (§12.4), so the first build of this file happens on the
-# Forgejo runner. That is written down rather than glossed: it is the same
-# "committed but never executed" state D7 and D12 are open for, and it is a
-# deliberate trade — the alternative was leaving the release producing nothing.
+# Built and scanned locally with podman on 2026-10-25 (`task build:image`, then
+# `task audit:image`: 0 HIGH/CRITICAL), amd64 only. A Che workspace still has no
+# container engine (§12.4), and CI is on hold until the Forgejo move, so the arm64
+# cross build has not run yet.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build
@@ -22,7 +21,7 @@
 # `$BUILDPLATFORM`: the compiler always runs natively and cross-compiles to the
 # target, so the arm64 image no longer builds the workspace under QEMU (hours, not
 # minutes). The runtime stage has no `RUN`, so nothing in this file is emulated.
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99-slim-trixie@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d AS chef
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99-slim-trixie@sha256:1a939748a7cbab172de91a014e3804a97af1394a8c844faa67fce9401c4e40fb AS chef
 
 ARG BUILDARCH
 ARG TARGETARCH
@@ -94,7 +93,7 @@ RUN cargo build --release --locked --target "$(cat /rust-target)" -p notify-serv
 #
 # `nonroot` is the tag, not a runtime flag: the image has no shell, no package
 # manager and no root user to drop from.
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS runtime
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e AS runtime
 
 COPY --from=builder /out/notify-server /usr/local/bin/notify-server
 

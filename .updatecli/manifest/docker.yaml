@@ -1,0 +1,14 @@
+# Moves every Containerfile `FROM` tag and digest together (weebo-containerfile §3): the
+# only writer of those pins. Local for now (`task deps:images`): CI is on hold until the
+# Forgejo move, at which point this gains the template's `scms` + `gitea/pullrequest`
+# action and opens the PR itself.
+name: Upgrade the Containerfile base images
+
+autodiscovery:
+  crawlers:
+    dockerfile:
+      digest: true
+      # List every Containerfile, or its bases never move.
+      filematch:
+        - "Containerfile"
+        - "web/Containerfile"

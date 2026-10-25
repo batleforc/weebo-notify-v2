@@ -18,7 +18,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # `$BUILDPLATFORM`: the bundle is platform-independent, so the arm64 image reuses a
 # native build instead of running pnpm and Vite under QEMU.
-FROM --platform=$BUILDPLATFORM docker.io/library/node:26-slim@sha256:0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS builder
 
 WORKDIR /build
 

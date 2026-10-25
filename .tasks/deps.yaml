@@ -50,6 +50,16 @@ tasks:
         vars: { LABEL: after }
       - task: deps:cve:diff
 
+  deps:images:
+    desc: "Report which Containerfile base images have a newer tag or digest (updatecli); writes nothing"
+    cmds:
+      - updatecli diff --config .updatecli/manifest/docker.yaml
+
+  deps:images:apply:
+    desc: "Move every Containerfile base to its latest tag and digest (updatecli), then rebuild and `task audit:image` it"
+    cmds:
+      - updatecli apply --config .updatecli/manifest/docker.yaml
+
   deps:cve:snapshot:
     desc: "Write the current advisories, one `<source> <id> <package>` per line (usage: task deps:cve:snapshot LABEL=before)"
     requires:

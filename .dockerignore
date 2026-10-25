@@ -22,6 +22,10 @@ config/local.toml
 # minutes — it lands artefacts built against another glibc next to the ones the
 # builder makes.
 target/
+# Its own cargo workspace (task fuzz), not part of the image; cargo-chef would read its manifest.
+fuzz/
+# The local knowledge graph (graphify), 20+ MB the build never reads.
+graphify-out/
 web/dist/
 web/coverage/
 docs/.next/
