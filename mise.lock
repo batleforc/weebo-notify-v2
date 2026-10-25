@@ -51,6 +51,7 @@ version = "2.38.5"
 backend = "aqua:aws/aws-cli"
 
 [tools.awscli."platforms.linux-x64"]
+checksum = "blake3:57ff61a49c4f3ea209a9468a4fffdade33d2051808895597bf30e799bd74cd02"
 url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.38.5.zip"
 
 [[tools.cargo-binstall]]
