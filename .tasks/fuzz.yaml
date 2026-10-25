@@ -1,0 +1,24 @@
+version: "3"
+
+tasks:
+  fuzz:
+    desc: "Run a fuzz target for up to MAX_TIME seconds (default: 30). TARGET is one of `cargo fuzz list` (default: fuzz_pattern)"
+    dir: fuzz
+    vars:
+      TARGET: '{{.TARGET | default "fuzz_pattern"}}'
+      MAX_TIME: '{{.MAX_TIME | default "30"}}'
+    cmds:
+      # --target: the toolchain's host, not cargo-fuzz's build triple (static musl cannot carry ASan).
+      # detect_leaks=0: LeakSanitizer cannot start under a restricted ptrace_scope and
+      # reports a 0-byte crash artefact that looks like a finding.
+      - >-
+        ASAN_OPTIONS=detect_leaks=0
+        cargo +nightly fuzz run --target "$(rustc +nightly -vV | sed -n 's/^host: //p')"
+        {{.TARGET}} -- -max_total_time={{.MAX_TIME}}
+        $(test -f dicts/{{.TARGET}}.dict && echo "-dict=$PWD/dicts/{{.TARGET}}.dict")
+
+  fuzz:check:
+    desc: "Every fuzz target still compiles — the per-PR gate (stable, no nightly)"
+    cmds:
+      # fuzz/ is its own workspace: `cargo check --workspace` and clippy never see it.
+      - cargo check --manifest-path fuzz/Cargo.toml --bins --all-targets

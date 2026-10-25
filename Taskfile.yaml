@@ -20,6 +20,7 @@ includes:
   ops: ./.tasks/ops.yaml
   perf: ./.tasks/perf.yaml
   deps: { taskfile: ./.tasks/deps.yaml, flatten: true }
+  fuzz: { taskfile: ./.tasks/fuzz.yaml, flatten: true }
 
 tasks:
   init:

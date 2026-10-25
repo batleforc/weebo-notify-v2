@@ -1,0 +1,5 @@
+# Build output, the local corpus and crash artefacts: CI caches the corpus instead.
+/target/
+/corpus/
+/artifacts/
+/coverage/

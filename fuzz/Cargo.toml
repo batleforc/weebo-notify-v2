@@ -1,0 +1,51 @@
+# Fuzz targets for the domain's parsers of untrusted strings (SEC-P2-35); the stable floor
+# they extend is `crates/notify-domain/tests/parsers_survive_hostile_input.rs`.
+# Its own workspace: `cargo +nightly fuzz` builds it, the root workspace never sees it, so
+# `task fuzz:check` is what keeps it compiling.
+[workspace]
+
+[package]
+name = "notify-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = "1"
+# Default features only: no `openapi`, nothing beyond the parsers.
+notify-domain = { path = "../crates/notify-domain" }
+
+# One [[bin]] per target; `cargo fuzz list` reads them from here.
+[[bin]]
+name = "fuzz_channel_id"
+path = "fuzz_targets/fuzz_channel_id.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_pattern"
+path = "fuzz_targets/fuzz_pattern.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_cursor"
+path = "fuzz_targets/fuzz_cursor.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_api_key"
+path = "fuzz_targets/fuzz_api_key.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_attachment_id"
+path = "fuzz_targets/fuzz_attachment_id.rs"
+test = false
+doc = false

@@ -54,12 +54,16 @@ tasks:
     cmds:
       - cargo fmt --all
       - cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # fuzz/ is its own workspace, invisible to clippy: this keeps its targets compiling.
+      - task: :fuzz:check
 
   rust:check:
     desc: "Read-only Rust lint: fails on unformatted code or any clippy warning"
     cmds:
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # fuzz/ is its own workspace, invisible to clippy: this keeps its targets compiling.
+      - task: :fuzz:check
 
   web:
     desc: "Lint and format the web frontend, applying fixes"

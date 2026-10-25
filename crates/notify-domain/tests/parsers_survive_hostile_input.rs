@@ -1,6 +1,6 @@
 //! Seeded random input against every hand-written parser of untrusted strings
 //! (SEC-P2-35): each must return without panicking and round-trip what it accepts.
-//! A stable-toolchain floor until `cargo-fuzz` targets exist.
+//! The stable-toolchain floor under the `cargo-fuzz` targets in `fuzz/` (`task fuzz`).
 
 #![expect(
     clippy::arithmetic_side_effects,
