@@ -80,8 +80,8 @@ jobs:
         # keep on the same version, and the pinned-binary reasoning (see any of the
         # other files) applies to this job as much as to the ones holding tokens.
         env:
-          MISE_VERSION: "v2026.10.12"
-          MISE_SHA256: "72404716768b5b044cbd5170136d3d795cbd592658b6e932b66f0f8d67a54875"
+          MISE_VERSION: "v2026.10.19"
+          MISE_SHA256: "3162760f40b6b5f706c60641e4ef5ee7322bc6c54f72fc26a7111b337aa18d9d"
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
@@ -147,8 +147,8 @@ jobs:
       # crate that still links libdbus and nothing here builds it.
       - name: Install the toolchain
         env:
-          MISE_VERSION: "v2026.10.12"
-          MISE_SHA256: "72404716768b5b044cbd5170136d3d795cbd592658b6e932b66f0f8d67a54875"
+          MISE_VERSION: "v2026.10.19"
+          MISE_SHA256: "3162760f40b6b5f706c60641e4ef5ee7322bc6c54f72fc26a7111b337aa18d9d"
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
@@ -215,7 +215,16 @@ jobs:
           if-no-files-found: error
 
       # --- Desktop ----------------------------------------------------------
+      # No instance to bake into a desktop build yet: say so in the summary rather than
+      # fail the job (the images and the CLI still publish) or skip without a word.
+      - name: Desktop bundles skipped
+        if: vars.WNK_DESKTOP_API_BASE_URL == ''
+        run: |
+          echo "::notice::Desktop bundles skipped: set the WNK_DESKTOP_* repository variables to build them."
+          echo "Desktop bundles skipped: no \`WNK_DESKTOP_API_BASE_URL\` repository variable." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Install the GTK/WebKit stack
+        if: vars.WNK_DESKTOP_API_BASE_URL != ''
         # What `task tauri:doctor` reports on, and the reason `web/src-tauri` sits
         # outside the cargo workspace (D13): Tauri on Linux links against system C
         # libraries that mise cannot carry and a Che workspace cannot install. A
@@ -243,6 +252,7 @@ jobs:
             xdg-utils
 
       - name: Build the desktop bundles
+        if: vars.WNK_DESKTOP_API_BASE_URL != ''
         # `.deb` and AppImage, per `tauri.conf.json`'s `bundle.targets`. Unsigned:
         # neither format carries an OS-enforced signature, and what §3.2bis signs for
         # them — the minisign updater manifest and cosign provenance — belongs to the
@@ -259,6 +269,7 @@ jobs:
           WNK_ATTACHMENT_ORIGIN: ${{ vars.WNK_DESKTOP_ATTACHMENT_ORIGIN }}
 
       - name: Upload the desktop bundles
+        if: vars.WNK_DESKTOP_API_BASE_URL != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: weebo-notify-desktop-linux-x64-${{ steps.sha.outputs.short }}
@@ -386,8 +397,8 @@ jobs:
         # keep on the same version, and the pinned-binary reasoning (see any of the
         # other files) applies to this job as much as to the ones holding tokens.
         env:
-          MISE_VERSION: "v2026.10.12"
-          MISE_SHA256: "72404716768b5b044cbd5170136d3d795cbd592658b6e932b66f0f8d67a54875"
+          MISE_VERSION: "v2026.10.19"
+          MISE_SHA256: "3162760f40b6b5f706c60641e4ef5ee7322bc6c54f72fc26a7111b337aa18d9d"
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
@@ -415,13 +426,13 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.3
+          cosign-release: v3.1.4
 
       - name: Set up buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

@@ -81,8 +81,8 @@ jobs:
         # A pinned, checksum-verified binary rather than `curl https://mise.run | sh`
         # — same reasoning as every other workflow in this directory.
         env:
-          MISE_VERSION: "v2026.10.12"
-          MISE_SHA256: "72404716768b5b044cbd5170136d3d795cbd592658b6e932b66f0f8d67a54875"
+          MISE_VERSION: "v2026.10.19"
+          MISE_SHA256: "3162760f40b6b5f706c60641e4ef5ee7322bc6c54f72fc26a7111b337aa18d9d"
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
