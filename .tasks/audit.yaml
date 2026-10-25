@@ -105,7 +105,7 @@ tasks:
     # in PLATFORMS is scanned, since `trivy image` on an index only scans the host's.
     vars:
       PLATFORMS: '{{.PLATFORMS | default (and (or .SERVER_REF .WEB_REF) "linux/amd64 linux/arm64")}}'
-      IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
+      IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify-v2"}}'
       IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'
       SERVER_REF: '{{.SERVER_REF | default (print .IMAGE_REPO ":" .IMAGE_TAG)}}'
       WEB_REF: '{{.WEB_REF | default (print .IMAGE_REPO "-web:" .IMAGE_TAG)}}'

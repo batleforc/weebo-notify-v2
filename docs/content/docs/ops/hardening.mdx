@@ -283,7 +283,7 @@ that stops an attacker who was never trying.
 Checking it by hand before a deploy:
 
 ```bash
-cosign verify ghcr.io/batleforc/weebo-notify@sha256:<digest> \
+cosign verify ghcr.io/batleforc/weebo-notify-v2@sha256:<digest> \
   --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/\.github/workflows/release\.yaml@refs/tags/v" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -299,7 +299,7 @@ metadata:
   name: weebo-notify
 spec:
   images:
-    - glob: "ghcr.io/batleforc/weebo-notify*"
+    - glob: "ghcr.io/batleforc/weebo-notify-v2*"
   authorities:
     - keyless:
         url: https://fulcio.sigstore.dev

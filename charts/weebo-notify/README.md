@@ -42,10 +42,10 @@ The chart is published as an OCI artifact next to the images, signed with the
 same keyless cosign identity:
 
 ```bash
-cosign verify ghcr.io/batleforc/charts/weebo-notify:0.4.2 \
+cosign verify ghcr.io/batleforc/weebo-notify-v2/charts/weebo-notify:0.4.2 \
   --certificate-identity-regexp '^https://github.com/batleforc/weebo-notify-v2/\.github/workflows/release\.yaml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-helm install notify oci://ghcr.io/batleforc/charts/weebo-notify --version 0.4.2 -f my-values.yaml
+helm install notify oci://ghcr.io/batleforc/weebo-notify-v2/charts/weebo-notify --version 0.4.2 -f my-values.yaml
 ```
 
 Chart `version` and `appVersion` both equal the product version; the image

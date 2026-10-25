@@ -8,7 +8,7 @@ imagePullSecrets: []
 
 image:
   server:
-    repository: ghcr.io/batleforc/weebo-notify
+    repository: ghcr.io/batleforc/weebo-notify-v2
     # Defaults to "v" + .Chart.AppVersion when empty — release.yaml tags images
     # with the git tag, which carries cog's `v` prefix.
     tag: ""
@@ -18,7 +18,7 @@ image:
     digest: ""
     pullPolicy: IfNotPresent
   web:
-    repository: ghcr.io/batleforc/weebo-notify-web
+    repository: ghcr.io/batleforc/weebo-notify-v2-web
     tag: ""
     digest: ""
     pullPolicy: IfNotPresent

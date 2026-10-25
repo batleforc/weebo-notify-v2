@@ -69,10 +69,10 @@ env:
   # arrangement of §3.2 means this repository lives in two forges, and whoever
   # deploys it may publish to neither of them.
   IMAGE_REGISTRY: ghcr.io
-  IMAGE_NAME: ghcr.io/batleforc/weebo-notify
+  IMAGE_NAME: ghcr.io/batleforc/weebo-notify-v2
   # The Helm chart, as an OCI artifact beside the images (`helm install
-  # oci://ghcr.io/batleforc/charts/weebo-notify --version X.Y.Z`).
-  CHART_REPO: oci://ghcr.io/batleforc/charts
+  # oci://ghcr.io/batleforc/weebo-notify-v2/charts/weebo-notify --version X.Y.Z`).
+  CHART_REPO: oci://ghcr.io/batleforc/weebo-notify-v2/charts
 
 # Least privilege; a job that needs more says so itself.
 permissions:

@@ -40,7 +40,7 @@ Log in as `alice`, `bob` or `carol`, password `weebo-dev`.
 | `web/` | Vue 3 frontend (from M1) |
 | `docs/` | The documentation site (Fumadocs) |
 | `dev/` | The development stack: Compose, seeds, test identities |
-| `charts/weebo-notify` | The Helm chart — published as `oci://ghcr.io/batleforc/charts/weebo-notify` |
+| `charts/weebo-notify` | The Helm chart — published as `oci://ghcr.io/batleforc/weebo-notify-v2/charts/weebo-notify` |
 
 ## Documentation
 

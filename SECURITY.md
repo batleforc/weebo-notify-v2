@@ -73,7 +73,7 @@ Images are signed with cosign keyless, by digest. Every release lists its digest
 and the command that checks them:
 
 ```bash
-cosign verify ghcr.io/batleforc/weebo-notify@sha256:<digest> \
+cosign verify ghcr.io/batleforc/weebo-notify-v2@sha256:<digest> \
   --certificate-identity-regexp "^https://github.com/batleforc/weebo-notify-v2/\.github/workflows/release\.yaml@refs/tags/v" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -82,7 +82,7 @@ An image that does not verify did not come from this project's pipeline, whateve
 it is tagged.
 
 The Helm chart is published the same way, as an OCI artifact
-(`oci://ghcr.io/batleforc/charts/weebo-notify`) signed by the same identity, and
+(`oci://ghcr.io/batleforc/weebo-notify-v2/charts/weebo-notify`) signed by the same identity, and
 each image carries a cosign-signed SPDX SBOM attestation per platform
 (`cosign verify-attestation --type spdxjson …`, same identity flags).
 

@@ -5,7 +5,7 @@ version: "3"
 
 vars:
   # Overridable: the release workflow passes its own.
-  IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify"}}'
+  IMAGE_REPO: '{{.IMAGE_REPO | default "ghcr.io/batleforc/weebo-notify-v2"}}'
   IMAGE_TAG: '{{.IMAGE_TAG | default "dev"}}'
   # An explicit `ENGINE=` wins; otherwise docker if present, else podman.
   ENGINE:

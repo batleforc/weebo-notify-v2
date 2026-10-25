@@ -36,7 +36,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  IMAGE_NAME: ghcr.io/batleforc/weebo-notify
+  IMAGE_NAME: ghcr.io/batleforc/weebo-notify-v2
 
 permissions:
   contents: read
