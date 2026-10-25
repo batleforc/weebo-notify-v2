@@ -7,6 +7,8 @@ export interface ProviderMetadata {
   authorization_endpoint: string;
   token_endpoint: string;
   end_session_endpoint?: string;
+  /** RFC 7009; sign-out revokes the refresh token here when the provider offers it. */
+  revocation_endpoint?: string;
   code_challenge_methods_supported?: string[];
 }
 
@@ -55,6 +57,7 @@ async function load(): Promise<ProviderMetadata> {
     metadata.authorization_endpoint,
     metadata.token_endpoint,
     metadata.end_session_endpoint,
+    metadata.revocation_endpoint,
   ]) {
     if (endpoint && new URL(endpoint).origin !== origin) {
       throw new Error(

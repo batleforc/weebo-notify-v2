@@ -7,8 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** `session.ts`'s own constant, which it does not export. */
 const REFRESH_KEY = "weebo-notify:refresh-token";
+const PENDING_KEY = "weebo-notify:pending-auth";
 
-const { desktop, credential, push } = vi.hoisted(() => ({
+const { desktop, credential, push, discovered } = vi.hoisted(() => ({
   // A holder rather than a bare boolean: `session.ts` reads `isDesktop()` at module
   // scope for `redirectUri`, so the value has to be settable before the import.
   desktop: { value: true },
@@ -19,6 +20,13 @@ const { desktop, credential, push } = vi.hoisted(() => ({
     share: vi.fn(),
   },
   push: { disable: vi.fn(), dropLocalPush: vi.fn(), claimFor: vi.fn() },
+  /** What discovery answers; a test adds endpoints the default leaves out. */
+  discovered: {
+    value: { token_endpoint: "https://idp.test/token" } as Record<
+      string,
+      string
+    >,
+  },
 }));
 
 vi.mock("@/lib/push", () => push);
@@ -36,7 +44,7 @@ vi.mock("./credential", () => ({
 }));
 
 vi.mock("./discovery", () => ({
-  discover: async () => ({ token_endpoint: "https://idp.test/token" }),
+  discover: async () => discovered.value,
 }));
 
 /** The provider's answer to a refresh: rotation, so the token that comes back differs. */
@@ -70,6 +78,7 @@ describe("session — where the refresh token rests", () => {
     push.disable.mockReset().mockResolvedValue(undefined);
     push.dropLocalPush.mockReset().mockResolvedValue(undefined);
     push.claimFor.mockReset().mockResolvedValue(undefined);
+    discovered.value = { token_endpoint: "https://idp.test/token" };
     sessionStorage.clear();
     localStorage.clear();
     vi.stubGlobal(
@@ -393,6 +402,67 @@ describe("session — where the refresh token rests", () => {
       await store.refresh();
 
       expect(received).toEqual([{ from: "refresh-1", to: "refresh-2" }]);
+    });
+
+    it("revokes the refresh token at the provider on sign-out", async () => {
+      discovered.value = {
+        token_endpoint: "https://idp.test/token",
+        revocation_endpoint: "https://idp.test/revoke",
+      };
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      const store = await session(false);
+      await store.restore(); // rotates to refresh-2
+
+      await store.logout();
+
+      const fetched = vi.mocked(fetch).mock.calls;
+      const revocation = fetched.find(
+        ([url]) => url === "https://idp.test/revoke",
+      );
+      const body = new URLSearchParams(String(revocation?.[1]?.body));
+      expect(body.get("token")).toBe("refresh-2");
+      expect(body.get("token_type_hint")).toBe("refresh_token");
+      expect(sessionStorage.getItem(REFRESH_KEY)).toBeNull();
+    });
+
+    it("signs out anyway when the revocation fails", async () => {
+      discovered.value = {
+        token_endpoint: "https://idp.test/token",
+        revocation_endpoint: "https://idp.test/revoke",
+      };
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      sessionStorage.setItem(REFRESH_KEY, "refresh-1");
+      const store = await session(false);
+      vi.mocked(fetch).mockRejectedValue(new TypeError("offline"));
+
+      await store.logout();
+
+      expect(sessionStorage.getItem(REFRESH_KEY)).toBeNull();
+    });
+
+    it("lets a forged callback neither cancel the sign-in nor speak", async () => {
+      const pending = JSON.stringify({
+        verifier: "v",
+        state: "s1",
+        returnTo: "/",
+      });
+      sessionStorage.setItem(PENDING_KEY, pending);
+      const store = await session(false);
+
+      await expect(
+        store.completeLogin(
+          new URLSearchParams("state=forged&error=x&error_description=call+us"),
+        ),
+      ).rejects.toThrow("did not start");
+      expect(sessionStorage.getItem(PENDING_KEY)).toBe(pending);
+
+      // The provider's own error, with the right state, still ends the attempt.
+      await expect(
+        store.completeLogin(
+          new URLSearchParams("state=s1&error=access_denied"),
+        ),
+      ).rejects.toThrow("access_denied");
+      expect(sessionStorage.getItem(PENDING_KEY)).toBeNull();
     });
 
     it("does not reach for the vault on sign-out either", async () => {

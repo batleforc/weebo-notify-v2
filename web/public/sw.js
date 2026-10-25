@@ -139,6 +139,10 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) {
     return;
   }
+  // The OAuth callback carries a code and state in its URL: never a cache key.
+  if (url.pathname === "/auth/callback") {
+    return;
+  }
 
   event.respondWith(
     fetch(request)

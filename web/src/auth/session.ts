@@ -74,6 +74,29 @@ interface TokenResponse {
   token_type: string;
 }
 
+/** RFC 7009, best-effort and bounded like the push revocation: sign-out never waits on the IdP. */
+async function revoke(endpoint: string, token: string): Promise<void> {
+  try {
+    await fetch(endpoint, {
+      method: "POST",
+      body: new URLSearchParams({
+        token,
+        token_type_hint: "refresh_token",
+        client_id: oidcClientId,
+      }),
+      signal: AbortSignal.timeout(LOGOUT_PUSH_TIMEOUT_MS),
+    }).then((response) => {
+      if (!response.ok) {
+        console.warn(
+          `weebo-notify: the refresh token revocation answered ${response.status}`,
+        );
+      }
+    });
+  } catch (error) {
+    console.warn("weebo-notify: could not revoke the refresh token", error);
+  }
+}
+
 export const useSession = defineStore("session", () => {
   const accessToken = ref<string | null>(null);
   const expiresAt = ref<number>(0);
@@ -240,20 +263,22 @@ export const useSession = defineStore("session", () => {
   /** Redeem the code; returns the permalink the person opened before signing in. */
   async function completeLogin(params: URLSearchParams): Promise<string> {
     const raw = sessionStorage.getItem(PENDING_KEY);
-    sessionStorage.removeItem(PENDING_KEY);
     if (!raw) {
       throw new Error(i18n.global.t("callback.error.noPending"));
     }
     const pending: PendingAuthorization = JSON.parse(raw);
 
+    // CSRF gate (RFC 6749 §10.12), before anything else is believed: a forged
+    // callback, `error` included, neither cancels the sign-in in progress nor
+    // puts its own text on screen.
+    if (params.get("state") !== pending.state) {
+      throw new Error(i18n.global.t("callback.error.state"));
+    }
+    sessionStorage.removeItem(PENDING_KEY);
+
     const error = params.get("error");
     if (error) {
       throw new Error(params.get("error_description") ?? error);
-    }
-
-    // CSRF gate (RFC 6749 §10.12).
-    if (params.get("state") !== pending.state) {
-      throw new Error(i18n.global.t("callback.error.state"));
     }
 
     const code = params.get("code");
@@ -378,8 +403,14 @@ export const useSession = defineStore("session", () => {
           error,
         );
       });
-    forget();
     const metadata = await discover().catch(() => null);
+    // Revoke the refresh token before dropping it: ending the IdP session alone may
+    // leave a copy (another tab, or one lifted by script) valid until it expires.
+    const token = storedRefreshToken();
+    if (token && metadata?.revocation_endpoint) {
+      await revoke(metadata.revocation_endpoint, token);
+    }
+    forget();
     if (metadata?.end_session_endpoint) {
       const url = new URL(metadata.end_session_endpoint);
       url.searchParams.set("client_id", oidcClientId);
