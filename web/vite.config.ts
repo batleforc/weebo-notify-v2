@@ -240,14 +240,14 @@ export default defineConfig({
         "src/test-setup.ts",
         "**/*.spec.ts",
       ],
-      // A floor a little under what the suite measures today (50/35/30/51 %), so
+      // A floor a little under what the suite measures (77/69/66/77 % on 2026-10-25), so
       // a change that deletes tests or adds untested code fails here rather than
       // drifting. Raise it as coverage grows; never lower it to make a build pass.
       thresholds: {
-        statements: 48,
-        branches: 33,
-        functions: 29,
-        lines: 49,
+        statements: 75,
+        branches: 67,
+        functions: 64,
+        lines: 75,
       },
     },
   },
