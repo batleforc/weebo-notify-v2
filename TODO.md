@@ -41,7 +41,7 @@ corrigé **et** testé. Les constats marqués *plausible* n'ont pas été tracé
   - `create_dir_all` + `Connection::open` sans mode ; config et credential voisins sont en 0600 (`config.rs:220-270`).
   - Fix : `set_permissions(parent, 0o700)` après `create_dir_all`, sous `cfg(unix)`.
 
-- [ ] **8. CI inopérante depuis le 2026-10-09 (facturation GitHub)**
+- [x] **8. CI inopérante depuis le 2026-10-09 (facturation GitHub)** — *Résolu le 2026-10-25 : dépôt passé public, les workflows tournent (check, e2e, contract, audit, oidc-compat ×3, codeql, semgrep, secret-scan, publish-main, release).*
   - Tous les jobs échouent en 3 s. La suite `critical` et les tests Postgres ne tournent nulle part. En local, `cargo test` (sans nextest) fait échouer 3 tests `watermark` par contention de base ; seul `.config/nextest.toml` les isole.
   - Fix : régler la facturation ou lancer la migration Forgejo prévue. En attendant, avant chaque tag : `WNK_TEST_DATABASE_URL=… WNK_TEST_REQUIRE_DB=1 cargo nextest run --workspace -P critical`.
 
