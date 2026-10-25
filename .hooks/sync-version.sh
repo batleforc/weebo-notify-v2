@@ -37,13 +37,11 @@ fi
 # top-level "version", so one loop covers them.
 for manifest in web/package.json docs/package.json web/src-tauri/tauri.conf.json; do
   [[ -f "$manifest" ]] || continue
-  if command -v yq >/dev/null; then
-    yq -i -o=json ".version = \"$version\"" "$manifest"
-  else
-    # Anchored to the first top-level "version" key: a dependency's version lives
-    # nested and is indented further, so it cannot match.
-    sed -i -E "0,/^  \"version\": \".*\",/s//  \"version\": \"$version\",/" "$manifest"
-  fi
+  # Anchored to the first top-level "version" key: a dependency's version lives
+  # nested and is indented further, so it cannot match. sed rather than yq: `yq -o=json`
+  # re-indents the whole file, and biome (task lint:check, replayed by the release gate)
+  # then rejects tauri.conf.json's expanded arrays.
+  sed -i -E "0,/^  \"version\": \".*\",/s//  \"version\": \"$version\",/" "$manifest"
   updated+=("$manifest")
 done
 
