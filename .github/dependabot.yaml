@@ -1,0 +1,24 @@
+# Version bumps for what `task deps:update` (lockfiles), `task update` (mise) and
+# updatecli (Containerfile bases) do not move on their own schedule: above all the
+# SHA-pinned GitHub Actions. `cooldown` waits a week before proposing a release;
+# security updates do not wait.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "cargo"
+    directories: ["/", "/web/src-tauri"]
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "npm"
+    directories: ["/web", "/docs"]
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 7

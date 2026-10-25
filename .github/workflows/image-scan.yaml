@@ -1,0 +1,80 @@
+name: image-scan
+
+# Rebuild both images daily, without pushing, and run the same `task audit:image` as a
+# local run: a CVE disclosed in a base image after the last commit fails here the next
+# morning with nothing changed. `publish-main` scans what it pushes; this covers the
+# days nothing is pushed.
+
+on:
+  pull_request:
+    paths:
+      - "Containerfile"
+      - "web/Containerfile"
+      - "Cargo.lock"
+      - "web/pnpm-lock.yaml"
+      - "**/.trivyignore.yaml"
+      - ".github/workflows/image-scan.yaml"
+  schedule:
+    - cron: "20 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the toolchain
+        env:
+          MISE_VERSION: "v2026.10.12"
+          MISE_SHA256: "72404716768b5b044cbd5170136d3d795cbd592658b6e932b66f0f8d67a54875"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install trivy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes trivy
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Same cache scopes as publish-main, so a scan after a push reuses its layers.
+      - name: Build the server image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Containerfile
+          load: true
+          push: false
+          tags: weebo-notify:scan
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
+
+      - name: Build the web image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./web
+          file: ./web/Containerfile
+          load: true
+          push: false
+          tags: weebo-notify-web:scan
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+      - name: Scan (task audit:image)
+        # IMAGE_REPO/IMAGE_TAG, not SERVER_REF/WEB_REF: those mean a multi-arch registry digest,
+        # and these local amd64 builds have no arm64 to scan.
+        run: mise exec -- task audit:image IMAGE_REPO=weebo-notify IMAGE_TAG=scan

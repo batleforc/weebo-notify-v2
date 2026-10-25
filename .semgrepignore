@@ -1,0 +1,3 @@
+# The gate step runs after the SARIF step in the same checkout; without this it
+# rescans its own report.
+semgrep.sarif

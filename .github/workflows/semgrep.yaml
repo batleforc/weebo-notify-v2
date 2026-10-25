@@ -1,0 +1,46 @@
+name: semgrep
+
+# Static analysis with the Rust, TypeScript and secrets rulesets. Report, then gate:
+# the SARIF reaches the Security tab even when the gate fails. ERROR findings block;
+# the baseline on 2026-10-25 was zero at ERROR and at WARNING.
+
+on:
+  push:
+    branches: [main]
+    paths: ["**/*.rs", "**/*.ts", "**/*.vue", ".semgrepignore", ".github/workflows/semgrep.yaml"]
+  pull_request:
+    paths: ["**/*.rs", "**/*.ts", "**/*.vue", ".semgrepignore", ".github/workflows/semgrep.yaml"]
+  schedule:
+    - cron: "50 23 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      SEMGREP_VERSION: "1.182.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Semgrep
+        run: pipx install "semgrep==${SEMGREP_VERSION}"
+
+      - name: Semgrep (SARIF)
+        run: semgrep scan --config p/rust --config p/typescript --config p/secrets --severity ERROR --sarif --output semgrep.sarif
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Semgrep (gate)
+        run: semgrep scan --config p/rust --config p/typescript --config p/secrets --severity ERROR --error

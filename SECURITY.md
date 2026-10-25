@@ -2,7 +2,8 @@
 
 ## Reporting a vulnerability
 
-**Email <maxleriche.60@gmail.com>** with `weebo-notify security` in the subject.
+**Report it privately on GitHub:** [open a security advisory](https://github.com/batleforc/weebo-notify-v2/security/advisories/new).
+Or **email <maxleriche.60@gmail.com>** with `weebo-notify security` in the subject.
 
 Please do **not** open a public issue for anything that looks exploitable. There is
 no bug bounty and no legal safe-harbour programme behind this document — it is a
