@@ -10,13 +10,16 @@
  * publisher and the subscribers share the k6 clock. /ws runs the same backlog code as
  * /stream (SSE), which k6 cannot hold open.
  *
- * Pre-requisite: `task perf:stack` with PERF_USERS >= PERF_STREAMS / 20.
+ * Over several replicas: `task perf:replica` too, then PERF_REPLICAS=http://localhost:8081;
+ * the sockets alternate between replicas, publications all go to the first.
+ *
+ * Pre-requisite: `task perf:stack` with PERF_USERS >= PERF_STREAMS / 20 (per replica).
  * Run: `task perf:run:fanout` (thresholds enforced).
  */
 import { check, fail, sleep } from "k6";
 import { Counter, Trend } from "k6/metrics";
 import ws from "k6/ws";
-import { STREAMS_PER_USER, USERS, WS_URL } from "../config.js";
+import { STREAMS_PER_USER, USERS, WS_URLS } from "../config.js";
 import { auth, loginAll, publish, publisherToken, tokenOf } from "../helpers.js";
 
 const STREAMS = Number(__ENV.PERF_STREAMS || 1000);
@@ -56,6 +59,8 @@ export const options = {
     // A stream that closes on its own is the storm starting.
     streams_dropped: ["count==0"],
     delivery: ["p(95)<1000", "p(99)<3000"],
+    // Per replica, so a run over PERF_REPLICAS shows what crossing the bus costs.
+    ...Object.fromEntries(WS_URLS.map((_, i) => [`delivery{replica:${i}}`, ["p(95)<1000"]])),
     "http_req_duration{name:publish}": ["p(95)<500"],
   },
 };
@@ -75,12 +80,14 @@ export function subscribe({ tokens }) {
   let closing = false;
 
   // VU n uses identity n mod USERS, so each identity holds STREAMS / USERS sockets.
-  const res = ws.connect(WS_URL, { headers: auth(tokenOf(tokens)) }, (socket) => {
+  const replica = __VU % WS_URLS.length;
+  const tags = { replica: String(replica) };
+  const res = ws.connect(WS_URLS[replica], { headers: auth(tokenOf(tokens)) }, (socket) => {
     socket.on("message", (text) => {
       frames.add(1);
       const sent = /perf-sent-(\d+)/.exec(text);
       // Ignore the backlog replayed on connect: only what was published since counts.
-      if (sent && Number(sent[1]) >= start) delivery.add(Date.now() - Number(sent[1]));
+      if (sent && Number(sent[1]) >= start) delivery.add(Date.now() - Number(sent[1]), tags);
     });
     socket.on("close", () => {
       if (!closing) dropped.add(1);

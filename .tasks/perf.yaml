@@ -40,6 +40,13 @@ tasks:
           wait -n
           SH
 
+  replica:
+    desc: "A second release server on :8081, same database, for scenario 02 over two replicas (needs `task perf:stack`)"
+    cmds:
+      - mkdir -p target/perf
+      - sed 's/^bind = "0.0.0.0:8080"/bind = "0.0.0.0:8081"/' perf/config.perf.toml > target/perf/config.replica.toml
+      - ./target/release/notify-server --config target/perf/config.replica.toml
+
   run:publish:
     desc: "k6 scenario 01 — publish burst ramping to 150/s, thresholds enforced"
     cmds:

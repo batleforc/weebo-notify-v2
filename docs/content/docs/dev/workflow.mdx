@@ -45,6 +45,7 @@ is usually caught before it reaches CI at all.
 | `task test:browser` | A real browser against a running stack — or any release with `WNK_E2E_WEB_URL`, `WNK_E2E_API_URL`, `WNK_E2E_USER`, `WNK_E2E_PASSWORD` | Seconds |
 | `task test:browser:ci` | Boots `config/e2e.toml` (server, oidc-mock, built bundle) and runs the browser suite, as CI does | Minutes |
 | `task cover` | Everything, with merged Rust + web coverage | Minutes |
+| `task fuzz TARGET=… MAX_TIME=30` | One cargo-fuzz target over a domain parser (`fuzz/`; needs the nightly toolchain). `task fuzz:check`, part of `task lint`, only compiles them | Seconds |
 
 The **`critical` suite** is never skipped and only grows: every bug fix adds its
 regression scenario. It gates pull requests and is replayed by the release pipeline —
@@ -75,6 +76,11 @@ land in `perf/results/`; copy them to `perf/results/<version>/` at a release and
 compare later runs with `task perf:report:compare BASE=perf/results/<version>`.
 `PERF_USERS` sets the number of identities: each may publish 60/min and hold 20
 streams (§8.2), so it caps the publish rate and the stream count a run can reach.
+
+Over two replicas: `task perf:replica` in a third terminal starts a second server on
+`:8081` against the same database, and `PERF_REPLICAS=http://localhost:8081 task
+perf:run:fanout` alternates the sockets between them while every publication goes to
+the first. `delivery{replica:1}` is then what crossing the Postgres bus costs.
 
 ## Commits and releases
 

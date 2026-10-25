@@ -207,7 +207,10 @@ impl SyncBacklog {
 /// Which of these notifications a quiet period is holding back for their reader (§7.4);
 /// shared by the catch-up page and the live stream, which marks them `muted_by_dnd`.
 #[must_use]
-pub fn deferred_by(dnd: &Dnd, events: &[Event]) -> Vec<NotificationId> {
+pub fn deferred_by<'a>(
+    dnd: &Dnd,
+    events: impl IntoIterator<Item = &'a Event>,
+) -> Vec<NotificationId> {
     // Notifications, not events: forty revisions are one row and one badge.
     let mut deferred = Vec::new();
     // No DND set: nothing was ever deferred.

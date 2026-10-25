@@ -1,7 +1,11 @@
 // Everything a scenario reads from the environment, with the defaults `task perf:stack` serves.
 export const BASE_URL = __ENV.PERF_URL || "http://localhost:8080";
 export const API = `${BASE_URL}/api/v1`;
-export const WS_URL = `${BASE_URL.replace(/^http/, "ws")}/api/v1/ws`;
+// Scenario 02 spreads its sockets over BASE_URL and PERF_REPLICAS (comma-separated base
+// URLs, e.g. `task perf:replica`'s http://localhost:8081); publishers stay on BASE_URL.
+export const WS_URLS = [BASE_URL, ...(__ENV.PERF_REPLICAS || "").split(",").filter(Boolean)].map(
+  (url) => `${url.replace(/^http/, "ws")}/api/v1/ws`,
+);
 export const OIDC_URL = __ENV.PERF_OIDC_URL || "http://localhost:9110";
 
 // The perf-NNN identities of `task perf:identities`; must match its PERF_USERS. Each may

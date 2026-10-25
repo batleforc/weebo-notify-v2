@@ -43,6 +43,9 @@ pub struct LiveBatch {
     pub until: Cursor,
     /// The events, for every audience: each stream keeps its own.
     pub events: Vec<Event>,
+    /// Each event as the JSON both transports send, rendered here once rather than by
+    /// every stream; `None` where it would not serialise.
+    pub frames: Vec<Option<Arc<str>>>,
 }
 
 /// The replica's single reader. Clone it into the HTTP state; spawn [`Self::run`] once.
@@ -153,16 +156,29 @@ impl LiveFeed {
             let more = page.next.is_some();
             if let Some(until) = page.items.last().map(|event| event.cursor) {
                 let after = core::mem::replace(cursor, until);
+                let frames = page.items.iter().map(frame).collect();
                 self.send(Live::Batch(Arc::new(LiveBatch {
                     after,
                     until,
                     events: page.items,
+                    frames,
                 })));
                 self.position.send_replace(until);
             }
             if !more {
                 return Ok(());
             }
+        }
+    }
+}
+
+/// An event as the wire carries it (design §8.1: SSE `data:` and WebSocket frames alike).
+fn frame(event: &Event) -> Option<Arc<str>> {
+    match serde_json::to_string(event) {
+        Ok(json) => Some(json.into()),
+        Err(error) => {
+            tracing::error!(%error, cursor = %event.cursor, "an event that will not serialise");
+            None
         }
     }
 }
@@ -242,6 +258,11 @@ mod tests {
         };
         assert_eq!((batch.after, batch.until), (start, last));
         assert_eq!(batch.events.len(), 3);
+        assert_eq!(
+            batch.frames[0].as_deref(),
+            Some(serde_json::to_string(&batch.events[0]).unwrap().as_str()),
+            "rendered once, for every stream"
+        );
         assert!(
             live.try_recv().is_err(),
             "the queued pokes were swallowed by the same read"

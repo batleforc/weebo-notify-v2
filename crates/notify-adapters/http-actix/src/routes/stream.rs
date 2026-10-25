@@ -2,6 +2,7 @@
 //! the replica's [`notify_app::LiveFeed`], one read for every stream; a stream that
 //! joined late or fell behind reads via [`notify_app::SyncBacklog`] like `GET /sync`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix_web::{HttpRequest, HttpResponse, get, web};
@@ -177,9 +178,39 @@ struct Connection {
 /// What the feed asks of a stream.
 enum Wake {
     /// Send these, already filtered for this reader.
-    Send(Vec<Event>),
+    Send(Vec<Outgoing>),
     /// Read the log for yourself: a gap, a lag, or channels to bring in.
     Read,
+}
+
+/// An event on its way out: one of the feed's, sent as the frame it rendered once for every
+/// stream, or this reader's own (a page it read, or a feed event it marks muted).
+enum Outgoing {
+    Fed(Arc<LiveBatch>, usize),
+    Own(Box<Event>),
+}
+
+impl Outgoing {
+    fn event(&self) -> Option<&Event> {
+        match self {
+            Self::Fed(batch, index) => batch.events.get(*index),
+            Self::Own(event) => Some(event),
+        }
+    }
+
+    /// The JSON both transports carry; `None` for an event that will not serialise, our
+    /// bug, which is logged and skipped rather than the client's end.
+    fn json(&self) -> Option<String> {
+        match self {
+            // The feed logged a missing frame once, rather than once per stream here.
+            Self::Fed(batch, index) => batch.frames.get(*index)?.as_deref().map(str::to_owned),
+            Self::Own(event) => serde_json::to_string(event)
+                .inspect_err(|error| {
+                    tracing::error!(%error, cursor = %event.cursor, "an event that will not serialise");
+                })
+                .ok(),
+        }
+    }
 }
 
 impl Connection {
@@ -282,7 +313,7 @@ impl Connection {
                     if batch.after > self.cursor {
                         return Some(Wake::Read);
                     }
-                    let events = self.take(&batch).await;
+                    let events = self.take(batch).await;
                     if !events.is_empty() {
                         return Some(Wake::Send(events));
                     }
@@ -296,41 +327,48 @@ impl Connection {
 
     /// This reader's share of a batch that starts at or before its cursor, which then
     /// moves to the batch's end: what it skipped was not its to see.
-    async fn take(&mut self, batch: &LiveBatch) -> Vec<Event> {
-        let mut events: Vec<Event> = batch
+    async fn take(&mut self, batch: Arc<LiveBatch>) -> Vec<Outgoing> {
+        let kept: Vec<usize> = batch
             .events
             .iter()
-            .filter(|event| event.cursor > self.cursor && self.sees(event))
-            .cloned()
+            .enumerate()
+            .filter(|(_, event)| event.cursor > self.cursor && self.sees(event))
+            .map(|(index, _)| index)
             .collect();
+        let events = || kept.iter().filter_map(|index| batch.events.get(*index));
         self.cursor = batch.until;
 
         let mine = |event: &Event| matches!(event.payload, EventPayload::Preference(_));
-        if events.iter().any(mine) {
+        if events().any(mine) {
             match self.sync.dnd(&self.caller).await {
                 Ok(dnd) => self.dnd = dnd,
                 Err(error) => tracing::warn!(%error, "could not re-read a stream's do-not-disturb"),
             }
         }
-        // Carry the per-reader `deferred_by_dnd` (§7.4) so clients needn't re-derive it.
-        if let Some(dnd) = &self.dnd {
-            let muted = notify_app::deferred_by(dnd, &events);
-            for event in &mut events {
-                if let EventPayload::Revision(revision) = &event.payload
-                    && muted.contains(&revision.notification_id)
-                {
-                    event.muted_by_dnd = true;
-                }
-            }
-        }
+        // Carry the per-reader `deferred_by_dnd` (§7.4) so clients needn't re-derive it;
+        // only a muted event is copied and rendered again, for this reader.
+        let muted = self
+            .dnd
+            .as_ref()
+            .map(|dnd| notify_app::deferred_by(dnd, events()))
+            .unwrap_or_default();
 
-        if let Some(last) = events.last() {
+        if let Some(last) = events().next_back() {
             self.unsaved = Some(last.cursor);
             if self.saved_at.elapsed() >= ADVANCE_EVERY {
                 self.save_device().await;
             }
         }
-        events
+
+        kept.into_iter()
+            .map(|index| match batch.events.get(index) {
+                Some(event) if is_muted(event, &muted) => Outgoing::Own(Box::new(Event {
+                    muted_by_dnd: true,
+                    ..event.clone()
+                })),
+                _ => Outgoing::Fed(batch.clone(), index),
+            })
+            .collect()
     }
 
     /// Record the device's cursor now rather than at the next [`ADVANCE_EVERY`].
@@ -349,7 +387,7 @@ impl Connection {
     ///
     /// `fed` is the feed's position, taken before the read: once caught up, this stream has
     /// read everything the feed had sent, and joins it there.
-    async fn page(&mut self, fed: Cursor) -> Result<(Vec<Event>, bool), ApiError> {
+    async fn page(&mut self, fed: Cursor) -> Result<(Vec<Outgoing>, bool), ApiError> {
         let page = self
             .sync
             .page(
@@ -376,12 +414,8 @@ impl Connection {
             .events
             .into_iter()
             .map(|mut event| {
-                if let notify_ports::EventPayload::Revision(revision) = &event.payload
-                    && muted.contains(&revision.notification_id)
-                {
-                    event.muted_by_dnd = true;
-                }
-                event
+                event.muted_by_dnd = is_muted(&event, muted);
+                Outgoing::Own(Box::new(event))
             })
             .collect();
 
@@ -422,15 +456,18 @@ impl Connection {
     }
 }
 
-/// Write these as SSE; `false` once the client is gone. An event that will not
-/// serialise is our bug: logged and skipped, not the client's end.
+/// Whether `event` is a revision of a notification this reader's DND deferred (§7.4).
+fn is_muted(event: &Event, muted: &[notify_domain::NotificationId]) -> bool {
+    matches!(&event.payload, EventPayload::Revision(revision) if muted.contains(&revision.notification_id))
+}
+
+/// Write these as SSE; `false` once the client is gone.
 async fn sent_sse(
     sender: &tokio::sync::mpsc::Sender<sse::Event>,
-    events: impl IntoIterator<Item = Event>,
+    events: impl IntoIterator<Item = Outgoing>,
 ) -> bool {
     for event in events {
-        let Ok(data) = as_sse(&event) else {
-            tracing::error!(cursor = %event.cursor, "an event that will not serialise");
+        let Some(data) = as_sse(&event) else {
             continue;
         };
         if !sent(sender.send(data.into())).await {
@@ -441,10 +478,12 @@ async fn sent_sse(
 }
 
 /// [`sent_sse`], as WebSocket frames.
-async fn sent_ws(session: &mut actix_ws::Session, events: impl IntoIterator<Item = Event>) -> bool {
+async fn sent_ws(
+    session: &mut actix_ws::Session,
+    events: impl IntoIterator<Item = Outgoing>,
+) -> bool {
     for event in events {
-        let Ok(frame) = serde_json::to_string(&event) else {
-            tracing::error!(cursor = %event.cursor, "an event that will not serialise");
+        let Some(frame) = event.json() else {
             continue;
         };
         if !sent(session.text(frame)).await {
@@ -471,11 +510,14 @@ impl Drop for Connection {
 
 /// Render one event as SSE (design §8.1): `data:` is the whole event, channel included,
 /// byte-identical to the WebSocket frame.
-fn as_sse(event: &Event) -> Result<sse::Data, serde_json::Error> {
-    Ok(sse::Data::new_json(event)?
-        // The `id:` is the cursor, which `Last-Event-ID` replays.
-        .id(event.cursor.to_string())
-        .event(event.kind().as_str()))
+fn as_sse(outgoing: &Outgoing) -> Option<sse::Data> {
+    let event = outgoing.event()?;
+    Some(
+        sse::Data::new(outgoing.json()?)
+            // The `id:` is the cursor, which `Last-Event-ID` replays.
+            .id(event.cursor.to_string())
+            .event(event.kind().as_str()),
+    )
 }
 
 /// The live stream.
@@ -535,7 +577,7 @@ pub(crate) async fn stream(
     // rest from the task one page at a time.
     let (first, mut more) = connection.page(state.live.position()).await?;
     for event in &first {
-        let data = as_sse(event).map_err(port_error)?;
+        let data = as_sse(event).ok_or_else(unserialisable)?;
         if sender.send(data.into()).await.is_err() {
             return Ok(stream);
         }
@@ -546,7 +588,7 @@ pub(crate) async fn stream(
         let connected = connected;
         let mut reauthenticate = tokio::time::interval(REAUTHENTICATE);
         reauthenticate.tick().await;
-        let mut pending: Vec<Event> = Vec::new();
+        let mut pending: Vec<Outgoing> = Vec::new();
 
         loop {
             // Send failure: the client left, the ordinary end of a stream.
@@ -666,7 +708,7 @@ pub(crate) async fn websocket(
 
         // Same order as SSE: backlog first, then live, one page at a time.
         let mut more = true;
-        let mut pending: Vec<Event> = Vec::new();
+        let mut pending: Vec<Outgoing> = Vec::new();
         'live: loop {
             if !sent_ws(&mut session, pending.drain(..)).await {
                 return;
@@ -743,8 +785,8 @@ pub(crate) async fn websocket(
 }
 
 /// An event we cannot serialise is our bug, not the caller's.
-fn port_error(error: serde_json::Error) -> ApiError {
-    notify_ports::PortError::corrupt("event.payload", error).into()
+fn unserialisable() -> ApiError {
+    notify_ports::PortError::corrupt("event.payload", "an event that will not serialise").into()
 }
 
 #[cfg(test)]
@@ -810,10 +852,15 @@ mod tests {
         let until = events
             .last()
             .map_or(Cursor::from_sequence(after), |event| event.cursor);
+        let frames = events
+            .iter()
+            .map(|event| serde_json::to_string(event).ok().map(Into::into))
+            .collect();
         Live::Batch(Arc::new(LiveBatch {
             after: Cursor::from_sequence(after),
             until,
             events,
+            frames,
         }))
     }
 
@@ -828,7 +875,10 @@ mod tests {
 
     fn cursors(wake: Option<Wake>) -> Vec<Cursor> {
         match wake {
-            Some(Wake::Send(events)) => events.iter().map(|event| event.cursor).collect(),
+            Some(Wake::Send(events)) => events
+                .iter()
+                .filter_map(|event| Some(event.event()?.cursor))
+                .collect(),
             Some(Wake::Read) => panic!("expected events, got a read"),
             None => panic!("expected events, got the end"),
         }
@@ -932,6 +982,52 @@ mod tests {
             connection.next_live(&mut live).await,
             Some(Wake::Read)
         ));
+    }
+
+    #[tokio::test]
+    async fn the_feed_frame_goes_out_as_is_unless_this_reader_muted_the_event() {
+        let me = UserId::generate();
+        let mut connection = connection(me);
+        connection.dnd = Some(
+            notify_domain::DndDraft {
+                until: Some(time::OffsetDateTime::now_utc() + time::Duration::days(1)),
+                ..notify_domain::DndDraft::default()
+            }
+            .for_user(me),
+        );
+        let (notification, written) = notify_domain::Notification::create(
+            notify_domain::NotificationId::generate(),
+            ci(),
+            None,
+            notify_domain::RevisionDraft::lifecycle(
+                notify_domain::State::Open,
+                notify_domain::ContentDraft::titled("quiet please"),
+            ),
+            notify_domain::Author::anonymous(Principal::User { id: me }),
+            time::OffsetDateTime::now_utc(),
+            &notify_domain::ChannelPolicy::default(),
+        )
+        .unwrap();
+        let revision = Event {
+            payload: EventPayload::Revision(Box::new(notify_ports::RevisionEvent::new(
+                &notification,
+                &written.revision,
+            ))),
+            ..event(12, on("ci-infra"))
+        };
+        let (_feed, mut live) = feed(vec![batch(10, vec![event(11, on("ci-infra")), revision])]);
+
+        let Some(Wake::Send(sent)) = connection.next_live(&mut live).await else {
+            panic!("expected events");
+        };
+        let [plain, muted] = sent.as_slice() else {
+            panic!("expected two events");
+        };
+        assert!(matches!(plain, Outgoing::Fed(_, 0)), "shared, not copied");
+        let Outgoing::Own(muted) = muted else {
+            panic!("a muted event is this reader's own");
+        };
+        assert!(muted.muted_by_dnd);
     }
 
     #[tokio::test]
