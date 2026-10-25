@@ -320,9 +320,12 @@ spec:
 
 ## Registry credentials are a publishing right
 
-`REGISTRY_TOKEN` is the credential the release pipeline pushes with. Anyone holding
-it can publish an image under this project's name, which downstream deployments will
-pull because the name is the one they trust.
+The release pipeline pushes with the job's own short-lived `GITHUB_TOKEN`
+(`packages: write`), the same as `publish-main`: no long-lived registry secret exists to
+leak or rotate. Whoever can change a workflow on `main` or push a `v*` tag can still
+publish an image under this project's name, which downstream deployments will pull
+because the name is the one they trust. If you fork this pipeline with a stored token
+instead:
 
 - Scope it to **this package**, not to the account. A token with `write:packages` across an org is a token that can replace any image that org publishes.
 - Give it to the **release workflow alone**. It is not needed by `check`, `contract`, `e2e` or `audit`, and none of them declare it.

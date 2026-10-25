@@ -254,17 +254,15 @@ jobs:
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Log in to the registry
-        # REGISTRY_TOKEN and not GITHUB_TOKEN, even though the latter can push to
-        # ghcr.io for this owner: pushing an image and editing a release are
-        # different authorities and should not share one credential (§10 A3). That
-        # reasoning did not change with the forge, so neither did this — but it does
-        # mean REGISTRY_TOKEN has to exist as a secret here, which is one of the two
-        # settings this move requires somebody to click.
+        # The job's own short-lived GITHUB_TOKEN (`packages: write` above), as publish-main
+        # uses: no long-lived secret to store or rotate. The cost is the separation §10 A3
+        # wanted: this job can now push images and edit the release with one credential,
+        # both scoped to this repository and gone when the job ends. Decided 2026-10-25.
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.IMAGE_REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push the server image
         # THIS HAS NEVER RUN. The Containerfile it builds was written in a workspace
@@ -395,7 +393,7 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
           TAG: ${{ steps.kind.outputs.tag }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -426,8 +424,7 @@ jobs:
         # and the `curl` fallback its comment described, are both gone.
         env:
           # The token the runner already has for this repository.
-          # Deliberately not REGISTRY_TOKEN: pushing an image and editing a release
-          # are different authorities and should not share one credential (§10 A3).
+          # The same job token as the registry login above (see the note there).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.kind.outputs.tag }}
           PRERELEASE: ${{ steps.kind.outputs.prerelease }}
