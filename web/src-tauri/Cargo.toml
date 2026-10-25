@@ -90,7 +90,7 @@ tauri-plugin-updater = "2"
 # rust-ini 0.21.2 added, so it fails to compile on Linux; drop this pin when a
 # deep-link release sets them (or uses `..Default::default()`).
 [target.'cfg(target_os = "linux")'.dependencies]
-rust-ini = "=0.21.1"
+rust-ini = "=0.21.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"
