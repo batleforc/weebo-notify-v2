@@ -10,13 +10,13 @@ url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/carg
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598214"
 
 [[tools."aqua:nextest-rs/nextest/cargo-nextest"]]
-version = "0.9.148"
+version = "0.9.149"
 backend = "aqua:nextest-rs/nextest/cargo-nextest"
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.linux-x64"]
-checksum = "sha256:223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/620598748"
+checksum = "sha256:32d1d8c0567b7a80bee2bad8bb09125c846da96bc009b2de11ec08557290c770"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.149/cargo-nextest-0.9.149-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/660814555"
 
 [[tools."aqua:rustsec/rustsec/cargo-audit"]]
 version = "0.22.2"
@@ -38,31 +38,34 @@ url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/5
 provenance = "github-attestations"
 
 [[tools."aqua:tauri-apps/tauri/cargo-tauri"]]
-version = "2.12.3"
+version = "2.12.4"
 backend = "aqua:tauri-apps/tauri/cargo-tauri"
 
 [tools."aqua:tauri-apps/tauri/cargo-tauri"."platforms.linux-x64"]
-checksum = "sha256:2f635874cbb0103878cd04794aab9f1fec9adf3950ca7c4b1be7f1d845244501"
-url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.3/cargo-tauri-x86_64-unknown-linux-gnu.tgz"
-url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/641393151"
+checksum = "sha256:820ae3c7580ca637cad15f65638960ee2a96e5a491e224691c86d6f25e6c9e8a"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-x86_64-unknown-linux-gnu.tgz"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381754"
 
 [[tools.awscli]]
-version = "2.38.1"
+version = "2.38.5"
 backend = "aqua:aws/aws-cli"
 
 [tools.awscli."platforms.linux-x64"]
-checksum = "blake3:ac5288e27654941d410040b00e9cab8e4901803c741b653fb63616a85d945a74"
-url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.38.1.zip"
+url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.38.5.zip"
 
 [[tools.cargo-binstall]]
-version = "1.25.3"
+version = "1.26.1"
 backend = "aqua:cargo-bins/cargo-binstall"
 
 [tools.cargo-binstall."platforms.linux-x64"]
-checksum = "sha256:a974ce4e525edfb78f953869cbe7c1b57d00ae04358adc1ae47462120d80bb6c"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.25.3/cargo-binstall-x86_64-unknown-linux-gnu.tgz"
-url_api = "https://api.github.com/repos/cargo-bins/cargo-binstall/releases/assets/628280029"
+checksum = "sha256:97d3fe139df2eb0947e9db09c129e4381847440a4622d2a94fc38ce4bd52f378"
+url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.26.1/cargo-binstall-x86_64-unknown-linux-gnu.tgz"
+url_api = "https://api.github.com/repos/cargo-bins/cargo-binstall/releases/assets/672372547"
 provenance = "github-attestations"
+
+[[tools."cargo:cargo-fuzz"]]
+version = "0.13.2"
+backend = "cargo:cargo-fuzz"
 
 [[tools."cargo:cargo-machete"]]
 version = "0.9.2"
@@ -109,34 +112,34 @@ url_api = "https://api.github.com/repos/jqlang/jq/releases/assets/453012752"
 provenance = "github-attestations"
 
 [[tools.k6]]
-version = "2.1.0"
+version = "2.3.0"
 backend = "aqua:grafana/k6"
 
 [tools.k6."platforms.linux-x64"]
-checksum = "sha256:295d961ebfca306f295f1133068dcd403a8171c87f387928f5f30b0fbcff858a"
-url = "https://github.com/grafana/k6/releases/download/v2.1.0/k6-v2.1.0-linux-amd64.tar.gz"
-url_api = "https://api.github.com/repos/grafana/k6/releases/assets/461987498"
+checksum = "sha256:39c3117b6af817592dcd0ce4242105c0a7af10948c2a425306f0be8f7a8a8ab1"
+url = "https://github.com/grafana/k6/releases/download/v2.3.0/k6-v2.3.0-linux-amd64.tar.gz"
+url_api = "https://api.github.com/repos/grafana/k6/releases/assets/579287772"
 
 [[tools.node]]
-version = "26.12.0"
+version = "26.12.1"
 backend = "core:node"
 
 [tools.node."platforms.linux-x64"]
-checksum = "sha256:d9f88af72ad34f7ddf8e67289829f1698f54b6254f7d4f54b7453117ff1a3d2c"
-url = "https://nodejs.org/dist/v26.12.0/node-v26.12.0-linux-x64.tar.gz"
+checksum = "sha256:0fd1eb7770598f52a21995edf6ed35fc690400fa437c2386af329519e9143132"
+url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-x64.tar.gz"
 
 [[tools."pipx:graphifyy"]]
-version = "0.9.92"
+version = "0.9.95"
 backend = "pipx:graphifyy"
 
 [[tools.pnpm]]
-version = "12.11.2"
+version = "12.15.0"
 backend = "aqua:pnpm/pnpm"
 
 [tools.pnpm."platforms.linux-x64"]
-checksum = "sha256:358f30541b42371360c0d48a8daddc0c0850a90c36fcbea598032a9850e2c9ab"
-url = "https://github.com/pnpm/pnpm/releases/download/v12.11.2/pnpm-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/625613177"
+checksum = "sha256:55b5ed0092bd11176c1669598e231ae52e7cedac59de6efd0d415730f37d0598"
+url = "https://github.com/pnpm/pnpm/releases/download/v12.15.0/pnpm-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/662173360"
 provenance = "github-attestations"
 
 [[tools.rust]]
@@ -157,11 +160,31 @@ url = "https://github.com/go-task/task/releases/download/v3.54.0/task_linux_amd6
 url_api = "https://api.github.com/repos/go-task/task/releases/assets/604090073"
 
 [[tools.trivy]]
-version = "0.76.0"
+version = "0.76.1"
 backend = "aqua:aquasecurity/trivy"
 
 [tools.trivy."platforms.linux-x64"]
-checksum = "sha256:e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7"
-url = "https://github.com/aquasecurity/trivy/releases/download/v0.76.0/trivy_0.76.0_Linux-64bit.tar.gz"
-url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/640213415"
+checksum = "sha256:c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
+url = "https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz"
+url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/662254617"
 provenance = "cosign"
+
+[[tools.updatecli]]
+version = "0.123.0"
+backend = "aqua:updatecli/updatecli"
+
+[tools.updatecli."platforms.linux-x64"]
+checksum = "sha256:a0cc40caee73c6efb217762a94ab90ef57617b651409d0077524f13cc07e0760"
+url = "https://github.com/updatecli/updatecli/releases/download/v0.123.0/updatecli_Linux_x86_64.tar.gz"
+url_api = "https://api.github.com/repos/updatecli/updatecli/releases/assets/664983377"
+provenance = "github-attestations"
+
+[[tools.uv]]
+version = "0.13.5"
+backend = "aqua:astral-sh/uv"
+
+[tools.uv."platforms.linux-x64"]
+checksum = "sha256:f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f"
+url = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/664336023"
+provenance = "github-attestations"

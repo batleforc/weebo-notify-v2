@@ -27,6 +27,7 @@ pnpm = "latest"                  # web/ and docs/ package manager (ADR-0011)
 cargo-binstall = "latest"        # lets the cargo: backend below fetch prebuilt binaries
 "aqua:nextest-rs/nextest/cargo-nextest" = "latest"  # test runner (task test)
 "aqua:taiki-e/cargo-llvm-cov" = "latest"            # source-based coverage (task cover, CI check)
+"cargo:cargo-fuzz" = "latest"                       # fuzz targets in fuzz/ (task fuzz; runs on +nightly)
 "aqua:EmbarkStudios/cargo-deny" = "latest"          # dependency CVE/licence audit (task audit)
 "aqua:rustsec/rustsec/cargo-audit" = "latest"       # RustSec advisories (task audit)
 "cargo:cargo-machete" = "latest"                    # unused Rust dependencies (task deps:unused)
@@ -50,6 +51,8 @@ k6 = "latest"                    # load scenarios in perf/k6 (task perf:run:*)
 # than compiling `cargo:tauri-cli` from source on every runner.
 "aqua:tauri-apps/tauri/cargo-tauri" = "2"
 "pipx:graphifyy" = "latest"
+uv = "latest"                                       # mise installs `pipx:` tools through uv; unpinned, `mise upgrade` fails
+updatecli = "latest"                                # moves the Containerfile base tags + digests (task deps:images)
 # `yq` used to live here for `task gen:devfile`, which inlined the identity
 # provider's configuration into devfile.yaml. The provider reads the committed file
 # directly now (ADR-0014), so both the step and the tool are gone.
