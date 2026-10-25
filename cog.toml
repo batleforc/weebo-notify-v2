@@ -19,7 +19,8 @@ tag_prefix = "v"
 pre_bump_hooks = [
     "task lint:check",
     "task recu",
-    "git diff --exit-code",
+    # CHANGELOG.md excluded: cog writes it before running these hooks.
+    "git diff --exit-code -- . ':!CHANGELOG.md'",
     "task test:critical",
     ".hooks/sync-version.sh {{version}}",
     # The OpenAPI `info.version` is the crate version: regenerate the spec and the
