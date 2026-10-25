@@ -143,7 +143,7 @@ Constats vérifiés dans le code, puis corrigés avec un test qui échoue sans l
 - [x] **13. SIGHUP : audit d'une politique retirée mais toujours appliquée** — politiques construites avant l'adoption, tout ou rien.
 - [x] **14. Sinks plafonnés à ~20/s** — le drain enchaîne les lots tant qu'ils sont pleins.
 - [x] **15. Silences jamais purgés, historique complet dans chaque événement** — `silences_for` filtré ; `purge_silences` dans la passe de purge.
-- [x] **16. Avatar : course et fuite d'objet** — `set_avatar` atomique ; `upsert` ne réécrit plus l'avatar. *Reste : deux `PATCH /me` simultanés sur des champs différents peuvent encore s'écraser (rare).*
+- [x] **16. Avatar : course et fuite d'objet** — `set_avatar` atomique ; `upsert` ne réécrit plus l'avatar. Deux `PATCH /me` simultanés (ou un `PATCH` et le rafraîchissement des claims au login) ne s'écrasent plus : `UserRepository::replace` compare-and-swap, l'édition est réappliquée sur la relecture (3 essais, puis 409).
 - [x] **17. 409 au premier login en parallèle** — relecture par `oidc_subject` sur conflit.
 - [x] **18. (régression f2032ed) Canal rejoint invisible jusqu'à 60 s** — `Poke::User` à l'ajout de membre et au self-join ; le flux relit ses canaux. *Les changements par groupe ou par GitOps gardent le délai de 60 s.*
 - [x] **19. Digests envoyés un par un** — 16 personnes à la fois.
@@ -161,8 +161,12 @@ sont ouverts. Écriture seule : OK (150 publications/s, p95 9,5 ms, 0 erreur).
   - 1 000 flux WebSocket : à 20 publications/s, `POST /notifications` passait de 9 ms à 600 ms et la livraison à ~1 s ; à 100/s, la livraison dérivait jusqu'à 20 s. Un poke réveillait chaque flux, qui relisait le journal pour lui seul (droits, settle, page, deux `count(*)` jetés, DND).
   - Fix : `LiveFeed`, un lecteur par réplica (`EventStore::tail`), diffuse chaque lot ; chaque flux filtre en mémoire et ne relit lui-même que pour rattraper (trou, retard, adhésion). Curseur d'appareil écrit au plus toutes les 30 s et à la fermeture.
   - Mesure, même run : 20/s → livraison p95 24 ms, publication p95 14 ms ; 100/s → livraison p95 57 ms (p99 299 ms), publication p95 34 ms, 18 M frames, 0 flux perdu. Tous les seuils de `perf:run:fanout` passent.
-  - Reste : chaque flux sérialise sa propre copie de chaque événement ; non mesuré à plusieurs réplicas.
+  - ~~Reste : chaque flux sérialise sa propre copie de chaque événement ; non mesuré à plusieurs réplicas.~~ Fait le 2026-10-25 : `LiveBatch.frames`, le JSON rendu une fois par réplica ; un flux ne recopie et ne re-sérialise qu'un événement que son DND rend muet. CPU serveur 345 → 320 s pour 18 M frames (−7 %, charges de test minuscules ; le gain croît avec la taille du contenu). Deux réplicas (`task perf:replica`, `PERF_REPLICAS=http://localhost:8081`) : livraison p95 39 ms sur chacun, le passage par le bus Postgres ne se voit pas ; 0 flux perdu.
 - [x] **K2. L'inbox triait tout le canal à chaque appel** — `persistence-pg/src/notifications.rs` (`list`)
   - `channel_id = ANY ($1) … ORDER BY cursor_seq DESC LIMIT 51` ne parcourait pas `notifications_inbox_idx` dans l'ordre : seq scan + tri de tout le canal (40 000 lignes, 26 ms). 100 VU saturaient Postgres.
   - Fix : une page par canal (`unnest` + `LATERAL … LIMIT`) puis fusion ; 0,55 ms sur la même base. `perf:run:read` : 234 → 702 req/s, p95 inbox 448 → 72 ms, `/channels` 364 → 92 ms, `/sync` 773 → 244 ms ; tous les seuils passent. Test : `an_inbox_over_several_channels_pages_in_one_order`.
-  - Laissé : `search` garde `ANY`, l'index GIN est le bon chemin pour un terme sélectif. `/sync` est maintenant l'appel le plus lent (requête `WITH candidate …` et `count(*)` par canal sur `events`) : à regarder avec K1.
+  - Laissé : `search` garde `ANY`, l'index GIN est le bon chemin pour un terme sélectif.
+- [x] **K3. `/sync` parcourait le journal pour ses deux compteurs** — `persistence-pg/src/events.rs`, migration `20261025000000_event_count_indexes`
+  - `expired_while_away` cherchait `kind = 'expired_unseen'` sans index : les 65 000 événements lus pour n'en trouver aucun (27 ms). `compacted` lisait 10 000 lignes du tas (15 ms).
+  - Fix : deux index partiels (`expired_unseen` ; `revision` avec `INCLUDE (notification_id)`), le compte de compaction ne lit que les révisions (toujours adressées à un canal). 27 → 0,04 ms et 15 → 10 ms (balayage 1,6 ms, le reste est le `count(DISTINCT)` sur 10 000 lignes, seulement pour une fenêtre aussi longue). `perf:run:read` : p95 `/sync` 244 → 180 ms, 702 → 891 req/s.
+  - Laissé : chaque `/sync` fait encore un upsert sur `principal_group_snapshots` (`remember_groups`) ; à sauter si groupes inchangés et vus il y a moins d'une minute, si la charge le demande.

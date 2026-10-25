@@ -3,7 +3,7 @@
 //! (past it the count is a lower bound). Every read stops at `events_watermark()` (ADR-0028), so a
 //! cursor never steps over a row that commits later; [`PgStore::settle`] waits briefly for it first.
 
-/// The most window events the `compacted` count looks at.
+/// The most window revisions the `compacted` count looks at.
 const COMPACTED_SCAN: i64 = 10_000;
 
 /// How long a read waits for the watermark; past it a long transaction is holding it back and the
@@ -20,27 +20,7 @@ use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 
 use crate::PgStore;
-use crate::mapping::{EXPIRED_UNSEEN, cursor, fail, from_json, parse, sequence};
-
-/// The events a client may see, by cursor and `?channels=`; `user` events ignore `?channels=` (T26).
-macro_rules! candidates {
-    ($($tail:literal),* $(,)?) => {
-        concat!(
-            "WITH candidate AS (
-                 SELECT seq, audience_kind, channel_id, user_id, recorded_at, kind,
-                        notification_id, payload
-                 FROM events
-                 WHERE ($1::bigint IS NULL OR seq > $1) AND seq <= events_watermark()
-                   AND kind <> 'expired_unseen'
-                   AND (
-                         (audience_kind = 'channel' AND channel_id = ANY ($2))
-                      OR (audience_kind = 'user' AND user_id = $3)
-                   )
-             ) ",
-            $($tail),*
-        )
-    };
-}
+use crate::mapping::{cursor, fail, from_json, parse, sequence};
 
 /// "This revision has a later one in the caller's window" — the compaction test,
 /// shared by both halves of `sync_page!`.
@@ -136,17 +116,17 @@ impl EventStore for PgStore {
             .await
             .map_err(|error| fail("event", error))?;
 
-        // Over at most `COMPACTED_SCAN` rows, no `ORDER BY` (it would scan the window); any subset
-        // gives a lower bound.
-        let compacted: i64 = sqlx::query_scalar(candidates!(
-            "SELECT count(*)
-                    - count(DISTINCT CASE WHEN kind = 'revision' THEN notification_id END)
-                    - count(*) FILTER (WHERE kind <> 'revision')
-             FROM (SELECT kind, notification_id FROM candidate LIMIT $4) bounded"
-        ))
+        // Over at most `COMPACTED_SCAN` revisions, no `ORDER BY` (it would scan the window); any
+        // subset gives a lower bound. Revisions only go to a channel, so the user audience adds none.
+        let compacted: i64 = sqlx::query_scalar(
+            "SELECT count(*) - count(DISTINCT notification_id)
+             FROM (SELECT notification_id FROM events
+                   WHERE kind = 'revision' AND channel_id = ANY ($2)
+                     AND ($1::bigint IS NULL OR seq > $1) AND seq <= events_watermark()
+                   LIMIT $3) bounded",
+        )
         .bind(after)
         .bind(&visible)
-        .bind(&user_ref)
         .bind(COMPACTED_SCAN)
         .fetch_one(self.pool())
         .await
@@ -328,16 +308,16 @@ impl PgStore {
         after: Option<i64>,
         visible: &[String],
     ) -> PortResult<Vec<ExpiredWhileAway>> {
+        // The kind is a literal, not a bind: a generic plan could not match the partial index.
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT channel_id, count(*)
              FROM events
-             WHERE kind = $1
-               AND ($2::bigint IS NULL OR seq > $2) AND seq <= events_watermark()
-               AND channel_id = ANY ($3)
+             WHERE kind = 'expired_unseen'
+               AND ($1::bigint IS NULL OR seq > $1) AND seq <= events_watermark()
+               AND channel_id = ANY ($2)
              GROUP BY channel_id
              ORDER BY channel_id",
         )
-        .bind(EXPIRED_UNSEEN)
         .bind(after)
         .bind(visible)
         .fetch_all(self.pool())
