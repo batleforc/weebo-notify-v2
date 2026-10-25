@@ -6,8 +6,8 @@ type: application
 # for the whole product, chart included. `.hooks/sync-version.sh` rewrites them
 # during `cog bump` (cog.toml pre_bump_hooks), so never edit them by hand.
 # appVersion has no `v`; the image tag does (_helpers.tpl adds it).
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.0-rc.0
+appVersion: "0.1.0-rc.0"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/batleforc/weebo-notify-v2
 sources:
