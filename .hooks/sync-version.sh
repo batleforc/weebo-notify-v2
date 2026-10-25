@@ -31,6 +31,14 @@ if [[ -f Cargo.toml ]]; then
   updated+=("Cargo.toml")
   # Keep Cargo.lock consistent so the bump commit is not followed by a dirty tree.
   cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
+  # The two workspaces outside this one lock our crates as path dependencies, version
+  # included; resolving them rewrites that line now rather than at their next build.
+  for manifest in fuzz/Cargo.toml web/src-tauri/Cargo.toml; do
+    [[ -f "$manifest" ]] || continue
+    cargo metadata --format-version 1 --manifest-path "$manifest" --offline >/dev/null 2>&1 \
+      || cargo metadata --format-version 1 --manifest-path "$manifest" >/dev/null
+    updated+=("${manifest%Cargo.toml}Cargo.lock")
+  done
 fi
 
 # The JavaScript projects and, from M5, the Tauri configuration. All JSON with a
