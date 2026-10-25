@@ -33,4 +33,4 @@ serde.workspace = true
 serde_json.workspace = true
 syn = "3"
 # Desktop icon rasteriser: pure Rust (no root for system packages, §12.4); no `text`, the marks are paths.
-resvg = { version = "0.48.1", default-features = false }
+resvg = { version = "0.49", default-features = false }
