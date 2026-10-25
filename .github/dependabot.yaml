@@ -16,6 +16,12 @@ updates:
       interval: "daily"
     cooldown:
       default-days: 7
+    ignore:
+      # sqlx 0.9 caps libsqlite3-sys below 0.38, which rusqlite 0.40+ needs (Cargo.toml).
+      - dependency-name: "rusqlite"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # tauri-plugin-deep-link 2.6.2 does not compile past rust-ini 0.21.1 (web/src-tauri/Cargo.toml).
+      - dependency-name: "rust-ini"
   - package-ecosystem: "npm"
     directories: ["/web", "/docs"]
     schedule:
