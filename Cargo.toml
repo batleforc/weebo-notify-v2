@@ -185,7 +185,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # --- Client-side storage (design §9.3bis) ---
 # `bundled` builds SQLite from source. Pinned to 0.39: `libsqlite3-sys` is `links = "sqlite3"`
 # and must match the one sqlx pulls in; bump both together.
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # --- Test-only ---
 testcontainers = "0.28"
