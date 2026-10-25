@@ -370,6 +370,9 @@ impl Fanout {
     /// Build the push body, degrading to a poke when the payload will not fit.
     fn message_for(notification: &Notification, max_payload: usize) -> PushMessage {
         let body = serde_json::to_vec(&notification.head.content)
+            .inspect_err(|error| {
+                tracing::error!(%error, id = %notification.id, "push content will not serialise, sending a poke");
+            })
             .ok()
             .filter(|bytes| bytes.len() <= max_payload)
             .map_or(PushBody::Poke, |bytes| PushBody::Payload {
