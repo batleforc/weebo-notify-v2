@@ -474,7 +474,9 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${{ steps.server_image.outputs.digest }}" && test -n "${{ steps.web_image.outputs.digest }}"
-          mise exec -- task audit:image SERVER_REF="$SERVER" WEB_REF="$WEB"
+          # amd64 only: this job builds for the runner, not the release's two platforms, and the
+          # task otherwise expects an arm64 child in the index.
+          mise exec -- task audit:image SERVER_REF="$SERVER" WEB_REF="$WEB" PLATFORMS=linux/amd64
           cosign sign --yes "$SERVER"
           cosign sign --yes "$WEB"
           for image in "$SERVER" "$WEB"; do
