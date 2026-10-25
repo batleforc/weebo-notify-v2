@@ -41,20 +41,9 @@ async function registerOnce(): Promise<ServiceWorkerRegistration | null> {
       scope: "/",
     });
 
-    navigator.serviceWorker.addEventListener("message", (event) => {
-      const message = event.data as { type?: string; url?: string } | null;
-      if (!message) {
-        return;
-      }
-      // A notification click the worker couldn't navigate itself.
-      if (message.type === "navigate" && message.url) {
-        void router.push(message.url);
-      }
-      // Only a page holds the credential needed to re-enrol.
-      if (message.type === "pushsubscriptionchange") {
-        onRotation?.();
-      }
-    });
+    navigator.serviceWorker.addEventListener("message", (event) =>
+      onWorkerMessage(event.data),
+    );
 
     return registration;
   } catch (error) {
@@ -79,5 +68,22 @@ export async function ready(): Promise<ServiceWorkerRegistration | null> {
     return await Promise.race([navigator.serviceWorker.ready, timeout]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** A message from the worker. Its shape is checked, not assumed: `event.data` is `any`. */
+export function onWorkerMessage(message: unknown): void {
+  if (typeof message !== "object" || message === null) {
+    return;
+  }
+  const type = "type" in message ? message.type : undefined;
+  const url = "url" in message ? message.url : undefined;
+  // A notification click the worker couldn't navigate itself; it sends a path.
+  if (type === "navigate" && typeof url === "string" && url.startsWith("/")) {
+    void router.push(url);
+  }
+  // Only a page holds the credential needed to re-enrol.
+  if (type === "pushsubscriptionchange") {
+    onRotation?.();
   }
 }

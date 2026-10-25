@@ -66,8 +66,10 @@ export function covers(
   const start = minutes(window.start);
   const end = minutes(window.end);
   const days = window.days ?? [];
-  const on = (index: number) =>
-    days.length === 0 || days.includes(DAYS[(index + 7) % 7]);
+  const on = (index: number) => {
+    const day = DAYS[(index + 7) % 7];
+    return days.length === 0 || (day !== undefined && days.includes(day));
+  };
 
   if (start < end) {
     return on(local.day) && local.minutes >= start && local.minutes < end;

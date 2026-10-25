@@ -67,15 +67,35 @@ export function readClaims(token: string): IdentityClaims | null {
     return null;
   }
   try {
-    const payload = segments[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = (segments[1] ?? "").replace(/-/g, "+").replace(/_/g, "/");
     const binary = atob(payload.padEnd(Math.ceil(payload.length / 4) * 4, "="));
     // Through bytes rather than straight to a string: a display name with an
     // accent in it is not exotic, and `atob` alone would mangle it.
     const bytes = Uint8Array.from(binary, (character) =>
       character.charCodeAt(0),
     );
-    const claims = JSON.parse(new TextDecoder().decode(bytes));
-    return typeof claims?.sub === "string" ? (claims as IdentityClaims) : null;
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (typeof parsed !== "object" || parsed === null) {
+      return null;
+    }
+    const claims = new Map<string, unknown>(Object.entries(parsed));
+    const sub = claims.get("sub");
+    if (typeof sub !== "string") {
+      return null;
+    }
+    const text = (key: string) => {
+      const value = claims.get(key);
+      return typeof value === "string" ? value : undefined;
+    };
+    const groups = claims.get("groups");
+    return {
+      sub,
+      name: text("name"),
+      email: text("email"),
+      groups: Array.isArray(groups)
+        ? groups.filter((group): group is string => typeof group === "string")
+        : undefined,
+    };
   } catch {
     return null;
   }

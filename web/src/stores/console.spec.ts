@@ -154,11 +154,11 @@ describe("what it shows", () => {
 
     expect(platform.channels).toHaveLength(1);
     expect(platform.managed).toBe(1);
-    expect(platform.policies[0].subject).toBe("repo:weebo/*");
+    expect(platform.policies[0]?.subject).toBe("repo:weebo/*");
     expect(platform.entries).toHaveLength(1);
     expect(platform.gitops?.pending).toEqual(["carol@weebo.local"]);
     expect(platform.stuck).toHaveLength(1);
-    expect(platform.stuck[0].sink).toContain("hooks.weebo.poc");
+    expect(platform.stuck[0]?.sink).toContain("hooks.weebo.poc");
   });
 
   it("never receives the event a dead letter failed to deliver", async () => {
@@ -172,7 +172,7 @@ describe("what it shows", () => {
     const platform = useConsole();
     await platform.load();
 
-    expect(Object.keys(platform.stuck[0])).not.toContain("event");
+    expect(Object.keys(platform.stuck[0] ?? {})).not.toContain("event");
   });
 
   it("reloads after a requeue, because the audit entry is the point", async () => {

@@ -74,6 +74,9 @@ function removeWindow(index: number): void {
 function toggleDay(index: number, day: (typeof DAY_KEYS)[number]): void {
   const windows = [...(draft.value.quiet_hours ?? [])];
   const window = windows[index];
+  if (!window) {
+    return;
+  }
   const days = new Set(window.days ?? []);
   days.has(day) ? days.delete(day) : days.add(day);
   windows[index] = { ...window, days: [...days] };

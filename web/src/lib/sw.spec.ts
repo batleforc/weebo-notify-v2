@@ -135,12 +135,12 @@ describe("the service worker", () => {
     await settled();
 
     expect(harness.shown).toHaveLength(1);
-    expect(harness.shown[0].title).toBe("etcd degraded");
-    expect(harness.shown[0].options.body).toBe("quorum lost");
-    expect(harness.shown[0].options.data).toEqual({ url: "/n/ntf_01J" });
+    expect(harness.shown[0]?.title).toBe("etcd degraded");
+    expect(harness.shown[0]?.options.body).toBe("quorum lost");
+    expect(harness.shown[0]?.options.data).toEqual({ url: "/n/ntf_01J" });
     // Per notification, so five revisions of one incident replace each other on
     // the lock screen instead of stacking (§2.1).
-    expect(harness.shown[0].options.tag).toBe("notification:ntf_01J");
+    expect(harness.shown[0]?.options.tag).toBe("notification:ntf_01J");
   });
 
   it("says what it knows when the payload did not fit", async () => {
@@ -155,8 +155,8 @@ describe("the service worker", () => {
     harness.listeners.get("push")?.(event);
     await settled();
 
-    expect(harness.shown[0].title).toBe("ci-infra");
-    expect(harness.shown[0].options.body).toBe("Ouvrez pour voir le détail");
+    expect(harness.shown[0]?.title).toBe("ci-infra");
+    expect(harness.shown[0]?.options.body).toBe("Ouvrez pour voir le détail");
   });
 
   it("renders a digest as the two numbers it is", async () => {
@@ -169,9 +169,9 @@ describe("the service worker", () => {
     harness.listeners.get("push")?.(event);
     await settled();
 
-    expect(harness.shown[0].options.body).toContain("12");
-    expect(harness.shown[0].options.body).toContain("2");
-    expect(harness.shown[0].options.data).toEqual({ url: "/" });
+    expect(harness.shown[0]?.options.body).toContain("12");
+    expect(harness.shown[0]?.options.body).toContain("2");
+    expect(harness.shown[0]?.options.data).toEqual({ url: "/" });
   });
 
   it("still shows something for an envelope it cannot read", async () => {
@@ -182,7 +182,7 @@ describe("the service worker", () => {
     await settled();
 
     expect(harness.shown).toHaveLength(1);
-    expect(harness.shown[0].title).toBe("weebo-notify");
+    expect(harness.shown[0]?.title).toBe("weebo-notify");
   });
 
   it("survives a push with no payload at all", async () => {
@@ -299,7 +299,7 @@ describe("the service worker", () => {
     harness.listeners.get("push")?.(event);
     await settled();
 
-    expect(harness.shown[0].options.body).toBe("Open to see the details");
+    expect(harness.shown[0]?.options.body).toBe("Open to see the details");
   });
 
   it("asks whichever tab is open to re-enrol when the subscription rotates", async () => {

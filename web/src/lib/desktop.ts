@@ -3,24 +3,17 @@
  * runtime. Presentation only — never branch authorisation on it.
  */
 
-/** Declared, not imported: the web build has no Tauri dependency. */
-interface MaybeTauri {
-  __TAURI_INTERNALS__?: unknown;
-  __TAURI__?: unknown;
-}
-
 /** The class the shell's rules hang off. */
 export const DESKTOP_CLASS = "is-desktop";
 
 /** Checks both globals: Tauri v2 renamed the injected object. */
 export function isDesktop(host: unknown = globalThis): boolean {
-  const candidate = host as MaybeTauri | null | undefined;
-  if (!candidate) {
+  if (typeof host !== "object" || host === null) {
     return false;
   }
   return (
-    candidate.__TAURI_INTERNALS__ !== undefined ||
-    candidate.__TAURI__ !== undefined
+    ("__TAURI_INTERNALS__" in host && host.__TAURI_INTERNALS__ !== undefined) ||
+    ("__TAURI__" in host && host.__TAURI__ !== undefined)
   );
 }
 

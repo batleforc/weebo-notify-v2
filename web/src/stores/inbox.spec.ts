@@ -151,9 +151,9 @@ describe("folding stream events into the inbox", () => {
     );
 
     const row = inbox.rows[0];
-    expect(row.head.status).toBe("failure");
-    expect(row.head.state).toBe("closed");
-    expect(row.last_seq).toBe(2);
+    expect(row?.head.status).toBe("failure");
+    expect(row?.head.state).toBe("closed");
+    expect(row?.last_seq).toBe(2);
     // No separator: this was not an arrival.
     expect(inbox.pendingCount).toBe(0);
   });
@@ -166,8 +166,8 @@ describe("folding stream events into the inbox", () => {
     inbox.ingest(revision("ntf_1", { seq: 3, status: "failure" }));
     inbox.ingest(revision("ntf_1", { seq: 2, status: "success" }));
 
-    expect(inbox.rows[0].head.status).toBe("failure");
-    expect(inbox.rows[0].last_seq).toBe(3);
+    expect(inbox.rows[0]?.head.status).toBe("failure");
+    expect(inbox.rows[0]?.last_seq).toBe(3);
   });
 
   it("removes a tombstoned notification from the list and from the buffer", async () => {
@@ -284,9 +284,9 @@ describe("grouping", () => {
     const groups = inbox.groups;
 
     expect(groups).toHaveLength(2);
-    expect(groups[0].members).toHaveLength(2);
+    expect(groups[0]?.members).toHaveLength(2);
     // The group is headed by its most recent member.
-    expect(groups[0].head.id).toBe("ntf_1");
+    expect(groups[0]?.head.id).toBe("ntf_1");
   });
 
   it("does not group across channels, even on the same key", async () => {
@@ -376,11 +376,11 @@ describe("loads and the stream racing each other", () => {
     inbox.start();
     const loading = inbox.load();
     // Published after the server read the page, delivered before it answered.
-    opened[0].onEvent(revision("ntf_1", { seq: 2, title: "fixed" }));
+    opened[0]?.onEvent(revision("ntf_1", { seq: 2, title: "fixed" }));
     answer({ data: { items: [notification("ntf_1")], next: null } });
     await loading;
 
-    expect(inbox.rows[0].head.content.title).toBe("fixed");
+    expect(inbox.rows[0]?.head.content.title).toBe("fixed");
   });
 
   it("resumes from the old stream's cursor when the filters change", async () => {

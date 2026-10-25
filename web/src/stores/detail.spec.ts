@@ -123,7 +123,9 @@ describe("who has read it", () => {
     );
     expect(detail.seenBy).toBe(1);
     expect(detail.audience).toBe(3);
-    expect(detail.readership?.seen[0].author.display_name).toBe("Alice Martin");
+    expect(detail.readership?.seen[0]?.author.display_name).toBe(
+      "Alice Martin",
+    );
   });
 
   it("keeps 'no policy' and 'nobody' apart (§7.3)", async () => {
@@ -167,7 +169,7 @@ describe("who has read it", () => {
 
     // The frame carries a principal; a hover card needs a person, and only the
     // server can name one (§2.4).
-    expect(detail.readership?.seen[1].author.display_name).toBe("Bob");
+    expect(detail.readership?.seen[1]?.author.display_name).toBe("Bob");
   });
 
   it("does not ask again for a channel that collects no receipts", async () => {

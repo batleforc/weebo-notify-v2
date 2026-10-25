@@ -380,8 +380,12 @@ describe("session — where the refresh token rests", () => {
       const twin = channels.length;
       await session(false);
       const received: unknown[] = [];
-      const original = channels[twin].onmessage;
-      channels[twin].onmessage = (event) => {
+      const channel = channels[twin];
+      if (!channel) {
+        throw new Error("the twin tab opened no channel");
+      }
+      const original = channel.onmessage;
+      channel.onmessage = (event) => {
         received.push(event.data);
         original?.(event);
       };

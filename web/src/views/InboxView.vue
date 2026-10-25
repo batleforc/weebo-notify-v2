@@ -79,6 +79,9 @@ function move(delta: number): void {
   }
   cursor.value = Math.min(Math.max(cursor.value + delta, 0), rows.length - 1);
   const row = rows[cursor.value];
+  if (!row) {
+    return;
+  }
   open(row.head.id, true);
 
   const element = list.value?.querySelector<HTMLElement>(

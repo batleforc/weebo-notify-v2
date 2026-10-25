@@ -69,7 +69,11 @@ describe("locale parity", () => {
       new Set([...leaves(messages)].map(([path]) => path)),
     ]) as Array<[string, Set<string>]>;
 
-    const [[firstName, first], ...rest] = keys;
+    const [head, ...rest] = keys;
+    if (!head) {
+      throw new Error("no locale registered");
+    }
+    const [firstName, first] = head;
     for (const [name, other] of rest) {
       expect({
         [`missing from ${name}`]: [...first]

@@ -208,7 +208,8 @@ export function openStream(options: StreamOptions): Stream {
       }
 
       status("reconnecting");
-      const wait = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
+      const wait =
+        BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)] ?? 30_000;
       attempt += 1;
       // Jitter, so a replica restart does not bring every tab back in lockstep.
       await new Promise<void>((resolve) => {

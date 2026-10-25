@@ -80,14 +80,14 @@ describe("LoginView", () => {
       login.mockRejectedValue(new Error("discovery document unreachable"));
       const wrapper = await loginView();
 
-      await buttons(wrapper)[0].trigger("click");
+      await buttons(wrapper)[0]?.trigger("click");
       await flushPromises();
 
       const after = buttons(wrapper);
       expect(after).toHaveLength(2);
       // Order matters: the retry is the lesser thing to do *after* the first one.
-      expect(after[0].text()).toContain(SIGN_IN);
-      expect(after[1].text()).toContain(RETRY);
+      expect(after[0]?.text()).toContain(SIGN_IN);
+      expect(after[1]?.text()).toContain(RETRY);
       // The provider's own words, not a generic "connexion impossible" — a dev
       // stack missing `task dev:oidc` has to be debuggable from this screen.
       expect(wrapper.text()).toContain("discovery document unreachable");
@@ -97,11 +97,11 @@ describe("LoginView", () => {
       login.mockRejectedValue(new Error("provider down"));
       const wrapper = await loginView();
 
-      await buttons(wrapper)[0].trigger("click");
+      await buttons(wrapper)[0]?.trigger("click");
       await flushPromises();
       expect(login).toHaveBeenCalledTimes(1);
 
-      await buttons(wrapper)[1].trigger("click");
+      await buttons(wrapper)[1]?.trigger("click");
       await flushPromises();
       expect(login).toHaveBeenCalledTimes(2);
       expect(openExternal).not.toHaveBeenCalled();
@@ -111,12 +111,12 @@ describe("LoginView", () => {
       login.mockRejectedValue(new Error("provider down"));
       const wrapper = await loginView();
 
-      await buttons(wrapper)[0].trigger("click");
+      await buttons(wrapper)[0]?.trigger("click");
       await flushPromises();
       expect(buttons(wrapper)).toHaveLength(2);
 
       login.mockResolvedValue(undefined);
-      await buttons(wrapper)[1].trigger("click");
+      await buttons(wrapper)[1]?.trigger("click");
       await flushPromises();
 
       expect(buttons(wrapper)).toHaveLength(1);
@@ -131,7 +131,7 @@ describe("LoginView", () => {
 
       const shown = buttons(wrapper);
       expect(shown).toHaveLength(2);
-      expect(shown[1].text()).toContain(REOPEN);
+      expect(shown[1]?.text()).toContain(REOPEN);
       // Not "Retry": there is nothing to retry, the flow is alive and only the
       // browser is missing.
       expect(wrapper.text()).not.toContain(RETRY);
@@ -142,14 +142,14 @@ describe("LoginView", () => {
       const wrapper = await loginView();
 
       // Whatever `going` is doing to the button above, this one is the way out.
-      expect(buttons(wrapper)[1].attributes("disabled")).toBeUndefined();
+      expect(buttons(wrapper)[1]?.attributes("disabled")).toBeUndefined();
     });
 
     it("reopens the same URL rather than starting a second sign-in", async () => {
       session.pendingAuthorizeUrl = AUTHORIZE_URL;
       const wrapper = await loginView();
 
-      await buttons(wrapper)[1].trigger("click");
+      await buttons(wrapper)[1]?.trigger("click");
       await flushPromises();
 
       expect(openExternal).toHaveBeenCalledWith(AUTHORIZE_URL);
@@ -170,7 +170,7 @@ describe("LoginView", () => {
       openExternal.mockRejectedValue(new Error("no opener available"));
       const wrapper = await loginView();
 
-      await buttons(wrapper)[1].trigger("click");
+      await buttons(wrapper)[1]?.trigger("click");
       await flushPromises();
 
       expect(wrapper.text()).toContain("no opener available");
@@ -181,7 +181,7 @@ describe("LoginView", () => {
     it("goes back to offering a retry once the attempt is over", async () => {
       session.pendingAuthorizeUrl = AUTHORIZE_URL;
       const wrapper = await loginView();
-      expect(buttons(wrapper)[1].text()).toContain(REOPEN);
+      expect(buttons(wrapper)[1]?.text()).toContain(REOPEN);
 
       // `login()`'s `finally` clears this on both paths — the listener timed out.
       session.pendingAuthorizeUrl = null;

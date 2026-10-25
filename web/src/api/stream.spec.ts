@@ -76,7 +76,7 @@ describe("createFrameParser", () => {
     const parse = createFrameParser();
     const [frame] = parse('event: revision\ndata: {"url":"https://x/y"}\n\n');
 
-    expect(frame.data).toBe('{"url":"https://x/y"}');
+    expect(frame?.data).toBe('{"url":"https://x/y"}');
   });
 });
 

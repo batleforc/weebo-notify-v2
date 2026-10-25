@@ -29,6 +29,9 @@ const defaultLinkOpen =
 
 markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
   const token = tokens[index];
+  if (!token) {
+    return defaultLinkOpen(tokens, index, options, env, self);
+  }
   // `attrGet` is typed loosely enough to hand back a number; a scheme check on
   // something that is not a string is exactly the hole this function closes.
   const href = String(token.attrGet("href") ?? "");

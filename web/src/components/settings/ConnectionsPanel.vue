@@ -44,7 +44,7 @@ async function disconnect(id: string): Promise<void> {
 }
 
 function credentialLabel(credential: string): string {
-  const kind = credential.split(":")[0];
+  const kind = credential.split(":")[0] ?? "";
   return ["session", "key", "ci", "device"].includes(kind)
     ? t(`settings.connections.credential.${kind}`)
     : credential;

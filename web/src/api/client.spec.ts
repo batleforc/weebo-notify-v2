@@ -68,7 +68,7 @@ describe("installAuth's 401 retry", () => {
 
     expect(response.status).toBe(200);
     expect(seen).toHaveLength(2);
-    expect(String(seen[1].headers.Authorization)).toBe("Bearer token-2");
+    expect(String(seen[1]?.headers.Authorization)).toBe("Bearer token-2");
     expect(session.refresh).toHaveBeenCalledOnce();
   });
 
@@ -121,8 +121,8 @@ describe("a generated SDK call", () => {
     await unread({ adapter });
 
     expect(seen).toHaveLength(1);
-    expect(new URL(String(seen[0].url)).origin).toBe("https://notify.test");
-    expect(String(seen[0].headers.Authorization)).toBe("Bearer token-1");
-    expect(seen[0].timeout).toBeGreaterThan(0);
+    expect(new URL(String(seen[0]?.url)).origin).toBe("https://notify.test");
+    expect(String(seen[0]?.headers.Authorization)).toBe("Bearer token-1");
+    expect(seen[0]?.timeout).toBeGreaterThan(0);
   });
 });

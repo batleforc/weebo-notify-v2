@@ -13,7 +13,9 @@ const INLINE_SCRIPT = /<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi;
 export function inlineScriptHashes(html: string): string[] {
   return [...html.matchAll(INLINE_SCRIPT)].map(
     (match) =>
-      `'sha256-${createHash("sha256").update(match[1], "utf8").digest("base64")}'`,
+      `'sha256-${createHash("sha256")
+        .update(match[1] ?? "", "utf8")
+        .digest("base64")}'`,
   );
 }
 

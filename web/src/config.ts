@@ -27,7 +27,7 @@ function required(name: keyof RuntimeEnv, value: string | undefined): string {
   return value;
 }
 
-const env = window.__ENV__ ?? ({} as Partial<RuntimeEnv>);
+const env: Partial<RuntimeEnv> = window.__ENV__ ?? {};
 
 /** Base URL of the weebo-notify API, without a trailing slash. */
 export const apiBaseUrl = required("apiBaseUrl", env.apiBaseUrl).replace(

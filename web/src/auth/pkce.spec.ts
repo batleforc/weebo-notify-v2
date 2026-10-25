@@ -91,4 +91,15 @@ describe("readClaims", () => {
     // A well-formed token with no subject is not an identity.
     expect(readClaims(jwt({ name: "nobody" }))).toBeNull();
   });
+
+  it("drops a claim of the wrong type instead of passing it to the UI", () => {
+    expect(
+      readClaims(
+        jwt({ sub: "eve", name: 42, email: ["x"], groups: ["ok", 7, null] }),
+      ),
+    ).toEqual({ sub: "eve", groups: ["ok"] });
+    expect(readClaims(jwt({ sub: "eve", groups: "admins" }))?.groups).toBe(
+      undefined,
+    );
+  });
 });
