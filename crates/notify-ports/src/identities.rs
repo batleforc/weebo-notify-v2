@@ -41,15 +41,20 @@ pub trait UserRepository: Send + Sync {
     /// read any other object in the shared store (§2.4).
     async fn is_avatar(&self, avatar: AttachmentId) -> PortResult<bool>;
 
-    /// Create on first login, or refresh the claims of an existing user. Protecting
-    /// locally edited fields is the use case's job (§2.4).
     /// Up to `limit` users whose name or email contains `text`, case-insensitively.
     async fn lookup(&self, text: &str, limit: u32) -> PortResult<Vec<User>>;
 
+    /// Create on first login. Protecting locally edited fields is the use case's job (§2.4).
+    ///
     /// The avatar of an existing user is left alone: it has its own writer,
     /// [`Self::set_avatar`], so a profile edit racing an upload cannot put back an
     /// avatar whose object was just deleted.
     async fn upsert(&self, user: &User) -> PortResult<()>;
+
+    /// Write `after` only if the stored user still is `before`, the avatar aside (as in
+    /// [`Self::upsert`]). `false` means another write landed since `before` was read, so
+    /// two edits of different fields at once cannot erase each other.
+    async fn replace(&self, before: &User, after: &User) -> PortResult<bool>;
 
     /// Point `user`'s avatar at `avatar` and return the one it replaced, in one write:
     /// the caller deletes exactly what this replaced, so two uploads at once leak nothing.

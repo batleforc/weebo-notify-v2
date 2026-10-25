@@ -139,14 +139,15 @@ impl Authenticate {
         // Conditional write: bearer auth runs on every request.
         let existing = self.users.find_by_subject(&claims.subject).await?;
         let first_login = existing.is_none();
-        let (mut user, changed) = match existing {
-            Some(mut found) => {
-                let changed = found.sync_from_claims(
+        let (mut user, changed) = match &existing {
+            Some(found) => {
+                let mut refreshed = found.clone();
+                let changed = refreshed.sync_from_claims(
                     claims.email.as_deref(),
                     claims.email_unverified,
                     claims.display_name.as_deref(),
                 )?;
-                (found, changed)
+                (refreshed, changed)
             }
             None => (
                 User::from_claims(
@@ -159,7 +160,15 @@ impl Authenticate {
                 true,
             ),
         };
-        if changed {
+        if let (true, Some(before)) = (changed, &existing) {
+            // Lost to a concurrent write (a profile edit, another request's refresh): keep
+            // what it stored rather than erase it; the next request refreshes the claims.
+            if !self.users.replace(before, &user).await? {
+                user = UserRepository::get(self.users.as_ref(), user.id)
+                    .await?
+                    .ok_or(PortError::Conflict { what: "user" })?;
+            }
+        } else if changed {
             match self.users.upsert(&user).await {
                 Ok(()) => {}
                 // The first requests after a login arrive together, each minting its own
@@ -390,6 +399,12 @@ mod tests {
             UserRepository::upsert(&self.inner, user).await
         }
 
+        async fn replace(&self, before: &User, after: &User) -> notify_ports::PortResult<bool> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.replace(before, after).await
+        }
+
         async fn set_avatar(
             &self,
             user: UserId,
@@ -496,6 +511,9 @@ mod tests {
                 winner.id = UserId::generate();
                 UserRepository::upsert(&self.0, &winner).await?;
                 Err(PortError::Conflict { what: "user" })
+            }
+            async fn replace(&self, before: &User, after: &User) -> notify_ports::PortResult<bool> {
+                self.0.replace(before, after).await
             }
             async fn set_avatar(
                 &self,

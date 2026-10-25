@@ -4913,6 +4913,41 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn a_profile_write_from_a_stale_read_is_refused() {
+        let store = store!();
+        let (alice_id, _) = user();
+        let read = User::from_claims(
+            alice_id,
+            &format!("oidc-{}", ulid_slug()),
+            None,
+            Some("Alice"),
+            now(),
+        )
+        .unwrap();
+        users(&store).upsert(&read).await.unwrap();
+
+        // Two edits of different fields, both from the same read.
+        let mut timezone = read.clone();
+        timezone.profile.timezone = Some("Europe/Paris".to_owned());
+        let mut renamed = read.clone();
+        renamed.display_name = Some("alice".to_owned());
+
+        assert!(users(&store).replace(&read, &timezone).await.unwrap());
+        assert!(
+            !users(&store).replace(&read, &renamed).await.unwrap(),
+            "the second would put the old timezone back"
+        );
+        let stored = users(&store).get(alice_id).await.unwrap().unwrap();
+        assert_eq!(stored.profile.timezone.as_deref(), Some("Europe/Paris"));
+        assert_eq!(stored.display_name.as_deref(), Some("Alice"));
+
+        // Re-read, it lands.
+        let mut renamed = stored.clone();
+        renamed.display_name = Some("alice".to_owned());
+        assert!(users(&store).replace(&stored, &renamed).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn a_leader_whose_connection_dies_knows_it_no_longer_leads() {
         const JOB: &str = "conformance-lost-leader";
         let store = store!();

@@ -1638,6 +1638,23 @@ impl UserRepository for InMemory {
         Ok(())
     }
 
+    async fn replace(&self, before: &User, after: &User) -> PortResult<bool> {
+        let mut state = self.state();
+        let Some(existing) = state.users.iter_mut().find(|user| user.id == before.id) else {
+            return Ok(false);
+        };
+        // As the SQL adapter: the avatar is neither compared nor written.
+        let avatar = existing.profile.avatar;
+        let mut compared = before.clone();
+        compared.profile.avatar = avatar;
+        if *existing != compared {
+            return Ok(false);
+        }
+        *existing = after.clone();
+        existing.profile.avatar = avatar;
+        Ok(true)
+    }
+
     async fn set_avatar(
         &self,
         user: UserId,

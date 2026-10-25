@@ -98,13 +98,6 @@ impl UserRepository for PgStore {
     }
 
     async fn upsert(&self, user: &User) -> PortResult<()> {
-        let overridden: Vec<String> = user
-            .profile
-            .overridden
-            .iter()
-            .map(|field| field_name(*field).to_owned())
-            .collect();
-
         sqlx::query(
             "INSERT INTO users
                  (id, oidc_subject, email, display_name, timezone, locale,
@@ -124,13 +117,42 @@ impl UserRepository for PgStore {
         .bind(user.display_name.as_deref())
         .bind(user.profile.timezone.as_deref())
         .bind(user.profile.locale.as_deref())
-        .bind(&overridden)
+        .bind(overridden(user))
         .bind(user.profile.avatar.map(|id| id.to_string()))
         .bind(user.created_at)
         .execute(self.pool())
         .await
         .map_err(|error| fail("user", error))
         .map(|_| ())
+    }
+
+    async fn replace(&self, before: &User, after: &User) -> PortResult<bool> {
+        let replaced = sqlx::query(
+            "UPDATE users
+                SET oidc_subject = $2, email = $3, display_name = $4, timezone = $5,
+                    locale = $6, overridden_fields = $7
+              WHERE id = $1
+                AND (oidc_subject, email, display_name, timezone, locale, overridden_fields)
+                    IS NOT DISTINCT FROM ($8, $9, $10, $11, $12, $13)",
+        )
+        .bind(after.id.to_string())
+        .bind(&after.oidc_subject)
+        .bind(after.email.as_deref())
+        .bind(after.display_name.as_deref())
+        .bind(after.profile.timezone.as_deref())
+        .bind(after.profile.locale.as_deref())
+        .bind(overridden(after))
+        .bind(&before.oidc_subject)
+        .bind(before.email.as_deref())
+        .bind(before.display_name.as_deref())
+        .bind(before.profile.timezone.as_deref())
+        .bind(before.profile.locale.as_deref())
+        .bind(overridden(before))
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("user", error))?;
+
+        Ok(replaced.rows_affected() == 1)
     }
 
     async fn set_avatar(
@@ -233,6 +255,15 @@ fn field_of(name: &str) -> Option<ProfileField> {
 }
 
 // --- Service accounts ------------------------------------------------------
+
+/// The locally edited fields, as stored.
+fn overridden(user: &User) -> Vec<String> {
+    user.profile
+        .overridden
+        .iter()
+        .map(|field| field_name(*field).to_owned())
+        .collect()
+}
 
 #[async_trait::async_trait]
 impl ServiceAccountRepository for PgStore {

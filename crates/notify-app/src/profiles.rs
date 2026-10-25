@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use notify_domain::{AttachmentId, DomainError, Principal, Profile, ProfileEdit, User};
 use notify_ports::{
-    AttachmentStore, AvatarProcessor, Failure, ImageRejection, StoredObject, UserRepository,
+    AttachmentStore, AvatarProcessor, Failure, ImageRejection, PortError, StoredObject,
+    UserRepository,
 };
 
 use crate::authz::Caller;
@@ -47,6 +48,9 @@ impl ReadProfile {
     }
 }
 
+/// How many times a profile edit retries against concurrent writes before a 409.
+const EDIT_ATTEMPTS: usize = 3;
+
 /// `PUT /api/v1/users/me/profile` (design §8).
 #[derive(Clone)]
 pub struct UpdateProfile {
@@ -73,10 +77,17 @@ impl UpdateProfile {
     /// explicit `null` hands the field back to the identity provider.
     pub async fn execute(&self, caller: &Caller, edit: ProfileEdit) -> Result<Profile, Failure> {
         caller.ensure_person()?;
-        let mut user = self.read.load(caller).await?;
-        user.edit_profile(edit)?;
-        self.users.upsert(&user).await?;
-        Ok(user.profile)
+        // Compare-and-swap, re-applied on a lost race: an edit is a merge, so it holds
+        // on whatever the other write left.
+        for _ in 0..EDIT_ATTEMPTS {
+            let before = self.read.load(caller).await?;
+            let mut user = before.clone();
+            user.edit_profile(edit.clone())?;
+            if self.users.replace(&before, &user).await? {
+                return Ok(user.profile);
+            }
+        }
+        Err(PortError::Conflict { what: "user" }.into())
     }
 }
 
@@ -291,6 +302,81 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(stored.display_name.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_loses_a_race_is_reapplied_on_the_winner() {
+        /// Lets another tab's timezone edit land just before our first write.
+        struct Raced(InMemory, std::sync::atomic::AtomicBool);
+
+        #[async_trait::async_trait]
+        impl UserRepository for Raced {
+            async fn get(&self, id: UserId) -> notify_ports::PortResult<Option<User>> {
+                UserRepository::get(&self.0, id).await
+            }
+            async fn get_many(&self, ids: &[UserId]) -> notify_ports::PortResult<Vec<User>> {
+                self.0.get_many(ids).await
+            }
+            async fn find_by_subject(&self, s: &str) -> notify_ports::PortResult<Option<User>> {
+                self.0.find_by_subject(s).await
+            }
+            async fn find_by_email(
+                &self,
+                email: &str,
+            ) -> notify_ports::PortResult<notify_ports::EmailMatch> {
+                self.0.find_by_email(email).await
+            }
+            async fn lookup(&self, text: &str, limit: u32) -> notify_ports::PortResult<Vec<User>> {
+                self.0.lookup(text, limit).await
+            }
+            async fn is_avatar(&self, avatar: AttachmentId) -> notify_ports::PortResult<bool> {
+                self.0.is_avatar(avatar).await
+            }
+            async fn upsert(&self, user: &User) -> notify_ports::PortResult<()> {
+                UserRepository::upsert(&self.0, user).await
+            }
+            async fn replace(&self, before: &User, after: &User) -> notify_ports::PortResult<bool> {
+                if !self.1.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let mut other = before.clone();
+                    other.profile.timezone = Some("Europe/Paris".to_owned());
+                    assert!(self.0.replace(before, &other).await?);
+                }
+                self.0.replace(before, after).await
+            }
+            async fn set_avatar(
+                &self,
+                user: UserId,
+                avatar: AttachmentId,
+            ) -> notify_ports::PortResult<Option<AttachmentId>> {
+                self.0.set_avatar(user, avatar).await
+            }
+        }
+
+        let (store, _, caller, id) = fixture().await;
+        let raced = Arc::new(Raced(
+            store.clone(),
+            std::sync::atomic::AtomicBool::new(false),
+        ));
+
+        let updated = UpdateProfile::new(raced)
+            .execute(
+                &caller,
+                ProfileEdit {
+                    display_name: Some(FieldEdit::Set("alice".to_owned())),
+                    ..ProfileEdit::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.display_name.as_deref(), Some("alice"));
+        let stored = UserRepository::get(&store, id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.profile.timezone.as_deref(),
+            Some("Europe/Paris"),
+            "the other edit survives ours"
+        );
         assert_eq!(stored.display_name.as_deref(), Some("alice"));
     }
 
