@@ -168,6 +168,15 @@ entries:
       # property the code depends on is stability (§5.1), which every sub_mode has;
       # the equality is a fixture convenience, and this is where it gets arranged.
       sub_mode: user_username
+      # Authentik 2026.8 only accepts the grants listed here, and an unset list is
+      # empty: every token request, the browser login included, failed `invalid_grant`
+      # ("Invalid grant_type for provider"). The login needs the first two;
+      # `password` (Authentik's app-password grant, see the tokens above) is only for
+      # the compat suite, so leave it out of a production provider.
+      grant_types:
+        - authorization_code
+        - refresh_token
+        - password
       include_claims_in_id_token: true
       access_code_validity: minutes=1
       access_token_validity: minutes=15

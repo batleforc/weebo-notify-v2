@@ -130,6 +130,15 @@ loopback `[oidc] issuer`, the `weebo:weebo` database. `config/dev.toml` sets it;
 nothing else should. Without it, a config that forgot `[oidc]` or `[database]`
 refuses to start rather than trusting whatever answers on localhost.
 
+## Identity provider: the client
+
+weebo-notify signs users in as a **public** OIDC client (Authorization Code + PKCE),
+so the provider must allow the `authorization_code` and `refresh_token` grants.
+Authentik 2026.8 and later only accept the grants listed on the provider, and an
+unset list is empty: every login then fails with `invalid_grant` and the server log
+says `Invalid grant_type for provider`. `dev/authentik/blueprints/weebo-notify.yaml` is
+a working example; its `password` grant is there for the compatibility tests only.
+
 ## Identity provider: unverified email
 
 ```toml
