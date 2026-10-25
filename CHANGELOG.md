@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.1.0-rc.1](https://github.com/batleforc/weebo-notify-v2/compare/v0.1.0-rc.0..v0.1.0-rc.1) - 2026-10-25
+#### Bug Fixes
+- (**authentik**) allow the grants the login and the compat suite use - ([2bbd361](https://github.com/batleforc/weebo-notify-v2/commit/2bbd361c1883232ff135f949f10153ad69229776)) - Max Batleforc, Claude Opus 5.5
+- (**deps**) move crypto-bigint off its yanked 0.7.x releases - ([2becbd5](https://github.com/batleforc/weebo-notify-v2/commit/2becbd51581394c8488771659099941a935c6799)) - Max Batleforc, Claude Opus 5.5
+- (**release**) sync the version into the fuzz and Tauri lockfiles - ([9593895](https://github.com/batleforc/weebo-notify-v2/commit/9593895e377e85c7268990ac9ce3826db68e9c46)) - Max Batleforc, Claude Opus 5.5
+#### Miscellaneous Chores
+- (**release**) leave CHANGELOG.md out of the clean-tree pre-hook - ([afbf0e1](https://github.com/batleforc/weebo-notify-v2/commit/afbf0e11c4497c875621dd55cf07a076845b0dfa)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.1.0-rc.0](https://github.com/batleforc/weebo-notify-v2/compare/976ebfe5dafeb3416ad00cf6335c1ed0bc11ff89..v0.1.0-rc.0) - 2026-10-25
 #### Features
 - sec review - ([385df89](https://github.com/batleforc/weebo-notify-v2/commit/385df895a956a40874df0af2c0107d5b00d00f98)) - Max Batleforc

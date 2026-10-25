@@ -2678,7 +2678,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "notify-client-api"
-version = "0.1.0-rc.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "chrono",
  "progenitor-client",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "notify-client-core"
-version = "0.1.0-rc.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "chrono",
  "chrono-tz",
