@@ -10,7 +10,8 @@
 //! `allow-<command>` permission. Without it, every command in
 //! `generate_handler!` is callable from any window with no ACL check at all, and
 //! `capabilities/default.json` gates only the plugins.
-fn main() {
+// Returned, not unwrapped: cargo fails the build on an `Err` from a build script's `main`.
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "loopback_authorize",
@@ -20,6 +21,6 @@ fn main() {
             "credential_clear",
             "credential_session",
         ]),
-    ))
-    .expect("failed to run tauri-build");
+    ))?;
+    Ok(())
 }

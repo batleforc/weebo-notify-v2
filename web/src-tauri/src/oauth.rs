@@ -70,7 +70,10 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// implementation of that here would be a second place for the CSRF check to be
 /// subtly wrong.
 #[tauri::command]
-pub async fn loopback_authorize(app: AppHandle, authorize_url: String) -> Result<String, String> {
+pub(crate) async fn loopback_authorize(
+    app: AppHandle,
+    authorize_url: String,
+) -> Result<String, String> {
     web_url(&authorize_url)?;
     // Bound *before* the browser opens, not after: the reverse order races a fast
     // provider (an already-signed-in session redirects immediately) against our
@@ -122,7 +125,11 @@ pub async fn loopback_authorize(app: AppHandle, authorize_url: String) -> Result
 ///
 /// `http`/`https` only — see [`web_url`].
 #[tauri::command]
-pub fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments owned, deserialised from the webview"
+)]
+pub(crate) fn open_external(app: AppHandle, url: String) -> Result<(), String> {
     web_url(&url)?;
     app.opener()
         .open_url(&url, None::<&str>)
@@ -147,7 +154,9 @@ fn web_url(url: &str) -> Result<(), String> {
 
 /// Accept connections until one of them is the provider's redirect.
 fn wait_for_callback(listener: &TcpListener) -> Result<String, String> {
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = Instant::now()
+        .checked_add(DEADLINE)
+        .ok_or_else(|| "the sign-in deadline is past the clock's range".to_owned())?;
 
     loop {
         match listener.accept() {

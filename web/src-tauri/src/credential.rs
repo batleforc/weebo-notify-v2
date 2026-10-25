@@ -88,7 +88,11 @@ fn clear_fallback(profile: &str) -> io::Result<()> {
 /// fallback is a supported configuration (§9.3bis), not a degraded one, and a
 /// sign-in must not fail because the machine has no keyring daemon.
 #[tauri::command]
-pub fn credential_save(secret: String) -> Result<(), String> {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments owned, deserialised from the webview"
+)]
+pub(crate) fn credential_save(secret: String) -> Result<(), String> {
     match vault(DEFAULT_PROFILE).and_then(|entry| entry.set_password(&secret)) {
         Ok(()) => {
             // A file written before this machine had a vault must not outlive it,
@@ -113,7 +117,7 @@ pub fn credential_save(secret: String) -> Result<(), String> {
 /// the login screen", while a vault that is present and failing is worth saying out
 /// loud rather than silently treating as a fresh install.
 #[tauri::command]
-pub fn credential_load() -> Result<Option<String>, String> {
+pub(crate) fn credential_load() -> Result<Option<String>, String> {
     match vault(DEFAULT_PROFILE).and_then(|entry| entry.get_password()) {
         Ok(secret) => Ok(Some(secret)),
         Err(keyring::Error::NoEntry) => read_fallback(DEFAULT_PROFILE),
@@ -141,7 +145,11 @@ fn read_fallback(profile: &str) -> Result<Option<String>, String> {
 /// sign-out, and a logout that reports failure while having removed one of the two
 /// copies is worse than one that removes what it can and says so on stderr.
 #[tauri::command]
-pub fn credential_clear() -> Result<(), String> {
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "`invoke` in `web/src/auth/credential.ts` expects the same shape as the other credential commands"
+)]
+pub(crate) fn credential_clear() -> Result<(), String> {
     match vault(DEFAULT_PROFILE).and_then(|entry| entry.delete_credential()) {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(error) => eprintln!("weebo-notify: could not clear the vault entry: {error}"),
@@ -180,6 +188,10 @@ mod tests {
     /// entry it stands in for.
     #[cfg(unix)]
     #[test]
+    #[expect(
+        unsafe_code,
+        reason = "`set_var` in a test serialised by `ENV`; see the SAFETY comment"
+    )]
     fn the_fallback_file_is_not_readable_by_anybody_else() {
         use std::os::unix::fs::PermissionsExt as _;
 

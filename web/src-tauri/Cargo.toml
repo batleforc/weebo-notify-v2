@@ -94,3 +94,50 @@ rust-ini = "=0.21.1"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# Copied from the root [workspace.lints]: this crate is not a member (above), so
+# `[lints] workspace = true` cannot reach it. Keep the two in step.
+[lints.rust]
+missing_debug_implementations = "warn"
+# `deny`, not the workspace's `forbid`: Tauri's mobile entry point is FFI, and only
+# `deny` lets that one item carry a reasoned `#[expect]`.
+unsafe_code = "deny"
+unreachable_pub = "warn"
+# `let _ =` drops on the spot; with a guard that is a bug, with a `Result` an ignored error.
+let_underscore_drop = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# A malformed payload must become a 4xx, never a downed replica; tests opt out per module.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# An error is handled, logged with why it is safe to go on, or `#[expect]`ed with the reason.
+let_underscore_must_use = "deny"
+let_underscore_future = "deny"
+# A malformed index is a panic too; tests are exempt (clippy.toml).
+indexing_slicing = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+undocumented_unsafe_blocks = "deny"
+# Every escape hatch carries its justification and dies with the code it excused.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+# Overflow (LANG-ARITH): checked_ (an error), saturating_ (a clamp) or wrapping_ (a hash);
+# instant − instant is allowed in clippy.toml, since it cannot overflow.
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
+# Noise from the pedantic group that fights the domain vocabulary.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# `#[async_trait]` expands every trait method into a `#[must_use]` fn returning a
+# boxed future, which is `#[must_use]` already; clippy 1.99 flags the pair on code
+# the macro wrote, not this repo.
+double_must_use = "allow"
+

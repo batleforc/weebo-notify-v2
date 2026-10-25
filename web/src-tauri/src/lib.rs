@@ -205,6 +205,10 @@ fn identity_line(app_name: &str, user: Option<&str>) -> String {
 /// within one poll rather than at the next launch.
 #[cfg(desktop)]
 #[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments owned, deserialised from the webview"
+)]
 fn credential_session(
     app: AppHandle,
     token: Option<String>,
@@ -257,6 +261,10 @@ const POLL: Duration = Duration::from_secs(20);
 /// runtime on Android/iOS once a build for either exists (see the module doc — it
 /// does not yet, D33/M6).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one builder chain: plugins, setup and handlers in the order Tauri runs them"
+)]
 pub fn run() {
     let builder = tauri::Builder::default();
 
@@ -307,6 +315,10 @@ pub fn run() {
         builder
     };
 
+    #[expect(
+        clippy::expect_used,
+        reason = "nothing to fall back to: without its event loop the shell cannot show an error"
+    )]
     builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
@@ -410,7 +422,7 @@ pub fn run() {
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
-                        let _ = close_window.hide();
+                        best_effort("hide the window", close_window.hide());
                     }
                 });
             }
@@ -533,7 +545,7 @@ pub fn run() {
                             // `notify-cli`'s own `block_on` exists for exactly this
                             // reason (`crates/notify-cli/src/main.rs`) — this mirrors
                             // it rather than fighting the same constraint twice.
-                            let _ = std::thread::Builder::new()
+                            best_effort("start the notification daemon", std::thread::Builder::new()
                                 .name("weebo-notify-daemon".to_owned())
                                 .spawn(move || {
                                     // Retried, not tried once: the TUI holding the stream
@@ -545,7 +557,7 @@ pub fn run() {
                                         std::thread::sleep(POLL);
                                     };
                                     run_daemon(daemon_session, daemon);
-                                });
+                                }));
                         }
 
                         tauri::async_runtime::spawn(poll_loop(
@@ -592,6 +604,10 @@ struct TrayIcons {
 
 #[cfg(desktop)]
 impl TrayIcons {
+    #[expect(
+        clippy::expect_used,
+        reason = "committed, already-rasterised PNGs embedded by `include_bytes!`; see the type's doc"
+    )]
     fn load() -> Self {
         Self {
             neutral: Image::from_bytes(include_bytes!("../icons/tray-neutral.png"))
@@ -712,7 +728,7 @@ async fn poll_loop(
         // no session left to poll.
         let identity = identity_line(&app_name, credential.user().as_deref());
         if identity != last_identity {
-            let _ = identity_item.set_text(&identity);
+            best_effort("update the tray header", identity_item.set_text(&identity));
             last_identity = identity;
         }
 
@@ -744,8 +760,14 @@ async fn poll_loop(
 
         let state = tray_now(last_unread, last_quiet, connected);
         if state != last_state {
-            let _ = tray_icon.set_icon(Some(icons.for_state(state.icon)));
-            let _ = status_item.set_text(&state.status);
+            best_effort(
+                "update the tray icon",
+                tray_icon.set_icon(Some(icons.for_state(state.icon))),
+            );
+            best_effort(
+                "update the tray status",
+                status_item.set_text(&state.status),
+            );
             last_state = state;
         }
     }
@@ -805,6 +827,10 @@ fn run_daemon(credential: Credential, mut daemon: Daemon) {
 /// Dispatch a tray menu click. Registered once, in `setup`, on the tray itself —
 /// this only ever sees clicks from that one menu in this increment.
 #[cfg(desktop)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the signature `TrayIconBuilder::on_menu_event` requires"
+)]
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         "open-inbox" => focus_main(app),
@@ -877,9 +903,17 @@ fn focus_main(app: &tauri::AppHandle) {
         // activity is either resumed or it is not, and `show`/`set_focus` below
         // (which do exist on both) are the whole of the operation there.
         #[cfg(desktop)]
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        best_effort("un-minimise the window", window.unminimize());
+        best_effort("show the window", window.show());
+        best_effort("focus the window", window.set_focus());
+    }
+}
+
+/// A window or tray call whose failure is printed, not fatal: the shell keeps running
+/// with a stale icon or a hidden window rather than quitting over it.
+fn best_effort<T, E: std::fmt::Display>(what: &str, result: Result<T, E>) {
+    if let Err(error) = result {
+        eprintln!("weebo-notify: could not {what}: {error}");
     }
 }
 
@@ -902,7 +936,10 @@ const DEEP_LINK_EVENT: &str = "deep-link";
 /// is how the desktop and the web drift apart.
 fn navigate(app: &tauri::AppHandle, link: &DeepLink) {
     focus_main(app);
-    let _ = app.emit(DEEP_LINK_EVENT, serde_json::json!({ "path": link.path() }));
+    best_effort(
+        "hand the link to the front end",
+        app.emit(DEEP_LINK_EVENT, serde_json::json!({ "path": link.path() })),
+    );
 }
 
 /// What the tray shows, from the one state everything else reads.
