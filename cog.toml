@@ -22,6 +22,9 @@ pre_bump_hooks = [
     "git diff --exit-code",
     "task test:critical",
     ".hooks/sync-version.sh {{version}}",
+    # The OpenAPI `info.version` is the crate version: regenerate the spec and the
+    # clients from it so the bump commit carries them and the release's contract gate holds.
+    "task recu",
 ]
 
 
