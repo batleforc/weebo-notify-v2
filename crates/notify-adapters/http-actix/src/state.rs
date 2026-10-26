@@ -143,6 +143,9 @@ pub struct ApiState {
     /// `GET /push/webpush`: the public VAPID key (base64url), `None` without Web Push (§6.2).
     pub application_server_key: Option<String>,
 
+    /// `GET /client-config`: issuer, client id and attachment origin, public (RFC 0001).
+    pub client_config: crate::routes::client_config::ClientConfig,
+
     /// `GET /serviceaccounts`.
     pub accounts: ListServiceAccounts,
     /// `GET /users`.

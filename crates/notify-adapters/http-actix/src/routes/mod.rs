@@ -6,6 +6,7 @@ pub(crate) mod attachments;
 pub(crate) mod attachments_fs;
 pub(crate) mod channels;
 pub(crate) mod cli;
+pub(crate) mod client_config;
 pub(crate) mod compat;
 pub(crate) mod connections;
 pub(crate) mod federation;
@@ -90,6 +91,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(attachments_fs::fs_download)
             .service(federation::exchange)
             .service(push::webpush_key)
+            .service(client_config::client_config)
             .service(preferences::read_dnd)
             .service(preferences::set_dnd)
             .service(profile::read_profile)

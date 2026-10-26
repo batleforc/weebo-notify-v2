@@ -301,6 +301,11 @@ impl Harness {
             ),
 
             application_server_key: Some(APPLICATION_SERVER_KEY.to_owned()),
+            client_config: notify_http_actix::dto::ClientConfig {
+                oidc_issuer: "https://idp.test/".to_owned(),
+                oidc_client_id: "weebo-notify".to_owned(),
+                attachment_origin: Some("https://files.test".to_owned()),
+            },
 
             accounts: ListServiceAccounts::new(Arc::new(store.clone())),
             users: notify_app::SearchUsers::new(Arc::new(store.clone())),
@@ -2293,6 +2298,36 @@ async fn a_browser_is_told_the_key_it_has_to_subscribe_with() {
         body["application_server_key"], APPLICATION_SERVER_KEY,
         "verbatim: it is passed straight to `pushManager.subscribe()`"
     );
+}
+
+/// RFC 0001: a native client reads this before it has any credential, so it must
+/// answer without one, and say exactly what the server itself validates against.
+#[actix_web::test]
+async fn a_client_reads_how_to_sign_in_before_it_has_a_token() {
+    let (_harness, state) = Harness::new();
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/client-config")
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "no token, and still answered"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=300")
+    );
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(body["oidc_issuer"], "https://idp.test/");
+    assert_eq!(body["oidc_client_id"], "weebo-notify");
+    assert_eq!(body["attachment_origin"], "https://files.test");
 }
 
 #[actix_web::test]

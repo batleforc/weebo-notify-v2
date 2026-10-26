@@ -812,6 +812,17 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
             Ok(Self(value.to_string()))
         }
     }
+    ///The public client settings of this instance.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ClientConfig {
+        ///Where attachment downloads are served from, when that is not the API itself.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub attachment_origin: ::std::option::Option<::std::string::String>,
+        ///The public client to sign in as (`[oidc] client_id`).
+        pub oidc_client_id: ::std::string::String,
+        ///The OIDC issuer this server validates tokens against (`[oidc] issuer`).
+        pub oidc_issuer: ::std::string::String,
+    }
     ///How long a lifecycle notification may go without activity before the server closes it: a single-unit duration such as `7d`, or `0` to never close it automatically.
     #[derive(
         ::serde::Deserialize,
@@ -5467,6 +5478,43 @@ Sends a `GET` request to `/api/v1/cli`
             501u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**The settings a native client needs to sign in to this instance; no credential
+
+Sends a `GET` request to `/api/v1/client-config`
+
+*/
+    pub async fn client_config<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<types::ClientConfig>, Error<()>> {
+        let url = format!("{}/api/v1/client-config", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "client_config",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }

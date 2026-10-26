@@ -1832,6 +1832,30 @@
         ]
       }
     },
+    "/api/v1/client-config": {
+      "get": {
+        "tags": [
+          "clients"
+        ],
+        "summary": "The settings a native client needs to sign in to this instance; no credential.",
+        "operationId": "client_config",
+        "responses": {
+          "200": {
+            "description": "Issuer, client id and attachment origin of this instance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientConfig"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
     "/api/v1/compat/alertmanager/{channel}": {
       "post": {
         "tags": [
@@ -5039,6 +5063,34 @@
       "ChoiceOptionKey": {
         "type": "string",
         "description": "One option of a `choice` action."
+      },
+      "ClientConfig": {
+        "type": "object",
+        "description": "The public client settings of this instance.",
+        "required": [
+          "oidc_issuer",
+          "oidc_client_id"
+        ],
+        "properties": {
+          "attachment_origin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where attachment downloads are served from, when that is not the API itself.",
+            "example": "https://files.example.org"
+          },
+          "oidc_client_id": {
+            "type": "string",
+            "description": "The public client to sign in as (`[oidc] client_id`).",
+            "example": "weebo-notify"
+          },
+          "oidc_issuer": {
+            "type": "string",
+            "description": "The OIDC issuer this server validates tokens against (`[oidc] issuer`).",
+            "example": "https://auth.example.org/application/o/weebo-notify/"
+          }
+        }
       },
       "CloseAfter": {
         "type": "string",

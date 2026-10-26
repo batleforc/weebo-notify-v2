@@ -395,6 +395,24 @@ export type ChoiceOption = {
 export type ChoiceOptionKey = string;
 
 /**
+ * The public client settings of this instance.
+ */
+export type ClientConfig = {
+    /**
+     * Where attachment downloads are served from, when that is not the API itself.
+     */
+    attachment_origin?: string | null;
+    /**
+     * The public client to sign in as (`[oidc] client_id`).
+     */
+    oidc_client_id: string;
+    /**
+     * The OIDC issuer this server validates tokens against (`[oidc] issuer`).
+     */
+    oidc_issuer: string;
+};
+
+/**
  * How long a lifecycle notification may go without activity before the server closes it: a single-unit duration such as `7d`, or `0` to never close it automatically.
  */
 export type CloseAfter = string;
@@ -3256,6 +3274,22 @@ export type DownloadResponses = {
 };
 
 export type DownloadResponse = DownloadResponses[keyof DownloadResponses];
+
+export type ClientConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/client-config';
+};
+
+export type ClientConfigResponses = {
+    /**
+     * Issuer, client id and attachment origin of this instance
+     */
+    200: ClientConfig;
+};
+
+export type ClientConfigResponse = ClientConfigResponses[keyof ClientConfigResponses];
 
 export type AlertmanagerData = {
     body: AlertmanagerBody;

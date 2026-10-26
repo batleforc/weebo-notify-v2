@@ -426,6 +426,7 @@ impl Application {
             set_dnd: SetDnd::new(repository.clone(), clock.clone(), fanout.clone()),
 
             application_server_key,
+            client_config: client_config(config),
 
             accounts: ListServiceAccounts::new(repository.clone()),
             users: notify_app::SearchUsers::new(repository.clone()),
@@ -787,6 +788,25 @@ impl AttachmentStore for NoAttachments {
 const fn unconfigured() -> notify_ports::PortError {
     notify_ports::PortError::NotConfigured {
         what: "attachments",
+    }
+}
+
+/// What `GET /client-config` publishes (RFC 0001): values already public in the web
+/// image's `env.js`, read from the same config the server validates tokens with.
+fn client_config(config: &Config) -> notify_http_actix::dto::ClientConfig {
+    let attachment_origin = config.attachments.as_ref().and_then(|attachments| {
+        let base = match attachments.kind {
+            AttachmentsBackend::S3 => &attachments.endpoint,
+            AttachmentsBackend::Filesystem => &attachments.public_base_url,
+        };
+        url::Url::parse(base)
+            .ok()
+            .map(|url| url.origin().ascii_serialization())
+    });
+    notify_http_actix::dto::ClientConfig {
+        oidc_issuer: config.oidc.issuer.clone(),
+        oidc_client_id: config.oidc.client_id.clone(),
+        attachment_origin,
     }
 }
 
