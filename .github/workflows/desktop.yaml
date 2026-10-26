@@ -1,0 +1,90 @@
+name: desktop
+
+# The Tauri crate sits outside the cargo workspace (it links GTK/WebKit), so `check`
+# never compiles it. This job does: clippy with the crate's own [lints] and its tests,
+# on every change that reaches it. publish-main only bundles it when an instance is
+# configured, so without this job a change to web/src-tauri ran nowhere.
+
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - "web/src-tauri/**"
+      - "crates/notify-client-core/**"
+      - "crates/notify-client-api/**"
+      - "crates/notify-domain/**"
+      - "Cargo.toml"
+      - "clippy.toml"
+      - "mise.toml"
+      - ".tasks/tauri.yaml"
+      - ".github/workflows/desktop.yaml"
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the GTK/WebKit stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev pkg-config
+
+      # `task tauri:check` exits 0 when the stack is missing (fine on a laptop, a
+      # gate that cannot fail here): say it out loud instead.
+      - name: The stack is there
+        run: pkg-config --exists webkit2gtk-4.1
+
+      - name: Install the toolchain
+        env:
+          MISE_VERSION: "v2026.10.19"
+          MISE_SHA256: "3162760f40b6b5f706c60641e4ef5ee7322bc6c54f72fc26a7111b337aa18d9d"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Restore caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup
+            ~/.local/share/mise
+            web/src-tauri/target
+          key: desktop-${{ runner.os }}-${{ hashFiles('web/src-tauri/Cargo.lock', 'mise.lock') }}
+          restore-keys: desktop-${{ runner.os }}-
+
+      - name: Install pinned tools
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mise install --yes rust task
+          mise exec -- rustup toolchain install "$(mise current rust)" \
+            --profile minimal --component clippy --no-self-update
+
+      # `generate_context!` embeds web/dist at compile time; a lint does not need
+      # the real bundle (that is publish-main's), only a directory that exists.
+      - name: Stand in for the web bundle
+        run: mkdir -p web/dist && echo '<!doctype html><title>weebo-notify</title>' > web/dist/index.html
+
+      - name: Clippy (task tauri:check)
+        run: mise exec -- task tauri:check
+
+      - name: Tests
+        run: mise exec -- cargo test --locked --manifest-path web/src-tauri/Cargo.toml
