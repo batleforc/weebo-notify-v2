@@ -25,12 +25,12 @@ import { contentSecurityPolicy, inlineScriptHashes } from "./src/lib/csp.ts";
  *
  * What HAS changed is where the policy is enforced. `web/nginx/default.conf.
  * template` renders it as a real header now, at container boot, from
- * `WNK_API_BASE_URL`/`WNK_OIDC_ISSUER`/`WNK_ATTACHMENT_ORIGIN` — so this plugin
- * hands `contentSecurityPolicy` those exact shell placeholders in place of real
- * origins, and only the inline-script hash, which names bytes this build
- * actually shipped, is real. `web/nginx/docker-entrypoint.d/05-runtime-config.envsh`
- * is what resolves the placeholders, once, against the container's actual
- * environment.
+ * the derived origin variables (`WNK_API_ORIGIN`/`WNK_OIDC_ORIGIN`) and
+ * `WNK_ATTACHMENT_ORIGIN` — so this plugin hands `contentSecurityPolicy` those
+ * exact shell placeholders in place of real origins, and only the inline-script
+ * hash, which names bytes this build actually shipped, is real.
+ * `web/nginx/docker-entrypoint.d/05-runtime-config.envsh` resolves the
+ * placeholders, once, against the container's actual environment.
  *
  * Reads `index.html` back off disk after the build rather than out of Rollup's
  * in-memory bundle — see `closeBundle` below for why.
@@ -86,9 +86,9 @@ function cspTemplate(): Plugin {
       // later (see this function's own doc comment).
       const template = contentSecurityPolicy({
         // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, resolved by envsubst at container boot, not by JS
-        apiOrigin: "${WNK_API_BASE_URL}",
+        apiOrigin: "${WNK_API_ORIGIN}",
         // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, resolved by envsubst at container boot, not by JS
-        oidcOrigin: "${WNK_OIDC_ISSUER}",
+        oidcOrigin: "${WNK_OIDC_ORIGIN}",
         // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, resolved by envsubst at container boot, not by JS
         attachmentOrigin: "${WNK_ATTACHMENT_ORIGIN}",
         hashes,

@@ -63,10 +63,18 @@ wnk_check WNK_OIDC_CLIENT_ID '[A-Za-z0-9._:-]+' required
 wnk_check WNK_ATTACHMENT_ORIGIN "$wnk_url_re" optional
 # The image defaults this to the same-origin `/csp-report`, so a bare path is fine.
 wnk_check WNK_CSP_REPORT_URL "($wnk_url_re|/[A-Za-z0-9._~/-]*)" required
+
+# The SPA needs the complete OIDC issuer for discovery, while CSP `connect-src`
+# must contain only the origin. A source expression with `/application/o/.../`
+# does not allow Authentik's shared `/application/o/token/` endpoint.
+WNK_API_ORIGIN="$(printf '%s' "$WNK_API_BASE_URL" | sed -E 's#^(https?://[^/]+).*$#\1#')"
+WNK_OIDC_ORIGIN="$(printf '%s' "$WNK_OIDC_ISSUER" | sed -E 's#^(https?://[^/]+).*$#\1#')"
+[ -n "$WNK_API_ORIGIN" ] || { echo "05-runtime-config: failed to derive WNK_API_ORIGIN" >&2; exit 1; }
+[ -n "$WNK_OIDC_ORIGIN" ] || { echo "05-runtime-config: failed to derive WNK_OIDC_ORIGIN" >&2; exit 1; }
 unset -f wnk_check
 unset wnk_url_re wnk_nl wnk_v wnk_v_ok
 
-WNK_CSP_HEADER="$(envsubst '${WNK_API_BASE_URL} ${WNK_OIDC_ISSUER} ${WNK_ATTACHMENT_ORIGIN}' \
+WNK_CSP_HEADER="$(envsubst '${WNK_API_ORIGIN} ${WNK_OIDC_ORIGIN} ${WNK_ATTACHMENT_ORIGIN}' \
   < /etc/nginx/wnk-templates/csp-template.txt)" || exit 1
 export WNK_CSP_HEADER
 
