@@ -1,0 +1,76 @@
+name: dast
+
+# OWASP ZAP against a running stack, the same `task audit:dast` as a local run:
+# baseline on the real web image (its nginx CSP and headers), API scan driven by the
+# OpenAPI spec. Weekly, and on demand; reports are uploaded whatever the outcome.
+
+on:
+  schedule:
+    - cron: "30 3 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zap:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: weebo
+          POSTGRES_PASSWORD: weebo
+          POSTGRES_DB: weebo_notify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U weebo -d weebo_notify"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install libdbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install the toolchain
+        env:
+          MISE_VERSION: "v2026.10.19"
+          MISE_SHA256: "3162760f40b6b5f706c60641e4ef5ee7322bc6c54f72fc26a7111b337aa18d9d"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64" \
+            -o "$HOME/.local/bin/mise"
+          echo "${MISE_SHA256}  $HOME/.local/bin/mise" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/mise"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise install --yes rust task
+
+      - name: Build the server and the oidc mock
+        run: mise exec -- cargo build --locked -p notify-server -p notify-oidc-mock
+
+      - name: Build the web image
+        run: mise exec -- task build:web:image
+
+      - name: Scan (task audit:dast)
+        run: mise exec -- task audit:dast
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zap-reports
+          path: |
+            target/dast/*.html
+            target/dast/*.json
+          retention-days: 30

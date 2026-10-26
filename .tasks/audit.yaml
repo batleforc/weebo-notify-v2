@@ -98,6 +98,47 @@ tasks:
         --helm-set web.env.oidcIssuer=https://auth.example.invalid
         charts/weebo-notify
 
+  dast:
+    desc: "Scan a running instance with OWASP ZAP: baseline on the real web image, API scan from the OpenAPI spec — needs Postgres (task dev:core) and a container engine; reports in target/dast/"
+    # Not in `audit:default`: it boots a stack. The web side is the nginx image, not
+    # `vite preview`, because its CSP and headers are what gets deployed. The API scan
+    # is unauthenticated: every route must refuse without a token, and how it refuses
+    # (status, headers, error bodies) is what ZAP judges. Fails on a ZAP FAIL;
+    # warnings are reported, and accepted ones live in .zap/rules.tsv with a reason.
+    vars:
+      ENGINE:
+        sh: if [ -n "${ENGINE:-}" ]; then echo "$ENGINE"; elif command -v docker >/dev/null 2>&1; then echo docker; else echo podman; fi
+      # Digest-pinned like every image this repository runs; zaproxy:stable of 2026-10-16.
+      ZAP: ghcr.io/zaproxy/zaproxy@sha256:241fd55e438fce3b6b092fdb68348581c28e391b094644ef506c1e3be4a31a78
+      WEB_IMAGE: '{{.WEB_IMAGE | default "ghcr.io/batleforc/weebo-notify-v2-web:dev"}}'
+    cmds:
+      - cmd: |
+          bash -euo pipefail <<'SH'
+          set -m
+          trap 'for p in $(jobs -p); do kill -- "-$p" 2>/dev/null || true; done; {{.ENGINE}} rm -f wnk-dast-web >/dev/null 2>&1 || true' EXIT
+          mkdir -p target/dast && chmod 777 target/dast
+          cp docs/content/docs/api/openapi.json target/dast/openapi.json
+          cp .zap/rules.tsv target/dast/rules.tsv
+          ./target/debug/oidc-mock --identities dev/oidc-mock/identities.toml &
+          ./target/debug/notify-server --config config/e2e.toml &
+          {{.ENGINE}} run -d --rm --name wnk-dast-web -p 127.0.0.1:5173:8080 \
+            -e WNK_API_BASE_URL=http://localhost:8080 -e WNK_OIDC_ISSUER=http://localhost:9110 \
+            -e WNK_OIDC_CLIENT_ID=weebo-notify -e WNK_ATTACHMENT_ORIGIN=http://localhost:8080 \
+            {{.WEB_IMAGE}} >/dev/null
+          for url in http://localhost:9110/.well-known/openid-configuration http://localhost:8080/readyz http://localhost:5173/healthz; do
+            timeout 120 sh -c "until curl -fsS -o /dev/null $url; do sleep 1; done"
+          done
+          zap() { {{.ENGINE}} run --rm --network host -v "$PWD/target/dast:/zap/wrk:rw,Z" {{.ZAP}} "$@"; }
+          # 0 clean, 2 warnings only: both pass. 1 is a FAIL, 3 a scan that did not run.
+          status=0
+          zap zap-baseline.py -t http://localhost:5173 -c rules.tsv -r web.html -J web.json -I || status=$?
+          [ "$status" -eq 0 ] || [ "$status" -eq 2 ] || { echo "ZAP baseline (web) exited $status"; exit 1; }
+          status=0
+          zap zap-api-scan.py -t /zap/wrk/openapi.json -f openapi -O http://localhost:8080 -c rules.tsv -r api.html -J api.json -I || status=$?
+          [ "$status" -eq 0 ] || [ "$status" -eq 2 ] || { echo "ZAP API scan exited $status"; exit 1; }
+          echo "Reports: target/dast/web.html, target/dast/api.html"
+          SH
+
   image:
     desc: "Scan the built server and web images for CVEs (trivy) — needs them built and a container engine, or SERVER_REF/WEB_REF pointing at a registry"
     # Not in `audit:default`: it needs built images; the release workflow runs it. SERVER_REF/WEB_REF
