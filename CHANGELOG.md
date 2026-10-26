@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.1.2](https://github.com/batleforc/weebo-notify-v2/compare/a823442b3d51ec400d6d73f261b19edf3b09318c..v0.1.2) - 2026-10-26
+#### Bug Fixes
+- (**web**) export CSP origins - ([a823442](https://github.com/batleforc/weebo-notify-v2/commit/a823442b3d51ec400d6d73f261b19edf3b09318c)) - Max Batleforc
+
+- - -
+
 ## [v0.1.1](https://github.com/batleforc/weebo-notify-v2/compare/0cc149be414fc230ab3493034bdd49d078f7f5be..v0.1.1) - 2026-10-26
 #### Bug Fixes
 - (**web**) allow OIDC token endpoint in CSP - ([0cc149b](https://github.com/batleforc/weebo-notify-v2/commit/0cc149be414fc230ab3493034bdd49d078f7f5be)) - Max Batleforc
