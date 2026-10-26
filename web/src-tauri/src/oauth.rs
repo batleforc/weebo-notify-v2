@@ -64,17 +64,22 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Open the provider's authorization URL and wait for the code it redirects with.
 ///
 /// Returns the raw query string of the callback — `code=…&state=…`, or
-/// `error=…&error_description=…` when the provider refuses. Deliberately raw:
-/// `completeLogin` in `web/src/auth/session.ts` already knows how to read every
-/// one of those cases and checks `state` against what it generated, and a second
-/// implementation of that here would be a second place for the CSRF check to be
-/// subtly wrong.
+/// `error=…&error_description=…&state=…` when the provider refuses. Deliberately
+/// raw: `completeLogin` in `web/src/auth/session.ts` reads every one of those cases
+/// and is where `state` is checked against what it generated (the CSRF gate).
+///
+/// The listener only uses the `state` already in `authorize_url` to decide which
+/// callback ends the wait: any page in the person's browser can reach
+/// `127.0.0.1:1420`, and without it the first forged `/auth/callback` would cancel
+/// the sign-in and put its own text in the app's error.
 #[tauri::command]
 pub(crate) async fn loopback_authorize(
     app: AppHandle,
     authorize_url: String,
 ) -> Result<String, String> {
     web_url(&authorize_url)?;
+    let expected_state = query_param(&authorize_url, "state")
+        .ok_or_else(|| "Refusing a sign-in with no `state` to wait for.".to_owned())?;
     // Bound *before* the browser opens, not after: the reverse order races a fast
     // provider (an already-signed-in session redirects immediately) against our
     // own `bind`, and loses that race as a connection refused the person can only
@@ -111,7 +116,7 @@ pub(crate) async fn loopback_authorize(
     // `spawn_blocking` rather than an async listener: this is one accept and one
     // short read, and it would cost a whole async TCP stack in a binary that
     // otherwise has no use for one.
-    tauri::async_runtime::spawn_blocking(move || wait_for_callback(&listener))
+    tauri::async_runtime::spawn_blocking(move || wait_for_callback(&listener, &expected_state))
         .await
         .map_err(|error| format!("The sign-in listener stopped unexpectedly: {error}"))?
 }
@@ -153,14 +158,14 @@ fn web_url(url: &str) -> Result<(), String> {
 }
 
 /// Accept connections until one of them is the provider's redirect.
-fn wait_for_callback(listener: &TcpListener) -> Result<String, String> {
+fn wait_for_callback(listener: &TcpListener, expected_state: &str) -> Result<String, String> {
     let deadline = Instant::now()
         .checked_add(DEADLINE)
         .ok_or_else(|| "the sign-in deadline is past the clock's range".to_owned())?;
 
     loop {
         match listener.accept() {
-            Ok((stream, _)) => match serve(stream) {
+            Ok((stream, _)) => match serve(stream, expected_state) {
                 // A callback. The port is released when `listener` drops, which is
                 // as soon as this returns.
                 Ok(Some(query)) => return Ok(query),
@@ -188,7 +193,7 @@ fn wait_for_callback(listener: &TcpListener) -> Result<String, String> {
 }
 
 /// Read one request and answer it. `Ok(None)` means "not the callback".
-fn serve(mut stream: TcpStream) -> Result<Option<String>, String> {
+fn serve(mut stream: TcpStream, expected_state: &str) -> Result<Option<String>, String> {
     // Accepted sockets do not reliably inherit the listener's blocking state, and
     // the difference between platforms here is a read that returns `WouldBlock`
     // instead of the request line.
@@ -217,9 +222,25 @@ fn serve(mut stream: TcpStream) -> Result<Option<String>, String> {
         respond(&mut stream, "404 Not Found", NOT_FOUND)?;
         return Ok(None);
     }
+    // Not this attempt's redirect (see `loopback_authorize`): refuse it and keep waiting.
+    if query_param(&format!("http://127.0.0.1/?{query}"), "state").as_deref()
+        != Some(expected_state)
+    {
+        respond(&mut stream, "400 Bad Request", NOT_FOUND)?;
+        return Ok(None);
+    }
 
     respond(&mut stream, "200 OK", DONE)?;
     Ok(Some(query.to_string()))
+}
+
+/// The first value of `name` in `url`'s query, decoded.
+fn query_param(url: &str, name: &str) -> Option<String> {
+    tauri::Url::parse(url)
+        .ok()?
+        .query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
 }
 
 /// Write one complete HTTP/1.0 response and close.
@@ -278,7 +299,7 @@ mod tests {
         });
 
         let (stream, _) = listener.accept().expect("accept");
-        let decided = serve(stream).expect("serve");
+        let decided = serve(stream, "xyz").expect("serve");
         (decided, client.join().expect("the client thread"))
     }
 
@@ -295,11 +316,11 @@ mod tests {
     #[test]
     fn returns_the_query_of_a_refusal() {
         let (decided, _) = round_trip(
-            "GET /auth/callback?error=access_denied&error_description=nope HTTP/1.1\r\n\r\n",
+            "GET /auth/callback?error=access_denied&error_description=nope&state=xyz HTTP/1.1\r\n\r\n",
         );
         assert_eq!(
             decided.as_deref(),
-            Some("error=access_denied&error_description=nope")
+            Some("error=access_denied&error_description=nope&state=xyz")
         );
     }
 
@@ -312,12 +333,35 @@ mod tests {
         assert!(answer.starts_with("HTTP/1.0 404 Not Found"), "{answer}");
     }
 
-    /// A callback with no query at all is still a callback, and `completeLogin`
-    /// is the one that says "came back without an authorization code".
+    /// Any page can reach the loopback port: a callback without this attempt's
+    /// `state` (forged, or a stale tab) is refused and the wait goes on.
     #[test]
-    fn accepts_a_callback_without_a_query() {
-        let (decided, _) = round_trip("GET /auth/callback HTTP/1.1\r\n\r\n");
-        assert_eq!(decided.as_deref(), Some(""));
+    fn keeps_waiting_through_a_callback_that_is_not_this_attempts() {
+        for forged in [
+            "GET /auth/callback?error=x&error_description=call+us HTTP/1.1\r\n\r\n",
+            "GET /auth/callback?code=abc&state=other HTTP/1.1\r\n\r\n",
+            "GET /auth/callback HTTP/1.1\r\n\r\n",
+        ] {
+            let (decided, answer) = round_trip(forged);
+            assert_eq!(decided, None, "{forged}");
+            assert!(answer.starts_with("HTTP/1.0 400 Bad Request"), "{answer}");
+        }
+    }
+
+    #[test]
+    fn reads_the_state_out_of_the_authorize_url() {
+        assert_eq!(
+            query_param(
+                "https://idp.test/authorize?client_id=a&state=s%2B1&code_challenge=c",
+                "state"
+            )
+            .as_deref(),
+            Some("s+1")
+        );
+        assert_eq!(
+            query_param("https://idp.test/authorize?client_id=a", "state"),
+            None
+        );
     }
 
     /// The opener must never be handed a local file or another app's scheme.
@@ -338,7 +382,7 @@ mod tests {
     /// The response has to be complete on its own — see [`respond`]'s doc.
     #[test]
     fn answers_with_a_length_and_a_close() {
-        let (_, answer) = round_trip("GET /auth/callback?code=abc HTTP/1.1\r\n\r\n");
+        let (_, answer) = round_trip("GET /auth/callback?code=abc&state=xyz HTTP/1.1\r\n\r\n");
         assert!(
             answer.contains(&format!("Content-Length: {}", DONE.len())),
             "{answer}"
