@@ -170,3 +170,31 @@ sont ouverts. Écriture seule : OK (150 publications/s, p95 9,5 ms, 0 erreur).
   - `expired_while_away` cherchait `kind = 'expired_unseen'` sans index : les 65 000 événements lus pour n'en trouver aucun (27 ms). `compacted` lisait 10 000 lignes du tas (15 ms).
   - Fix : deux index partiels (`expired_unseen` ; `revision` avec `INCLUDE (notification_id)`), le compte de compaction ne lit que les révisions (toujours adressées à un canal). 27 → 0,04 ms et 15 → 10 ms (balayage 1,6 ms, le reste est le `count(DISTINCT)` sur 10 000 lignes, seulement pour une fenêtre aussi longue). `perf:run:read` : p95 `/sync` 244 → 180 ms, 702 → 891 req/s.
   - Laissé : chaque `/sync` fait encore un upsert sur `principal_group_snapshots` (`remember_groups`) ; à sauter si groupes inchangés et vus il y a moins d'une minute, si la charge le demande.
+
+# RFC 0001 — l'instance choisie au premier lancement (2026-10-26)
+
+Phases 1 à 3 livrées pour le desktop (`fad97cd` route `client-config`, `20d9cb4` sonde
+et stockage, `5504f46` commandes + CSP réécrite + dialogue natif, `779d40d` jeton par
+instance et bundle sans instance, `87efc6c` écrans). Reste, dans l'ordre :
+
+- [ ] **Q3. La réécriture de CSP sur Android et iOS** — question ouverte n°3 de la RFC.
+  Le code de Tauri 2.12.5 appelle le hook pour tous les protocoles `tauri` (desktop et
+  mobile, `protocol/tauri.rs:188`) ; reste à prouver que la WebView Android applique la
+  CSP d'une réponse interceptée. Expérience en cours sur émulateur.
+- [ ] **Preuve §6.P sur l'AppImage** — lancer le bundle, choisir une instance, confirmer
+  la boîte native, se connecter, « Changer de serveur ». Personne ne l'a encore fait.
+- [ ] **Verrouillage d'instance** (`WNK_DESKTOP_LOCK_INSTANCE`, §4.1) — pour les
+  déploiements gérés ; aujourd'hui un preset `WNK_DESKTOP_*` pré-remplit seulement.
+- [ ] **Cache local et boucle du tray par instance** — `notify-client-core` range encore le
+  store SQLite et le profil du daemon sous `default` ; après « Changer de serveur » le
+  tray peut montrer l'ancien cache jusqu'à la prochaine synchro.
+- [ ] **Fuzz du normaliseur d'URL** (§7.3) — `notify_client_core::instance::normalise`
+  dans `fuzz/` ; demande d'ajouter `notify-client-core` au workspace de fuzz (rusqlite
+  `bundled` à compiler), ou d'isoler le normaliseur.
+- [ ] **Mobile (phase 4)** — décision 4 (schéma `weebo-notify://oauth/callback` + PKCE) à
+  porter ; `instance.rs`, `credential.rs` et `oauth.rs` sont `cfg(desktop)` ; stockage du
+  jeton dans le Keystore Android. Voir la liste mobile du 2026-10-26 (push UnifiedPush,
+  clé d'appareil X25519, déchiffrement de la sealed box, `allowBackup`, release signée).
+- [ ] **Clôturer la RFC** — section « 17. Revision against the tree », statut, `Touches`.
+- [ ] **Accessibilité, hors RFC** — les cartes de la page Réglages passent de `h1` à `h3`
+  (relevé par `accessibilite-check` le 2026-10-26, ancien et sur toute la page).
