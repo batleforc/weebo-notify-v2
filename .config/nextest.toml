@@ -65,7 +65,7 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 # The fan-out outbox claims are just as global: they lease, and retire as dead,
 # every row in `fanout_outbox`.
-filter = 'package(notify-persistence-pg) & test(/claim_leases|retry_reschedules|buried_delivery|dead_letters_past|what_a_write_owes|fanout_row/)'
+filter = 'package(notify-persistence-pg) & test(/claim_leases|retry_reschedules|buried_delivery|dead_letters_past|what_a_write_owes|fanout_row|later_revision_waits/)'
 test-group = "sink-queue"
 
 [[profile.default.overrides]]
