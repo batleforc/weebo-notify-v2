@@ -20,6 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "credential_load",
             "credential_clear",
             "credential_session",
+            "instance_probe",
+            "instance_save",
+            "instance_current",
+            "instance_clear",
         ]),
     ))?;
     Ok(())

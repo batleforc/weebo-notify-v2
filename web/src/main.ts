@@ -1,22 +1,12 @@
-import { createPinia } from "pinia";
-import { createApp } from "vue";
-import App from "@/App.vue";
-import { installAuth } from "@/api/client";
-import { i18n } from "@/i18n";
-import { markDesktop } from "@/lib/desktop";
-import { router } from "@/router";
-import "@/styles/theme.css";
+import { isDesktop } from "@/lib/desktop";
 
-// Before mount, so the first paint already has desktop styling (§10bis.3bis).
-markDesktop(document.documentElement);
+// On desktop the chosen instance (RFC 0001) replaces any baked `env.js`, and has to
+// before the app's modules load: `config.ts` reads `window.__ENV__` on import.
+if (isDesktop()) {
+  const { adoptChosenInstance } = await import("@/lib/instance");
+  await adoptChosenInstance().catch((error: unknown) => {
+    console.error("weebo-notify: the chosen server could not be read", error);
+  });
+}
 
-const app = createApp(App);
-
-app.use(createPinia());
-app.use(i18n);
-// Before the router: the first navigation runs a guard that restores the session,
-// and the guard needs a client that knows how to carry a token.
-installAuth();
-app.use(router);
-
-app.mount("#app");
+await import("./app");

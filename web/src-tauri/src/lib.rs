@@ -92,6 +92,9 @@ mod credential;
 mod oauth;
 
 #[cfg(desktop)]
+mod instance;
+
+#[cfg(desktop)]
 use std::sync::{Arc, Mutex};
 #[cfg(desktop)]
 use std::time::Duration;
@@ -298,7 +301,11 @@ pub fn run() {
         credential::credential_save,
         credential::credential_load,
         credential::credential_clear,
-        credential_session
+        credential_session,
+        instance::instance_probe,
+        instance::instance_save,
+        instance::instance_current,
+        instance::instance_clear
     ]);
 
     let context = tauri::generate_context!();
@@ -308,6 +315,13 @@ pub fn run() {
     // time (README.md « Updates and signing »). Its `Config` has no default for
     // `pubkey`, so registering it unconditionally would make every dev and
     // unsigned build fail at startup rather than merely not update.
+    // The chosen instance (RFC 0001), and the native dialog that confirms it; the
+    // dialog plugin has no entry in `capabilities/`, so only Rust can draw one.
+    #[cfg(desktop)]
+    let builder = builder
+        .manage(instance::Instances::load())
+        .plugin(tauri_plugin_dialog::init());
+
     #[cfg(desktop)]
     let builder = if context.config().plugins.0.contains_key("updater") {
         builder.plugin(tauri_plugin_updater::Builder::new().build())
@@ -403,8 +417,29 @@ pub fn run() {
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("weebo-notify")
                 .visible(true)
-                .background_color(Color(3, 0, 1, 255))
-                .build()?;
+                .background_color(Color(3, 0, 1, 255));
+            // Every page the bundle serves gets the CSP of the chosen instance
+            // (RFC 0001 §5.2): the build names no server, the shell names the one the
+            // person confirmed. Before one is chosen the built CSP stands.
+            #[cfg(desktop)]
+            let window = {
+                let instances = app.state::<std::sync::Arc<instance::Instances>>().inner().clone();
+                window.on_web_resource_request(move |_request, response| {
+                    let Some(chosen) = instances.current() else {
+                        return;
+                    };
+                    let rewritten = response
+                        .headers()
+                        .get("content-security-policy")
+                        .and_then(|value| value.to_str().ok())
+                        .map(|csp| instance::csp_for(csp, &chosen))
+                        .and_then(|csp| tauri::http::HeaderValue::from_str(&csp).ok());
+                    if let Some(value) = rewritten {
+                        response.headers_mut().insert("content-security-policy", value);
+                    }
+                })
+            };
+            let window = window.build()?;
 
             // Close hides rather than quits (§10bis.3ter): the app's normal mode of
             // life is the tray. The Linux "no tray host detected, so close really

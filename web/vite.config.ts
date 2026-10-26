@@ -237,6 +237,7 @@ export default defineConfig({
       exclude: [
         "src/api/generated/**",
         "src/main.ts",
+        "src/app.ts",
         "src/test-setup.ts",
         "**/*.spec.ts",
       ],

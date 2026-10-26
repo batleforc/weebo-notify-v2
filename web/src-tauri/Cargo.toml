@@ -64,6 +64,9 @@ serde_json = "1"
 # default feature set.
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-deep-link = "2"
+# The native "use this server?" confirmation of RFC 0001 (decision 5): called from Rust
+# only, so no `dialog:` permission reaches the webview, which therefore cannot draw it.
+tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 # Opens the authorization URL in the system browser (RFC 8252 wants an external
 # user-agent — see `oauth.rs`). The plugin rather than a `Command::new("xdg-open")`

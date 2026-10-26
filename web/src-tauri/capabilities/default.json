@@ -12,6 +12,10 @@
     "allow-credential-save",
     "allow-credential-load",
     "allow-credential-clear",
-    "allow-credential-session"
+    "allow-credential-session",
+    "allow-instance-probe",
+    "allow-instance-save",
+    "allow-instance-current",
+    "allow-instance-clear"
   ]
 }
