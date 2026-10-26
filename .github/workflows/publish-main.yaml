@@ -215,16 +215,7 @@ jobs:
           if-no-files-found: error
 
       # --- Desktop ----------------------------------------------------------
-      # No instance to bake into a desktop build yet: say so in the summary rather than
-      # fail the job (the images and the CLI still publish) or skip without a word.
-      - name: Desktop bundles skipped
-        if: vars.WNK_DESKTOP_API_BASE_URL == ''
-        run: |
-          echo "::notice::Desktop bundles skipped: set the WNK_DESKTOP_* repository variables to build them."
-          echo "Desktop bundles skipped: no \`WNK_DESKTOP_API_BASE_URL\` repository variable." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Install the GTK/WebKit stack
-        if: vars.WNK_DESKTOP_API_BASE_URL != ''
         # What `task tauri:doctor` reports on, and the reason `web/src-tauri` sits
         # outside the cargo workspace (D13): Tauri on Linux links against system C
         # libraries that mise cannot carry and a Che workspace cannot install. A
@@ -252,16 +243,14 @@ jobs:
             xdg-utils
 
       - name: Build the desktop bundles
-        if: vars.WNK_DESKTOP_API_BASE_URL != ''
         # `.deb` and AppImage, per `tauri.conf.json`'s `bundle.targets`. Unsigned:
         # neither format carries an OS-enforced signature, and what §3.2bis signs for
         # them — the minisign updater manifest and cosign provenance — belongs to the
         # release path, not to a per-commit convenience build.
         run: mise exec -- task tauri:bundle
-        # What the bundle talks to is baked in (no nginx renders env.js on a
-        # desktop): `task tauri:bundle` fails when these are unset, rather than
-        # shipping the dev stack's localhost. Repository variables, not secrets —
-        # nothing here is secret (public OIDC client, §5.1).
+        # Optional preset instance (managed deployments); unset, the app asks at
+        # first launch (RFC 0001). Repository variables, not secrets: nothing here
+        # is secret (public OIDC client, §5.1).
         env:
           WNK_API_BASE_URL: ${{ vars.WNK_DESKTOP_API_BASE_URL }}
           WNK_OIDC_ISSUER: ${{ vars.WNK_DESKTOP_OIDC_ISSUER }}
@@ -269,7 +258,6 @@ jobs:
           WNK_ATTACHMENT_ORIGIN: ${{ vars.WNK_DESKTOP_ATTACHMENT_ORIGIN }}
 
       - name: Upload the desktop bundles
-        if: vars.WNK_DESKTOP_API_BASE_URL != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: weebo-notify-desktop-linux-x64-${{ steps.sha.outputs.short }}

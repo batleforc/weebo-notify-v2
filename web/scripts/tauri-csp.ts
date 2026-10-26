@@ -1,11 +1,13 @@
 /**
  * Print the desktop shell's Content-Security-Policy as a Tauri config merge patch.
  *
- * The desktop bundle's env.js is fixed at build time — there is no nginx to render
- * it at boot — so the API and identity provider it talks to are known here, and
- * the policy names them. The static policy in `tauri.conf.json` is the fallback
- * for a build that skips this, and allows no remote origin at all: such a build
- * fails closed rather than talking to any `https:` host.
+ * A build may preset an instance (`WNK_*`, managed deployments): the policy then
+ * names its API and identity provider. Without one (RFC 0001) nothing is printed
+ * for the policy, so the static one in `tauri.conf.json` stands — it allows no
+ * remote origin — and the shell adds the origins of the instance the person
+ * chooses at first launch (`web/src-tauri/src/instance.rs`, `csp_for`). There is
+ * deliberately no fallback to `web/public/env.js`: those are the dev stack's
+ * localhost values, which a bundle must never ship.
  *
  * Inline-script hashes are not passed: Tauri hashes the bundle's inline scripts
  * into the policy itself when it embeds the assets.
@@ -16,49 +18,36 @@
  * half-configured updater. Run with `node web/scripts/tauri-csp.ts` (Node strips the types).
  */
 
-import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
-
 import { contentSecurityPolicy, originOf } from "../src/lib/csp.ts";
 import { updaterConfig } from "../src/lib/tauri-updater.ts";
 
-// `WNK_*` first: it is what `vite.config.ts` (`desktopEnv`) writes into the
-// bundle's env.js, so a release build's policy and config name the same origins.
-// `public/env.js` (the local dev stack) only for a local `task tauri:build`.
-let env: Record<string, string | undefined> | undefined;
-if (process.env.WNK_API_BASE_URL) {
-  env = {
-    apiBaseUrl: process.env.WNK_API_BASE_URL,
-    oidcIssuer: process.env.WNK_OIDC_ISSUER,
-    attachmentOrigin: process.env.WNK_ATTACHMENT_ORIGIN,
-  };
-} else {
-  const window: { __ENV__?: Record<string, string | undefined> } = {};
-  runInNewContext(
-    readFileSync(new URL("../public/env.js", import.meta.url), "utf8"),
-    { window },
-  );
-  env = window.__ENV__;
-}
-if (!env?.apiBaseUrl || !env.oidcIssuer) {
-  throw new Error(
-    "neither WNK_* nor web/public/env.js set apiBaseUrl and oidcIssuer",
-  );
+const apiBaseUrl = process.env.WNK_API_BASE_URL;
+const oidcIssuer = process.env.WNK_OIDC_ISSUER;
+if (apiBaseUrl && !oidcIssuer) {
+  throw new Error("WNK_API_BASE_URL is set but WNK_OIDC_ISSUER is not");
 }
 
-const csp = contentSecurityPolicy({
-  apiOrigin: originOf(env.apiBaseUrl),
-  oidcOrigin: originOf(env.oidcIssuer),
-  attachmentOrigin: env.attachmentOrigin && originOf(env.attachmentOrigin),
-  hashes: [],
-  // The webview's IPC to the Rust side (`invoke`), which is a fetch on Linux and
-  // Android.
-  connect: ["ipc:", "http://ipc.localhost"],
-});
+const security = apiBaseUrl
+  ? {
+      app: {
+        security: {
+          csp: contentSecurityPolicy({
+            apiOrigin: originOf(apiBaseUrl),
+            oidcOrigin: originOf(oidcIssuer ?? ""),
+            attachmentOrigin:
+              process.env.WNK_ATTACHMENT_ORIGIN &&
+              originOf(process.env.WNK_ATTACHMENT_ORIGIN),
+            hashes: [],
+            // The webview's IPC to the Rust side (`invoke`), which is a fetch on
+            // Linux and Android.
+            connect: ["ipc:", "http://ipc.localhost"],
+          }),
+        },
+      },
+    }
+  : {};
 
 const updater = process.argv.includes("--updater")
   ? updaterConfig(process.env)
   : {};
-process.stdout.write(
-  JSON.stringify({ app: { security: { csp } }, ...updater }),
-);
+process.stdout.write(JSON.stringify({ ...security, ...updater }));

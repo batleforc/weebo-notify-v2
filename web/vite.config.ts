@@ -121,6 +121,15 @@ function desktopEnv(): Plugin {
       const { WNK_API_BASE_URL, WNK_OIDC_ISSUER, WNK_OIDC_CLIENT_ID } =
         process.env;
       if (!WNK_API_BASE_URL) {
+        // A desktop build with no preset instance (RFC 0001): the shell asks at
+        // first launch, and the dev stack's `public/env.js`, copied here by Vite,
+        // must not ship as if it were one. Tauri's CLI sets TAURI_ENV_PLATFORM.
+        if (process.env.TAURI_ENV_PLATFORM) {
+          writeFileSync(
+            resolve(outDir, "env.js"),
+            "// No preset instance: the shell asks at first launch (RFC 0001).\n",
+          );
+        }
         return;
       }
       if (!WNK_OIDC_ISSUER) {

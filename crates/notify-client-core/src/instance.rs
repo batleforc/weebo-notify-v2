@@ -275,10 +275,27 @@ impl Instance {
         (vec![api, issuer], images)
     }
 
-    /// The key the shell files this instance's credential under.
+    /// The key the shell files this instance's credential under, also a directory
+    /// name for the `0600` fallback: host, port and path, everything outside
+    /// `[A-Za-z0-9.-]` as `_`, so it can never climb out of the store directory.
     #[must_use]
     pub fn id(&self) -> String {
-        self.api.as_str().trim_end_matches('/').to_owned()
+        let without_scheme = self
+            .api
+            .as_str()
+            .split_once("://")
+            .map_or(self.api.as_str(), |(_, rest)| rest)
+            .trim_end_matches('/');
+        without_scheme
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
     }
 }
 
@@ -474,6 +491,20 @@ mod tests {
     }
 
     #[test]
+    fn files_an_instance_under_a_name_that_stays_in_its_directory() {
+        let mut instance = from_client_config(
+            api(),
+            br#"{"oidc_issuer":"https://auth.example.org/","oidc_client_id":"x"}"#,
+            false,
+        )
+        .unwrap();
+        assert_eq!(instance.id(), "notify.example.org");
+        instance.api = "https://example.org:8443/weebo/../x".parse().unwrap();
+        assert_eq!(instance.id(), "example.org_8443_x");
+        assert!(!instance.id().contains('/'));
+    }
+
+    #[test]
     fn keeps_and_forgets_the_chosen_instance() {
         let dir = std::env::temp_dir().join(format!("weebo-instance-{}", std::process::id()));
         let path = dir.join("instance.toml");
@@ -547,7 +578,10 @@ mod tests {
         assert_eq!(instance.api.as_str(), format!("{base}/"));
         assert_eq!(instance.issuer.as_str(), format!("{base}/idp"));
         assert_eq!(instance.client_id, "weebo-notify");
-        assert_eq!(instance.id(), base);
+        assert_eq!(
+            instance.id(),
+            base.trim_start_matches("http://").replace(':', "_")
+        );
     }
 
     #[tokio::test]

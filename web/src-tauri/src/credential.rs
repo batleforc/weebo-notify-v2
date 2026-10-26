@@ -30,7 +30,12 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use notify_client_core::{DEFAULT_PROFILE, try_store_path, write_private};
+use tauri::State;
+
+use crate::instance::Instances;
 
 /// What the secret is filed under in the vault.
 ///
@@ -92,20 +97,24 @@ fn clear_fallback(profile: &str) -> io::Result<()> {
     clippy::needless_pass_by_value,
     reason = "a Tauri command receives its arguments owned, deserialised from the webview"
 )]
-pub(crate) fn credential_save(secret: String) -> Result<(), String> {
-    match vault(DEFAULT_PROFILE).and_then(|entry| entry.set_password(&secret)) {
+pub(crate) fn credential_save(
+    instances: State<'_, Arc<Instances>>,
+    secret: String,
+) -> Result<(), String> {
+    let profile = profile(&instances);
+    match vault(&profile).and_then(|entry| entry.set_password(&secret)) {
         Ok(()) => {
             // A file written before this machine had a vault must not outlive it,
             // or `credential_load` below would keep answering from the older of two
             // secrets after the next rotation.
-            if let Err(error) = clear_fallback(DEFAULT_PROFILE) {
+            if let Err(error) = clear_fallback(&profile) {
                 eprintln!("weebo-notify: could not remove the fallback credential: {error}");
             }
             Ok(())
         }
         Err(error) => {
             eprintln!("weebo-notify: no OS vault ({error}); using a 0600 file instead");
-            write_fallback(DEFAULT_PROFILE, &secret).map_err(|error| error.to_string())
+            write_fallback(&profile, &secret).map_err(|error| error.to_string())
         }
     }
 }
@@ -117,15 +126,30 @@ pub(crate) fn credential_save(secret: String) -> Result<(), String> {
 /// the login screen", while a vault that is present and failing is worth saying out
 /// loud rather than silently treating as a fresh install.
 #[tauri::command]
-pub(crate) fn credential_load() -> Result<Option<String>, String> {
-    match vault(DEFAULT_PROFILE).and_then(|entry| entry.get_password()) {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments owned, `State` included"
+)]
+pub(crate) fn credential_load(
+    instances: State<'_, Arc<Instances>>,
+) -> Result<Option<String>, String> {
+    let profile = profile(&instances);
+    match vault(&profile).and_then(|entry| entry.get_password()) {
         Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => read_fallback(DEFAULT_PROFILE),
+        Err(keyring::Error::NoEntry) => read_fallback(&profile),
         Err(error) => {
             eprintln!("weebo-notify: no OS vault ({error}); reading the 0600 file instead");
-            read_fallback(DEFAULT_PROFILE)
+            read_fallback(&profile)
         }
     }
+}
+
+/// Whose credential: the chosen instance's (RFC 0001), so a token obtained for one
+/// is never read for another; `default` for a build that presets its instance.
+fn profile(instances: &Instances) -> String {
+    instances
+        .current()
+        .map_or_else(|| DEFAULT_PROFILE.to_owned(), |chosen| chosen.id())
 }
 
 fn read_fallback(profile: &str) -> Result<Option<String>, String> {
@@ -149,13 +173,18 @@ fn read_fallback(profile: &str) -> Result<Option<String>, String> {
     clippy::unnecessary_wraps,
     reason = "`invoke` in `web/src/auth/credential.ts` expects the same shape as the other credential commands"
 )]
-pub(crate) fn credential_clear() -> Result<(), String> {
-    match vault(DEFAULT_PROFILE).and_then(|entry| entry.delete_credential()) {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments owned, `State` included"
+)]
+pub(crate) fn credential_clear(instances: State<'_, Arc<Instances>>) -> Result<(), String> {
+    let profile = profile(&instances);
+    match vault(&profile).and_then(|entry| entry.delete_credential()) {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(error) => eprintln!("weebo-notify: could not clear the vault entry: {error}"),
     }
 
-    if let Err(error) = clear_fallback(DEFAULT_PROFILE) {
+    if let Err(error) = clear_fallback(&profile) {
         eprintln!("weebo-notify: could not remove the fallback credential: {error}");
     }
 
