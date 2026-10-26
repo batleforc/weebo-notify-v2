@@ -467,6 +467,11 @@
         "ci": "CI token",
         "device": "enrolled device"
       }
+    },
+    "server": {
+      "title": "Server",
+      "current": "This app uses",
+      "change": "Change server"
     }
   },
   "problem": {
@@ -489,5 +494,14 @@
   "toaster": {
     "region": "Notifications",
     "close": "Close"
+  },
+  "instance": {
+    "title": "Which server?",
+    "help": "Enter the address of your organisation's weebo-notify server. The app checks it, then asks you to confirm where you will sign in.",
+    "address": "Server address",
+    "continue": "Continue",
+    "checking": "Checking…",
+    "declined": "Not saved: you chose not to use this server.",
+    "refused": "This server cannot be used: {reason}"
   }
 }

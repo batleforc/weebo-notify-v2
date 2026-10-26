@@ -24,6 +24,7 @@ import { useSession } from "@/auth/session";
 import ConnectionsPanel from "@/components/settings/ConnectionsPanel.vue";
 import DndPanel from "@/components/settings/DndPanel.vue";
 import PushPanel from "@/components/settings/PushPanel.vue";
+import ServerPanel from "@/components/settings/ServerPanel.vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -454,6 +455,7 @@ const appearance = computed(() => [
     <ConnectionsPanel />
 
     <PushPanel v-if="!desktop" />
+    <ServerPanel v-if="desktop" />
 
     <DndPanel />
 

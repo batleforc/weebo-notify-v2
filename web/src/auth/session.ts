@@ -382,7 +382,10 @@ export const useSession = defineStore("session", () => {
   }
 
   /** Sign out here, and at the provider when it offers a way to. */
-  async function logout(): Promise<void> {
+  async function logout(options?: {
+    /** Desktop: run once signed out, before the reload ("Change server"). */
+    afterSignOut?: () => Promise<void>;
+  }): Promise<void> {
     // Revoke the device while there is still a token to do it with. Best-effort
     // and bounded: a slow or unreachable API must not keep someone signed in.
     await Promise.race([
@@ -428,6 +431,7 @@ export const useSession = defineStore("session", () => {
       }
     }
 
+    await options?.afterSignOut?.();
     // A reload, not a push, so no component keeps the previous session's data.
     window.location.assign("/");
   }

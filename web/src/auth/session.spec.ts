@@ -210,6 +210,25 @@ describe("session — where the refresh token rests", () => {
       expect(credential.clear).toHaveBeenCalled();
       expect(store.authenticated).toBe(false);
     });
+
+    it('runs "Change server" once signed out, before the reload', async () => {
+      credential.load.mockResolvedValue("refresh-1");
+      const store = await session(true);
+      await store.restore();
+      const order: string[] = [];
+      const assign = vi.fn(() => order.push("reload"));
+      vi.stubGlobal("location", { ...window.location, assign });
+
+      await store.logout({
+        afterSignOut: async () => {
+          order.push(
+            store.authenticated ? "still signed in" : "forget instance",
+          );
+        },
+      });
+
+      expect(order).toEqual(["forget instance", "reload"]);
+    });
   });
 
   describe("in a browser", () => {

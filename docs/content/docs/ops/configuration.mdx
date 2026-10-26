@@ -139,6 +139,16 @@ unset list is empty: every login then fails with `invalid_grant` and the server 
 says `Invalid grant_type for provider`. `dev/authentik/blueprints/weebo-notify.yaml` is
 a working example; its `password` grant is there for the compatibility tests only.
 
+The desktop app needs two more things from an instance it can be pointed at
+(RFC 0001): the provider registers `http://127.0.0.1:1420/auth/callback` as a
+redirect URI for the same client (the app signs in through the system browser and
+a loopback listener), and `GET /api/v1/client-config` is reachable through the
+ingress without a token. That route publishes the issuer, the client id and the
+attachment origin, the same public values the web image puts in `env.js`. A
+desktop build no longer needs any of this baked in: it asks for the server at
+first launch, shows the identity provider it names, and confirms through a native
+dialog before storing it.
+
 ## Identity provider: unverified email
 
 ```toml

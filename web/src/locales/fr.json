@@ -467,6 +467,11 @@
         "ci": "jeton CI",
         "device": "appareil enrôlé"
       }
+    },
+    "server": {
+      "title": "Serveur",
+      "current": "Cette app utilise",
+      "change": "Changer de serveur"
     }
   },
   "problem": {
@@ -489,5 +494,14 @@
   "toaster": {
     "region": "Notifications",
     "close": "Fermer"
+  },
+  "instance": {
+    "title": "Quel serveur ?",
+    "help": "Saisissez l'adresse du serveur weebo-notify de votre organisation. L'app la vérifie, puis vous demande de confirmer où vous allez vous connecter.",
+    "address": "Adresse du serveur",
+    "continue": "Continuer",
+    "checking": "Vérification…",
+    "declined": "Non enregistré : vous avez choisi de ne pas utiliser ce serveur.",
+    "refused": "Ce serveur ne peut pas être utilisé : {reason}"
   }
 }
