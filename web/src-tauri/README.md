@@ -84,6 +84,15 @@ Without that section the app simply never updates — nothing fails.
    endpoint serves. Nothing is committed to `tauri.conf.json`, so a build without
    the secrets can never turn into one that updates.
 
+**What the signature does not cover: the manifest.** minisign signs each bundle, not
+`latest.json`, so the `version` the plugin compares against the installed one is a
+label nobody signed. Whoever controls the endpoint can serve an *older*, genuinely
+signed build labelled `9.9.9`, and every desktop installs it on its next launch
+(a downgrade to a known-vulnerable release). Until the client checks the version
+inside the bundle it downloaded, treat the endpoint as release infrastructure: serve
+it from the release pipeline only, over HTTPS, from a host only that pipeline can
+write, and generate each manifest from its own tag.
+
 The signature checked here is the updater's own (minisign), and it is what makes an
 update trustworthy. It is not OS code signing, which needs certificates this project
 does not have — so it is not wired, only described. What Tauri expects when they

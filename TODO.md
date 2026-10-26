@@ -72,7 +72,7 @@ corrigé **et** testé. Les constats marqués *plausible* n'ont pas été tracé
   - Fix : résoudre « quiet ou non » une fois par propriétaire distinct avant le `for_each_concurrent`, map consultée dans `push_one`.
 
 - [x] **15. `/api/docs` charge Scalar depuis `cdn.jsdelivr.net` sans version ni SRI** — `crates/notify-server/src/main.rs:286-291`, `config.rs:201,212` *(plausible : template utoipa-scalar 0.3 lu, 0.4 non vérifié)*
-  - Page activée par défaut, sans auth, JS tiers hors de la chaîne épinglée revendiquée par l'ADR-0023 §7.
+  - Page activée par défaut, sans auth, JS tiers hors de la chaîne épinglée revendiquée par l'ADR-0023 §8 (adversaire chaîne d'approvisionnement).
   - Fix : `docs = false` par défaut, ou `Scalar::custom_html` avec version épinglée + `integrity=`.
 
 - [x] **16. Tests manquants**
