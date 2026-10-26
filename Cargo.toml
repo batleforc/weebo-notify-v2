@@ -33,7 +33,7 @@ exclude = ["web/src-tauri"]
 
 [workspace.package]
 # One product version (§3.2bis); `cog bump` syncs it to web/ and tauri.conf.json.
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # 1.94 because sqlx 0.9 requires it (our own floor is 1.89, for `File::try_lock`,
 # §9.3bis). Cargo resolves against this, so an understated value holds crates back.

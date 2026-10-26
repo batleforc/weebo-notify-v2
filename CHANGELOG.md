@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.1.1](https://github.com/batleforc/weebo-notify-v2/compare/0cc149be414fc230ab3493034bdd49d078f7f5be..v0.1.1) - 2026-10-26
+#### Bug Fixes
+- (**web**) allow OIDC token endpoint in CSP - ([0cc149b](https://github.com/batleforc/weebo-notify-v2/commit/0cc149be414fc230ab3493034bdd49d078f7f5be)) - Max Batleforc
+
+- - -
+
 ## [v0.1.0](https://github.com/batleforc/weebo-notify-v2/compare/v0.1.0-rc.1..v0.1.0) - 2026-10-26
 #### Features
 - (**api**) GET /api/v1/client-config, what a native client needs to sign in - ([fad97cd](https://github.com/batleforc/weebo-notify-v2/commit/fad97cdb2dfb39b4244250d75763fdec2db2191c)) - Max Batleforc, Claude Opus 5.5
