@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.1.3](https://github.com/batleforc/weebo-notify-v2/compare/4691f661f0a9199c30cd05d85dd0bf4ca03d2058..v0.1.3) - 2026-10-26
+#### Bug Fixes
+- (**oidc**) support in-cluster issuer resolution - ([4691f66](https://github.com/batleforc/weebo-notify-v2/commit/4691f661f0a9199c30cd05d85dd0bf4ca03d2058)) - Max Batleforc
+
+- - -
+
 ## [v0.1.2](https://github.com/batleforc/weebo-notify-v2/compare/a823442b3d51ec400d6d73f261b19edf3b09318c..v0.1.2) - 2026-10-26
 #### Bug Fixes
 - (**web**) export CSP origins - ([a823442](https://github.com/batleforc/weebo-notify-v2/commit/a823442b3d51ec400d6d73f261b19edf3b09318c)) - Max Batleforc
