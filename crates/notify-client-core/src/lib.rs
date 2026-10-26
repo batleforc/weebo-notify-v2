@@ -7,6 +7,7 @@ mod deeplink;
 mod dnd;
 mod election;
 mod error;
+pub mod instance;
 mod session;
 mod signal;
 mod store;
