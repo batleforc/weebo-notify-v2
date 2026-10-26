@@ -1,8 +1,9 @@
 # ZAP rule overrides for `task audit:dast`: <rule id>\t<IGNORE|WARN|FAIL>\t<reason>.
-# None yet. Every warning of the first run (2026-10-26) was triaged and kept at WARN,
+# None yet. Every warning of the first runs (2026-10-26, without and with a token) was triaged and kept at WARN,
 # so a new instance of it still shows; the verdicts, for the next reader:
-#   100000 Server error (API): a 501 from /auth/token/exchange, federation not configured
-#          in config/e2e.toml. Not silenced: the same rule is how a real 500 shows up.
+#   100000 Server error (API): 501s only, for what config/e2e.toml leaves off: federation
+#          (/auth/token/exchange), Web Push (/push/webpush), the CLI download (/cli).
+#          Not silenced: the same rule is how a real 500 shows up.
 #   10024  Token in URL (API): presigned attachment URLs and the ntfy/Gotify/Alertmanager
 #          compat endpoints, whose clients send the token that way. By design.
 #   90004  CORP missing (API /healthz): harmless; CORP on the API would block attachment

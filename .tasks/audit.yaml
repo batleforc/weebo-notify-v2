@@ -101,16 +101,22 @@ tasks:
   dast:
     desc: "Scan a running instance with OWASP ZAP: baseline on the real web image, API scan from the OpenAPI spec — needs Postgres (task dev:core) and a container engine; reports in target/dast/"
     # Not in `audit:default`: it boots a stack. The web side is the nginx image, not
-    # `vite preview`, because its CSP and headers are what gets deployed. The API scan
-    # is unauthenticated: every route must refuse without a token, and how it refuses
-    # (status, headers, error bodies) is what ZAP judges. Fails on a ZAP FAIL;
-    # warnings are reported, and accepted ones live in .zap/rules.tsv with a reason.
+    # `vite preview`, because its CSP and headers are what gets deployed. The API is
+    # scanned twice: without a token (every route must refuse, and how it refuses is
+    # what ZAP judges), then as alice, a platform admin from the oidc mock, so the
+    # active scan reaches every route, /admin included. That pass writes and deletes,
+    # hence its own database, recreated each run and never the dev one. Fails on a ZAP
+    # FAIL; warnings are reported, and accepted ones live in .zap/rules.tsv with a reason.
     vars:
       ENGINE:
         sh: if [ -n "${ENGINE:-}" ]; then echo "$ENGINE"; elif command -v docker >/dev/null 2>&1; then echo docker; else echo podman; fi
       # Digest-pinned like every image this repository runs; zaproxy:stable of 2026-10-16.
       ZAP: ghcr.io/zaproxy/zaproxy@sha256:241fd55e438fce3b6b092fdb68348581c28e391b094644ef506c1e3be4a31a78
       WEB_IMAGE: '{{.WEB_IMAGE | default "ghcr.io/batleforc/weebo-notify-v2-web:dev"}}'
+      # Same pinned image as the e2e job's service, used here only as a psql client.
+      POSTGRES: docker.io/library/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+      PG_ADMIN_URL: '{{.PG_ADMIN_URL | default "postgres://weebo:weebo@localhost:5432/postgres"}}'
+      DAST_DB_URL: '{{.DAST_DB_URL | default "postgres://weebo:weebo@localhost:5432/weebo_dast"}}'
     cmds:
       - cmd: |
           bash -euo pipefail <<'SH'
@@ -119,8 +125,10 @@ tasks:
           mkdir -p target/dast && chmod 777 target/dast
           cp docs/content/docs/api/openapi.json target/dast/openapi.json
           cp .zap/rules.tsv target/dast/rules.tsv
+          psql() { {{.ENGINE}} run --rm --network host {{.POSTGRES}} psql "$@"; }
+          psql "{{.PG_ADMIN_URL}}" -qc "DROP DATABASE IF EXISTS weebo_dast WITH (FORCE)" -c "CREATE DATABASE weebo_dast"
           ./target/debug/oidc-mock --identities dev/oidc-mock/identities.toml &
-          ./target/debug/notify-server --config config/e2e.toml &
+          WNK_DATABASE__URL="{{.DAST_DB_URL}}" ./target/debug/notify-server --config config/e2e.toml &
           {{.ENGINE}} run -d --rm --name wnk-dast-web -p 127.0.0.1:5173:8080 \
             -e WNK_API_BASE_URL=http://localhost:8080 -e WNK_OIDC_ISSUER=http://localhost:9110 \
             -e WNK_OIDC_CLIENT_ID=weebo-notify -e WNK_ATTACHMENT_ORIGIN=http://localhost:8080 \
@@ -136,7 +144,36 @@ tasks:
           status=0
           zap zap-api-scan.py -t /zap/wrk/openapi.json -f openapi -O http://localhost:8080 -c rules.tsv -r api.html -J api.json -I || status=$?
           [ "$status" -eq 0 ] || [ "$status" -eq 2 ] || { echo "ZAP API scan exited $status"; exit 1; }
-          echo "Reports: target/dast/web.html, target/dast/api.html"
+
+          # alice's access token, through the mock's real code + PKCE flow (15 min, enough for one pass).
+          verifier=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
+          challenge=$(python3 -c 'import base64, hashlib, sys; print(base64.urlsafe_b64encode(hashlib.sha256(sys.argv[1].encode()).digest()).rstrip(b"=").decode())' "$verifier")
+          redirect=http://localhost:5173/auth/callback
+          request=$(curl -fsS -G http://localhost:9110/authorize --data-urlencode response_type=code \
+              --data-urlencode client_id=weebo-notify --data-urlencode redirect_uri=$redirect \
+              --data-urlencode "scope=openid profile email groups" --data-urlencode state=dast \
+              --data-urlencode code_challenge="$challenge" --data-urlencode code_challenge_method=S256 \
+            | sed -n 's/.*name="request" value="\([^"]*\)".*/\1/p' | head -1)
+          location=$(curl -fsS -o /dev/null -w '%{redirect_url}' -X POST http://localhost:9110/authorize \
+            --data-urlencode request="$request" --data-urlencode username=alice --data-urlencode password=weebo-dev)
+          code=$(python3 -c 'import sys, urllib.parse as u; print(u.parse_qs(u.urlsplit(sys.argv[1]).query)["code"][0])' "$location")
+          token=$(curl -fsS -X POST http://localhost:9110/token --data-urlencode grant_type=authorization_code \
+              --data-urlencode code="$code" --data-urlencode redirect_uri=$redirect \
+              --data-urlencode client_id=weebo-notify --data-urlencode code_verifier="$verifier" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+          # The first request makes the user, the way a browser sign-in would.
+          curl -fsS -o /dev/null -H "Authorization: Bearer $token" http://localhost:8080/api/v1/me
+          # A replacer rule sets the header on every request; quoted for zap_common's
+          # shlex split (ZAP_AUTH_HEADER_VALUE is not read by these packaged scans).
+          replace="-config replacer.full_list(0)"
+          auth="$replace.description=auth $replace.enabled=true $replace.matchtype=REQ_HEADER"
+          auth="$auth $replace.matchstr=Authorization $replace.regex=false"
+          auth="$auth -config 'replacer.full_list(0).replacement=Bearer $token'"
+          status=0
+          zap zap-api-scan.py -t /zap/wrk/openapi.json -f openapi -O http://localhost:8080 \
+            -c rules.tsv -r api-auth.html -J api-auth.json -I -z "$auth" || status=$?
+          [ "$status" -eq 0 ] || [ "$status" -eq 2 ] || { echo "ZAP authenticated API scan exited $status"; exit 1; }
+          echo "Reports: target/dast/web.html, target/dast/api.html, target/dast/api-auth.html"
           SH
 
   image:
