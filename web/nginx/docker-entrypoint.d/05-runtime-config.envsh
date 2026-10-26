@@ -71,6 +71,7 @@ WNK_API_ORIGIN="$(printf '%s' "$WNK_API_BASE_URL" | sed -E 's#^(https?://[^/]+).
 WNK_OIDC_ORIGIN="$(printf '%s' "$WNK_OIDC_ISSUER" | sed -E 's#^(https?://[^/]+).*$#\1#')"
 [ -n "$WNK_API_ORIGIN" ] || { echo "05-runtime-config: failed to derive WNK_API_ORIGIN" >&2; exit 1; }
 [ -n "$WNK_OIDC_ORIGIN" ] || { echo "05-runtime-config: failed to derive WNK_OIDC_ORIGIN" >&2; exit 1; }
+export WNK_API_ORIGIN WNK_OIDC_ORIGIN
 unset -f wnk_check
 unset wnk_url_re wnk_nl wnk_v wnk_v_ok
 
