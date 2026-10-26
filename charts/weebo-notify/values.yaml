@@ -124,6 +124,10 @@ server:
 
   podAnnotations: {}
   podLabels: {}
+  # Optional split-horizon entries for issuers whose public ingress cannot be
+  # hairpinned from the cluster. The URL/Host header remains the public issuer;
+  # only the pod's DNS resolution is redirected to the in-cluster Service.
+  hostAliases: []
   nodeSelector: {}
   tolerations: []
   affinity: {}

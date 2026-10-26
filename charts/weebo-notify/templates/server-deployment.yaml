@@ -58,6 +58,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "weebo-notify.componentFullname" (dict "ctx" . "component" "server") }}
+      {{- with .Values.server.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.server.podSecurityContext | nindent 8 }}
       # Outlives .shutdown_timeout(15) in notify-server's own drain (main.rs),
