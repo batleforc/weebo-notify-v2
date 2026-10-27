@@ -1,6 +1,8 @@
 //! Every query in this adapter against a real Postgres, matching the in-memory double's semantics
 //! (the reason `sqlx::query!` is not needed). Under `mod e2e`; skipped without a database.
-//! Tests share the database and isolate by fresh ULID-named channels.
+//! Each test runs in its own database, cloned from a template that holds the migrated
+//! schema, so no test reads rows another test or an earlier run wrote. The configured
+//! database is only the door in: its role must be allowed to create databases.
 
 #![expect(
     clippy::arithmetic_side_effects,
@@ -40,16 +42,169 @@ mod e2e {
             .ok()
     }
 
-    /// The database under test, or `None` when there is not one.
-    async fn store() -> Option<PgStore> {
+    /// Names this suite creates; anything under it on the server is ours to drop.
+    const PREFIX: &str = "wnk_conf_";
+
+    /// A clone this much older than now belongs to a run that is over.
+    const STALE_CLONE_SECONDS: i64 = 3_600;
+
+    /// Any constant both build and wait on, so one process builds the template.
+    const TEMPLATE_LOCK: i64 = 0x0057_4e4b_434f_4e46;
+
+    /// A test's own database, dropped when the test ends, failed or not.
+    struct Database {
+        url: String,
+        name: String,
+    }
+
+    impl Drop for Database {
+        fn drop(&mut self) {
+            let (url, name) = (self.url.clone(), self.name.clone());
+            // `drop` cannot await, and the test's runtime may be unwinding: a thread
+            // and a runtime of its own. `FORCE` closes the store's connections.
+            let dropped = std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                runtime.block_on(async {
+                    sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"
+                    )))
+                    .execute(&mut admin(&url).await)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+                })
+            })
+            .join();
+            if !matches!(dropped, Ok(Ok(()))) {
+                eprintln!("left {} in place: a later run drops it", self.name);
+            }
+        }
+    }
+
+    /// This test's own database, or `None` when there is no server to make it on.
+    async fn store() -> Option<(Database, PgStore)> {
         let url = database_url()?;
+        let template = template(&url).await;
 
-        let store = PgStore::connect(&url, 8)
+        // The creation time leads the name, so a later run can tell a stale clone.
+        let name = format!(
+            "{PREFIX}{}_{}",
+            OffsetDateTime::now_utc().unix_timestamp(),
+            ulid_slug()
+        );
+        let mut admin = admin(&url).await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE \"{name}\" TEMPLATE \"{template}\""
+        )))
+        .execute(&mut admin)
+        .await
+        .expect("the test role may create a database");
+
+        let store = PgStore::connect(&database_on(&url, &name), 8)
             .await
-            .expect("the configured database accepts connections");
-        store.migrate().await.expect("migrations apply");
+            .expect("the clone accepts connections");
+        Some((Database { url, name }, store))
+    }
 
-        Some(store)
+    /// The migrated template for this build's migrations, built by whichever process
+    /// gets there first. `cargo nextest` runs each test in a process of its own, so
+    /// the lock is Postgres's, not a `OnceCell`.
+    async fn template(url: &str) -> String {
+        use std::hash::{Hash as _, Hasher as _};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for migration in notify_persistence_pg::MIGRATIONS.iter() {
+            migration.version.hash(&mut hasher);
+            migration.checksum.hash(&mut hasher);
+        }
+        let name = format!("{PREFIX}tmpl_{:016x}", hasher.finish());
+
+        let mut admin = admin(url).await;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(TEMPLATE_LOCK)
+            .execute(&mut admin)
+            .await
+            .expect("the advisory lock");
+
+        let databases: Vec<String> = sqlx::query_scalar("SELECT datname FROM pg_database")
+            .fetch_all(&mut admin)
+            .await
+            .expect("the database list");
+        if !databases.contains(&name) {
+            // Built under another name and renamed once migrated, so a process killed
+            // halfway never leaves a template that looks finished.
+            let building = format!("{name}_building");
+            for statement in [
+                format!("DROP DATABASE IF EXISTS \"{building}\" WITH (FORCE)"),
+                format!("CREATE DATABASE \"{building}\""),
+            ] {
+                sqlx::query(sqlx::AssertSqlSafe(statement))
+                    .execute(&mut admin)
+                    .await
+                    .expect("the test role may create a database");
+            }
+            let store = PgStore::connect(&database_on(url, &building), 2)
+                .await
+                .expect("the new template accepts connections");
+            store.migrate().await.expect("migrations apply");
+            store.pool().close().await;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER DATABASE \"{building}\" RENAME TO \"{name}\""
+            )))
+            .execute(&mut admin)
+            .await
+            .expect("the template is renamed");
+        }
+
+        // Templates of other migration sets, and clones of runs that are over.
+        let cutoff = OffsetDateTime::now_utc().unix_timestamp() - STALE_CLONE_SECONDS;
+        for stale in databases.iter().filter(|database| {
+            let Some(rest) = database.strip_prefix(PREFIX) else {
+                return false;
+            };
+            match rest.split_once('_') {
+                Some(("tmpl", _)) => **database != name && !database.ends_with("_building"),
+                Some((created, _)) => created.parse::<i64>().is_ok_and(|at| at < cutoff),
+                None => false,
+            }
+        }) {
+            // Best effort: a database still in use by a concurrent run is left for later.
+            let dropped = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS \"{stale}\""
+            )))
+            .execute(&mut admin)
+            .await;
+            if let Err(error) = dropped {
+                eprintln!("left {stale} in place: {error}");
+            }
+        }
+
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(TEMPLATE_LOCK)
+            .execute(&mut admin)
+            .await
+            .expect("the advisory unlock");
+        name
+    }
+
+    /// A connection to the configured database, to create and drop the others from.
+    async fn admin(url: &str) -> sqlx::PgConnection {
+        use sqlx::Connection as _;
+        sqlx::PgConnection::connect(url)
+            .await
+            .expect("the configured database accepts connections")
+    }
+
+    /// `url` pointed at another database on the same server.
+    fn database_on(url: &str, database: &str) -> String {
+        let (server, rest) = url.rsplit_once('/').expect("a database url has a path");
+        match rest.split_once('?') {
+            Some((_, query)) => format!("{server}/{database}?{query}"),
+            None => format!("{server}/{database}"),
+        }
     }
 
     /// No database configured: skip — unless `WNK_TEST_REQUIRE_DB` is set, which is
@@ -63,16 +218,14 @@ mod e2e {
         eprintln!("no WNK_TEST_DATABASE_URL or DATABASE_URL — skipping");
     }
 
-    /// Skip cleanly when no database is configured.
+    /// `store!(store);` binds this test's store, or skips cleanly when no database is
+    /// configured. Its database lives as long as the enclosing block.
     macro_rules! store {
-        () => {
-            match store().await {
-                Some(store) => store,
-                None => {
-                    skip_without_database();
-                    return;
-                }
-            }
+        ($store:ident) => {
+            let Some((_database, $store)) = store().await else {
+                skip_without_database();
+                return;
+            };
         };
     }
 
@@ -158,7 +311,7 @@ mod e2e {
     async fn feed_state_round_trips_and_saves_only_from_the_current_version() {
         use notify_ports::{FeedKey, FeedState, PendingItem};
 
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let now = now();
@@ -325,7 +478,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_published_notification_comes_back_with_its_head_revision() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -347,7 +500,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_revision_moves_the_head_and_keeps_the_history() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (mut published, first) = publish(&store, &channel, &alice, "deploy prod").await;
@@ -394,7 +547,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_revision_written_from_a_stale_read_conflicts_instead_of_landing() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (snapshot, _) = publish(&store, &channel, &alice, "deploy prod").await;
@@ -437,7 +590,7 @@ mod e2e {
 
     #[tokio::test]
     async fn two_publishers_racing_on_one_external_id_produce_one_notification() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let external = ExternalId::parse("run-4521").unwrap();
@@ -484,7 +637,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_expired_holder_of_the_external_id_is_retired_even_while_the_sweep_has_it() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let external = ExternalId::parse("run-expired").unwrap();
@@ -544,7 +697,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_inbox_narrows_on_every_filter_it_offers() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -636,7 +789,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_inbox_page_follows_its_cursor_without_gaps_or_repeats() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -683,7 +836,7 @@ mod e2e {
     async fn an_inbox_over_several_channels_pages_in_one_order() {
         // The query takes a page per channel and merges them: interleaved channels
         // must still come back newest first, every row once.
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let a = seeded_channel(&store, &alice).await;
         let b = seeded_channel(&store, &alice).await;
@@ -719,7 +872,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_search_cannot_reach_outside_the_channels_it_was_given() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, bob) = user();
         let mine = seeded_channel(&store, &alice).await;
@@ -756,7 +909,7 @@ mod e2e {
 
     #[tokio::test]
     async fn deleting_twice_emits_one_tombstone() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (published, _) = publish(&store, &channel, &alice, "mistake").await;
@@ -782,7 +935,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t9_an_undelivered_expired_notification_is_counted_not_backlogged() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -839,7 +992,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_expired_notification_somebody_saw_gets_a_tombstone() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -899,7 +1052,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_expiry_sweep_skips_a_row_a_receipt_is_being_written_against() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (published, _) = publish_with(
@@ -945,7 +1098,7 @@ mod e2e {
     #[tokio::test]
     async fn the_attachments_of_doomed_rows_are_named_and_the_others_are_not() {
         // `content->'image'->>'ref'` type-checks in Rust and can still match nothing in Postgres.
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -1018,7 +1171,7 @@ mod e2e {
     #[tokio::test]
     async fn a_signed_upload_nobody_referenced_becomes_collectable_once_it_is_old() {
         // The registry records an id until a revision names it; `NOT EXISTS` decides.
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -1085,7 +1238,7 @@ mod e2e {
     #[tokio::test]
     async fn an_attachment_is_visible_exactly_where_a_notification_shows_it() {
         // The authorisation behind `GET /attachments/{id}`: readable iff something showing it is.
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let elsewhere = seeded_channel(&store, &alice).await;
@@ -1151,14 +1304,14 @@ mod e2e {
 
     #[tokio::test]
     async fn forgetting_nothing_is_not_a_query() {
-        let store = store!();
+        store!(store);
         assert_eq!(registry(&store).forget(&[]).await.unwrap(), 0);
     }
 
     #[tokio::test]
     async fn nothing_expiring_means_nothing_to_collect() {
         // Guards the `NOT IN`-over-NULL trap.
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let reference = AttachmentId::generate();
@@ -1192,7 +1345,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_tombstoned_row_only_goes_once_its_grace_period_has_passed() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (published, _) = publish(&store, &channel, &alice, "will be purged").await;
@@ -1223,7 +1376,7 @@ mod e2e {
     /// The whole stale-closure sweep: closed, retention starts, the purge sees it.
     #[tokio::test]
     async fn close_stale_closes_what_nobody_has_touched() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -1303,7 +1456,7 @@ mod e2e {
     /// Both kinds of activity (revision and interaction) keep a notification open.
     #[tokio::test]
     async fn close_stale_leaves_anything_with_recent_activity_alone() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -1387,7 +1540,7 @@ mod e2e {
     /// A channel absent from the deadlines is never looked at.
     #[tokio::test]
     async fn close_stale_only_touches_the_channels_it_was_given() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let swept = seeded_channel(&store, &alice).await;
         let spared = seeded_channel(&store, &alice).await;
@@ -1440,7 +1593,7 @@ mod e2e {
     /// Idempotent: a closed notification is not a candidate again.
     #[tokio::test]
     async fn close_stale_is_idempotent() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -1472,7 +1625,7 @@ mod e2e {
     /// A simple notification is born closed, so never a candidate.
     #[tokio::test]
     async fn close_stale_ignores_simple_notifications() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -1510,7 +1663,7 @@ mod e2e {
     /// `all_policies` must round-trip `close_after` through JSON.
     #[tokio::test]
     async fn all_policies_round_trips_close_after() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let id = seeded_channel(&store, &alice).await;
 
@@ -1530,7 +1683,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_channel_round_trips_with_its_members_and_policy() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, bob) = user();
 
@@ -1556,7 +1709,7 @@ mod e2e {
 
     #[tokio::test]
     async fn upserting_a_channel_replaces_its_members_rather_than_adding_to_them() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, bob) = user();
         let id = seeded_channel(&store, &alice).await;
@@ -1577,7 +1730,7 @@ mod e2e {
 
     #[tokio::test]
     async fn creating_a_name_that_exists_conflicts_instead_of_taking_it_over() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, mallory) = user();
         let id = seeded_channel(&store, &alice).await;
@@ -1596,7 +1749,7 @@ mod e2e {
 
     #[tokio::test]
     async fn member_and_policy_writes_leave_everything_else_alone() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, bob) = user();
         let (_, carol) = user();
@@ -1639,7 +1792,7 @@ mod e2e {
 
     #[tokio::test]
     async fn membership_is_the_only_door_to_a_channel() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, bob) = user();
         let mine = seeded_channel(&store, &alice).await;
@@ -1665,7 +1818,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_group_binding_scopes_a_caller_who_is_not_a_member_of_anything() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let (_, carol) = user();
         let group = fresh_group();
@@ -1736,7 +1889,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_caller_who_is_both_a_member_and_in_a_bound_group_gets_the_channel_once() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let group = fresh_group();
 
@@ -1760,7 +1913,7 @@ mod e2e {
 
     #[tokio::test]
     async fn removing_a_group_binding_actually_removes_the_access() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let group = fresh_group();
 
@@ -1784,7 +1937,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_managed_channel_is_listed_for_the_reconciler_and_a_dynamic_one_is_not() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
 
         let dynamic = seeded_channel(&store, &alice).await;
@@ -1816,7 +1969,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_user_is_found_by_every_handle_the_config_can_bind_on() {
-        let store = store!();
+        store!(store);
         let subject = format!("oidc-{}", ulid_slug());
         let email = format!("{}@weebo.local", ulid_slug());
 
@@ -1909,7 +2062,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_service_account_round_trips_and_reports_its_origin() {
-        let store = store!();
+        store!(store);
         let id = ServiceAccountId::parse(&format!("bot-{}", ulid_slug())).unwrap();
 
         let account = ServiceAccount {
@@ -1948,7 +2101,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_api_key_authenticates_by_prefix_and_dies_on_revocation() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let prefix = ApiKeyPrefix::parse(fresh_prefix().as_str()).unwrap();
 
@@ -2009,7 +2162,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_channels_keys_are_listed_by_that_channel() {
-        let store = store!();
+        store!(store);
         let channel = fresh_channel();
         let key = ApiKey {
             id: ApiKeyId::generate(),
@@ -2049,7 +2202,7 @@ mod e2e {
     #[tokio::test]
     async fn a_platform_admins_ceiling_on_a_key_round_trips_through_a_widened_column() {
         // The `BIGINT` column holds values near the top of `u32`.
-        let store = store!();
+        store!(store);
         let (alice_id, _alice) = user();
         let key = ApiKey {
             id: ApiKeyId::generate(),
@@ -2099,7 +2252,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t25_disabling_a_service_account_takes_every_key_with_it() {
-        let store = store!();
+        store!(store);
         let account = ServiceAccountId::parse(&format!("bot-{}", ulid_slug())).unwrap();
         let principal = Principal::ServiceAccount {
             id: account.clone(),
@@ -2150,7 +2303,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_device_round_trips_with_its_transport_and_key() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
 
         let device = Device {
@@ -2186,7 +2339,7 @@ mod e2e {
 
     #[tokio::test]
     async fn enrolments_racing_at_the_device_cap_land_exactly_one() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let enrol = |label: &str| Device {
             id: DeviceId::generate(),
@@ -2237,7 +2390,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t18_revoking_a_device_takes_its_key_and_its_subscription() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
 
         let device = Device {
@@ -2276,7 +2429,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_device_cursor_never_goes_backwards() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
 
         let device = Device {
@@ -2311,7 +2464,7 @@ mod e2e {
 
     #[tokio::test]
     async fn delivery_targets_are_the_active_devices_of_the_subscribers() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, bob) = user();
         let channel = seeded_channel(&store, &alice).await;
@@ -2343,7 +2496,7 @@ mod e2e {
 
     #[tokio::test]
     async fn delivery_targets_reach_a_group_bound_subscriber_once_their_groups_are_remembered() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let group = fresh_group();
 
@@ -2413,7 +2566,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_declaration_set_is_replaced_and_not_merged() {
-        let store = store!();
+        store!(store);
 
         // Namespaced per run. Invasive: `apply` replaces a whole kind, so against a shared database
         // the reconciler's next pass will audit spurious `added`/`removed` entries.
@@ -2470,7 +2623,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_configuration_can_be_an_audit_actor() {
-        let store = store!();
+        store!(store);
         let channel = seeded_channel(&store, &user().1).await;
 
         audit(&store)
@@ -2514,7 +2667,7 @@ mod e2e {
         const MIGRATION: &str =
             include_str!("../migrations/20261010300000_redact_audit_webhook_urls.sql");
 
-        let store = store!();
+        store!(store);
         let channel = seeded_channel(&store, &user().1).await;
         let secret = "https://hooks.slack.com/services/T0/B0/SECRETPATH";
         let kept = "https://hooks.example#0123456789abcdef";
@@ -2654,7 +2807,7 @@ mod e2e {
     async fn critical_the_audit_purge_removes_only_old_rows_and_records_itself() {
         // ADR-0027: the one sanctioned deletion. Past the cutoff goes, inside it
         // stays — including a row the floor would allow but the cutoff does not.
-        let store = store!();
+        store!(store);
         let channel = seeded_channel(&store, &user().1).await;
         for days in [500, 400, 100, 1] {
             audit_entry_aged(&store, &channel, Duration::days(days)).await;
@@ -2697,7 +2850,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_the_audit_purge_is_the_only_door_and_it_has_a_floor() {
-        let store = store!();
+        store!(store);
         let channel = seeded_channel(&store, &user().1).await;
         audit_entry_aged(&store, &channel, Duration::days(400)).await;
         audit_entry_aged(&store, &channel, Duration::days(10)).await;
@@ -2760,7 +2913,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_receipt_is_recorded_once_however_often_it_is_retried() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (published, _) = publish(&store, &channel, &alice, "seen by").await;
@@ -2822,7 +2975,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_acknowledgement_is_idempotent_and_a_pick_replaces_the_previous_one() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -2899,7 +3052,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t26_a_silence_is_announced_to_its_own_user_and_to_nobody_else() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let (bob_id, bob) = user();
 
@@ -2979,7 +3132,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_preference_nobody_set_reads_as_one_that_mutes_nothing() {
-        let store = store!();
+        store!(store);
         let (alice_id, _) = user();
 
         // No row is not an error: same as a mute-nothing preference.
@@ -2992,7 +3145,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_preference_survives_the_round_trip_through_jsonb() {
-        let store = store!();
+        store!(store);
         let (alice_id, _) = user();
         let channel = fresh_channel();
 
@@ -3026,7 +3179,7 @@ mod e2e {
 
     #[tokio::test]
     async fn setting_one_replaces_the_previous_rather_than_stacking() {
-        let store = store!();
+        store!(store);
         let (alice_id, _) = user();
 
         store
@@ -3052,7 +3205,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_held_back_push_is_counted_and_the_failures_among_them_separately() {
-        let store = store!();
+        store!(store);
         let (alice_id, _) = user();
         store.set_dnd(&Dnd::off(alice_id), now()).await.unwrap();
 
@@ -3101,7 +3254,7 @@ mod e2e {
 
     #[tokio::test]
     async fn somebody_with_no_preference_cannot_have_anything_held_back() {
-        let store = store!();
+        store!(store);
         let (alice_id, _) = user();
 
         // No row: matching nothing is correct.
@@ -3127,7 +3280,7 @@ mod e2e {
 
     #[tokio::test]
     async fn replacing_a_preference_drops_what_was_counted_under_the_old_one() {
-        let store = store!();
+        store!(store);
         let (alice_id, _) = user();
         store.set_dnd(&Dnd::off(alice_id), now()).await.unwrap();
         PreferenceRepository::defer(
@@ -3165,7 +3318,7 @@ mod e2e {
     /// A `silence` must not ship a `preference` event missing the do-not-disturb half.
     #[tokio::test]
     async fn critical_t26_a_preference_event_carries_both_halves_whichever_one_changed() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
 
         let channel = fresh_channel();
@@ -3231,7 +3384,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t7_a_sync_replays_exactly_what_was_missed() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -3282,7 +3435,7 @@ mod e2e {
 
     #[tokio::test]
     async fn compaction_folds_a_noisy_deploy_into_one_entry_and_says_how_many() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let head = EventStore::head(&store).await.unwrap();
@@ -3330,7 +3483,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_live_tail_reads_the_log_compacted_page_by_page() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let head = EventStore::head(&store).await.unwrap();
@@ -3386,7 +3539,7 @@ mod e2e {
         // The page is merged from one bounded scan per channel; walking it one row
         // at a time must yield exactly what one big page does, in `seq` order, with
         // the same compaction across channels that interleave.
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let first = seeded_channel(&store, &alice).await;
         let second = seeded_channel(&store, &alice).await;
@@ -3433,7 +3586,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_sync_cannot_be_widened_by_asking_for_a_channel_you_are_not_in() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let (_, bob) = user();
         let mine = seeded_channel(&store, &alice).await;
@@ -3462,7 +3615,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_head_does_not_move_backwards_when_the_log_is_pruned() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         publish(&store, &channel, &alice, "old news").await;
@@ -3484,7 +3637,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t16_a_claimed_key_replays_instead_of_publishing_twice() {
-        let store = store!();
+        store!(store);
         let principal = format!("usr_{}", ulid_slug());
         let key = "deploy-1";
         let claimed_at = now();
@@ -3524,7 +3677,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_released_claim_frees_the_key_and_an_expired_one_lapses() {
-        let store = store!();
+        store!(store);
         let principal = format!("usr_{}", ulid_slug());
 
         let claimed_at = now();
@@ -3569,7 +3722,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_claim_taken_over_cannot_be_completed_or_released_by_its_first_owner() {
-        let store = store!();
+        store!(store);
         let principal = format!("usr_{}", ulid_slug());
         let first = now();
         let second = first + Duration::hours(1);
@@ -3610,7 +3763,7 @@ mod e2e {
     #[tokio::test]
     async fn every_action_this_build_emits_can_be_read_back() {
         // An action outside the closed vocabulary would make the whole audit query fail (§13).
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -3649,7 +3802,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_audit_log_is_browsable_by_actor_action_and_channel() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let (_, bob) = user();
         let channel = seeded_channel(&store, &alice).await;
@@ -3724,7 +3877,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_audit_page_follows_its_cursor_backwards() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
 
         for _ in 0..4 {
@@ -3766,7 +3919,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t14_a_noisy_publisher_degrades_its_own_quota_and_nobody_elses() {
-        let store = store!();
+        store!(store);
         let mine = Quota::TokenExchange {
             subject: format!("forgejo|{}", ulid_slug()),
         };
@@ -3811,7 +3964,7 @@ mod e2e {
 
     #[tokio::test]
     async fn users_are_found_by_name_or_email_with_wildcards_matched_literally() {
-        let store = store!();
+        store!(store);
         let (id, _) = user();
         let tag = id.to_string().to_lowercase();
         let person = User::from_claims(
@@ -3837,7 +3990,7 @@ mod e2e {
     #[tokio::test]
     async fn stream_leases_cap_a_principal_across_replicas_and_expire_unrenewed() {
         use notify_ports::{Acquired, LeaseRequest, StreamLeases};
-        let store = store!();
+        store!(store);
         let me = format!("user:{}", UserId::generate());
         let you = format!("user:{}", UserId::generate());
         let ask = |principal: &str, replica: &str, token: &str| LeaseRequest {
@@ -3950,7 +4103,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t22_only_one_replica_leads_a_job_at_a_time() {
-        let store = store!();
+        store!(store);
         let first = PgLeaderElection::new(store.pool().clone());
         let second = PgLeaderElection::new(store.pool().clone());
 
@@ -3987,7 +4140,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_store_answers_readyz() {
-        let store = store!();
+        store!(store);
         store.ping().await.expect("the database is reachable");
     }
 
@@ -3999,7 +4152,7 @@ mod e2e {
         reason = "each binding is a compile-time check that the store implements the port"
     )]
     async fn one_store_satisfies_every_port_the_use_cases_ask_for() {
-        let store = store!();
+        store!(store);
         let shared = Arc::new(store);
 
         let _: Arc<dyn NotificationRepository> = shared.clone();
@@ -4020,7 +4173,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_federated_token_id_is_remembered_exactly_once() {
-        let store = store!();
+        store!(store);
         let jti = format!("tok-{}", ulid_slug());
         let until = OffsetDateTime::now_utc() + Duration::minutes(15);
 
@@ -4037,7 +4190,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_purge_drops_ids_whose_token_has_expired_and_keeps_the_rest() {
-        let store = store!();
+        store!(store);
         let now = OffsetDateTime::now_utc();
         let stale = format!("stale-{}", ulid_slug());
         let live = format!("live-{}", ulid_slug());
@@ -4070,7 +4223,7 @@ mod e2e {
 
     #[tokio::test]
     async fn what_a_write_owes_commits_with_it_and_the_fanout_row_is_leased() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (notification, written) = Notification::create(
@@ -4209,7 +4362,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_fanout_row_that_keeps_failing_is_dead_lettered_and_stops_coming_back() {
-        let store = store!();
+        store!(store);
         let (_, cursor) = owed_fanout(&store).await;
         let outbox: &dyn notify_ports::FanoutOutbox = &store;
         // A one-second lease that is never completed: what a worker that dies on the
@@ -4269,7 +4422,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_fanout_row_lease_extends_and_its_deliveries_outlive_it_until_the_last_row() {
-        let store = store!();
+        store!(store);
         let (id, first) = owed_fanout(&store).await;
         let outbox: &dyn notify_ports::FanoutOutbox = &store;
 
@@ -4328,7 +4481,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_later_revision_waits_while_another_worker_pushes_the_earlier_one() {
-        let store = store!();
+        store!(store);
         let (id, first) = owed_fanout(&store).await;
         let outbox: &dyn notify_ports::FanoutOutbox = &store;
         // Leased by "replica A".
@@ -4388,7 +4541,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_old_dead_letter_is_purged_and_a_recent_one_kept() {
-        let store = store!();
+        store!(store);
         let (_, old) = owed_fanout(&store).await;
         let (_, recent) = owed_fanout(&store).await;
         for (cursor, dead_at) in [(old, now() - Duration::days(40)), (recent, now())] {
@@ -4423,7 +4576,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_undecodable_fanout_row_is_dead_lettered_without_failing_the_claim() {
-        let store = store!();
+        store!(store);
         // Below every real cursor, so it is claimed first: the worst place for it.
         let slug = ulid_slug();
         let poison = -i64::from(u32::from_str_radix(&slug[slug.len() - 6..], 36).unwrap_or(1));
@@ -4461,7 +4614,7 @@ mod e2e {
 
     #[tokio::test]
     async fn deleting_a_notification_drops_the_push_it_still_owed() {
-        let store = store!();
+        store!(store);
         let (id, cursor) = owed_fanout(&store).await;
 
         notifications(&store).mark_deleted(id, now()).await.unwrap();
@@ -4524,7 +4677,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_claim_leases_rather_than_takes_and_an_expired_lease_owes_it_again() {
-        let store = store!();
+        store!(store);
         let delivery = delivery(&store).await;
         let now = now();
 
@@ -4573,7 +4726,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_retry_reschedules_the_same_row_rather_than_adding_one() {
-        let store = store!();
+        store!(store);
         let delivery = delivery(&store).await;
         let now = now();
 
@@ -4612,7 +4765,7 @@ mod e2e {
 
     #[tokio::test]
     async fn critical_t17_a_buried_delivery_is_listed_counted_and_requeued() {
-        let store = store!();
+        store!(store);
         let delivery = delivery(&store).await;
         let channel = delivery.channel.clone();
         let now = now();
@@ -4695,7 +4848,7 @@ mod e2e {
     }
     #[tokio::test]
     async fn dead_letters_past_the_retention_are_pruned_and_younger_ones_kept() {
-        let store = store!();
+        store!(store);
         let old = delivery(&store).await;
         let young = delivery(&store).await;
         let now = now();
@@ -4735,7 +4888,7 @@ mod e2e {
         // What the server's boot does with the configured urls and the key
         // (`notify-server/src/sinks.rs`, `rekey_stored`); here only the store's half:
         // every row with a mapped id moves, in both tables, and nothing else does.
-        let store = store!();
+        store!(store);
         let now = now();
         let unique = ulid_slug();
         let legacy = notify_domain::SinkId::new(
@@ -4794,7 +4947,7 @@ mod e2e {
         // idempotent by design.
         const MIGRATION: &str = include_str!("../migrations/20261010200000_redacted_sink_ids.sql");
 
-        let store = store!();
+        store!(store);
         let key = format!("redact-{}", ulid_slug());
         sqlx::query(
             "INSERT INTO managed_declarations (kind, key, snapshot, applied_at)
@@ -4849,7 +5002,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_presign_row_goes_once_a_revision_names_it_and_not_before() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
 
@@ -4892,7 +5045,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_upload_is_signed_for_the_channel_that_asked_and_no_other() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let other = seeded_channel(&store, &alice).await;
@@ -4929,7 +5082,7 @@ mod e2e {
 
     #[tokio::test]
     async fn an_attachment_stays_nameable_in_its_channel_until_its_rows_near_purge() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let other = seeded_channel(&store, &alice).await;
@@ -4973,7 +5126,7 @@ mod e2e {
 
     #[tokio::test]
     async fn somebodys_avatar_is_never_an_orphan_of_a_purged_notification() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let avatar = AttachmentId::generate();
@@ -5020,7 +5173,7 @@ mod e2e {
 
     #[tokio::test]
     async fn a_profile_write_from_a_stale_read_is_refused() {
-        let store = store!();
+        store!(store);
         let (alice_id, _) = user();
         let read = User::from_claims(
             alice_id,
@@ -5056,7 +5209,7 @@ mod e2e {
     #[tokio::test]
     async fn a_leader_whose_connection_dies_knows_it_no_longer_leads() {
         const JOB: &str = "conformance-lost-leader";
-        let store = store!();
+        store!(store);
         let election = PgLeaderElection::new(store.pool().clone());
 
         let guard = election
@@ -5093,7 +5246,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_platform_lists_page_without_skipping_or_repeating() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let mut my_channels = Vec::new();
         for _ in 0..3 {
@@ -5153,7 +5306,7 @@ mod e2e {
 
     #[tokio::test]
     async fn silences_that_can_no_longer_apply_are_purged_and_live_ones_kept() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         let (shown, _) = publish(&store, &channel, &alice, "still here").await;
@@ -5211,7 +5364,7 @@ mod e2e {
 
     #[tokio::test]
     async fn long_revoked_credentials_are_deleted_and_recent_ones_kept() {
-        let store = store!();
+        store!(store);
         let (alice_id, alice) = user();
 
         let device = |label: &str| Device {
@@ -5311,7 +5464,7 @@ mod e2e {
 
     #[tokio::test]
     async fn the_retention_backlog_sees_an_expiry_nobody_has_claimed() {
-        let store = store!();
+        store!(store);
         let (_, alice) = user();
         let channel = seeded_channel(&store, &alice).await;
         // Simple notifications age from creation: a month old is long past 7 days.
@@ -5361,10 +5514,7 @@ mod e2e {
             .await
             .expect("the test role may create a database");
 
-        let fresh = url
-            .rsplit_once('/')
-            .map(|(head, _)| format!("{head}/{name}"))
-            .unwrap();
+        let fresh = database_on(&url, &name);
         let outcome = migrate_twice(&fresh).await;
 
         // Dropped even if an assertion failed.

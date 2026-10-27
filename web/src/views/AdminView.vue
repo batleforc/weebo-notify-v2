@@ -251,6 +251,7 @@ onMounted(load);
                 <span class="ml-2">{{ key.label ?? t("admin.keys.unnamed") }}</span>
                 <span class="block text-xs text-ink-dim">
                   {{ key.channels.join(", ") }} ·
+                  {{ key.scopes.join(" · ") }} ·
                   {{ key.last_used_at ? t("admin.keys.lastUsed", { at: exact(key.last_used_at) }) : t("admin.keys.neverUsed") }}
                 </span>
               </span>

@@ -544,6 +544,7 @@ const appearance = computed(() => [
             <code class="text-xs">{{ key.prefix }}…</code>
             <span class="ml-2">{{ key.label ?? t("settings.keys.unnamed") }}</span>
             <span class="ml-2 text-xs text-ink-dim">
+              {{ key.scopes.join(" · ") }} ·
               {{
                 key.last_used_at
                   ? t("settings.keys.lastUsed", { at: exact(key.last_used_at) })
