@@ -37,12 +37,13 @@ struct KindLabel {
     kind: &'static str,
 }
 
-/// `{transport="webpush"}`.
+/// `{outcome="not_modified"}`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct OutcomeLabel {
     outcome: &'static str,
 }
 
+/// `{transport="webpush"}`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct TransportLabel {
     transport: String,

@@ -263,6 +263,9 @@ impl FeedState {
     }
 }
 
+/// How stale `touched_at` may get before [`FeedStateStore::retain`] rewrites it.
+pub const TOUCH_EVERY: time::Duration = time::Duration::hours(1);
+
 /// The `feed_state` table, read and written by the leader only.
 #[async_trait::async_trait]
 pub trait FeedStateStore: Send + Sync {
@@ -272,6 +275,8 @@ pub trait FeedStateStore: Send + Sync {
 
     /// Mark `declared` as seen at `now`, and delete the rows of every other feed
     /// untouched since before `forget_before` (decision 9). Returns how many went.
+    /// A row touched within [`TOUCH_EVERY`] is not rewritten: the grace period is a
+    /// day, so a write per feed per pass would only bloat the table.
     async fn retain(
         &self,
         declared: &[FeedKey],
@@ -279,8 +284,14 @@ pub trait FeedStateStore: Send + Sync {
         forget_before: OffsetDateTime,
     ) -> PortResult<u64>;
 
-    /// The rows due at `now`, soonest first.
-    async fn due(&self, now: OffsetDateTime, limit: u32) -> PortResult<Vec<FeedState>>;
+    /// The rows of `declared` feeds due at `now`, soonest first. Rows of feeds no
+    /// longer declared never come due again, so they must not take the `limit`.
+    async fn due(
+        &self,
+        declared: &[FeedKey],
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<FeedState>>;
 
     async fn get(&self, key: &FeedKey) -> PortResult<Option<FeedState>>;
 

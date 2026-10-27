@@ -160,8 +160,13 @@ impl FeedStateStore for Crashing {
     ) -> PortResult<u64> {
         self.inner.retain(declared, now, forget_before).await
     }
-    async fn due(&self, now: OffsetDateTime, limit: u32) -> PortResult<Vec<FeedState>> {
-        self.inner.due(now, limit).await
+    async fn due(
+        &self,
+        declared: &[FeedKey],
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<FeedState>> {
+        self.inner.due(declared, now, limit).await
     }
     async fn get(&self, key: &FeedKey) -> PortResult<Option<FeedState>> {
         FeedStateStore::get(&self.inner, key).await
@@ -417,6 +422,11 @@ async fn a_tight_quota_drains_the_backlog_over_passes_each_item_once() {
     for _ in 0..6 {
         budget.refill();
         published += fixture.pass().await.published;
+        assert_eq!(
+            fixture.state().await.failures,
+            0,
+            "a quota is not a failing fetch"
+        );
     }
 
     // Ten newest and one summary of the oldest, each upserted once.

@@ -597,6 +597,14 @@ impl Feed {
             (Self::MIN_EVERY..=Self::MAX_EVERY).contains(&every),
             "{at} has every = {every:?}; it must be between 5m and 24h"
         );
+        // The publish path's own check, so a tag it would refuse fails the load
+        // instead of every item of the feed.
+        notify_domain::Content::try_from(notify_domain::ContentDraft {
+            title: "feed".to_owned(),
+            tags: self.tags.clone(),
+            ..notify_domain::ContentDraft::default()
+        })
+        .map_err(|error| anyhow::anyhow!("{at} has tags the publish path refuses: {error}"))?;
         anyhow::ensure!(
             (1..=Self::MAX_MAX_PER_POLL).contains(&self.max_per_poll()),
             "{at} has max_per_poll = {}; it must be between 1 and {}",
@@ -1808,6 +1816,22 @@ mod tests {
                 "feed-max-high",
                 &format!("{FEED}\nmax_per_poll = 51"),
                 "max_per_poll",
+            ),
+            (
+                "feed-tag-long",
+                &format!("{FEED}\ntags = [\"{}\"]", "t".repeat(33)),
+                "tags the publish path refuses",
+            ),
+            (
+                "feed-tags-many",
+                &format!(
+                    "{FEED}\ntags = [{}]",
+                    (0..17)
+                        .map(|n| format!("\"t{n}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                "tags the publish path refuses",
             ),
             (
                 "feed-unknown-publisher",

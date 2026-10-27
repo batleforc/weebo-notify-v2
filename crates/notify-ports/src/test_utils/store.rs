@@ -2529,7 +2529,7 @@ impl crate::feeds::FeedStateStore for InMemory {
     ) -> PortResult<u64> {
         let mut state = self.state();
         for (row, touched) in &mut state.feeds {
-            if declared.contains(&row.key) {
+            if declared.contains(&row.key) && *touched < now - crate::feeds::TOUCH_EVERY {
                 *touched = now;
             }
         }
@@ -2540,6 +2540,7 @@ impl crate::feeds::FeedStateStore for InMemory {
 
     async fn due(
         &self,
+        declared: &[crate::feeds::FeedKey],
         now: OffsetDateTime,
         limit: u32,
     ) -> PortResult<Vec<crate::feeds::FeedState>> {
@@ -2547,7 +2548,7 @@ impl crate::feeds::FeedStateStore for InMemory {
             .state()
             .feeds
             .iter()
-            .filter(|(row, _)| row.next_poll_at <= now)
+            .filter(|(row, _)| row.next_poll_at <= now && declared.contains(&row.key))
             .map(|(row, _)| row.clone())
             .collect();
         due.sort_by_key(|row| row.next_poll_at);

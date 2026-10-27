@@ -72,12 +72,15 @@ impl FeedStateStore for PgStore {
         forget_before: OffsetDateTime,
     ) -> PortResult<u64> {
         let keys: Vec<&str> = declared.iter().map(FeedKey::as_str).collect();
-        sqlx::query("UPDATE feed_state SET touched_at = $2 WHERE feed_key = ANY($1)")
-            .bind(&keys)
-            .bind(now)
-            .execute(self.pool())
-            .await
-            .map_err(|error| fail("feed_state", error))?;
+        sqlx::query(
+            "UPDATE feed_state SET touched_at = $2 WHERE feed_key = ANY($1) AND touched_at < $3",
+        )
+        .bind(&keys)
+        .bind(now)
+        .bind(now.saturating_sub(notify_ports::TOUCH_EVERY))
+        .execute(self.pool())
+        .await
+        .map_err(|error| fail("feed_state", error))?;
         let deleted = sqlx::query("DELETE FROM feed_state WHERE touched_at < $1")
             .bind(forget_before)
             .execute(self.pool())
@@ -86,14 +89,22 @@ impl FeedStateStore for PgStore {
         Ok(deleted.rows_affected())
     }
 
-    async fn due(&self, now: OffsetDateTime, limit: u32) -> PortResult<Vec<FeedState>> {
+    async fn due(
+        &self,
+        declared: &[FeedKey],
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<FeedState>> {
+        let keys: Vec<&str> = declared.iter().map(FeedKey::as_str).collect();
         let rows = sqlx::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM feed_state WHERE next_poll_at <= $1 ORDER BY next_poll_at LIMIT $2"
+            " FROM feed_state WHERE next_poll_at <= $1 AND feed_key = ANY($3)",
+            " ORDER BY next_poll_at LIMIT $2"
         ))
         .bind(now)
         .bind(i64::from(limit))
+        .bind(keys)
         .fetch_all(self.pool())
         .await
         .map_err(|error| fail("feed_state", error))?;

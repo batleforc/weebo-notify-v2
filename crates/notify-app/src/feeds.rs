@@ -163,17 +163,16 @@ impl PollFeeds {
             .retain(&keys, now, now.saturating_sub(GRACE))
             .await?;
 
-        // A due row of a feed this replica does not declare is left alone: during a
-        // rolling deploy another replica may.
+        // Only declared feeds come due: the row of one this replica does not declare
+        // is left alone, since during a rolling deploy another replica may.
+        let by_key: std::collections::HashMap<&FeedKey, &DeclaredFeed> =
+            declared.iter().map(|(key, feed)| (key, feed)).collect();
         let work: Vec<(DeclaredFeed, FeedState)> = self
             .store
-            .due(now, DUE_LIMIT)
+            .due(&keys, now, DUE_LIMIT)
             .await?
             .into_iter()
-            .filter_map(|state| {
-                let (_, feed) = declared.iter().find(|(key, _)| *key == state.key)?;
-                Some((feed.clone(), state))
-            })
+            .filter_map(|state| Some(((*by_key.get(&state.key)?).clone(), state)))
             .collect();
 
         let outcomes: Vec<Result<FeedReport, Failure>> = futures::stream::iter(work)
@@ -362,9 +361,9 @@ impl PollFeeds {
                         %error,
                         "a feed item was refused; the rest waits for the next poll"
                     );
-                    state.failures = state.failures.saturating_add(1);
-                    state.next_poll_at =
-                        next_poll(self.clock.now(), feed.every, state.failures, None);
+                    // Not a fetch failure: `failures` and the gauge are the fetch's.
+                    // The quota refills within a minute, so the next try is `every` away.
+                    state.next_poll_at = next_poll(self.clock.now(), feed.every, 0, None);
                     return Ok(Err(match self.save(state).await? {
                         Some(_) => Stopped::Superseded,
                         None => Stopped::Refused,
@@ -472,7 +471,8 @@ fn plan(seen: Option<&[String]>, keys: &[String]) -> Plan {
             new.push(index);
         }
     }
-    if keys.len() > 1 && new.len() == keys.len() {
+    // A feed primed while empty has nothing to churn against: its first posts are new.
+    if !seen.is_empty() && keys.len() > 1 && new.len() == keys.len() {
         return Plan::Suspicious;
     }
     Plan::New(new)
@@ -715,6 +715,11 @@ mod tests {
     fn an_all_new_later_fetch_is_suspicious() {
         let seen = keys(&["a", "b"]);
         assert_eq!(plan(Some(&seen), &keys(&["x", "y"])), Plan::Suspicious);
+    }
+
+    #[test]
+    fn a_feed_primed_empty_publishes_its_first_posts() {
+        assert_eq!(plan(Some(&[]), &keys(&["x", "y"])), Plan::New(vec![0, 1]));
     }
 
     #[test]

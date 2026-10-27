@@ -304,9 +304,8 @@ mod e2e {
         store
     }
 
-    /// RFC 0002 §14: `feed_state` round-trips, is due in order, saves only from the
-    /// current version, clears a CRLF validator, forgets undeclared rows after the
-    /// grace period, and goes with its channel.
+    /// RFC 0002 §14: `feed_state` round-trips, is due in order among declared feeds,
+    /// saves only from the current version and clears a CRLF validator.
     #[tokio::test]
     async fn feed_state_round_trips_and_saves_only_from_the_current_version() {
         use notify_ports::{FeedKey, FeedState, PendingItem};
@@ -323,6 +322,8 @@ mod e2e {
             .ensure(&[
                 FeedState::fresh(later.clone(), channel.clone(), now - Duration::minutes(1)),
                 FeedState::fresh(soon.clone(), channel.clone(), now - Duration::hours(1)),
+                // Due before both, and no longer declared by the time it is read.
+                FeedState::fresh(orphan.clone(), channel.clone(), now - Duration::hours(2)),
                 ghost.clone(),
             ])
             .await
@@ -333,14 +334,17 @@ mod e2e {
         );
 
         let due: Vec<FeedKey> = feeds(&store)
-            .due(now, 1_000)
+            .due(&[soon.clone(), later.clone()], now, 1)
             .await
             .unwrap()
             .into_iter()
             .map(|state| state.key)
-            .filter(|key| *key == soon || *key == later)
             .collect();
-        assert_eq!(due, vec![soon.clone(), later.clone()], "soonest first");
+        assert_eq!(
+            due,
+            vec![soon.clone()],
+            "soonest declared first; the orphan takes no slot"
+        );
 
         let mut state = feeds(&store).get(&soon).await.unwrap().unwrap();
         assert_eq!((state.version, state.seen.clone()), (0, None));
@@ -369,12 +373,55 @@ mod e2e {
         assert_eq!(stored.last_modified, state.last_modified);
         assert_eq!(stored.failures, 2);
         assert!(feeds(&store).failing().await.unwrap() >= 1);
+    }
 
-        // `orphan` was declared once, then dropped from config.
+    /// RFC 0002 §14: `retain` rewrites only stale rows, forgets an undeclared feed's
+    /// row after the grace period, and the rows go with their channel.
+    #[tokio::test]
+    async fn feed_state_is_forgotten_after_its_grace_and_with_its_channel() {
+        use notify_ports::{FeedKey, FeedState};
+
+        store!(store);
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let now = now();
+        let key = |n: u32| FeedKey::from_stored(format!("{}{n}", ulid_slug()));
+        let (soon, later, orphan) = (key(1), key(2), key(3));
         feeds(&store)
-            .ensure(&[FeedState::fresh(orphan.clone(), channel.clone(), now)])
+            .ensure(
+                &[soon.clone(), later.clone(), orphan.clone()]
+                    .map(|key| FeedState::fresh(key, channel.clone(), now)),
+            )
             .await
             .unwrap();
+
+        // `orphan` was declared once, then dropped from config.
+        let touched = |key: FeedKey| {
+            let pool = store.pool().clone();
+            async move {
+                sqlx::query_scalar::<_, OffsetDateTime>(
+                    "SELECT touched_at FROM feed_state WHERE feed_key = $1",
+                )
+                .bind(key.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let before = touched(soon.clone()).await;
+        feeds(&store)
+            .retain(
+                std::slice::from_ref(&soon),
+                now + Duration::minutes(10),
+                now - Duration::hours(24),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            touched(soon.clone()).await,
+            before,
+            "fresh rows are not rewritten"
+        );
         feeds(&store)
             .retain(
                 &[soon.clone(), later.clone()],

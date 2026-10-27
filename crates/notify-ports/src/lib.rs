@@ -55,6 +55,7 @@ pub use eventbus::{EventBus, Poke};
 pub use feeds::{
     DeclaredFeed, FEED_KEY_HEX, FeedEntry, FeedFetcher, FeedKey, FeedLang, FeedRegistry,
     FeedRequest, FeedState, FeedStateStore, FetchError, Fetched, FetchedFeed, PendingItem,
+    TOUCH_EVERY,
 };
 pub use idempotency::{Claim, IdempotencyStore};
 pub use identities::{

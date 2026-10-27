@@ -140,7 +140,7 @@ impl FeedFetcher for HttpFeeds {
         }
         if !status.is_success() {
             let retry_after = matches!(status.as_u16(), 429 | 503)
-                .then(|| retry::retry_after(header_text(response.headers(), header::RETRY_AFTER)))
+                .then(|| retry_after(header_text(response.headers(), header::RETRY_AFTER)))
                 .flatten();
             return Err(FetchError::Status {
                 status: status.as_u16(),
@@ -157,6 +157,19 @@ impl FeedFetcher for HttpFeeds {
         feed.last_modified = last_modified;
         Ok(Fetched::Feed(feed))
     }
+}
+
+/// `Retry-After` in either form: delta-seconds, or an HTTP-date, as the time left
+/// until then. A date already past asks for nothing.
+fn retry_after(header: Option<&str>) -> Option<Duration> {
+    retry::retry_after(header).or_else(|| {
+        let at = OffsetDateTime::parse(
+            header?.trim(),
+            &time::format_description::well_known::Rfc2822,
+        )
+        .ok()?;
+        Duration::try_from(at - OffsetDateTime::now_utc()).ok()
+    })
 }
 
 fn valid_header(value: Option<&str>) -> Option<HeaderValue> {
@@ -244,8 +257,11 @@ pub fn parse(body: &[u8], base: &Url) -> Result<FetchedFeed, FetchError> {
 fn entry_of(entry: feed_rs::model::Entry, base: &Url) -> Option<FeedEntry> {
     let title = entry.title.and_then(|title| non_blank(&title.content));
     let published = entry.published.and_then(|at| at_time(at.timestamp()));
+    let link = first_http(&entry.links, base);
+    // The link as resolved, not its raw text: whitespace or a relative form that
+    // a CMS reformats would otherwise give every item a new identity.
     let id = non_blank(&entry.id)
-        .or_else(|| entry.links.first().map(|link| link.href.clone()))
+        .or_else(|| link.as_ref().map(ToString::to_string))
         .or_else(|| {
             let title = title.as_deref()?;
             Some(published.map_or_else(
@@ -255,18 +271,19 @@ fn entry_of(entry: feed_rs::model::Entry, base: &Url) -> Option<FeedEntry> {
         })?;
     Some(FeedEntry {
         id,
-        link: first_http(&entry.links, base),
+        link,
         title,
         published,
         updated: entry.updated.and_then(|at| at_time(at.timestamp())),
     })
 }
 
-/// The first `http(s)` link that is not the feed's own `rel="self"`.
+/// The first `http(s)` link to the page itself (`rel` absent or `alternate`): not
+/// the feed's own `self`, nor an `enclosure`, `replies` or `edit` link.
 fn first_http(links: &[feed_rs::model::Link], base: &Url) -> Option<Url> {
     links
         .iter()
-        .filter(|link| link.rel.as_deref() != Some("self"))
+        .filter(|link| matches!(link.rel.as_deref(), None | Some("alternate")))
         .filter_map(|link| base.join(link.href.trim()).ok())
         .find(|url| matches!(url.scheme(), "http" | "https"))
 }
@@ -420,6 +437,50 @@ mod tests {
                 title.len()
             );
         }
+    }
+
+    #[test]
+    fn an_item_without_guid_is_keyed_on_its_resolved_page_link() {
+        let rss = |link: &str| {
+            format!(
+                r#"<feed xmlns="http://www.w3.org/2005/Atom"><title>x</title><entry>
+                <title>t</title>
+                <link rel="enclosure" href="https://cdn.example.org/a.mp3"/>
+                <link href="{link}"/></entry></feed>"#
+            )
+        };
+        let relative = parse(rss("  /post  ").as_bytes(), &base()).unwrap();
+        let absolute = parse(rss("https://example.org/post").as_bytes(), &base()).unwrap();
+
+        assert_eq!(relative.entries[0].id, "https://example.org/post");
+        assert_eq!(
+            relative.entries[0].id, absolute.entries[0].id,
+            "same page, same key"
+        );
+        assert_eq!(
+            relative.entries[0].link,
+            Some(url("https://example.org/post"))
+        );
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_http_dates() {
+        assert_eq!(retry_after(Some("120")), Some(Duration::from_secs(120)));
+        let later = (OffsetDateTime::now_utc() + time::Duration::hours(2))
+            .format(&time::format_description::well_known::Rfc2822)
+            .unwrap()
+            .replace("+0000", "GMT");
+        let asked = retry_after(Some(&later)).unwrap();
+        assert!(
+            asked > Duration::from_secs(7_100) && asked <= Duration::from_secs(7_200),
+            "{asked:?}"
+        );
+        assert_eq!(
+            retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT")),
+            None,
+            "past"
+        );
+        assert_eq!(retry_after(Some("soon")), None);
     }
 
     #[test]
