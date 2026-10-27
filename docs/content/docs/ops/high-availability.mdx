@@ -97,7 +97,7 @@ Per replica:
 - `[database] max_connections`, **16** by default;
 - **one more** for this replica's dedicated `LISTEN` connection, which is not drawn from that pool;
 - the leader's background loops, on the same pool — which is why
-  `max_connections` is refused below 9.
+  `max_connections` is refused below 10.
 
 Each connection carries `statement_timeout` (30 s) and
 `idle_in_transaction_session_timeout` (60 s), and a request waits at most

@@ -101,6 +101,22 @@ everywhere principals do. The last revision keeps saying what the publisher said
 A publisher that comes back to life reopens it with its next revision, exactly as it
 would after any other closure.
 
+## Where a notification comes from
+
+Every notification is written by a **publisher**: a user, a service account, a
+channel key or a CI job, through `POST` or the `PUT` upsert. A channel can also have
+**sources** the server reads for it: the feeds of a managed channel
+([configuration](/docs/ops/configuration#feeds), RFC 0002). A feed is not a new kind of
+channel or of publisher. The leader polls it and publishes each new item through the
+same upsert, as the service account the feed names, with the external id
+`feed:<item key>`. So the channel's members, policy, quotas, push and sinks apply to
+feed items exactly as to anything else that account publishes, and a channel that
+grants `publish` to that account alone is a channel only its feeds write to.
+
+What a source adds to the model is memory, not content: which items of each feed were
+already seen, so that an item is published once, even after its notification has
+expired and while it is still in the feed.
+
 ## Content hygiene
 
 Every piece of publisher-supplied text is sanitised **at ingestion**, so every

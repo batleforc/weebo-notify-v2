@@ -33,6 +33,9 @@ rules living outside this repository, so a rename here breaks somebody else's pa
 | `reconcile_removals_refused_total` | counter | — | Reconcile passes whose removals the `[reconcile] max_removals` guard refused |
 | `fanout_outbox_rows` | gauge | `kind` (`pending`, `dead`) | Device pushes still owed, and those given up on (ADR-0025) — leader only |
 | `fanout_outbox_oldest_age_seconds` | gauge | — | Age of the oldest push still owed; minutes means the drain is not keeping up |
+| `feed_polls_total` | counter | `outcome` | How feed polls ended: `ok`, `not_modified`, `refused_address`, `too_large`, `timeout`, `http_error`, `unparsable`, `suspicious`, `superseded`, `publish_refused` |
+| `feed_items_total` | counter | `outcome` | Feed items `published` (summaries included), `summarised` into a summary, or skipped as `invalid` |
+| `feed_failing` | gauge | — | Feeds whose last poll failed — leader only |
 
 Every background loop is supervised: a pass that errors or panics is logged, counted
 in `background_job_failures_total`, backed off (5 s doubling to 5 min) and retried —
@@ -118,9 +121,26 @@ counter** (the 5xx rule reads ingress-nginx, and is off on other controllers via
 checks Postgres, so readiness flapping is the pool/connectivity signal.
 
 The job families label the job `task` (`purge`, `close-stale`, `dnd-digest`,
-`sink-drain`, `fan-out`, `reconcile`) rather than `job`, which Prometheus already
+`sink-drain`, `feed-poll`, `fan-out`, `reconcile`) rather than `job`, which Prometheus already
 attaches to every scraped series — a server-side `job` would be renamed
 `exported_job` and every selector written against it would match nothing.
+
+The feed families carry no feed or channel label, on purpose: feeds are unbounded in
+number and a feed url may hold a token. A feed host being down is not an incident for
+this instance, so the chart pages on nothing feed-related. A ticket-level rule is
+worth adding yourself:
+
+```yaml
+- alert: WeeboNotifyFeedFailing
+  expr: max(feed_failing) > 0
+  for: 6h
+  labels: { severity: ticket }
+  annotations:
+    summary: A feed has failed every poll for six hours; its `warn` log names the channel and feeds[n].
+```
+
+`feed_polls_total{outcome="suspicious"}` rising means a feed whose ids change on every
+fetch, or one outrunning its window; neither publishes, and the `warn` log says which.
 
 `grafanaDashboard.enabled` adds one dashboard (connections, publish rate, push
 latency and failures, job freshness, dead letters, retention and sync backlog) as a

@@ -31,7 +31,7 @@ rather than `localhost`. No second file, no `if env == che`.
 ```toml
 [database]
 url = "postgres://…"                 # WNK_DATABASE__URL — never printed (Debug shows [redacted])
-max_connections = 16                 # refused below 9
+max_connections = 16                 # refused below 10
 migrate_on_start = true              # WNK_DATABASE__MIGRATE_ON_START
 acquire_timeout = "5s"               # wait for a pooled connection, then fail
 idle_timeout = "10m"
@@ -40,8 +40,8 @@ statement_timeout = "30s"            # Postgres statement_timeout per connection
 idle_in_transaction_timeout = "60s"  # Postgres idle_in_transaction_session_timeout; 0 disables
 ```
 
-`max_connections` has a floor of **9**: five leader jobs (purge, stale closure, DND
-digest, sink drain, reconcile) each hold a connection for as long as they lead — the
+`max_connections` has a floor of **10**: six leader jobs (purge, stale closure, DND
+digest, sink drain, feed poll, reconcile) each hold a connection for as long as they lead — the
 advisory lock lives on it — and four more is the least that still serves requests
 while they do. A smaller value is refused at startup by name.
 
@@ -121,6 +121,78 @@ so does rotating the key, which is why it is only read at boot and has a
 a reload that reached some pods first) is kept and retried later; only after the 24 h
 retry window does it become a dead letter, saying why. Dead letters older than
 `dead_letter_retention` are deleted by the leader's drain.
+
+## Feeds
+
+A managed channel can follow RSS 0.9x/1.0/2.0, Atom and JSON feeds
+([RFC 0002](/docs/rfc/0002-channels-fed-by-rss-and-atom-feeds)). The leader polls each
+one and publishes its new items into the channel as a service account you name, through
+the same upsert the API uses: the account's grant, the channel's quota and the
+attribution all apply as they would to that account calling `PUT`.
+
+```toml
+[[service_accounts]]
+id = "bot-feeds"
+display_name = "Flux RSS"          # what the inbox shows as the author
+
+[[channels.managed]]
+id = "veille-rust"
+
+  [[channels.managed.access]]
+  service_account = "bot-feeds"
+  scopes = ["publish"]              # required: the poller publishes as this account
+
+  [[channels.managed.feeds]]
+  url = "https://blog.rust-lang.org/feed.xml"  # http(s) only; no user:pass@
+  publisher = "bot-feeds"           # required, a [[service_accounts]] id
+  every = "30m"                     # default 30m, from 5m to 24h
+  tags = ["blog"]                   # added to every item; default none
+  max_per_poll = 10                 # default 10, from 1 to 50
+  allow_private_network = false     # default false: non-public addresses are refused
+  lang = "en"                       # "en" or "fr": the "Open" label and summary title
+```
+
+What to expect:
+
+- **The first poll publishes nothing.** It records what is already in the feed, and
+  logs `feed primed` with the item count. Changing a feed's `url` makes it a new
+  feed, which primes again.
+- **Each new item is one notification**: its title, an *Open* link to the item, the
+  feed's `tags`, and the feed as `group_key`. No body; priority and TTL come from the
+  channel policy. An item is published once even if its notification is later
+  deleted or expires while it is still in the feed.
+- **More than `max_per_poll` new items** publish the newest `max_per_poll`, preceded by
+  one summary notification, "*n* more items from *feed*", linking to the feed's site.
+- **A later poll where every item is new** publishes nothing and counts
+  `outcome="suspicious"`: a feed whose ids change on every fetch would otherwise flood
+  the channel. If a busy feed outruns its window between polls, lower `every`.
+- **Requests are conditional** (`If-None-Match`, `If-Modified-Since`), so an
+  unchanged feed costs a `304`. A failing feed backs off, doubling up to 24 h, and
+  honours a longer `Retry-After`.
+- **What the server will fetch is bounded**: public addresses only (the name, every
+  redirect and IP literals are checked), no `HTTP(S)_PROXY`, 20 s per fetch, 2 MiB
+  after decompression, at most 3 redirects and never from `https` to `http`, and the
+  first 200 entries. An instance whose only egress is a proxy cannot use feeds.
+- A quota or a removed grant stops that feed's pass; the items it had chosen are
+  published on later polls, each once. With a `publish_per_min` below
+  `max_per_poll + 1`, a backlog drains a few items per pass.
+
+Refused at startup and on `SIGHUP` (a refused reload keeps the running file), each
+message naming the channel and `feeds[n]`: a scheme other than `http`/`https`,
+credentials in the url, a non-public IP literal without `allow_private_network`,
+`every` or `max_per_poll` out of range, the same url twice on one channel, a
+`publisher` that is not a `[[service_accounts]]` id or holds no `publish` grant in the
+channel's `access`, any unknown key in the table (`interval = "15m"` is an error, not
+a silent 30m), and a feed declared without `[sinks] fingerprint_key`, which redacts
+feed urls in the reconcile journal and the logs as it does webhook urls. A token in
+the query string (GitLab's `feed_token`) is therefore never stored or logged in
+clear. Each `allow_private_network = true` is logged as a warning at load.
+
+Feeds can only be declared here. There is no API or UI for them: letting a channel
+manager make the server fetch a url of their choice is the request forgery this keeps
+out of reach. Per-feed state lives in `feed_state`, keyed on a digest of channel and
+url; the row of a feed removed from the file is deleted a day after the last pass
+that saw it, so a rolling deploy does not re-prime it.
 
 ## Development instances
 
