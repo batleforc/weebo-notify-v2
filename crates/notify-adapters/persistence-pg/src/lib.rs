@@ -11,6 +11,7 @@ mod declarations;
 mod devices;
 mod events;
 mod federation;
+mod feeds;
 mod idempotency;
 mod identities;
 mod interactions;

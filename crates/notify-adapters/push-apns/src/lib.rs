@@ -119,6 +119,8 @@ impl Apns {
         Ok(Self {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
+                // reqwest's `gzip` is on for the feeds (RFC 0002 §6.5); not here.
+                .no_gzip()
                 .build()
                 .map_err(ApnsSetup::Client)?,
             signing,

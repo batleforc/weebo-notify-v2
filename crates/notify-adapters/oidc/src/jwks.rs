@@ -89,6 +89,8 @@ impl HttpJwksSource {
             .unwrap_or(core::time::Duration::from_secs(5));
         let http = Client::builder()
             .timeout(timeout)
+            // reqwest's `gzip` is on for the feeds (RFC 0002 §6.5); not here.
+            .no_gzip()
             .build()
             .map_err(|error| PortError::unavailable(DEPENDENCY, error))?;
 

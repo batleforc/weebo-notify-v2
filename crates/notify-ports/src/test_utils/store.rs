@@ -113,6 +113,8 @@ struct State {
     buried: Vec<SinkDelivery>,
     /// The groups a principal's token last carried, one row per principal.
     group_snapshots: Vec<(String, Vec<String>, OffsetDateTime)>,
+    /// `feed_state` rows, each with when a pass last saw its feed declared.
+    feeds: Vec<(crate::feeds::FeedState, OffsetDateTime)>,
 }
 
 /// One fan-out outbox row, as the Postgres table holds it.
@@ -2500,6 +2502,96 @@ impl AuditLog for InMemory {
             });
         }
         Ok(purged)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::feeds::FeedStateStore for InMemory {
+    async fn ensure(&self, fresh: &[crate::feeds::FeedState]) -> PortResult<()> {
+        let mut state = self.state();
+        let now = self.now();
+        for row in fresh {
+            let known = state.feeds.iter().any(|(stored, _)| stored.key == row.key);
+            // The foreign key: no channel, no row.
+            let channel = state.channels.iter().any(|c| c.value.id == row.channel);
+            if !known && channel {
+                state.feeds.push((row.clone(), now));
+            }
+        }
+        Ok(())
+    }
+
+    async fn retain(
+        &self,
+        declared: &[crate::feeds::FeedKey],
+        now: OffsetDateTime,
+        forget_before: OffsetDateTime,
+    ) -> PortResult<u64> {
+        let mut state = self.state();
+        for (row, touched) in &mut state.feeds {
+            if declared.contains(&row.key) {
+                *touched = now;
+            }
+        }
+        let before = state.feeds.len();
+        state.feeds.retain(|(_, touched)| *touched >= forget_before);
+        Ok((before - state.feeds.len()) as u64)
+    }
+
+    async fn due(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> PortResult<Vec<crate::feeds::FeedState>> {
+        let mut due: Vec<_> = self
+            .state()
+            .feeds
+            .iter()
+            .filter(|(row, _)| row.next_poll_at <= now)
+            .map(|(row, _)| row.clone())
+            .collect();
+        due.sort_by_key(|row| row.next_poll_at);
+        due.truncate(limit as usize);
+        Ok(due)
+    }
+
+    async fn get(
+        &self,
+        key: &crate::feeds::FeedKey,
+    ) -> PortResult<Option<crate::feeds::FeedState>> {
+        Ok(self
+            .state()
+            .feeds
+            .iter()
+            .find(|(row, _)| &row.key == key)
+            .map(|(row, _)| row.clone()))
+    }
+
+    async fn save(&self, next: &crate::feeds::FeedState) -> PortResult<bool> {
+        let mut state = self.state();
+        let Some((row, _)) = state
+            .feeds
+            .iter_mut()
+            .find(|(row, _)| row.key == next.key && row.version == next.version)
+        else {
+            return Ok(false);
+        };
+        *row = crate::feeds::FeedState {
+            version: next.version + 1,
+            etag: crate::feeds::clean_validator(next.etag.as_deref()),
+            last_modified: crate::feeds::clean_validator(next.last_modified.as_deref()),
+            ..next.clone()
+        };
+        Ok(true)
+    }
+
+    async fn failing(&self) -> PortResult<u64> {
+        Ok(self
+            .state()
+            .feeds
+            .iter()
+            .filter(|(row, _)| row.failures > 0)
+            .count() as u64)
     }
 }
 

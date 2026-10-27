@@ -1,0 +1,33 @@
+[package]
+name = "notify-feeds-http"
+description = "Fetches and parses RSS, Atom and JSON feeds for channel sources (RFC 0002): public addresses only, bounded in time, size and item count."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+# The public-only resolver, and the `Retry-After` reader.
+notify-push-http = { workspace = true }
+
+async-trait = { workspace = true }
+# No `sanitize` (it pulls ammonia): no HTML from a feed is rendered (RFC 0002 decision 4).
+feed-rs = { version = "3.0.0", default-features = false }
+futures = { workspace = true }
+reqwest = { workspace = true, features = ["gzip"] }
+time = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "net"] }
+# The decompression-bomb relay test; already locked through reqwest's `gzip`.
+flate2 = "1"

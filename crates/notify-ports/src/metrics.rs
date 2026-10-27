@@ -133,6 +133,16 @@ pub trait Metrics: Send + Sync {
     /// after it began; this is what makes that visible. Default no-op.
     fn event_watermark_lag(&self, _seconds: u64) {}
 
+    /// One feed poll ended — `feed_polls_total{outcome}` (RFC 0002 §10.1). Default no-op.
+    fn feed_poll(&self, _outcome: &'static str) {}
+
+    /// Feed items handled — `feed_items_total{outcome}`: `published`, `summarised`
+    /// or `invalid`. Default no-op.
+    fn feed_items(&self, _outcome: &'static str, _count: u64) {}
+
+    /// Feeds currently failing — `feed_failing`, set by the leader. Default no-op.
+    fn feed_failing(&self, _feeds: u64) {}
+
     /// Render the registry in the Prometheus text format, for `GET /metrics`.
     fn render(&self) -> String;
 }

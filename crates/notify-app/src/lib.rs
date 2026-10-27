@@ -13,6 +13,7 @@ pub mod devices;
 pub mod digest;
 pub mod fanout;
 pub mod federate;
+pub mod feeds;
 pub mod interact;
 pub mod keys;
 pub mod live;
@@ -43,6 +44,7 @@ pub use devices::{DEFAULT_MAX_DEVICES_PER_USER, EnrolDevice, ListDevices, Revoke
 pub use digest::{DigestReport, SendDndDigests};
 pub use fanout::{DrainFanout, Fanout};
 pub use federate::{ExchangeToken, LivePolicies};
+pub use feeds::{FeedReport, PollFeeds};
 pub use interact::{
     ListInteractions, PostReceipt, ReadReceipts, RecordInteraction, SilenceNotification,
 };

@@ -11,6 +11,7 @@ pub mod devices;
 pub mod error;
 pub mod event;
 pub mod eventbus;
+pub mod feeds;
 pub mod idempotency;
 pub mod identities;
 pub mod interactions;
@@ -51,6 +52,10 @@ pub use event::{
     RevisionEvent, SyncPage, SyncQuery,
 };
 pub use eventbus::{EventBus, Poke};
+pub use feeds::{
+    DeclaredFeed, FEED_KEY_HEX, FeedEntry, FeedFetcher, FeedKey, FeedLang, FeedRegistry,
+    FeedRequest, FeedState, FeedStateStore, FetchError, Fetched, FetchedFeed, PendingItem,
+};
 pub use idempotency::{Claim, IdempotencyStore};
 pub use identities::{
     ApiKeyRepository, EmailMatch, KeyGenerator, SecretHasher, ServiceAccountRepository,

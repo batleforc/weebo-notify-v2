@@ -18,6 +18,9 @@ libfuzzer-sys = "0.4"
 arbitrary = "1"
 # Default features only: no `openapi`, nothing beyond the parsers.
 notify-domain = { path = "../crates/notify-domain" }
+# The feed parse entry point (RFC 0002 T3); it brings reqwest along, unused here.
+notify-feeds-http = { path = "../crates/notify-adapters/feeds-http" }
+url = "2"
 
 # One [[bin]] per target; `cargo fuzz list` reads them from here.
 [[bin]]
@@ -47,5 +50,11 @@ doc = false
 [[bin]]
 name = "fuzz_attachment_id"
 path = "fuzz_targets/fuzz_attachment_id.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_feed_parse"
+path = "fuzz_targets/fuzz_feed_parse.rs"
 test = false
 doc = false

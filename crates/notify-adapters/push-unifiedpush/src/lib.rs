@@ -78,6 +78,8 @@ impl UnifiedPush {
                 // way around it.
                 .no_proxy()
                 .dns_resolver(PublicOnly)
+                // reqwest's `gzip` is on for the feeds (RFC 0002 §6.5); not here.
+                .no_gzip()
                 .build()
                 .map_err(UnifiedPushSetup::Client)?,
         })

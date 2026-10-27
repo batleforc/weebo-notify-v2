@@ -83,7 +83,11 @@ wildcards = "deny"
 allow-wildcard-paths = true
 # Duplicate versions are noise in a young dependency tree; they become an error
 # once the tree settles, rather than training everyone to ignore warnings now.
-skip = []
+skip = [
+    # feed-rs 3.0.0 (RFC 0002) pins 0.42 while the tree's other user is on 0.41; drop
+    # this once both agree.
+    { crate = "quick-xml@0.41.0", reason = "a second quick-xml from feed-rs (RFC 0002 §8)" },
+]
 # Closed by moving JWT signing and RFC 8291 onto aws-lc (2026-10-24); denied so that
 # turning jsonwebtoken's `rust_crypto` back on, or re-adding `web-push-native`, fails CI.
 deny = [

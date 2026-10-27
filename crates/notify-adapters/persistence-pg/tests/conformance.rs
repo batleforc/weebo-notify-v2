@@ -147,6 +147,112 @@ mod e2e {
         Author::anonymous(principal.clone())
     }
 
+    fn feeds(store: &PgStore) -> &dyn notify_ports::FeedStateStore {
+        store
+    }
+
+    /// RFC 0002 §14: `feed_state` round-trips, is due in order, saves only from the
+    /// current version, clears a CRLF validator, forgets undeclared rows after the
+    /// grace period, and goes with its channel.
+    #[tokio::test]
+    async fn feed_state_round_trips_and_saves_only_from_the_current_version() {
+        use notify_ports::{FeedKey, FeedState, PendingItem};
+
+        let store = store!();
+        let (_, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let now = now();
+        let key = |n: u32| FeedKey::from_stored(format!("{}{n}", ulid_slug()));
+        let (soon, later, orphan) = (key(1), key(2), key(3));
+        let ghost = FeedState::fresh(key(4), fresh_channel(), now - Duration::hours(2));
+
+        feeds(&store)
+            .ensure(&[
+                FeedState::fresh(later.clone(), channel.clone(), now - Duration::minutes(1)),
+                FeedState::fresh(soon.clone(), channel.clone(), now - Duration::hours(1)),
+                ghost.clone(),
+            ])
+            .await
+            .unwrap();
+        assert!(
+            feeds(&store).get(&ghost.key).await.unwrap().is_none(),
+            "no channel, no row"
+        );
+
+        let due: Vec<FeedKey> = feeds(&store)
+            .due(now, 1_000)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|state| state.key)
+            .filter(|key| *key == soon || *key == later)
+            .collect();
+        assert_eq!(due, vec![soon.clone(), later.clone()], "soonest first");
+
+        let mut state = feeds(&store).get(&soon).await.unwrap().unwrap();
+        assert_eq!((state.version, state.seen.clone()), (0, None));
+        state.seen = Some(vec!["a".to_owned(), "b".to_owned()]);
+        state.batch = vec![PendingItem {
+            key: Some("c".to_owned()),
+            external_id: "feed:x".to_owned(),
+            title: "C".to_owned(),
+            link: Some("https://example.org/c".parse().unwrap()),
+        }];
+        state.etag = Some("\"v1\"\r\nx-injected: 1".to_owned());
+        state.last_modified = Some("Tue, 27 Oct 2026 10:00:00 GMT".to_owned());
+        state.failures = 2;
+        state.next_poll_at = now + Duration::minutes(30);
+        assert!(feeds(&store).save(&state).await.unwrap());
+        assert!(
+            !feeds(&store).save(&state).await.unwrap(),
+            "a stale version is refused"
+        );
+
+        let stored = feeds(&store).get(&soon).await.unwrap().unwrap();
+        assert_eq!(stored.version, 1);
+        assert_eq!(stored.seen, state.seen);
+        assert_eq!(stored.batch, state.batch);
+        assert_eq!(stored.etag, None, "a CRLF validator is cleared");
+        assert_eq!(stored.last_modified, state.last_modified);
+        assert_eq!(stored.failures, 2);
+        assert!(feeds(&store).failing().await.unwrap() >= 1);
+
+        // `orphan` was declared once, then dropped from config.
+        feeds(&store)
+            .ensure(&[FeedState::fresh(orphan.clone(), channel.clone(), now)])
+            .await
+            .unwrap();
+        feeds(&store)
+            .retain(
+                &[soon.clone(), later.clone()],
+                now,
+                now - Duration::hours(24),
+            )
+            .await
+            .unwrap();
+        assert!(
+            feeds(&store).get(&orphan).await.unwrap().is_some(),
+            "touched within the grace period: kept"
+        );
+        feeds(&store)
+            // A day later: the declared rows are touched then, `orphan` was not.
+            .retain(
+                &[soon.clone(), later.clone()],
+                now + Duration::hours(25),
+                now + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        assert!(feeds(&store).get(&orphan).await.unwrap().is_none());
+        assert!(
+            feeds(&store).get(&soon).await.unwrap().is_some(),
+            "declared: kept"
+        );
+
+        channels(&store).delete(&channel).await.unwrap();
+        assert!(feeds(&store).get(&soon).await.unwrap().is_none(), "cascade");
+    }
+
     /// A channel with one member holding every scope, already stored.
     async fn seeded_channel(store: &PgStore, member: &Principal) -> ChannelId {
         let id = fresh_channel();

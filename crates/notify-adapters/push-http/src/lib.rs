@@ -64,6 +64,26 @@ async fn retrying(request: reqwest::RequestBuilder) -> reqwest::Result<reqwest::
 #[derive(Debug, Clone, Copy)]
 pub struct PublicOnly;
 
+/// What [`PublicOnly`] fails with, typed so a caller can tell a refused address
+/// from a DNS failure by walking the error's sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotPublic;
+
+impl std::fmt::Display for NotPublic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the name resolves to no public address")
+    }
+}
+
+impl std::error::Error for NotPublic {}
+
+/// Whether `error`, or any error it wraps, is [`NotPublic`].
+#[must_use]
+pub fn is_not_public(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |error| error.source())
+        .any(<dyn std::error::Error>::is::<NotPublic>)
+}
+
 impl reqwest::dns::Resolve for PublicOnly {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         Box::pin(async move {
@@ -72,7 +92,7 @@ impl reqwest::dns::Resolve for PublicOnly {
                 .filter(|addr| notify_domain::is_public_address(addr.ip()))
                 .collect();
             if addrs.is_empty() {
-                return Err("the push endpoint resolves to no public address".into());
+                return Err(Box::new(NotPublic) as Box<dyn std::error::Error + Send + Sync>);
             }
             Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
@@ -158,7 +178,7 @@ mod tests {
 
         let resolved = PublicOnly.resolve("localhost".parse().unwrap()).await;
         assert!(
-            resolved.is_err_and(|error| error.to_string().contains("no public address")),
+            resolved.is_err_and(|error| is_not_public(error.as_ref())),
             "localhost is not a push service"
         );
     }

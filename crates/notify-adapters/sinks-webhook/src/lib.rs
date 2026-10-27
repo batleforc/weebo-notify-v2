@@ -40,6 +40,8 @@ impl WebhookSink {
             // Following a redirect would deliver a request signed for one host to another.
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("weebo-notify/", env!("CARGO_PKG_VERSION")))
+            // reqwest's `gzip` is on for the feeds (RFC 0002 §6.5); not here.
+            .no_gzip()
             .build()
             .map_err(|error| PortError::unavailable("sinks.webhook", error))?;
 
