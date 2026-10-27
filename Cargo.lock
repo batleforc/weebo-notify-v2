@@ -3516,6 +3516,7 @@ dependencies = [
  "notify-avatars",
  "notify-domain",
  "notify-eventbus-pg",
+ "notify-feeds-http",
  "notify-http-actix",
  "notify-metrics-prometheus",
  "notify-oidc",

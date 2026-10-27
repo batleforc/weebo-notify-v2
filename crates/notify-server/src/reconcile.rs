@@ -105,18 +105,22 @@ fn channel_snapshot(
 ) -> anyhow::Result<serde_json::Value> {
     let mut snapshot = serde_json::to_value(channel)?;
     // Only read when there is a url to redact: `Config::validate` requires the key
-    // exactly when a webhook is configured.
+    // exactly when a webhook or a feed is configured. Both urls may carry a token
+    // (RFC 0002 §7.4).
     let mut key = None;
-    if let Some(sinks) = snapshot
-        .get_mut("sinks")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for sink in sinks {
-            let url = sink
+    for list in ["sinks", "feeds"] {
+        let Some(entries) = snapshot
+            .get_mut(list)
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        for entry in entries {
+            let url = entry
                 .get("url")
                 .and_then(serde_json::Value::as_str)
                 .and_then(|raw| url::Url::parse(raw).ok());
-            if let (Some(url), Some(object)) = (url, sink.as_object_mut()) {
+            if let (Some(url), Some(object)) = (url, entry.as_object_mut()) {
                 let key = match &mut key {
                     Some(key) => key,
                     None => key.insert(settings.fingerprint_key()?),
@@ -1143,6 +1147,48 @@ mod tests {
             1,
             "one retirement, one audit entry — not one per pass"
         );
+    }
+
+    #[test]
+    fn a_channel_without_feeds_snapshots_as_earlier_builds_stored_it() {
+        let snapshot = channel_snapshot(
+            &ManagedChannel {
+                id: "ci-infra".to_owned(),
+                ..ManagedChannel::default()
+            },
+            &crate::config::Sinks::default(),
+        )
+        .unwrap();
+
+        // The shape the previous build journalled: no `feeds` key at all.
+        assert!(snapshot.get("feeds").is_none(), "{snapshot}");
+        assert!(snapshot.get("sinks").is_some());
+    }
+
+    #[test]
+    fn a_feed_url_reaches_the_journal_redacted() {
+        let settings = crate::config::Sinks {
+            fingerprint_key: "reconcile-test-fingerprint-key-0123456".into(),
+            ..crate::config::Sinks::default()
+        };
+        let feed: crate::config::Feed = serde_json::from_value(serde_json::json!({
+            "url": "https://gitlab.example.org/feed.atom?feed_token=SECRET",
+            "publisher": "bot-feeds",
+        }))
+        .unwrap();
+        let snapshot = channel_snapshot(
+            &ManagedChannel {
+                id: "veille".to_owned(),
+                feeds: vec![feed],
+                ..ManagedChannel::default()
+            },
+            &settings,
+        )
+        .unwrap();
+
+        let text = snapshot.to_string();
+        assert!(!text.contains("feed_token"), "{text}");
+        assert!(text.contains("https://gitlab.example.org#"), "{text}");
     }
 
     #[tokio::test]

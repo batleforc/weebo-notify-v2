@@ -39,6 +39,11 @@ struct KindLabel {
 
 /// `{transport="webpush"}`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct OutcomeLabel {
+    outcome: &'static str,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct TransportLabel {
     transport: String,
 }
@@ -81,6 +86,14 @@ pub struct PrometheusMetrics {
     job_success: Family<JobLabel, Gauge>,
     job_failures: Family<JobLabel, Counter>,
     reconcile_refused: Counter,
+    feeds: FeedMetrics,
+}
+
+#[derive(Debug)]
+struct FeedMetrics {
+    polls: Family<OutcomeLabel, Counter>,
+    items: Family<OutcomeLabel, Counter>,
+    failing: Gauge,
 }
 
 impl Default for PrometheusMetrics {
@@ -178,6 +191,7 @@ impl PrometheusMetrics {
         );
 
         let (fanout_rows, fanout_age) = register_fanout(&mut registry);
+        let feeds = register_feeds(&mut registry);
         let watermark_lag = Gauge::default();
         registry.register_with_unit(
             "event_watermark_lag",
@@ -203,7 +217,32 @@ impl PrometheusMetrics {
             job_success,
             job_failures,
             reconcile_refused,
+            feeds,
         }
+    }
+}
+
+/// RFC 0002 §10.1. No feed or channel label: feeds are unbounded in number and
+/// their urls may be secret.
+fn register_feeds(registry: &mut Registry) -> FeedMetrics {
+    let polls = Family::<OutcomeLabel, Counter>::default();
+    registry.register("feed_polls", "Feed polls, by how they ended", polls.clone());
+    let items = Family::<OutcomeLabel, Counter>::default();
+    registry.register(
+        "feed_items",
+        "Feed items published, folded into a summary, or skipped as invalid",
+        items.clone(),
+    );
+    let failing = Gauge::default();
+    registry.register(
+        "feed_failing",
+        "Feeds whose last poll failed — reported by the leader only",
+        failing.clone(),
+    );
+    FeedMetrics {
+        polls,
+        items,
+        failing,
     }
 }
 
@@ -352,6 +391,26 @@ impl Metrics for PrometheusMetrics {
         self.reconcile_refused.inc();
     }
 
+    fn feed_poll(&self, outcome: &'static str) {
+        self.feeds
+            .polls
+            .get_or_create(&OutcomeLabel { outcome })
+            .inc();
+    }
+
+    fn feed_items(&self, outcome: &'static str, count: u64) {
+        self.feeds
+            .items
+            .get_or_create(&OutcomeLabel { outcome })
+            .inc_by(count);
+    }
+
+    fn feed_failing(&self, feeds: u64) {
+        self.feeds
+            .failing
+            .set(i64::try_from(feeds).unwrap_or(i64::MAX));
+    }
+
     fn render(&self) -> String {
         let mut out = String::new();
 
@@ -405,6 +464,25 @@ mod tests {
         assert!(rendered.contains("notifications_published_total{channel=\"other\"} 2"));
         assert!(rendered.contains("notifications_published_total{channel=\"c-0\"} 2"));
         assert!(!rendered.contains("one-too-many"));
+    }
+
+    #[test]
+    fn feed_polls_and_items_are_counted_by_outcome_only() {
+        let metrics = PrometheusMetrics::new();
+        metrics.feed_poll("ok");
+        metrics.feed_poll("ok");
+        metrics.feed_poll("refused_address");
+        metrics.feed_items("published", 3);
+        metrics.feed_failing(2);
+
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("feed_polls_total{outcome=\"ok\"} 2"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("feed_polls_total{outcome=\"refused_address\"} 1"));
+        assert!(rendered.contains("feed_items_total{outcome=\"published\"} 3"));
+        assert!(rendered.contains("feed_failing 2"));
     }
 
     #[test]

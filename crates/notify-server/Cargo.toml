@@ -17,6 +17,7 @@ base16ct = { workspace = true }
 notify-attachments-fs.workspace = true
 notify-attachments-s3.workspace = true
 notify-avatars.workspace = true
+notify-feeds-http.workspace = true
 notify-http-actix.workspace = true
 notify-metrics-prometheus.workspace = true
 notify-push-apns.workspace = true

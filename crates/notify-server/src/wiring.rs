@@ -59,6 +59,10 @@ pub(crate) struct Application {
     pub digests: SendDndDigests,
     /// The outbound sink drain (§7.1bis), on the same terms again.
     pub drain: DrainSinks,
+    /// The feed poll (RFC 0002), on the same terms again.
+    pub poll_feeds: notify_app::PollFeeds,
+    /// What `[[channels.managed.feeds]]` declared; swapped on `SIGHUP`.
+    pub feed_routes: crate::feeds::FeedRoutes,
     /// The fan-out outbox worker (ADR-0025): on every replica, not just the leader.
     pub fanout_drain: DrainFanout,
     /// What `[[channels.managed.sinks]]` configured; shared with the fan-out and drain, swapped on `SIGHUP`.
@@ -501,6 +505,19 @@ impl Application {
                 .unwrap_or(time::Duration::MAX),
         );
 
+        // The feed poll (RFC 0002), leader-only so each item is published once; it
+        // publishes through the API's own upsert, as the feed's service account.
+        let feed_routes = crate::feeds::FeedRoutes::build(config)?;
+        let poll_feeds = notify_app::PollFeeds::new(
+            Arc::new(feed_routes.clone()),
+            repository.clone(),
+            Arc::new(notify_feeds_http::HttpFeeds::new()?),
+            state.upsert.clone(),
+            Arc::new(PgLeaderElection::new(store.pool().clone())),
+            clock.clone(),
+            metrics.clone(),
+        );
+
         let reconciler = Reconciler::new(
             repository.clone(),
             repository.clone(),
@@ -522,6 +539,8 @@ impl Application {
             close_stale,
             digests,
             drain,
+            poll_feeds,
+            feed_routes,
             fanout_drain,
             routes,
             fleet: sinks,

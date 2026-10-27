@@ -12,6 +12,7 @@ use utoipa_scalar::Servable as _;
 mod bus;
 mod config;
 mod doctor;
+mod feeds;
 mod health;
 mod openapi;
 mod push;
@@ -167,6 +168,10 @@ const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6
 /// How often the leader looks for due sink deliveries (design §7.1bis): this is first-attempt latency.
 const SINK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How often the feed poll looks for due feeds: scheduling granularity, not the
+/// poll rate, which is each feed's own `every` (RFC 0002 §6.1).
+const FEED_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// How often the fan-out outbox worker looks without being woken (ADR-0025).
 ///
 /// A publish on this replica wakes it at once; the tick is for everything else —
@@ -229,6 +234,9 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             kinds = ?application.routes.kinds(),
             "outbound sinks configured"
         );
+    }
+    if application.feed_routes.len() > 0 {
+        tracing::info!(feeds = application.feed_routes.len(), "feeds configured");
     }
 
     let bind = config.server.bind;
@@ -306,6 +314,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         application.close_stale,
         application.digests,
         application.drain,
+        application.poll_feeds,
         application.fanout_drain,
         application.metrics.clone(),
         Reconciling {
@@ -318,6 +327,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             owed: true,
             routes: application.routes,
             fleet: application.fleet,
+            feeds: application.feed_routes.clone(),
             started,
             metrics: application.metrics.clone(),
         },
@@ -383,6 +393,8 @@ struct Reconciling {
     /// The sink routing table and its adapters, swapped on `SIGHUP`.
     routes: sinks::SinkRoutes,
     fleet: sinks::SinkFleet,
+    /// The declared feeds, swapped on `SIGHUP` with the sinks.
+    feeds: feeds::FeedRoutes,
     /// Set once the configuration has been applied (or found already applied by
     /// someone else), which is when `/readyz` stops reporting `startup`.
     started: health::Started,
@@ -441,6 +453,17 @@ impl Reconciling {
                     Err(error) => tracing::warn!(
                         ?error,
                         "SIGHUP: the sinks did not build; keeping the running set"
+                    ),
+                }
+
+                match feeds::FeedRoutes::build(&self.config) {
+                    Ok(feeds) => {
+                        self.feeds.adopt(&feeds);
+                        tracing::info!(feeds = self.feeds.len(), "SIGHUP: feeds re-read");
+                    }
+                    Err(error) => tracing::warn!(
+                        ?error,
+                        "SIGHUP: the feeds did not build; keeping the running set"
                     ),
                 }
 
@@ -572,13 +595,16 @@ fn every(period: std::time::Duration) -> actix_web::rt::time::Interval {
 /// tick, each [`supervise`]d so an error or panic is counted and retried rather than ending it.
 #[expect(
     clippy::too_many_arguments,
-    reason = "one per job, and each is a different type; a struct would only rename them"
+    clippy::too_many_lines,
+    reason = "one argument and one loop per job, each a different type; a struct or \
+              helper would only rename them"
 )]
 async fn background(
     purge: notify_app::PurgeExpired,
     close_stale: notify_app::CloseStale,
     digests: notify_app::SendDndDigests,
     drain: notify_app::DrainSinks,
+    poll_feeds: notify_app::PollFeeds,
     fanout_drain: notify_app::DrainFanout,
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
     reconciling: Reconciling,
@@ -591,8 +617,8 @@ async fn background(
         .retention
         .revoked_credentials
         .as_duration();
-    let (purge, close_stale, digests, drain, store) =
-        (&purge, &close_stale, &digests, &drain, &store);
+    let (purge, close_stale, digests, drain, poll_feeds, store) =
+        (&purge, &close_stale, &digests, &drain, &poll_feeds, &store);
     let metrics = metrics.as_ref();
 
     let purging = supervise("purge", JOB_INTERVAL, metrics, move || async move {
@@ -665,6 +691,11 @@ async fn background(
         Ok::<_, notify_ports::Failure>(())
     });
 
+    // The feeds of RFC 0002; logged by the pass itself when it published.
+    let polling = supervise("feed-poll", FEED_INTERVAL, metrics, move || async move {
+        poll_feeds.execute().await.map(|_| ())
+    });
+
     // Device pushes and thumbnails of committed publishes (ADR-0025), on every replica (rows are
     // leased, not led). Woken by a local publish, so its own loop rather than `supervise`'s tick.
     let fanning_out = async {
@@ -692,6 +723,7 @@ async fn background(
         closing,
         digesting,
         draining,
+        polling,
         fanning_out,
         // Every replica, like the fan-out: it wakes this replica's own streams
         // when a long transaction stops holding events back (ADR-0028).

@@ -243,13 +243,13 @@ pub(crate) struct Database {
 impl Database {
     /// The smallest pool this build can run on.
     ///
-    /// Five leader jobs (purge, stale closure, DND digest, sink drain, reconcile)
-    /// each hold one connection for as long as they lead — the advisory lock lives
-    /// on it — and a replica can lead all five at once. Four more is the least that
+    /// Six leader jobs (purge, stale closure, DND digest, sink drain, feed poll,
+    /// reconcile) each hold one connection for as long as they lead — the advisory
+    /// lock lives on it — and a replica can lead all six at once. Four more is the least that
     /// still serves requests (and lets those jobs do their own queries) while they
     /// do. The `LISTEN` connection is taken from the pool and detached, so it is
     /// not counted against it.
-    pub(crate) const MIN_CONNECTIONS: u32 = 5 + 4;
+    pub(crate) const MIN_CONNECTIONS: u32 = 6 + 4;
 
     /// What the persistence adapter is handed.
     pub(crate) const fn pool(&self) -> notify_persistence_pg::PoolSettings {
@@ -514,6 +514,97 @@ pub(crate) struct ManagedChannel {
     pub publishers: Vec<Publisher>,
     /// Outbound sinks (§7.1bis), swapped on `SIGHUP` like the rest of this block.
     pub sinks: Vec<Sink>,
+    /// Feeds published into this channel (RFC 0002). Not serialised when empty, so
+    /// the snapshot of a channel without feeds is the one earlier builds stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feeds: Vec<Feed>,
+}
+
+/// One `[[channels.managed.feeds]]` entry (RFC 0002 §4.1). Unknown keys are refused,
+/// so `interval = "15m"` is an error rather than a silent 30m.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Feed {
+    pub url: String,
+    /// A `[[service_accounts]]` id holding `publish` on this channel.
+    pub publisher: String,
+    #[serde(default)]
+    pub every: Option<HumanDuration>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub max_per_poll: Option<u32>,
+    #[serde(default)]
+    pub allow_private_network: bool,
+    #[serde(default)]
+    pub lang: FeedLang,
+}
+
+/// The language of the strings the server writes for a feed (RFC 0002 decision 14).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FeedLang {
+    #[default]
+    En,
+    Fr,
+}
+
+impl Feed {
+    pub(crate) const DEFAULT_EVERY: std::time::Duration = std::time::Duration::from_mins(30);
+    const MIN_EVERY: std::time::Duration = std::time::Duration::from_mins(5);
+    const MAX_EVERY: std::time::Duration = std::time::Duration::from_hours(24);
+    pub(crate) const DEFAULT_MAX_PER_POLL: u32 = 10;
+    const MAX_MAX_PER_POLL: u32 = 50;
+
+    pub(crate) fn every(&self) -> std::time::Duration {
+        self.every
+            .map_or(Self::DEFAULT_EVERY, HumanDuration::as_duration)
+    }
+
+    pub(crate) fn max_per_poll(&self) -> u32 {
+        self.max_per_poll.unwrap_or(Self::DEFAULT_MAX_PER_POLL)
+    }
+
+    /// The per-feed rows of RFC 0002 §4.3; the checks against the rest of the file
+    /// are [`Config::validate`]'s.
+    pub(crate) fn validate(&self, channel: &str, position: usize) -> anyhow::Result<url::Url> {
+        let at = format!("channel `{channel}` feeds[{position}]");
+        let url = url::Url::parse(&self.url)
+            .map_err(|error| anyhow::anyhow!("{at} has a url that is not one: {error}"))?;
+        anyhow::ensure!(
+            matches!(url.scheme(), "http" | "https"),
+            "{at} has scheme `{}`; only http and https feeds are fetched",
+            url.scheme()
+        );
+        anyhow::ensure!(
+            url.username().is_empty() && url.password().is_none(),
+            "{at} has a url carrying credentials; the url is stored and logged, and a \
+             password in it would be too"
+        );
+        // reqwest does not resolve a literal, so the resolver guard never sees one.
+        let private = match url.host() {
+            Some(url::Host::Ipv4(ip)) => !notify_domain::is_public_address(ip.into()),
+            Some(url::Host::Ipv6(ip)) => !notify_domain::is_public_address(ip.into()),
+            _ => false,
+        };
+        anyhow::ensure!(
+            !private || self.allow_private_network,
+            "{at} points at a non-public address; set `allow_private_network = true` on \
+             this feed if that is meant"
+        );
+        let every = self.every();
+        anyhow::ensure!(
+            (Self::MIN_EVERY..=Self::MAX_EVERY).contains(&every),
+            "{at} has every = {every:?}; it must be between 5m and 24h"
+        );
+        anyhow::ensure!(
+            (1..=Self::MAX_MAX_PER_POLL).contains(&self.max_per_poll()),
+            "{at} has max_per_poll = {}; it must be between 1 and {}",
+            self.max_per_poll(),
+            Self::MAX_MAX_PER_POLL
+        );
+        Ok(url)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -916,7 +1007,7 @@ impl Config {
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.database.max_connections >= Database::MIN_CONNECTIONS,
-            "[database] max_connections = {} is below the {} this build needs: five \
+            "[database] max_connections = {} is below the {} this build needs: six \
              leader jobs each hold a connection while they lead, and requests need the \
              rest — a smaller pool deadlocks the first time they all lead at once",
             self.database.max_connections,
@@ -995,6 +1086,7 @@ impl Config {
                  publish; omit the key to take the default of design §8.2",
                 channel.id
             );
+            self.validate_feeds(channel)?;
             for sink in &channel.sinks {
                 sink.validate(&channel.id)?;
                 anyhow::ensure!(
@@ -1051,6 +1143,38 @@ impl Config {
         Ok(())
     }
 
+    /// A channel's feeds (RFC 0002 §4.3): each on its own, then against the file —
+    /// the publisher is declared and may publish here, and no url is listed twice.
+    fn validate_feeds(&self, channel: &ManagedChannel) -> anyhow::Result<()> {
+        let mut urls = std::collections::HashSet::new();
+        for (position, feed) in channel.feeds.iter().enumerate() {
+            let url = feed.validate(&channel.id, position)?;
+            let at = format!("channel `{}` feeds[{position}]", channel.id);
+            anyhow::ensure!(
+                urls.insert(url),
+                "{at} repeats a url already declared on this channel"
+            );
+            anyhow::ensure!(
+                self.service_accounts
+                    .iter()
+                    .any(|account| account.id == feed.publisher),
+                "{at} names publisher `{}`, which is not a [[service_accounts]] id",
+                feed.publisher
+            );
+            anyhow::ensure!(
+                channel.access.iter().any(|access| {
+                    access.service_account.as_deref() == Some(feed.publisher.as_str())
+                        && access.scopes.contains(&Scope::Publish)
+                }),
+                "{at} names publisher `{}`, which holds no `publish` grant in this \
+                 channel's access; the poller must not publish where its identity could \
+                 not through the API",
+                feed.publisher
+            );
+        }
+        Ok(())
+    }
+
     /// lettre reads `smtp://host` with no `?tls=` as plaintext, without STARTTLS: relay
     /// credentials need `smtps://` or `?tls=required`.
     fn validate_smtp(&self) -> anyhow::Result<()> {
@@ -1090,6 +1214,19 @@ impl Config {
             self.sinks.fingerprint_key().map_err(|error| {
                 error
                     .context("a webhook sink is configured, so [sinks] fingerprint_key is required")
+            })?;
+        }
+        if self
+            .channels
+            .managed
+            .iter()
+            .any(|channel| !channel.feeds.is_empty())
+        {
+            self.sinks.fingerprint_key().map_err(|error| {
+                error.context(
+                    "a feed is declared, so [sinks] fingerprint_key is required: it \
+                     redacts feed urls in the journal and the logs",
+                )
             })?;
         }
         Ok(())
@@ -1592,6 +1729,168 @@ mod tests {
             assert!(error.contains("[sinks] fingerprint_key"), "{error}");
             assert!(error.contains("WNK_SINKS__FINGERPRINT_KEY"), "{error}");
         }
+    }
+
+    /// A file declaring one feed, with `feed` lines appended to its table.
+    fn feed_config(test: &str, feed: &str) -> anyhow::Result<Config> {
+        load_isolated(&with_config(
+            test,
+            &format!(
+                "[sinks]\n\
+                 fingerprint_key = \"feeds-test-fingerprint-key-0123456789\"\n\
+                 [[service_accounts]]\n\
+                 id = \"bot-feeds\"\n\
+                 [[channels.managed]]\n\
+                 id = \"veille\"\n\
+                 [[channels.managed.access]]\n\
+                 service_account = \"bot-feeds\"\n\
+                 scopes = [\"publish\"]\n\
+                 [[channels.managed.feeds]]\n\
+                 {feed}\n"
+            ),
+        ))
+    }
+
+    const FEED: &str = "url = \"https://blog.example.org/feed.xml\"\npublisher = \"bot-feeds\"";
+
+    #[test]
+    fn a_feed_takes_its_defaults_and_its_snapshot_skips_an_empty_list() {
+        let config = feed_config("feed-defaults", FEED).unwrap();
+        let feed = &config.channels.managed[0].feeds[0];
+
+        assert_eq!(feed.every(), Feed::DEFAULT_EVERY);
+        assert_eq!(feed.max_per_poll(), 10);
+        assert!(!feed.allow_private_network);
+        assert_eq!(feed.lang, FeedLang::En);
+        let bare = serde_json::to_value(ManagedChannel::default()).unwrap();
+        assert!(bare.get("feeds").is_none(), "{bare}");
+    }
+
+    #[test]
+    fn every_refused_feed_names_its_channel_and_position() {
+        for (test, extra, expected) in [
+            (
+                "feed-scheme",
+                "url = \"file:///etc/passwd\"\npublisher = \"bot-feeds\"",
+                "scheme",
+            ),
+            (
+                "feed-userinfo",
+                "url = \"https://me:pw@blog.example.org/feed\"\npublisher = \"bot-feeds\"",
+                "credentials",
+            ),
+            (
+                "feed-literal",
+                "url = \"http://127.0.0.1:8080/feed\"\npublisher = \"bot-feeds\"",
+                "non-public",
+            ),
+            (
+                "feed-metadata",
+                "url = \"http://169.254.169.254/latest\"\npublisher = \"bot-feeds\"",
+                "non-public",
+            ),
+            (
+                "feed-every-low",
+                &format!("{FEED}\nevery = \"1m\""),
+                "between 5m and 24h",
+            ),
+            (
+                "feed-every-high",
+                &format!("{FEED}\nevery = \"25h\""),
+                "between 5m and 24h",
+            ),
+            (
+                "feed-max-zero",
+                &format!("{FEED}\nmax_per_poll = 0"),
+                "max_per_poll",
+            ),
+            (
+                "feed-max-high",
+                &format!("{FEED}\nmax_per_poll = 51"),
+                "max_per_poll",
+            ),
+            (
+                "feed-unknown-publisher",
+                "url = \"https://blog.example.org/feed\"\npublisher = \"nobody\"",
+                "not a [[service_accounts]] id",
+            ),
+            (
+                "feed-twice",
+                &format!("{FEED}\n[[channels.managed.feeds]]\n{FEED}"),
+                "repeats a url",
+            ),
+        ] {
+            let error = format!("{:#}", feed_config(test, extra).unwrap_err());
+            assert!(error.contains(expected), "{test}: {error}");
+            if expected != "repeats a url" {
+                assert!(error.contains("`veille` feeds[0]"), "{test}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_private_literal_is_allowed_with_the_opt_in() {
+        let config = feed_config(
+            "feed-private-ok",
+            "url = \"http://10.0.0.5/feed\"\npublisher = \"bot-feeds\"\nallow_private_network = true",
+        );
+        assert!(config.is_ok(), "{:?}", config.err());
+    }
+
+    #[test]
+    fn an_unknown_key_or_language_in_a_feed_is_refused() {
+        for (test, extra) in [
+            ("feed-unknown-key", format!("{FEED}\ninterval = \"15m\"")),
+            ("feed-lang", format!("{FEED}\nlang = \"de\"")),
+        ] {
+            assert!(feed_config(test, &extra).is_err(), "{test}");
+        }
+        let french = feed_config("feed-fr", &format!("{FEED}\nlang = \"fr\"")).unwrap();
+        assert_eq!(french.channels.managed[0].feeds[0].lang, FeedLang::Fr);
+    }
+
+    #[test]
+    fn a_publisher_without_a_publish_grant_is_refused() {
+        let path = with_config(
+            "feed-no-grant",
+            &format!(
+                "[sinks]\n\
+                 fingerprint_key = \"feeds-test-fingerprint-key-0123456789\"\n\
+                 [[service_accounts]]\n\
+                 id = \"bot-feeds\"\n\
+                 [[channels.managed]]\n\
+                 id = \"veille\"\n\
+                 [[channels.managed.access]]\n\
+                 service_account = \"bot-feeds\"\n\
+                 scopes = [\"subscribe\"]\n\
+                 [[channels.managed.feeds]]\n\
+                 {FEED}\n"
+            ),
+        );
+
+        let error = format!("{:#}", load_isolated(&path).unwrap_err());
+        assert!(error.contains("no `publish` grant"), "{error}");
+    }
+
+    #[test]
+    fn a_feed_without_a_fingerprint_key_is_refused() {
+        let path = with_config(
+            "feed-unkeyed",
+            &format!(
+                "[[service_accounts]]\n\
+                 id = \"bot-feeds\"\n\
+                 [[channels.managed]]\n\
+                 id = \"veille\"\n\
+                 [[channels.managed.access]]\n\
+                 service_account = \"bot-feeds\"\n\
+                 scopes = [\"publish\"]\n\
+                 [[channels.managed.feeds]]\n\
+                 {FEED}\n"
+            ),
+        );
+
+        let error = format!("{:#}", load_isolated(&path).unwrap_err());
+        assert!(error.contains("a feed is declared"), "{error}");
     }
 
     #[test]
