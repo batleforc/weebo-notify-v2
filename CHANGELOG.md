@@ -2,6 +2,24 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.0](https://github.com/batleforc/weebo-notify-v2/compare/ba113359eac704bac69a074aaec5e7856351f374..v0.2.0) - 2026-10-28
+#### Features
+- (**feeds**) declare feeds in config and poll them on the leader - ([de75dae](https://github.com/batleforc/weebo-notify-v2/commit/de75daec160b8d16a9f077894392030d1f8ea489)) - Max Batleforc, Claude Opus 5.5
+- (**feeds**) poll RSS, Atom and JSON feeds into managed channels - ([0e416b1](https://github.com/batleforc/weebo-notify-v2/commit/0e416b1b1d29e149e63fe37ed3555c98f612efbd)) - Max Batleforc, Claude Opus 5.5
+- JSON webhook transforms (RFC 0003) and closing from the web (RFC 0004) - ([3eb5341](https://github.com/batleforc/weebo-notify-v2/commit/3eb53412367f7f7edc59cb99fb0d256c6d6e6882)) - Max Batleforc, Claude Opus 5.5
+- RFC 3 and 4 and fix pbl with settings view and adm - ([9e08515](https://github.com/batleforc/weebo-notify-v2/commit/9e08515b80623fbbd66822f6f08733c36b275c32)) - Max Batleforc
+#### Bug Fixes
+- (**desktop**) no "Change server" on a build that fixes its server; land RFC 0001 - ([f34e7c8](https://github.com/batleforc/weebo-notify-v2/commit/f34e7c82b1447e9d791bfcd62c7161fedb3d6118)) - Max Batleforc, Claude Opus 5.5
+- (**feeds**) address the code review of RFC 0002 - ([1894be3](https://github.com/batleforc/weebo-notify-v2/commit/1894be376b55dd02f2e9940b629c3ac6781377bc)) - Max Batleforc, Claude Opus 5.5
+#### Documentation
+- (**feeds**) document feeds and land RFC 0002 - ([2c3a940](https://github.com/batleforc/weebo-notify-v2/commit/2c3a9409b9711f8347b6ebc215e38fc72a30ce6b)) - Max Batleforc, Claude Opus 5.5
+- (**rfc**) accept RFC 0002, channels fed by RSS and Atom feeds - ([ba11335](https://github.com/batleforc/weebo-notify-v2/commit/ba113359eac704bac69a074aaec5e7856351f374)) - Max Batleforc, Claude Opus 5.5
+#### Build system
+- (**feeds**) drop the unused tracing dependency of feeds-http - ([1d13cfc](https://github.com/batleforc/weebo-notify-v2/commit/1d13cfcb22b19833b1ad0959e443b4553819df70)) - Max Batleforc, Claude Opus 5.5
+- (**fuzz**) drop the unused direct arbitrary dependency - ([a691c93](https://github.com/batleforc/weebo-notify-v2/commit/a691c93d0deb958a9cfbb60d3d8cccc46c4ede39)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.1.3](https://github.com/batleforc/weebo-notify-v2/compare/4691f661f0a9199c30cd05d85dd0bf4ca03d2058..v0.1.3) - 2026-10-26
 #### Bug Fixes
 - (**oidc**) support in-cluster issuer resolution - ([4691f66](https://github.com/batleforc/weebo-notify-v2/commit/4691f661f0a9199c30cd05d85dd0bf4ca03d2058)) - Max Batleforc
