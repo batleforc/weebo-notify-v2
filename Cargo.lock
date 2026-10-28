@@ -3274,7 +3274,6 @@ dependencies = [
  "reqwest 0.13.5",
  "time",
  "tokio",
- "tracing",
  "url",
 ]
 
