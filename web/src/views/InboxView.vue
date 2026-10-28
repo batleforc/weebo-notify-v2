@@ -3,7 +3,12 @@
  * The inbox list (§10.4). Arrivals wait behind a "N new" separator (§10.5); updates
  * to visible rows apply at once. Keyboard: ↑ ↓ move, Enter opens, Esc closes (§10.1).
  */
-import { Inbox as InboxIcon, RefreshCw } from "@lucide/vue";
+import {
+  ChevronDown,
+  ChevronRight,
+  Inbox as InboxIcon,
+  RefreshCw,
+} from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
@@ -23,10 +28,10 @@ const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
 
-/** The empty state reads differently when filtered (§10.4). */
+/** The empty state reads differently when filtered (§10.4). The open channel is
+ * where you are, not a filter: the sidebar does not count it either. */
 const isFiltered = computed(
   () =>
-    inbox.filters.channels.length > 0 ||
     inbox.filters.state.length > 0 ||
     inbox.filters.status.length > 0 ||
     inbox.filters.tags.length > 0 ||
@@ -38,6 +43,27 @@ const list = ref<HTMLElement | null>(null);
 const cursor = ref(0);
 
 const groups = computed(() => inbox.groups);
+const total = computed(() =>
+  groups.value.reduce((sum, group) => sum + group.members.length, 0),
+);
+
+/** Groups shown with all their members, keyed by the head's id. */
+const expanded = ref(new Set<string>());
+
+function toggleGroup(id: string): void {
+  const next = new Set(expanded.value);
+  if (!next.delete(id)) {
+    next.add(id);
+  }
+  expanded.value = next;
+}
+
+/** What the list shows, in order: a group's other members follow its head once expanded. */
+const visible = computed(() =>
+  groups.value.flatMap((group) =>
+    expanded.value.has(group.head.id) ? group.members : [group.head],
+  ),
+);
 const liveCount = computed(
   () => groups.value.filter((g) => g.head.head.state !== "closed").length,
 );
@@ -73,7 +99,7 @@ function open(id: string, viaKeyboard = false): void {
 }
 
 function move(delta: number): void {
-  const rows = groups.value;
+  const rows = visible.value;
   if (!rows.length) {
     return;
   }
@@ -82,10 +108,10 @@ function move(delta: number): void {
   if (!row) {
     return;
   }
-  open(row.head.id, true);
+  open(row.id, true);
 
   const element = list.value?.querySelector<HTMLElement>(
-    `[data-row="${row.head.id}"]`,
+    `[data-row="${row.id}"]`,
   );
   element?.scrollIntoView({ block: "nearest" });
   element?.focus({ preventScroll: true });
@@ -115,7 +141,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       <div class="min-w-0">
         <h1 class="pixel truncate text-2xl font-bold uppercase">{{ title }}</h1>
         <p class="meta mt-1 tabular-nums">
-          {{ t("inbox.summary", { total: groups.length, live: liveCount }) }}
+          {{ t("inbox.summary", { total, live: liveCount }) }}
         </p>
       </div>
       <span v-if="isFiltered" class="meta shrink-0 text-copper">{{ t("inbox.filtered") }}</span>
@@ -160,8 +186,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       </div>
 
       <ul v-else>
-        <li v-for="group in groups" :key="group.head.id" :data-row="group.head.id">
+        <li v-for="group in groups" :key="group.head.id">
           <NotificationRow
+            :data-row="group.head.id"
             :row="group.head"
             :channel-name="channels.nameOf(group.head.channel)"
             :selected="detail.id === group.head.id"
@@ -169,6 +196,33 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             :late-by="lateness(group.head.head.received_at)"
             @open="open(group.head.id)"
           />
+          <!-- A row is a <button>: the group's toggle sits beside it, not inside. -->
+          <button
+            v-if="group.members.length > 1"
+            type="button"
+            class="meta flex w-full items-center gap-1 border-b border-rule py-1 pl-11 text-ink-dim hover:bg-ground-raised hover:text-ink sm:pl-12"
+            :aria-expanded="expanded.has(group.head.id)"
+            @click="toggleGroup(group.head.id)"
+          >
+            <component :is="expanded.has(group.head.id) ? ChevronDown : ChevronRight" class="size-3.5" />
+            {{
+              expanded.has(group.head.id)
+                ? t("inbox.group.hide")
+                : t("inbox.group.show", { count: group.members.length - 1 }, group.members.length - 1)
+            }}
+          </button>
+          <ul v-if="expanded.has(group.head.id)" class="border-l border-rule-strong ml-4 sm:ml-5">
+            <li v-for="member in group.members.slice(1)" :key="member.id">
+              <NotificationRow
+                :data-row="member.id"
+                :row="member"
+                :channel-name="channels.nameOf(member.channel)"
+                :selected="detail.id === member.id"
+                :late-by="lateness(member.head.received_at)"
+                @open="open(member.id)"
+              />
+            </li>
+          </ul>
         </li>
       </ul>
 

@@ -225,6 +225,10 @@
     "loadMore": "Charger la suite",
     "summary": "{total} affichées · {live} en cours",
     "filtered": "Filtré",
+    "group": {
+      "show": "Afficher l'autre notification du groupe | Afficher les {count} autres notifications du groupe",
+      "hide": "Replier le groupe"
+    },
     "errorTitle": "Synchronisation échouée"
   },
   "palette": {

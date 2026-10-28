@@ -225,6 +225,10 @@
     "loadMore": "Load more",
     "summary": "{total} shown · {live} running",
     "filtered": "Filtered",
+    "group": {
+      "show": "Show the other notification in this group | Show the {count} other notifications in this group",
+      "hide": "Collapse the group"
+    },
     "errorTitle": "Sync failed"
   },
   "palette": {
