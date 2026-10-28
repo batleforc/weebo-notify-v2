@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.2](https://github.com/batleforc/weebo-notify-v2/compare/53a962647039e0704fc93d55d868598fcb8d2f3b..v0.2.2) - 2026-10-28
+#### Tests
+- (**web**) cover the inbox view beyond its groups - ([53a9626](https://github.com/batleforc/weebo-notify-v2/commit/53a962647039e0704fc93d55d868598fcb8d2f3b)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.2.1](https://github.com/batleforc/weebo-notify-v2/compare/528011fa8cdf326441c54827c770030b1bbe7174..v0.2.1) - 2026-10-28
 #### Bug Fixes
 - (**web**) expand an inbox group to its members - ([528011f](https://github.com/batleforc/weebo-notify-v2/commit/528011fa8cdf326441c54827c770030b1bbe7174)) - Max Batleforc, Claude Opus 5.5
