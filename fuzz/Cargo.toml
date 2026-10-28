@@ -19,6 +19,8 @@ libfuzzer-sys = "0.4"
 notify-domain = { path = "../crates/notify-domain" }
 # The feed parse entry point (RFC 0002 T3); it brings reqwest along, unused here.
 notify-feeds-http = { path = "../crates/notify-adapters/feeds-http" }
+# The instance address normaliser (RFC 0001).
+notify-client-core = { path = "../crates/notify-client-core" }
 # The JSON webhook transforms (RFC 0003 T12).
 notify-transform-cel = { path = "../crates/notify-adapters/transform-cel" }
 url = "2"
@@ -63,5 +65,11 @@ doc = false
 [[bin]]
 name = "fuzz_transform"
 path = "fuzz_targets/fuzz_transform.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_instance_url"
+path = "fuzz_targets/fuzz_instance_url.rs"
 test = false
 doc = false

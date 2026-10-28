@@ -5,7 +5,7 @@ description: Today a desktop bundle can only talk to the instance it was built f
 
 | Field       | Value |
 | ----------- | ----- |
-| Status      | Draft |
+| Status      | Implemented (2026-10-28; phases 1 to 3, phase 4 belongs to the M6 RFC; decisions 1, 2, 4 and 5 in §15, question 3 still open; the delta is §17; §6.P not recorded) |
 | Short       | Instance chosen at first launch |
 | Settles     | How one desktop (later mobile) build finds, trusts and remembers the instance it talks to |
 | Author      | Max Batleforc &lt;maxleriche.60@gmail.com&gt; |
@@ -508,3 +508,42 @@ rewrite runs once per HTML response.
 | 2 | Shell: instance store, probe, CSP hook, credential keys, capability; front `config.ts` on desktop; migration of a baked instance. The CSP hook lands with the store, never after. |
 | 3 | `InstanceView.vue`, Settings "Change server", i18n, docs; `publish-main` builds the desktop bundle unconditionally. |
 | 4 | Mobile: the answer to open question 3, and decision 4 carried out, in the M6 RFC. |
+
+---
+
+## 17. Revision against the tree (2026-10-28)
+
+Phases 1 to 3 shipped on 2026-10-26 (`5504f46` and the commits around it); the
+status was left at *Draft*. This section is the check made on 2026-10-28 against
+the tree, and what it changed. Phase 4 (mobile) is, as planned, the M6 RFC's.
+
+### 17.1 Where the tree differs, and why
+
+| # | The RFC says | The tree does | Why |
+| --- | --- | --- | --- |
+| 1 | `WNK_DESKTOP_API_BASE_URL` prefills the URL field; `WNK_DESKTOP_LOCK_INSTANCE=1` locks it (§4.1) | a build given `WNK_API_BASE_URL` and the other `WNK_*` bakes the whole instance into `env.js` and starts on it: a preset is always locked, and there is no prefill and no lock variable. Since 2026-10-28 Settings says so instead of offering "Change server" (`isPresetInstance`) | Before, "Change server" on such a build signed out and forgot an instance that was never chosen, then reloaded onto the same baked server: a button that only signed you out. Found by this check |
+| 2 | A router guard sends every route to the instance screen (§4.2) | `main.ts` boots a separate `instance-app` when nothing is chosen or baked | The instance screen needs none of the app's stores, router or session; the main app never mounts without an instance |
+| 3 | `instance.rs` in the shell holds the probe (§6.2) | the probe, the normaliser, the discovery checks and the store live in `notify_client_core::instance`; the shell's `instance.rs` wraps them as commands and owns the dialog and `csp_for` | Kept in the client core with the rest of the client logic, so it is tested without a webview |
+| 4 | `client-config` answering `404` gets its own message (§4.2) | any non-success answer is "not a weebo-notify instance: <url> answered <status>" | A `404`, a `502` from a proxy or a login page all mean "not this instance"; the status is in the message |
+| 5 | Credentials keyed by instance id (§5.3) | keyed by the chosen instance's id; a preset build keeps `DEFAULT_PROFILE` | A preset build has one instance by construction; its existing vault entry stays readable across the upgrade |
+
+### 17.2 Proof
+
+- Server: the `client-config` test in `crates/notify-adapters/http-actix/tests/api.rs`
+  (values, no auth, `Cache-Control`).
+- `notify-client-core::instance`: normalisation, https-only with the loopback
+  exception, ambiguous addresses refused, the issuer's discovery kept to its origin
+  with S256, an end-to-end probe against a local server, a page that is not an
+  instance refused, an oversized answer cut off, and the store kept to its directory.
+- Shell: `csp_for` swaps exactly the built origins and touches nothing but
+  `connect-src`/`img-src`; the `desktop` CI job (clippy, tests) is green on `main`.
+- Web: `InstanceView.spec.ts`, and `ServerPanel.spec.ts` (2026-10-28) for row 1.
+- `fuzz_instance_url` (2026-10-28): the normaliser over arbitrary text, 60 s,
+  1 888 613 runs, no crash; whatever it accepts is https (or loopback http when
+  allowed) with no userinfo, query or fragment.
+
+**Not done**: the §6.P observations against a real AppImage (not recorded when the
+phases landed, and not repeatable here without a desktop session); the capability
+test that a second window cannot call `instance_save`; a server that drips bytes
+(T5: only the oversized answer is tested); a deep link carrying an instance (T4) is
+refused because the deep-link parser knows no such route, not by a test of its own.

@@ -474,7 +474,8 @@
     "server": {
       "title": "Serveur",
       "current": "Cette app utilise",
-      "change": "Changer de serveur"
+      "change": "Changer de serveur",
+      "preset": "Ce serveur est fixé par cette version de l'app et ne peut pas être changé ici."
     }
   },
   "problem": {

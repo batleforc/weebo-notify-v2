@@ -15,6 +15,22 @@ export async function adoptChosenInstance(): Promise<boolean> {
   return true;
 }
 
+let preset = false;
+
+/**
+ * Whether this build fixed its server (`WNK_*` at build time, a managed deployment,
+ * RFC 0001 §4.1). Such a server cannot be changed from the app: forgetting a chosen
+ * instance would only land back on it.
+ */
+export function isPresetInstance(): boolean {
+  return preset;
+}
+
+/** Called once at boot, when the desktop app starts on its build's own server. */
+export function markPresetInstance(): void {
+  preset = true;
+}
+
 /** What `instance_probe` answers: the id to confirm with, and the hosts to name. */
 export interface ProbedInstance {
   probe: string;

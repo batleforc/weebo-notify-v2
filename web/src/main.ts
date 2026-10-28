@@ -15,5 +15,10 @@ if (isDesktop()) {
 if (isDesktop() && !chosen && !window.__ENV__) {
   await import("./instance-app");
 } else {
+  if (isDesktop() && !chosen) {
+    // Started on the build's own server: Settings must not offer to change it.
+    const { markPresetInstance } = await import("@/lib/instance");
+    markPresetInstance();
+  }
   await import("./app");
 }

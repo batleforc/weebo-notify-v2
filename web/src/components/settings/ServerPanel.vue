@@ -6,11 +6,12 @@ import { useSession } from "@/auth/session";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiBaseUrl } from "@/config";
-import { forgetInstance } from "@/lib/instance";
+import { forgetInstance, isPresetInstance } from "@/lib/instance";
 
 const { t } = useI18n();
 const session = useSession();
 const busy = ref(false);
+const preset = isPresetInstance();
 
 async function changeServer(): Promise<void> {
   busy.value = true;
@@ -30,7 +31,10 @@ async function changeServer(): Promise<void> {
         {{ t("settings.server.current") }}
         <span class="font-mono">{{ apiBaseUrl }}</span>
       </p>
-      <Button variant="outline" :disabled="busy" @click="changeServer">
+      <p v-if="preset" class="text-sm text-ink-dim">
+        {{ t("settings.server.preset") }}
+      </p>
+      <Button v-else variant="outline" :disabled="busy" @click="changeServer">
         {{ t("settings.server.change") }}
       </Button>
     </CardContent>
