@@ -574,7 +574,7 @@ fn summary_title(lang: FeedLang, count: usize, feed: &str) -> String {
     }
 }
 
-const fn open_label(lang: FeedLang) -> &'static str {
+pub(crate) const fn open_label(lang: FeedLang) -> &'static str {
     match lang {
         FeedLang::En => "Open",
         FeedLang::Fr => "Ouvrir",

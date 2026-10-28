@@ -32,6 +32,14 @@ pub(crate) struct Config {
     /// Managed service accounts, reconciled like channels (§5.2bis).
     pub service_accounts: Vec<ManagedServiceAccount>,
 
+    /// JSON webhook transforms (RFC 0003), swapped on `SIGHUP`.
+    pub transforms: Vec<ManagedTransform>,
+
+    /// `[[transform]]`, a misspelt `[[transforms]]`: kept only so
+    /// [`Config::unhonoured`] can say so, since unknown top-level keys load.
+    #[serde(skip_serializing)]
+    pub transform: Option<figment::value::Value>,
+
     /// Federation trust policies (§5.3).
     pub trust_policy: Vec<TrustPolicy>,
 
@@ -540,6 +548,109 @@ pub(crate) struct Feed {
     pub lang: FeedLang,
 }
 
+/// One `[[transforms]]` entry (RFC 0003 §4.1): plain keys, and CEL source in the
+/// others. Unknown keys are refused, so `raw_body = true` is an error.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManagedTransform {
+    pub id: String,
+    pub channels: Vec<String>,
+    #[serde(default)]
+    pub lang: FeedLang,
+    #[serde(default)]
+    pub split: Option<String>,
+    #[serde(default)]
+    pub max_items: Option<usize>,
+    pub title: String,
+    #[serde(default)]
+    pub title_fallback: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub group_key: Option<String>,
+    #[serde(default)]
+    pub tags: Option<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub ack: Option<String>,
+    #[serde(default)]
+    pub update: bool,
+    #[serde(default)]
+    pub raw: RawBody,
+}
+
+/// `raw` (RFC 0003 §4.2): off unless the operator writes it down.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RawBody {
+    #[default]
+    Off,
+    Item,
+    Payload,
+}
+
+impl ManagedTransform {
+    /// What the adapter compiles. Fails on a channel id that does not parse.
+    pub(crate) fn spec(&self) -> anyhow::Result<notify_transform_cel::TransformSpec> {
+        let channels = self
+            .channels
+            .iter()
+            .map(|id| {
+                notify_domain::ChannelId::parse(id).map_err(|error| {
+                    anyhow::anyhow!("[[transforms]] `{}` channels: `{id}`: {error}", self.id)
+                })
+            })
+            .collect::<anyhow::Result<_>>()?;
+        Ok(notify_transform_cel::TransformSpec {
+            id: self.id.clone(),
+            channels,
+            lang: match self.lang {
+                FeedLang::En => notify_ports::FeedLang::En,
+                FeedLang::Fr => notify_ports::FeedLang::Fr,
+            },
+            split: self.split.clone(),
+            max_items: self.max_items,
+            title: self.title.clone(),
+            title_fallback: self.title_fallback.clone(),
+            body: self.body.clone(),
+            link: self.link.clone(),
+            external_id: self.external_id.clone(),
+            group_key: self.group_key.clone(),
+            tags: self.tags.clone(),
+            priority: self.priority.clone(),
+            status: self.status.clone(),
+            state: self.state.clone(),
+            ack: self.ack.clone(),
+            update: self.update,
+            raw: match self.raw {
+                RawBody::Off => notify_ports::RawMode::Off,
+                RawBody::Item => notify_ports::RawMode::Item,
+                RawBody::Payload => notify_ports::RawMode::Payload,
+            },
+        })
+    }
+
+    /// Every program compiles and passes the §4.3 checks.
+    pub(crate) fn compile(
+        &self,
+        slots: notify_transform_cel::Slots,
+    ) -> anyhow::Result<notify_transform_cel::CelTransform> {
+        Ok(notify_transform_cel::CelTransform::compile(
+            self.spec()?,
+            slots,
+        )?)
+    }
+}
+
 /// The language of the strings the server writes for a feed (RFC 0002 decision 14).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -906,13 +1017,14 @@ impl Config {
     }
 
     /// The configuration a `SIGHUP` may adopt (design §11, T21): `[[channels.managed]]` (with their
-    /// sinks and `[sinks.smtp]`, swapped via `crate::sinks::SinkRoutes::adopt`), `[[service_accounts]]`
-    /// and trust policies (via `notify_app::LivePolicies`). Everything else was wired at boot;
+    /// sinks and `[sinks.smtp]`, swapped via `crate::sinks::SinkRoutes::adopt`), `[[service_accounts]]`,
+    /// `[[transforms]]` (via `crate::transforms::TransformRoutes::adopt`) and trust policies (via `notify_app::LivePolicies`). Everything else was wired at boot;
     /// changes there are reported by [`Config::unreloadable`].
     pub(crate) fn reloaded_from(&self, file: Self) -> Self {
         Self {
             channels: file.channels,
             service_accounts: file.service_accounts,
+            transforms: file.transforms,
             trust_policy: file.trust_policy,
             // The relay rides with the sinks: a reload that adds an email sink
             // rebuilds the sink fleet from this, and a fleet built from the old
@@ -1084,6 +1196,7 @@ impl Config {
         self.validate_smtp()?;
 
         self.validate_managed_ids()?;
+        self.validate_transforms()?;
         for channel in &self.channels.managed {
             // Zero would refuse every publish with a misleading `429`; omit `limits` for the default (§8.2).
             anyhow::ensure!(
@@ -1146,6 +1259,20 @@ impl Config {
                 accounts.insert(id),
                 "[[service_accounts]] id `{}` is declared twice",
                 account.id
+            );
+        }
+        Ok(())
+    }
+
+    /// Every transform compiles on its own (RFC 0003 §4.3), and no id is declared twice.
+    fn validate_transforms(&self) -> anyhow::Result<()> {
+        let mut ids = std::collections::HashSet::new();
+        for transform in &self.transforms {
+            transform.compile(notify_transform_cel::Slots::new(1))?;
+            anyhow::ensure!(
+                ids.insert(transform.id.as_str()),
+                "[[transforms]] id `{}` is declared twice",
+                transform.id
             );
         }
         Ok(())
@@ -1263,6 +1390,14 @@ impl Config {
                 "{publishers} [[channels.managed.publishers]] entries — no [federation] \
                  block, so nothing can be exchanged against them (§5.3)"
             ));
+        }
+
+        if self.transform.is_some() {
+            pending.push(
+                "[[transform]] — the table is `[[transforms]]`; no transform was declared \
+                 from it"
+                    .to_owned(),
+            );
         }
 
         // Honoured sections (sinks, `limits`, `[push.*]`) are deliberately absent: the
@@ -2104,6 +2239,72 @@ mod tests {
 
         assert_eq!(reloaded.channels.managed.len(), 1);
         assert_eq!(reloaded.service_accounts.len(), 1);
+    }
+
+    const NEWS: &str = r#"
+[[transforms]]
+id = "mlab-news"
+channels = ["security"]
+split = 'body.items'
+title = 'item.title'
+external_id = 'item.id'
+"#;
+
+    #[test]
+    fn a_transform_loads_and_a_reload_adopts_it() {
+        let config = load_isolated(&with_config("transform-ok", NEWS)).unwrap();
+        assert_eq!(config.transforms.len(), 1);
+        assert_eq!(config.unhonoured(), [] as [std::string::String; 0]);
+
+        let reloaded = Config::default().reloaded_from(config);
+        assert_eq!(reloaded.transforms.len(), 1);
+    }
+
+    #[test]
+    fn a_transform_that_would_not_work_fails_the_load() {
+        for (name, contents, why) in [
+            (
+                "transform-unknown-key",
+                format!("{NEWS}raw_body = true\n"),
+                "raw_body",
+            ),
+            ("transform-twice", format!("{NEWS}{NEWS}"), "declared twice"),
+            (
+                "transform-bad-channel",
+                NEWS.replace(r#"["security"]"#, r#"["Not A Channel"]"#),
+                "channels",
+            ),
+            (
+                "transform-unquoted",
+                format!("{NEWS}group_key = 'mlab-news'\n"),
+                "CEL quotes",
+            ),
+            (
+                "transform-no-title",
+                NEWS.replace("title = 'item.title'\n", ""),
+                "title",
+            ),
+            ("transform-raw", format!("{NEWS}raw = \"all\"\n"), "raw"),
+        ] {
+            let error = load_isolated(&with_config(name, &contents)).unwrap_err();
+            assert!(format!("{error:#}").contains(why), "{name}: {error:#}");
+        }
+    }
+
+    #[test]
+    fn a_misspelt_transforms_table_is_reported() {
+        let config = load_isolated(&with_config(
+            "transform-typo",
+            &NEWS.replace("[[transforms]]", "[[transform]]"),
+        ))
+        .unwrap();
+        assert!(config.transforms.is_empty());
+        assert!(
+            config
+                .unhonoured()
+                .iter()
+                .any(|pending| pending.contains("[[transform]]"))
+        );
     }
 
     #[test]

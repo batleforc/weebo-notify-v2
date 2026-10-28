@@ -143,6 +143,27 @@ pub trait Metrics: Send + Sync {
     /// Feeds currently failing — `feed_failing`, set by the leader. Default no-op.
     fn feed_failing(&self, _feeds: u64) {}
 
+    /// A live notification was closed without a revision —
+    /// `notifications_closed_total{reason}`, `manual` (RFC 0004) or `stale`. Default no-op.
+    fn notification_closed(&self, _reason: &'static str, _count: u64) {}
+
+    /// One JSON webhook request ended — `transform_requests_total{transform,outcome}`
+    /// (RFC 0003 §10.1). Default no-op.
+    fn transform_request(&self, _transform: &str, _outcome: &'static str) {}
+
+    /// Elements of one — `transform_items_total{transform,outcome}`. Default no-op.
+    fn transform_items(&self, _transform: &str, _outcome: &'static str, _count: u64) {}
+
+    /// One request's evaluation, slot wait included — `transform_eval_seconds{transform}`.
+    /// Default no-op.
+    fn transform_eval_seconds(&self, _transform: &str, _seconds: f64) {}
+
+    /// The transforms now loaded, each under a digest of its declaration —
+    /// `transform_info{transform,hash}`, so replicas on different configs show.
+    /// Replaces the whole series, so an edited or removed transform stops showing.
+    /// Default no-op.
+    fn transforms_loaded(&self, _loaded: &[(String, String)]) {}
+
     /// Render the registry in the Prometheus text format, for `GET /metrics`.
     fn render(&self) -> String;
 }

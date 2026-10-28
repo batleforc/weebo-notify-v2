@@ -214,7 +214,15 @@ impl Session {
                 .map_err(ClientError::from)?
                 .into_inner();
 
-            all.extend(page.items);
+            // `my_scopes` (RFC 0004) serves the web's buttons; these clients have none yet.
+            all.extend(page.items.into_iter().map(|view| Channel {
+                display_name: view.display_name,
+                group_access: view.group_access,
+                id: view.id,
+                members: view.members,
+                origin: view.origin,
+                policy: view.policy,
+            }));
             // Until `next` is null, never until a page looks short (§8).
             match page.next {
                 Some(next) => cursor = Some(next.to_string()),

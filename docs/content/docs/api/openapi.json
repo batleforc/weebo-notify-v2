@@ -1127,11 +1127,11 @@
         ],
         "responses": {
           "200": {
-            "description": "A page of channels",
+            "description": "A page of channels, each with the caller's own scopes",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_Channel"
+                  "$ref": "#/components/schemas/Page_ChannelView"
                 }
               }
             }
@@ -2031,6 +2031,154 @@
         ]
       }
     },
+    "/api/v1/compat/json/{transform}/{channel}": {
+      "post": {
+        "tags": [
+          "compat"
+        ],
+        "summary": "Receive any JSON webhook, mapped by the operator-declared transform `{transform}`.",
+        "operationId": "json",
+        "parameters": [
+          {
+            "name": "transform",
+            "in": "path",
+            "description": "A `[[transforms]]` id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "path",
+            "description": "Channel id; must be in the transform's `channels`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "The API key, for clients that cannot set a header. Prefer a header: URLs get logged.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "One entry per element, in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JsonIngested"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No `publish` scope in that channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such transform, or it does not serve that channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Over 256 KiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "A form or multipart body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not JSON, `split` is not a list, too many elements, or every element refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Over the publish quota; elements before it stay published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Every evaluation slot is busy, or the evaluation took too long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/compat/ntfy": {
       "post": {
         "tags": [
@@ -2822,6 +2970,83 @@
           },
           "403": {
             "description": "No `publish` scope in its channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/{id}/close": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Close a live notification by hand (RFC 0004): no revision, a `closure` event\nnaming the caller. Needs `publish` or `manage` in its channel.",
+        "operationId": "close_one",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Notification id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Closed, or already was: the notification as it now stands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notification"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No `publish` or `manage` in its channel, or no such notification",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Deleted or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not a notification id",
             "content": {
               "application/json": {
                 "schema": {
@@ -5042,6 +5267,29 @@
           }
         }
       },
+      "ChannelView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Channel"
+          },
+          {
+            "type": "object",
+            "required": [
+              "my_scopes"
+            ],
+            "properties": {
+              "my_scopes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Scope"
+                },
+                "description": "The caller's own scopes here; a control needing one they lack is not shown."
+              }
+            }
+          }
+        ],
+        "description": "A channel as `GET /channels` lists it: the channel, and what the caller may do\nthere (RFC 0004 decision 4)."
+      },
       "ChoiceOption": {
         "type": "object",
         "description": "One option of a `choice` action.",
@@ -5901,7 +6149,7 @@
           {
             "type": "object",
             "title": "LoggedClosure",
-            "description": "A lifecycle notification was closed by the server because nothing had happened to it for longer than its channel allows; clients mark their copy closed rather than dropping it.",
+            "description": "A lifecycle notification was closed without a revision: by the server because nothing had happened to it for longer than its channel allows, or by a person (`closed_by`); clients mark their copy closed rather than dropping it.",
             "required": [
               "cursor",
               "logged_at",
@@ -5925,6 +6173,17 @@
                 "type": "string",
                 "format": "date-time",
                 "description": "When the server closed it, and therefore when its retention clock starts."
+              },
+              "closed_by": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Author"
+                  }
+                ],
+                "description": "Who closed it by hand (RFC 0004); absent when the server did."
               },
               "cursor": {
                 "$ref": "#/components/schemas/Cursor"
@@ -6314,6 +6573,30 @@
           }
         }
       },
+      "JsonIngested": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Published"
+          },
+          {
+            "type": "object",
+            "required": [
+              "notification_id",
+              "skipped"
+            ],
+            "properties": {
+              "notification_id": {
+                "$ref": "#/components/schemas/NotificationId"
+              },
+              "skipped": {
+                "type": "boolean",
+                "description": "Always `true`."
+              }
+            }
+          }
+        ],
+        "description": "One element of a JSON webhook: its notification as written, or only its id\nwhen it was already there (RFC 0003 decision 11): a skip carries no content."
+      },
       "Membership": {
         "type": "object",
         "description": "The scopes one principal holds in one channel.",
@@ -6417,6 +6700,17 @@
             ],
             "format": "date-time",
             "description": "When it last closed, starting its retention clock; `None` while live (§7.2bis)."
+          },
+          "closed_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Author",
+                "description": "Who closed it by hand (RFC 0004); `None` when a revision or the server did."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "created_at": {
             "type": "string",
@@ -6603,7 +6897,7 @@
           }
         }
       },
-      "Page_Channel": {
+      "Page_ChannelCard": {
         "type": "object",
         "description": "What a caller gets.",
         "required": [
@@ -6613,7 +6907,7 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Channel"
+              "$ref": "#/components/schemas/ChannelCard"
             },
             "description": "The rows, in the ordering of the endpoint."
           },
@@ -6630,7 +6924,7 @@
           }
         }
       },
-      "Page_ChannelCard": {
+      "Page_ChannelView": {
         "type": "object",
         "description": "What a caller gets.",
         "required": [
@@ -6640,7 +6934,7 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChannelCard"
+              "$ref": "#/components/schemas/ChannelView"
             },
             "description": "The rows, in the ordering of the endpoint."
           },

@@ -4,11 +4,11 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import { listChannels } from "@/api/generated";
-import type { Channel } from "@/api/generated/types.gen";
+import type { ChannelView } from "@/api/generated/types.gen";
 import { failureOf } from "@/api/problem";
 
 export const useChannels = defineStore("channels", () => {
-  const all = ref<Channel[]>([]);
+  const all = ref<ChannelView[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
 
@@ -26,10 +26,16 @@ export const useChannels = defineStore("channels", () => {
     return byId.value.get(id)?.policy.receipts_enabled ?? false;
   }
 
+  /** Whether the caller may close notifications here by hand (RFC 0004): a convenience, the server decides. */
+  function mayClose(id: string): boolean {
+    const scopes = byId.value.get(id)?.my_scopes ?? [];
+    return scopes.includes("publish") || scopes.includes("manage");
+  }
+
   async function load(): Promise<void> {
     loading.value = true;
     error.value = null;
-    const collected: Channel[] = [];
+    const collected: ChannelView[] = [];
     try {
       // A cursor is followed until it comes back `null`, never until a page looks
       // short: rows can expire between two calls (§8).
@@ -53,5 +59,14 @@ export const useChannels = defineStore("channels", () => {
     }
   }
 
-  return { all, byId, collectsReceipts, error, load, loading, nameOf };
+  return {
+    all,
+    byId,
+    collectsReceipts,
+    error,
+    load,
+    loading,
+    mayClose,
+    nameOf,
+  };
 });

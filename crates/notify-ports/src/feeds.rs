@@ -180,7 +180,7 @@ pub const FEED_KEY_HEX: usize = 32;
 
 /// `hex(sha256(parts joined by NUL))`, cut to [`FEED_KEY_HEX`]. NUL separates so
 /// two different splits of the same text never collide.
-fn digest(parts: &[&str]) -> String {
+pub(crate) fn digest(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for (index, part) in parts.iter().enumerate() {
         if index > 0 {

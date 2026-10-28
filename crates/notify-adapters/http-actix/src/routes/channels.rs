@@ -1,6 +1,7 @@
 //! Channels and their members (design §8, §11).
 
 use actix_web::{HttpResponse, delete, get, patch, post, web};
+use notify_app::ChannelView;
 use notify_domain::{
     Ceiling, Channel, ChannelId, CloseAfter, PolicyEdit, Principal, Priority, Scope, Ttl,
 };
@@ -76,7 +77,7 @@ pub struct AddMemberBody {
     tag = "channels",
     params(PageParams),
     responses(
-        (status = 200, description = "A page of channels", body = Page<Channel>),
+        (status = 200, description = "A page of channels, each with the caller's own scopes", body = Page<ChannelView>),
         (status = 401, description = "No usable credential", body = Problem),
     ),
     security(("bearer" = []))
@@ -86,7 +87,7 @@ pub(crate) async fn list_channels(
     state: web::Data<ApiState>,
     caller: Authenticated,
     params: web::Query<PageParams>,
-) -> Result<web::Json<Page<Channel>>, ApiError> {
+) -> Result<web::Json<Page<ChannelView>>, ApiError> {
     let params = params.into_inner();
     let page = page(params.cursor.as_deref(), params.limit)?;
 

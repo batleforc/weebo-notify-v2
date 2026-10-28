@@ -54,6 +54,17 @@ pub enum Envelope {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<serde_json::Value>,
     },
+    /// A person closed it (RFC 0004): the worker replaces the alert under the same
+    /// tag, silently, and a visible tab takes it from the stream instead.
+    Closure {
+        /// Which channel.
+        channel: ChannelId,
+        /// Which notification.
+        notification_id: NotificationId,
+        /// Who closed it, as members see them.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        closed_by: Option<String>,
+    },
     /// The one push that ends a quiet period (design §7.4).
     Digest {
         /// How many were held back.
@@ -94,6 +105,15 @@ impl Envelope {
                     PushBody::Payload { bytes, .. } => serde_json::from_slice(bytes).ok(),
                     PushBody::Poke => None,
                 },
+            },
+            PushMessage::Closure {
+                channel,
+                notification_id,
+                closed_by,
+            } => Self::Closure {
+                channel: channel.clone(),
+                notification_id: *notification_id,
+                closed_by: closed_by.clone(),
             },
             PushMessage::Digest { total, failures } => Self::Digest {
                 total: *total,

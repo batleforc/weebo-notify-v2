@@ -20,6 +20,7 @@ members = [
     "crates/notify-adapters/push-apns",
     "crates/notify-adapters/push-http",
     "crates/notify-adapters/feeds-http",
+    "crates/notify-adapters/transform-cel",
     "crates/notify-server",
     "crates/notify-client-api",
     "crates/notify-client-core",
@@ -66,6 +67,7 @@ notify-push-unifiedpush = { path = "crates/notify-adapters/push-unifiedpush" }
 notify-push-apns = { path = "crates/notify-adapters/push-apns" }
 notify-push-http = { path = "crates/notify-adapters/push-http" }
 notify-feeds-http = { path = "crates/notify-adapters/feeds-http" }
+notify-transform-cel = { path = "crates/notify-adapters/transform-cel" }
 notify-client-api = { path = "crates/notify-client-api" }
 notify-client-core = { path = "crates/notify-client-core" }
 

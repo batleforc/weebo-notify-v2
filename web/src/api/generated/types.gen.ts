@@ -376,6 +376,17 @@ export type ChannelPolicyBody = {
 };
 
 /**
+ * A channel as `GET /channels` lists it: the channel, and what the caller may do
+ * there (RFC 0004 decision 4).
+ */
+export type ChannelView = Channel & {
+    /**
+     * The caller's own scopes here; a control needing one they lack is not shown.
+     */
+    my_scopes: Array<Scope>;
+};
+
+/**
  * One option of a `choice` action.
  */
 export type ChoiceOption = {
@@ -852,6 +863,10 @@ export type Event = (RevisionEvent & {
      * When the server closed it, and therefore when its retention clock starts.
      */
     closed_at: string;
+    /**
+     * Who closed it by hand (RFC 0004); absent when the server did.
+     */
+    closed_by?: null | Author;
     cursor: Cursor;
     event: 'closure';
     /**
@@ -1073,6 +1088,18 @@ export type InteractionRecord = {
 };
 
 /**
+ * One element of a JSON webhook: its notification as written, or only its id
+ * when it was already there (RFC 0003 decision 11): a skip carries no content.
+ */
+export type JsonIngested = Published | {
+    notification_id: NotificationId;
+    /**
+     * Always `true`.
+     */
+    skipped: boolean;
+};
+
+/**
  * The scopes one principal holds in one channel.
  */
 export type Membership = {
@@ -1130,6 +1157,7 @@ export type Notification = {
      * When it last closed, starting its retention clock; `None` while live (§7.2bis).
      */
     closed_at?: string | null;
+    closed_by?: Author | null;
     /**
      * When the first revision landed.
      */
@@ -1263,11 +1291,11 @@ export type PageAuditEntry = {
 /**
  * What a caller gets.
  */
-export type PageChannel = {
+export type PageChannelCard = {
     /**
      * The rows, in the ordering of the endpoint.
      */
-    items: Array<Channel>;
+    items: Array<ChannelCard>;
     /**
      * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
      */
@@ -1277,11 +1305,11 @@ export type PageChannel = {
 /**
  * What a caller gets.
  */
-export type PageChannelCard = {
+export type PageChannelView = {
     /**
      * The rows, in the ordering of the endpoint.
      */
-    items: Array<ChannelCard>;
+    items: Array<ChannelView>;
     /**
      * Pass this back as the `cursor` of the next request. Absent means this was the last page. A present cursor does not promise the next page is non-empty — rows can expire between two calls — so clients follow it until it is absent rather than until a page comes back short.
      */
@@ -2899,9 +2927,9 @@ export type ListChannelsError = ListChannelsErrors[keyof ListChannelsErrors];
 
 export type ListChannelsResponses = {
     /**
-     * A page of channels
+     * A page of channels, each with the caller's own scopes
      */
-    200: PageChannel;
+    200: PageChannelView;
 };
 
 export type ListChannelsResponse = ListChannelsResponses[keyof ListChannelsResponses];
@@ -3376,6 +3404,75 @@ export type GotifyResponses = {
 
 export type GotifyResponse = GotifyResponses[keyof GotifyResponses];
 
+export type JsonData = {
+    body: {
+        [key: string]: unknown;
+    };
+    path: {
+        /**
+         * A `[[transforms]]` id
+         */
+        transform: string;
+        /**
+         * Channel id; must be in the transform's `channels`
+         */
+        channel: string;
+    };
+    query?: {
+        /**
+         * The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+         */
+        token?: string;
+    };
+    url: '/api/v1/compat/json/{transform}/{channel}';
+};
+
+export type JsonErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `publish` scope in that channel
+     */
+    403: Problem;
+    /**
+     * No such transform, or it does not serve that channel
+     */
+    404: Problem;
+    /**
+     * Over 256 KiB
+     */
+    413: Problem;
+    /**
+     * A form or multipart body
+     */
+    415: Problem;
+    /**
+     * Not JSON, `split` is not a list, too many elements, or every element refused
+     */
+    422: Problem;
+    /**
+     * Over the publish quota; elements before it stay published
+     */
+    429: Problem;
+    /**
+     * Every evaluation slot is busy, or the evaluation took too long
+     */
+    503: Problem;
+};
+
+export type JsonError = JsonErrors[keyof JsonErrors];
+
+export type JsonResponses = {
+    /**
+     * One entry per element, in order
+     */
+    200: Array<JsonIngested>;
+};
+
+export type JsonResponse = JsonResponses[keyof JsonResponses];
+
 export type NtfyJsonData = {
     body: NtfyBody;
     path?: never;
@@ -3806,6 +3903,48 @@ export type GetOneResponses = {
 };
 
 export type GetOneResponse = GetOneResponses[keyof GetOneResponses];
+
+export type CloseOneData = {
+    body?: never;
+    path: {
+        /**
+         * Notification id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/notifications/{id}/close';
+};
+
+export type CloseOneErrors = {
+    /**
+     * No usable credential
+     */
+    401: Problem;
+    /**
+     * No `publish` or `manage` in its channel, or no such notification
+     */
+    403: Problem;
+    /**
+     * Deleted or expired
+     */
+    409: Problem;
+    /**
+     * Not a notification id
+     */
+    422: Problem;
+};
+
+export type CloseOneError = CloseOneErrors[keyof CloseOneErrors];
+
+export type CloseOneResponses = {
+    /**
+     * Closed, or already was: the notification as it now stands
+     */
+    200: Notification;
+};
+
+export type CloseOneResponse = CloseOneResponses[keyof CloseOneResponses];
 
 export type ListInteractionsData = {
     body?: never;

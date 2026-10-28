@@ -36,6 +36,11 @@ rules living outside this repository, so a rename here breaks somebody else's pa
 | `feed_polls_total` | counter | `outcome` | How feed polls ended: `ok`, `not_modified`, `refused_address`, `too_large`, `timeout`, `http_error`, `unparsable`, `suspicious`, `superseded`, `publish_refused` |
 | `feed_items_total` | counter | `outcome` | Feed items `published` (summaries included), `summarised` into a summary, or skipped as `invalid` |
 | `feed_failing` | gauge | — | Feeds whose last poll failed — leader only |
+| `notifications_closed_total` | counter | `reason` | Live notifications closed without a revision: `manual` (a person, RFC 0004) or `stale` (`close_after`) |
+| `transform_requests_total` | counter | `transform`, `outcome` | JSON webhook requests (RFC 0003): `ok`, `too_large`, `form`, `forbidden`, `unlisted`, `not_json`, `not_list`, `too_many`, `busy`, `timeout`, `internal`, `refused` (quota mid-way), `error`, `all_invalid`; an unknown id counts as `transform="_unknown"` |
+| `transform_items_total` | counter | `transform`, `outcome` | Elements `published`, `skipped` (already there), `invalid`; fields that failed (`eval_error`); ids taken from a digest (`id_digest`); raw blocks cut (`raw_truncated`) |
+| `transform_eval_seconds` | histogram | `transform` | One request's evaluation, the wait for a slot included |
+| `transform_info` | gauge | `transform`, `hash` | `1` per loaded transform, under a digest of its declaration: two hashes for one id means pods on different configs |
 
 Every background loop is supervised: a pass that errors or panics is logged, counted
 in `background_job_failures_total`, backed off (5 s doubling to 5 min) and retried —
@@ -141,6 +146,24 @@ worth adding yourself:
 
 `feed_polls_total{outcome="suspicious"}` rising means a feed whose ids change on every
 fetch, or one outrunning its window; neither publishes, and the `warn` log says which.
+
+The `transform` label is an id the operator declared, never one a caller typed. A rise
+of `transform_requests_total{outcome!="ok"}` usually means a producer changed its
+format (`not_list`, and `eval_error` items); `outcome="unlisted"` is someone with a key
+probing transforms on a channel they may publish to. Worth a ticket rule, not a page:
+
+```yaml
+- alert: WeeboNotifyTransformRefusing
+  expr: sum by (transform, outcome) (rate(transform_requests_total{outcome!="ok"}[1h])) > 0
+  for: 1h
+  labels: { severity: ticket }
+  annotations:
+    summary: A JSON webhook producer is being refused; `notify-server transform try` a saved body.
+- alert: WeeboNotifyTransformSlow
+  expr: histogram_quantile(0.99, sum by (le) (rate(transform_eval_seconds_bucket[30m]))) > 0.1
+  for: 30m
+  labels: { severity: ticket }
+```
 
 `grafanaDashboard.enabled` adds one dashboard (connections, publish rate, push
 latency and failures, job freshness, dead letters, retention and sync backlog) as a

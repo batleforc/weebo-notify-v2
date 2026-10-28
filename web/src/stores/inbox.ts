@@ -313,6 +313,18 @@ export const useInbox = defineStore("inbox", () => {
         applyRevision(event, event.channel_id);
         return;
       }
+      case "closure": {
+        // A server's or a person's closure (RFC 0004): no revision, the row turns closed.
+        const row =
+          index.get(event.notification_id) ??
+          pending.value.find((one) => one.id === event.notification_id);
+        if (row) {
+          row.head = { ...row.head, state: "closed" };
+          row.closed_at = event.closed_at;
+          row.closed_by = event.closed_by ?? null;
+        }
+        return;
+      }
       case "tombstone": {
         const removed = event.notification_id;
         rows.value = rows.value.filter((row) => row.id !== removed);

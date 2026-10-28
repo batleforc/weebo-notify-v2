@@ -59,6 +59,7 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(notifications::get_one)
             .service(notifications::revisions)
             .service(notifications::delete_one)
+            .service(notifications::close_one)
             .service(notifications::unread)
             .service(notifications::search)
             .service(interactions::record)
@@ -116,7 +117,8 @@ pub fn configure(config: &mut ServiceConfig<'_>) {
             .service(compat::ntfy)
             .service(compat::ntfy_put)
             .service(compat::ntfy_json)
-            .service(compat::alertmanager),
+            .service(compat::alertmanager)
+            .service(compat::json),
     );
 }
 

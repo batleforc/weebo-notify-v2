@@ -33,6 +33,7 @@ pub struct CloseStale {
     election: Arc<dyn LeaderElection>,
     bus: Arc<dyn notify_ports::EventBus>,
     clock: Arc<dyn Clock>,
+    metrics: Arc<dyn notify_ports::Metrics>,
 }
 
 impl core::fmt::Debug for CloseStale {
@@ -61,7 +62,15 @@ impl CloseStale {
             election,
             bus,
             clock,
+            metrics: Arc::new(notify_ports::NoMetrics),
         }
+    }
+
+    /// Count each closure in `notifications_closed_total{reason="stale"}` (RFC 0004).
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<dyn notify_ports::Metrics>) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Run one pass.
@@ -100,6 +109,8 @@ impl CloseStale {
                 break;
             }
             report.closed = report.closed.saturating_add(closed.len() as u64);
+            self.metrics
+                .notification_closed("stale", closed.len() as u64);
 
             // So connected clients mark their copy closed. One poke per channel per batch: a
             // poke means "read from your cursor".

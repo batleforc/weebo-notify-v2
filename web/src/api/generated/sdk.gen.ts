@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddMemberData, AddMemberErrors, AddMemberResponses, AlertmanagerData, AlertmanagerErrors, AlertmanagerResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, ClientConfigData, ClientConfigResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, DisconnectStreamData, DisconnectStreamErrors, DisconnectStreamResponses, DlqData, DlqErrors, DlqResponses, DownloadData, DownloadErrors, DownloadResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, FsDownloadData, FsDownloadErrors, FsDownloadResponses, FsUploadData, FsUploadErrors, FsUploadResponses, GetOneData, GetOneErrors, GetOneResponses, GotifyData, GotifyErrors, GotifyResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, ListStreamsData, ListStreamsErrors, ListStreamsResponses, NtfyData, NtfyErrors, NtfyJsonData, NtfyJsonErrors, NtfyJsonResponses, NtfyPutData, NtfyPutResponses, NtfyResponses, PresignData, PresignDownloadData, PresignDownloadErrors, PresignDownloadResponses, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadChannelData, ReadChannelErrors, ReadChannelResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RequeueDeadLetterData, RequeueDeadLetterErrors, RequeueDeadLetterResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SearchUsersData, SearchUsersErrors, SearchUsersResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SetKeyLimitData, SetKeyLimitErrors, SetKeyLimitResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, ThumbnailData, ThumbnailErrors, ThumbnailResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UnreadData, UnreadErrors, UnreadResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
+import type { AddMemberData, AddMemberErrors, AddMemberResponses, AlertmanagerData, AlertmanagerErrors, AlertmanagerResponses, AuditData, AuditErrors, AuditResponses, ChannelInboxData, ChannelInboxErrors, ChannelInboxResponses, ClientConfigData, ClientConfigResponses, CloseOneData, CloseOneErrors, CloseOneResponses, CreateAccountData, CreateAccountErrors, CreateAccountResponses, CreateChannelData, CreateChannelErrors, CreateChannelResponses, CreateKeyData, CreateKeyErrors, CreateKeyResponses, DeactivateAccountData, DeactivateAccountErrors, DeactivateAccountResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteOneData, DeleteOneErrors, DeleteOneResponses, DisconnectStreamData, DisconnectStreamErrors, DisconnectStreamResponses, DlqData, DlqErrors, DlqResponses, DownloadData, DownloadErrors, DownloadResponses, EnrolDeviceData, EnrolDeviceErrors, EnrolDeviceResponses, ExchangeData, ExchangeErrors, ExchangeResponses, FsDownloadData, FsDownloadErrors, FsDownloadResponses, FsUploadData, FsUploadErrors, FsUploadResponses, GetOneData, GetOneErrors, GetOneResponses, GotifyData, GotifyErrors, GotifyResponses, HealthzData, HealthzResponses, InboxData, InboxErrors, InboxResponses, InventoryData, InventoryErrors, InventoryResponses, JsonData, JsonErrors, JsonResponses, ListAccountsData, ListAccountsErrors, ListAccountsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDevicesData, ListDevicesErrors, ListDevicesResponses, ListInteractionsData, ListInteractionsErrors, ListInteractionsResponses, ListKeysData, ListKeysErrors, ListKeysResponses, ListStreamsData, ListStreamsErrors, ListStreamsResponses, NtfyData, NtfyErrors, NtfyJsonData, NtfyJsonErrors, NtfyJsonResponses, NtfyPutData, NtfyPutResponses, NtfyResponses, PresignData, PresignDownloadData, PresignDownloadErrors, PresignDownloadResponses, PresignErrors, PresignResponses, PublishData, PublishErrors, PublishResponses, ReadAvatarData, ReadAvatarErrors, ReadAvatarResponses, ReadChannelData, ReadChannelErrors, ReadChannelResponses, ReadDndData, ReadDndErrors, ReadDndResponses, ReadershipData, ReadershipErrors, ReadershipResponses, ReadProfileData, ReadProfileErrors, ReadProfileResponses, ReadyzData, ReadyzErrors, ReadyzResponses, ReceiptData, ReceiptErrors, ReceiptResponses, ReconciliationData, ReconciliationErrors, ReconciliationResponses, RecordData, RecordErrors, RecordResponses, RemoveMemberData, RemoveMemberErrors, RemoveMemberResponses, RequeueDeadLetterData, RequeueDeadLetterErrors, RequeueDeadLetterResponses, RevisionsData, RevisionsErrors, RevisionsResponses, RevokeDeviceData, RevokeDeviceErrors, RevokeDeviceResponses, RevokeKeyData, RevokeKeyErrors, RevokeKeyResponses, SearchData, SearchErrors, SearchResponses, SearchUsersData, SearchUsersErrors, SearchUsersResponses, SelfJoinData, SelfJoinErrors, SelfJoinResponses, SetAvatarData, SetAvatarErrors, SetAvatarResponses, SetDndData, SetDndErrors, SetDndResponses, SetKeyLimitData, SetKeyLimitErrors, SetKeyLimitResponses, SilenceData, SilenceErrors, SilenceResponses, StreamData, StreamErrors, StreamResponses, SyncData, SyncErrors, SyncResponses, ThumbnailData, ThumbnailErrors, ThumbnailResponses, TrustPoliciesData, TrustPoliciesErrors, TrustPoliciesResponses, UnreadData, UnreadErrors, UnreadResponses, UpdateChannelData, UpdateChannelErrors, UpdateChannelResponses, UpdateProfileData, UpdateProfileErrors, UpdateProfileResponses, UpsertData, UpsertErrors, UpsertResponses, WebpushKeyData, WebpushKeyErrors, WebpushKeyResponses, WebsocketData, WebsocketErrors, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -362,6 +362,20 @@ export const gotify = <ThrowOnError extends boolean = false>(options: Options<Go
 });
 
 /**
+ * Receive any JSON webhook, mapped by the operator-declared transform `{transform}`.
+ */
+export const json = <ThrowOnError extends boolean = false>(options: Options<JsonData, ThrowOnError>): RequestResult<JsonResponses, JsonErrors, ThrowOnError> => (options.client ?? client).post<JsonResponses, JsonErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/compat/json/{transform}/{channel}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
  * Publish an ntfy JSON message; the channel is its `topic`.
  */
 export const ntfyJson = <ThrowOnError extends boolean = false>(options: Options<NtfyJsonData, ThrowOnError>): RequestResult<NtfyJsonResponses, NtfyJsonErrors, ThrowOnError> => (options.client ?? client).post<NtfyJsonResponses, NtfyJsonErrors, ThrowOnError>({
@@ -488,6 +502,17 @@ export const getOne = <ThrowOnError extends boolean = false>(options: Options<Ge
     responseType: 'json',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/notifications/{id}',
+    ...options
+});
+
+/**
+ * Close a live notification by hand (RFC 0004): no revision, a `closure` event
+ * naming the caller. Needs `publish` or `manage` in its channel.
+ */
+export const closeOne = <ThrowOnError extends boolean = false>(options: Options<CloseOneData, ThrowOnError>): RequestResult<CloseOneResponses, CloseOneErrors, ThrowOnError> => (options.client ?? client).post<CloseOneResponses, CloseOneErrors, ThrowOnError>({
+    responseType: 'json',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/notifications/{id}/close',
     ...options
 });
 

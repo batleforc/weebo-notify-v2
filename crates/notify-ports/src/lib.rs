@@ -30,6 +30,7 @@ pub mod receipts;
 mod schema;
 pub mod sinks;
 pub mod tokens;
+pub mod transforms;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -85,4 +86,7 @@ pub use sinks::{
 pub use tokens::{
     FederationVerifier, MintedClaims, MintedToken, ReplayGuard, TokenRejection, TokenVerifier,
     VerifiedClaims,
+};
+pub use transforms::{
+    Mapped, RawMode, Transform, TransformError, TransformRegistry, element_digest,
 };

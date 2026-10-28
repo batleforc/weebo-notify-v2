@@ -162,14 +162,18 @@ pub enum EventPayload {
         /// Why — clients word "deleted" and "expired" differently.
         reason: TombstoneReason,
     },
-    /// A lifecycle notification was closed by the server for inactivity (§7.2bis).
-    /// Publisher-requested closures arrive as revisions instead.
+    /// A lifecycle notification was closed without a revision: by the server for
+    /// inactivity (§7.2bis), or by a person (RFC 0004). Publisher-requested closures
+    /// arrive as revisions instead.
     Closure {
         /// Which one.
         notification_id: NotificationId,
         /// When it was closed, which starts its retention clock.
         #[serde(with = "time::serde::rfc3339")]
         closed_at: OffsetDateTime,
+        /// Who closed it by hand; absent for the server's closure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        closed_by: Option<notify_domain::Author>,
     },
     /// See [`PreferenceEvent`].
     Preference(Box<PreferenceEvent>),
@@ -517,8 +521,13 @@ mod tests {
         let payload = EventPayload::Closure {
             notification_id: NotificationId::generate(),
             closed_at: OffsetDateTime::from_unix_timestamp(1_785_000_000).unwrap(),
+            closed_by: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
+        assert!(
+            json.get("closed_by").is_none(),
+            "a server closure serialises as before: {json}"
+        );
 
         assert_eq!(
             json["closed_at"].as_str(),

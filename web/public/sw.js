@@ -67,6 +67,8 @@ const TEXT = {
       `${total} notification(s), dont ${failures} en échec`,
     poke: "Ouvrez pour voir le détail",
     unknown: "Une notification est arrivée",
+    closedBy: (name) => `Fermée par ${name}`,
+    closed: "Fermée",
   },
   en: {
     digestTitle: "While you were away",
@@ -75,6 +77,8 @@ const TEXT = {
       `${total} notification(s), ${failures} failed`,
     poke: "Open to see the details",
     unknown: "A notification arrived",
+    closedBy: (name) => `Closed by ${name}`,
+    closed: "Closed",
   },
 };
 
@@ -252,9 +256,22 @@ function offer(client, envelope) {
   });
 }
 
-/** Put it on the lock screen. */
+/**
+ * Put it on the lock screen. A closure (RFC 0004) keeps the title of the alert it
+ * replaces, when that one is still there, and never buzzes.
+ */
 function show(envelope) {
-  return self.registration.showNotification(envelope.title, {
+  const title = envelope.closure
+    ? self.registration
+        .getNotifications({ tag: envelope.tag })
+        .then((shown) => shown[0]?.title ?? envelope.title)
+        .catch(() => envelope.title)
+    : Promise.resolve(envelope.title);
+  return title.then((title) => display(title, envelope));
+}
+
+function display(title, envelope) {
+  return self.registration.showNotification(title, {
     body: envelope.body,
     icon: "/icon.svg",
     badge: "/icon.svg",
@@ -266,6 +283,7 @@ function show(envelope) {
     // A revision that supersedes what is already on screen should not buzz a
     // second time; a new one should.
     renotify: envelope.renotify,
+    silent: envelope.closure === true,
   });
 }
 
@@ -298,6 +316,22 @@ function readEnvelope(data) {
       tag: "digest",
       url: "/",
       renotify: true,
+    };
+  }
+
+  if (payload && payload.kind === "closure") {
+    const id = payload.notification_id ?? "";
+    return {
+      title: payload.channel ?? "weebo-notify",
+      body: payload.closed_by
+        ? text().closedBy(payload.closed_by)
+        : text().closed,
+      // The same tag as the alert, so the OS replaces it in place.
+      tag: id ? `notification:${id}` : "notification",
+      url: id ? `/n/${id}` : "/",
+      notification: id || undefined,
+      closure: true,
+      renotify: false,
     };
   }
 

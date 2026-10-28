@@ -209,13 +209,20 @@ pub(crate) async fn upsert(
     body: web::Json<RevisionDraft>,
 ) -> Result<web::Json<Published>, ApiError> {
     let (channel, external_id) = path.into_inner();
+    let channel = ChannelId::parse(&channel)?;
+    // Only the transform may write under its prefix, or a publisher could claim an
+    // id first and silence the real alert (RFC 0003 decision 15).
+    state
+        .ingest_json
+        .refuse_reserved(&caller.0, &channel, &external_id)
+        .await?;
 
     let published = state
         .upsert
         .execute(
             &caller.0,
             UpsertRequest {
-                channel: ChannelId::parse(&channel)?,
+                channel,
                 external_id: ExternalId::parse(&external_id)?,
                 draft: body.into_inner(),
             },
@@ -349,6 +356,34 @@ pub(crate) async fn delete_one(
     let id: NotificationId = path.into_inner().parse()?;
     state.delete_notification.execute(&caller.0, id).await?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+/// Close a live notification by hand (RFC 0004): no revision, a `closure` event
+/// naming the caller. Needs `publish` or `manage` in its channel.
+#[utoipa::path(
+    post,
+    path = "/notifications/{id}/close",
+    tag = "notifications",
+    params(("id" = String, Path, description = "Notification id")),
+    responses(
+        (status = 200, description = "Closed, or already was: the notification as it now stands", body = Notification),
+        (status = 401, description = "No usable credential", body = Problem),
+        (status = 403, description = "No `publish` or `manage` in its channel, or no such notification", body = Problem),
+        (status = 409, description = "Deleted or expired", body = Problem),
+        (status = 422, description = "Not a notification id", body = Problem),
+    ),
+    security(("bearer" = []))
+)]
+#[post("/notifications/{id}/close")]
+pub(crate) async fn close_one(
+    state: web::Data<ApiState>,
+    caller: Authenticated,
+    path: web::Path<String>,
+) -> Result<web::Json<Notification>, ApiError> {
+    let id: NotificationId = path.into_inner().parse()?;
+    Ok(web::Json(
+        state.close_notification.execute(&caller.0, id).await?,
+    ))
 }
 
 /// The unread badge, per channel (design §7.3, §9.2, §10.4, §10bis).

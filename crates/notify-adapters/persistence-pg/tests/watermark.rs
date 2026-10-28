@@ -81,6 +81,7 @@ mod e2e {
         let payload = EventPayload::Closure {
             notification_id: NotificationId::generate(),
             closed_at: OffsetDateTime::now_utc(),
+            closed_by: None,
         };
         sqlx::query_scalar(
             "INSERT INTO events (audience_kind, channel_id, recorded_at, kind, notification_id, payload)

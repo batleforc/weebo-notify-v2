@@ -19,6 +19,7 @@ mod push;
 mod reconcile;
 mod sinks;
 mod telemetry;
+mod transforms;
 mod wiring;
 
 #[derive(Debug, Parser)]
@@ -56,6 +57,12 @@ enum Command {
     /// and exit non-zero on anything that looks wrong. Connects to nothing; safe to paste into an issue.
     Doctor,
 
+    /// Work with the JSON webhook transforms of `[[transforms]]` (RFC 0003).
+    Transform {
+        #[command(subcommand)]
+        action: TransformAction,
+    },
+
     /// Apply the database migrations and exit.
     ///
     /// For deployments that set `[database] migrate_on_start = false` and run the
@@ -64,12 +71,27 @@ enum Command {
     Migrate,
 }
 
+#[derive(Debug, Subcommand)]
+enum TransformAction {
+    /// Run transform `id` over a saved body and print what each element maps to,
+    /// with CEL's own messages. Connects to nothing.
+    Try {
+        /// A `[[transforms]]` id.
+        id: String,
+        /// A JSON file, as the producer sends it.
+        body: PathBuf,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Some(Command::DumpOpenapi { output }) => dump_openapi(output.as_deref()),
         Some(Command::Doctor) => doctor_report(&cli.config),
+        Some(Command::Transform {
+            action: TransformAction::Try { id, body },
+        }) => transforms::try_one(&cli.config, &id, &body),
         Some(Command::Migrate) => migrate(&cli.config),
         None => run(&cli.config),
     }
@@ -238,6 +260,12 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     if application.feed_routes.len() > 0 {
         tracing::info!(feeds = application.feed_routes.len(), "feeds configured");
     }
+    if application.transform_routes.len() > 0 {
+        tracing::info!(
+            transforms = application.transform_routes.len(),
+            "JSON webhook transforms configured"
+        );
+    }
 
     let bind = config.server.bind;
     let cors_origins = config.server.cors_origins.clone();
@@ -328,6 +356,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             routes: application.routes,
             fleet: application.fleet,
             feeds: application.feed_routes.clone(),
+            transforms: application.transform_routes.clone(),
             started,
             metrics: application.metrics.clone(),
         },
@@ -395,6 +424,8 @@ struct Reconciling {
     fleet: sinks::SinkFleet,
     /// The declared feeds, swapped on `SIGHUP` with the sinks.
     feeds: feeds::FeedRoutes,
+    /// The JSON webhook transforms (RFC 0003), swapped on `SIGHUP` likewise.
+    transforms: transforms::TransformRoutes,
     /// Set once the configuration has been applied (or found already applied by
     /// someone else), which is when `/readyz` stops reporting `startup`.
     started: health::Started,
@@ -464,6 +495,21 @@ impl Reconciling {
                     Err(error) => tracing::warn!(
                         ?error,
                         "SIGHUP: the feeds did not build; keeping the running set"
+                    ),
+                }
+
+                match transforms::TransformRoutes::build(&self.config, self.transforms.slots()) {
+                    Ok(transforms) => {
+                        self.transforms.adopt(&transforms);
+                        self.transforms.report(self.metrics.as_ref());
+                        tracing::info!(
+                            transforms = self.transforms.len(),
+                            "SIGHUP: transforms re-read"
+                        );
+                    }
+                    Err(error) => tracing::warn!(
+                        ?error,
+                        "SIGHUP: the transforms did not build; keeping the running set"
                     ),
                 }
 

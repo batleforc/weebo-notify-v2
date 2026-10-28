@@ -43,6 +43,8 @@ utoipa-actix-web = { workspace = true }
 # The real decoder, so avatar tests prove what reaches the bucket (design §15).
 notify-avatars = { workspace = true }
 notify-ports = { workspace = true, features = ["openapi", "test-utils"] }
+# The real interpreter behind the JSON webhook route (RFC 0003 §6.P).
+notify-transform-cel = { workspace = true }
 # Builds the JPEG fixtures that prove the server re-encodes avatars.
 image = { workspace = true, features = ["jpeg"] }
 tempfile = { workspace = true }

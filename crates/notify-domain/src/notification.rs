@@ -201,6 +201,9 @@ pub struct Notification {
     /// When it last closed, starting its retention clock; `None` while live (§7.2bis).
     #[serde(with = "time::serde::rfc3339::option", default)]
     pub closed_at: Option<OffsetDateTime>,
+    /// Who closed it by hand (RFC 0004); `None` when a revision or the server did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_by: Option<Author>,
     /// Retention as resolved by the channel policy.
     pub ttl: Ttl,
     /// Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).
@@ -249,6 +252,7 @@ impl Notification {
             kind,
             // Simple notifications are born closed: expiry is always measured from `closed_at`.
             closed_at: (state == State::Closed).then_some(now),
+            closed_by: None,
             created_at: now,
             last_seq: 1,
             revision_count: 1,
@@ -330,6 +334,8 @@ impl Notification {
         let was_live = self.head.state.is_live();
         self.last_seq = revision.seq;
         self.head = revision.clone();
+        // A revision speaks for the publisher: nobody closed it by hand any more.
+        self.closed_by = None;
 
         match revision.state {
             // Closing starts the retention clock; amending a closed status must not extend it.
@@ -387,18 +393,20 @@ impl Notification {
         self.deleted_at.get_or_insert(now);
     }
 
-    /// Close it on the publisher's behalf after inactivity (§7.2bis, [`CloseAfter`]),
-    /// returning whether anything changed. Not a revision: nobody authored it, and
+    /// Close it, returning whether anything changed: on the publisher's behalf after
+    /// inactivity (§7.2bis, [`CloseAfter`], `by = None`), or by a person with `publish`
+    /// or `manage` (RFC 0004). Not a revision: the content stays the publisher's, and
     /// `EventPayload::Closure` announces it instead.
     ///
     /// [`CloseAfter`]: crate::CloseAfter
-    pub fn close(&mut self, at: OffsetDateTime) -> bool {
+    pub fn close(&mut self, at: OffsetDateTime, by: Option<Author>) -> bool {
         if !self.head.state.is_live() {
             return false;
         }
         self.head.state = State::Closed;
         // Retention runs from the moment it stopped being live: now.
         self.closed_at = Some(at);
+        self.closed_by = by;
         true
     }
 }
@@ -497,7 +505,7 @@ mod tests {
         );
 
         let swept_at = at + TimeDuration::days(7);
-        assert!(notification.close(swept_at));
+        assert!(notification.close(swept_at, None));
 
         assert_eq!(notification.closed_at, Some(swept_at));
         assert_eq!(notification.head.state, State::Closed);
@@ -513,6 +521,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_person_closing_is_named_until_a_revision_reopens_it() {
+        let at = now();
+        let mut notification = create(RevisionDraft::lifecycle(State::Open, content()), at);
+        let alice = author();
+
+        assert!(notification.close(at + TimeDuration::minutes(5), Some(alice.clone())));
+        assert_eq!(notification.closed_by, Some(alice.clone()));
+        assert!(
+            !notification.close(at + TimeDuration::minutes(6), None),
+            "a second close changes nothing, the closer included"
+        );
+        assert_eq!(notification.closed_by, Some(alice));
+
+        notification
+            .revise(
+                RevisionDraft::lifecycle(State::Open, content()),
+                author(),
+                at + TimeDuration::minutes(10),
+                &ChannelPolicy::default(),
+            )
+            .unwrap();
+        assert_eq!(notification.closed_by, None);
+        assert_eq!(notification.closed_at, None);
+    }
+
     /// Closing an already-closed notification must report no change.
     #[test]
     fn closing_an_already_closed_notification_changes_nothing() {
@@ -520,7 +554,7 @@ mod tests {
         let mut notification = create(RevisionDraft::lifecycle(State::Closed, content()), at);
         let closed_at = notification.closed_at;
 
-        assert!(!notification.close(at + TimeDuration::days(30)));
+        assert!(!notification.close(at + TimeDuration::days(30), None));
         assert_eq!(
             notification.closed_at, closed_at,
             "a second closure must not push retention back"

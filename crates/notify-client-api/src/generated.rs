@@ -764,6 +764,24 @@ Lifting a ceiling is spelled `"0"` (unbounded, §7.2bis), never `null`.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub receipts_enabled: ::std::option::Option<bool>,
     }
+    /**A channel as `GET /channels` lists it: the channel, and what the caller may do
+there (RFC 0004 decision 4).*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ChannelView {
+        ///Human label. Falls back to the id when unset.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        ///Access granted to whole identity-provider groups (§11), resolved per request.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub group_access: ::std::vec::Vec<GroupBinding>,
+        pub id: ChannelId,
+        ///Its members, users and service accounts alike.
+        pub members: ::std::vec::Vec<Membership>,
+        ///The caller's own scopes here; a control needing one they lack is not shown.
+        pub my_scopes: ::std::vec::Vec<Scope>,
+        pub origin: Origin,
+        pub policy: ChannelPolicy,
+    }
     ///One option of a `choice` action.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ChoiceOption {
@@ -1460,6 +1478,8 @@ never taken from input.*/
             channel_id: ChannelId,
             ///When the server closed it, and therefore when its retention clock starts.
             closed_at: ::chrono::DateTime<::chrono::offset::Utc>,
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+            closed_by: ::std::option::Option<Author>,
             cursor: Cursor,
             event: LoggedClosureEvent,
             ///When it was appended, by the server's clock.
@@ -1728,6 +1748,23 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         pub notification_id: NotificationId,
         ///When the server recorded it.
         pub recorded_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    }
+    /**One element of a JSON webhook: its notification as written, or only its id
+when it was already there (RFC 0003 decision 11): a skip carries no content.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged)]
+    pub enum JsonIngested {
+        Published(Published),
+        Object {
+            notification_id: NotificationId,
+            ///Always `true`.
+            skipped: bool,
+        },
+    }
+    impl ::std::convert::From<Published> for JsonIngested {
+        fn from(value: Published) -> Self {
+            Self::Published(value)
+        }
     }
     ///`LoggedClosureAudience`
     #[derive(
@@ -2399,6 +2436,8 @@ Resolved from the token's `groups` claim at request time, never stored per user.
         ///When it last closed, starting its retention clock; `None` while live (§7.2bis).
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub closed_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub closed_by: ::std::option::Option<Author>,
         ///When the first revision landed.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Set on deletion; the row survives long enough to broadcast a tombstone (§7.2bis).
@@ -2611,17 +2650,17 @@ Resolved from the token's `groups` claim at request time, never stored per user.
     }
     ///What a caller gets.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PageChannel {
+    pub struct PageChannelCard {
         ///The rows, in the ordering of the endpoint.
-        pub items: ::std::vec::Vec<Channel>,
+        pub items: ::std::vec::Vec<ChannelCard>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
     ///What a caller gets.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PageChannelCard {
+    pub struct PageChannelView {
         ///The rows, in the ordering of the endpoint.
-        pub items: ::std::vec::Vec<ChannelCard>,
+        pub items: ::std::vec::Vec<ChannelView>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub next: ::std::option::Option<Cursor>,
     }
@@ -4965,7 +5004,7 @@ Arguments:
         &'a self,
         cursor: Option<&'a str>,
         limit: Option<i32>,
-    ) -> Result<ResponseValue<types::PageChannel>, Error<types::Problem>> {
+    ) -> Result<ResponseValue<types::PageChannelView>, Error<types::Problem>> {
         let url = format!("{}/api/v1/channels", self.baseurl,);
         let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
         header_map
@@ -5635,6 +5674,84 @@ Arguments:
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /**Receive any JSON webhook, mapped by the operator-declared transform `{transform}`
+
+Sends a `POST` request to `/api/v1/compat/json/{transform}/{channel}`
+
+Arguments:
+- `transform`: A `[[transforms]]` id
+- `channel`: Channel id; must be in the transform's `channels`
+- `token`: The API key, for clients that cannot set a header. Prefer a header: URLs get logged.
+- `body`
+*/
+    pub async fn json<'a>(
+        &'a self,
+        transform: &'a str,
+        channel: &'a str,
+        token: Option<&'a str>,
+        body: &'a ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    ) -> Result<
+        ResponseValue<::std::vec::Vec<types::JsonIngested>>,
+        Error<types::Problem>,
+    > {
+        let url = format!(
+            "{}/api/v1/compat/json/{}/{}", self.baseurl, encode_path(& transform
+            .to_string()), encode_path(& channel.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("token", &token))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "json",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            404u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            413u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            415u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            429u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            503u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /**Publish an ntfy JSON message; the channel is its `topic`
 
 Sends a `POST` request to `/api/v1/compat/ntfy`
@@ -6224,6 +6341,62 @@ Arguments:
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /**Close a live notification by hand (RFC 0004): no revision, a `closure` event
+naming the caller. Needs `publish` or `manage` in its channel
+
+Sends a `POST` request to `/api/v1/notifications/{id}/close`
+
+Arguments:
+- `id`: Notification id
+*/
+    pub async fn close_one<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<types::Notification>, Error<types::Problem>> {
+        let url = format!(
+            "{}/api/v1/notifications/{}/close", self.baseurl, encode_path(& id
+            .to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map
+            .append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+            );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "close_one",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => ResponseValue::from_response(response).await,
+            401u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            403u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            409u16 => {
+                Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
+            }
+            422u16 => {
                 Err(Error::ErrorResponse(ResponseValue::from_response(response).await?))
             }
             _ => Err(Error::UnexpectedResponse(response)),

@@ -1,6 +1,6 @@
 ---
-title: Gotify, ntfy & Alertmanager
-description: Point tools that already speak Gotify, ntfy or the Alertmanager webhook at weebo-notify — only the URL and the token change.
+title: Gotify, ntfy, Alertmanager & JSON webhooks
+description: Point tools that already speak Gotify, ntfy or the Alertmanager webhook at weebo-notify — only the URL and the token change — and map any other JSON webhook with a transform.
 ---
 
 Uptime Kuma, Watchtower (shoutrrr), Proxmox, `curl` scripts and Alertmanager can
@@ -71,3 +71,124 @@ its firing opened:
 
 The title is `alertname: summary`, the body the `description` annotation, and the
 `severity`, `job` and `namespace` labels become tags.
+
+## Any JSON webhook
+
+A producer that can only POST *its own* JSON to a URL publishes through a
+**transform** the operator declares in the config file
+([RFC 0003](/docs/rfc/0003-json-webhooks-mapped-by-declared-transforms)):
+
+```text
+POST https://weebo.example/api/v1/compat/json/{transform}/{channel}?token=wnk_…
+```
+
+A transform is a set of [CEL](https://cel.dev) expressions, one per notification
+field, reading the received JSON as `body` (and, with `split`, the current array
+element as `item`). The full key list and the load-time checks are in
+[Configuration](/docs/ops/configuration#json-webhook-transforms).
+
+```toml
+[[transforms]]
+id = "mlab-audit"
+channels = ["security"]
+title = 'body.data.label + ": " + body.data.target'
+body = '"`" + body.event + "` · `" + body.data.action + "`"'
+external_id = 'body.delivery_id'
+tags = '["audit", body.event]'
+status = 'body.data.action.endsWith(".deleted") ? "warning" : "info"'
+
+[[transforms]]
+id = "mlab-news"
+channels = ["security", "veille"]
+lang = "fr"
+split = 'body.items'                 # one notification per element
+title = 'item.title'
+body = 'item.source + " · " + item.published_at'
+link = 'item.url'
+external_id = 'item.id'
+tags = '["news", item.source]'
+priority = '''
+  (item.title.matches("CVE-\\d{4}-\\d+") && item.severity in ["high", "critical"])
+    ? "high"
+    : {"info": "low", "medium": "default", "high": "high", "critical": "urgent"}[item.severity]
+'''
+status = 'item.severity in ["high", "critical"] ? "warning" : "info"'
+state = '''
+  (item.title.matches("CVE-\\d{4}-\\d+") && item.severity in ["high", "critical"])
+    ? "open" : null
+'''
+ack = 'item.title.matches("CVE-") ? "Vu" : null'
+```
+
+### Onboarding a producer
+
+1. Save one real delivery to a file.
+2. `notify-server transform try mlab-news delivery.json` prints, per element, every
+   mapped field and CEL's full message for each field that failed. It connects to
+   nothing.
+3. `notify-server doctor`, then `SIGHUP` (or roll the pods, see below).
+4. Mint a key — one service account per producer, `publish` only on its channels —
+   and paste the URL into the producer. Prefer a header form when the producer
+   allows one: a `?token=` URL is stored at the producer and logged by proxies.
+
+### What the route does
+
+- **Order**: `401` without a key; `413` over 256 KiB; `415` for a form or multipart
+  body; `403` without `publish` on the channel, before anything else is looked at;
+  `404` when the transform does not exist **or** does not list the channel (the same
+  answer for both); `422` when the body is not JSON, `split` is not a list, or it has
+  more than `max_items` elements — nothing is published then; `503` with
+  `Retry-After: 1` when every evaluation slot is busy or the evaluation took over a
+  second.
+- **The answer** is one entry per element, in order: the notification as written, or
+  `{"notification_id": "…", "skipped": true}`.
+- **A repeated element is skipped** (`update = false`, the default): an external id
+  that already has a live notification in the channel is not written again, does not
+  notify again, does not reopen a closed notification, and costs no quota. That is why
+  re-sending a producer's *test* body shows nothing new. `update = true` revises
+  instead.
+- **A failing field is left unset** (the title falls back to `title_fallback`, then the
+  transform id), counted as `eval_error`, and logged once at `warn` with its kind,
+  never with a body value.
+- **A quota hit** (`429`) stops the request; elements already written stay, and the
+  producer's retry skips them for free.
+- The native `PUT /channels/{channel}/notifications/{external_id}` refuses an external id
+  that starts with a declared `<transform id>:`, so nobody else can claim one first.
+
+### CEL traps
+
+- **A literal string needs CEL quotes**: `group_key = '"mlab-news"'`. Unquoted, it reads
+  as `mlab - news` and fails the load with a hint.
+- Write expressions as TOML literal strings (`'…'`) so backslashes and double quotes
+  reach CEL unchanged; use `'''…'''` when the text holds an apostrophe
+  (`'''"Acquitter l'alerte"'''`).
+- **A missing key fails the field**: `item.cve` on an element without `cve` leaves it
+  unset. Test first with `has(item.cve) ? item.cve : "none"`.
+- **Numbers**: a non-negative JSON number is a CEL `uint`. Comparisons mix freely, but
+  `item.count + 1` fails; write `item.count + 1u` or `int(item.count) + 1`. A number in
+  a string field goes through `string()`.
+- `map`, `filter`, `exists`, `all` and `exists_one` are allowed only when their step
+  reads nothing but its own variable and literals, with no `matches()` and no nested
+  comprehension: `item.labels.filter(x, x.startsWith("cve"))` loads,
+  `body.l.filter(x, x in body.l)` does not.
+- `matches()` takes a literal pattern only. Dates stay text: there are no time
+  functions.
+
+### Raw body and privacy
+
+`raw = "item"` (with `split`) or `raw = "payload"` appends the received JSON to the
+body in a fenced `json` block, cut with a marker past the body's size limit. It is
+**off by default**: whatever the JSON carries — user or organisation ids, internal
+host names — then reaches every device, lock-screen preview, email and webhook of the
+channel. Prefer mapping the fields you need, and `item` over `payload`. Do not pick a
+personal field as `external_id` either: it appears in traces.
+
+### A CVE that stays open until someone closes it
+
+`state = "open"` makes the notification a lifecycle one, which the channel's
+`close_after` then ages. Set `close_after = "0"` on the channel so the server never
+closes it on its own. The `ack` button records a per-user "seen" and closes nothing;
+label it accordingly. Whoever holds `publish` or `manage` in the channel ends it with
+the web's **Close notification** button
+([RFC 0004](/docs/rfc/0004-closing-a-notification-from-the-web)), which names them on
+the notification; with `update = false` a re-sent CVE leaves it closed.

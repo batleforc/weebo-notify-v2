@@ -1,0 +1,30 @@
+[package]
+name = "notify-transform-cel"
+description = "Maps a received JSON body to notification fields through operator-declared CEL programs (RFC 0003): checked at load, bounded at evaluation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notify-domain = { workspace = true }
+notify-ports = { workspace = true }
+
+async-trait = { workspace = true }
+# No `chrono`: dates stay text (RFC 0003 §3). `json` turns a `split` element back
+# into JSON for the digest and the raw block; its crates are already locked.
+cel = { version = "0.15.0", default-features = false, features = ["regex", "json"] }
+regex = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -194,6 +194,64 @@ out of reach. Per-feed state lives in `feed_state`, keyed on a digest of channel
 url; the row of a feed removed from the file is deleted a day after the last pass
 that saw it, so a rolling deploy does not re-prime it.
 
+
+## JSON webhook transforms
+
+`[[transforms]]` maps a producer's own JSON to notifications on
+`POST /api/v1/compat/json/{transform}/{channel}`
+([RFC 0003](/docs/rfc/0003-json-webhooks-mapped-by-declared-transforms); the
+producer side and examples are in [Clients → JSON webhooks](/docs/clients/compat#any-json-webhook)).
+Keys marked *CEL* hold one expression over `body` (and `item` with `split`).
+
+```toml
+[[transforms]]
+id = "mlab-news"              # [a-z0-9-], ≤ 64 chars; the path segment
+channels = ["security"]       # required, non-empty, no wildcard
+lang = "en"                   # "en" (default) or "fr": the "Open" label, the truncation marker
+split = 'body.items'          # CEL, optional: a list; one notification per element
+max_items = 20                # with split: default 20, ceiling 50; more is a 422
+title = 'item.title'          # CEL, required: a string
+title_fallback = "mlab news"  # when title fails or is empty; default: the id
+body = 'item.source'          # CEL: a string, Markdown
+link = 'item.url'             # CEL: an http(s) URL, becomes the "Open" button
+external_id = 'item.id'       # CEL: a string or a number; absent: a digest of the element
+group_key = '"mlab-news"'     # CEL: a string
+tags = '["news"]'             # CEL: a list of strings
+priority = '"high"'           # CEL: min | low | default | high | urgent
+status = '"info"'             # CEL: success | failure | warning | info | cancelled
+state = 'null'                # CEL: open | working | closed
+ack = 'null'                  # CEL: a button label, or null for none
+update = false                # default false: an element already published is skipped
+raw = "off"                   # "off" (default) | "item" | "payload"
+```
+
+Refused at startup and on `SIGHUP` (a refused reload keeps the running set): an `id`
+outside `[a-z0-9-]` or declared twice; `channels` missing, empty or holding an id that
+does not parse; no `title`; an expression that does not compile (the error quotes
+the column, and hints at CEL quotes when the source holds none); a variable other than
+`body`, or `item` without `split`; a nested comprehension, or one whose step reads
+anything but its own variable, or calls `matches()`; more than 16 reads of `body`,
+`item` or a comprehension's variable in one expression; an expression nested more
+than 32 levels deep (`1u+1u+…` included) or with brackets nested more than 32 deep
+(brackets inside string literals, raw or not, do not count),
+or over 4 096 characters; a `matches()` pattern that is not a
+string literal or does not compile; a string literal that `priority`, `status` or
+`state` can result in and is not one of their values (`"hihg"`); `max_items` out of
+range or without `split`; `raw = "item"` without `split`; any unknown key in the table.
+A misspelt `[[transform]]` table loads but is named at startup as not honoured.
+
+`notify-server doctor` and the startup log name, as notes: a listed channel that is
+not a managed one (fine for a dynamic channel), a transform with `raw` on, and one
+without `external_id`.
+
+Evaluation runs on at most one blocking thread per core; a request that finds every
+slot busy gets `503` and `Retry-After: 1`, and a producer waits one second at most.
+
+**Rollout.** Replicas adopt a `SIGHUP` one at a time, and a rolling deploy runs two
+configs side by side, so a new transform answers `404` on pods that do not have it
+yet. Add a transform through a rollout (the config Secret's checksum), and point the
+producer at it only afterwards. `transform_info{transform,hash}` shows which
+declaration each pod runs.
 ## Development instances
 
 `[server] dev = true` (`WNK_SERVER__DEV`) declares a development instance, and is

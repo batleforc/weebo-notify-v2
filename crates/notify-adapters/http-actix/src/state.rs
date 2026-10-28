@@ -4,15 +4,16 @@
 use std::sync::Arc;
 
 use notify_app::{
-    Authenticate, BrowseAudit, ChannelInventory, CountUnread, CreateApiKey, CreateChannel,
-    CreateServiceAccount, DeactivateServiceAccount, DeleteChannel, DeleteNotification, EnrolDevice,
-    ExchangeToken, GetNotification, ListApiKeys, ListChannels, ListDeadLetters, ListDevices,
-    ListInbox, ListInteractions, ListRevisions, ListServiceAccounts, ListTrustPolicies,
-    ManageMembers, PostReceipt, PresignAttachment, PublishNotification, ReadAttachment,
-    ReadAttachmentThumbnail, ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts,
-    ReadReconciliation, RecordInteraction, RequeueDeadLetter, ResolveStreamStart, RevokeApiKey,
-    RevokeDevice, SearchNotifications, SearchUsers, SelfJoin, SetApiKeyLimit, SetAvatar, SetDnd,
-    SilenceNotification, SyncBacklog, UpdateChannel, UpdateProfile, UpsertNotification,
+    Authenticate, BrowseAudit, ChannelInventory, CloseNotification, CountUnread, CreateApiKey,
+    CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
+    DeleteNotification, EnrolDevice, ExchangeToken, GetNotification, IngestJson, ListApiKeys,
+    ListChannels, ListDeadLetters, ListDevices, ListInbox, ListInteractions, ListRevisions,
+    ListServiceAccounts, ListTrustPolicies, ManageMembers, PostReceipt, PresignAttachment,
+    PublishNotification, ReadAttachment, ReadAttachmentThumbnail, ReadAvatar, ReadChannel, ReadDnd,
+    ReadProfile, ReadReceipts, ReadReconciliation, RecordInteraction, RequeueDeadLetter,
+    ResolveStreamStart, RevokeApiKey, RevokeDevice, SearchNotifications, SearchUsers, SelfJoin,
+    SetApiKeyLimit, SetAvatar, SetDnd, SilenceNotification, SyncBacklog, UpdateChannel,
+    UpdateProfile, UpsertNotification,
 };
 use notify_attachments_fs::FsAttachments;
 use notify_ports::Metrics;
@@ -40,6 +41,10 @@ pub struct ApiState {
     pub upsert: UpsertNotification,
     /// `DELETE /notifications/{id}`.
     pub delete_notification: DeleteNotification,
+    /// `POST /notifications/{id}/close` (RFC 0004).
+    pub close_notification: CloseNotification,
+    /// `POST /compat/json/{transform}/{channel}` (RFC 0003).
+    pub ingest_json: IngestJson,
 
     /// `GET /channels/{id}/notifications`.
     pub inbox: ListInbox,

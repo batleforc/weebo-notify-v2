@@ -429,34 +429,97 @@ impl UpsertNotification {
         caller: &Caller,
         request: UpsertRequest,
     ) -> Result<Published, Failure> {
-        let now = self.writer.clock.now();
+        match self.upsert(caller, request, false).await? {
+            Upserted::Written(published) => Ok(*published),
+            // Only a create-only upsert skips.
+            Upserted::Skipped(_) => Err(PortError::Conflict {
+                what: "notification.external_id",
+            }
+            .into()),
+        }
+    }
+
+    /// Create, or skip when the external id already has a live notification
+    /// (RFC 0003 decision 11): checked after authorising and before the quota, so
+    /// a producer's retry costs nothing and a skip writes nothing.
+    #[tracing::instrument(
+        name = "upsert",
+        skip_all,
+        fields(channel = %request.channel, external_id = %request.external_id)
+    )]
+    pub async fn create_or_skip(
+        &self,
+        caller: &Caller,
+        request: UpsertRequest,
+    ) -> Result<Upserted, Failure> {
+        self.upsert(caller, request, true).await
+    }
+
+    async fn upsert(
+        &self,
+        caller: &Caller,
+        request: UpsertRequest,
+        create_only: bool,
+    ) -> Result<Upserted, Failure> {
         let channel = self
             .writer
             .authorizer
             .authorize(caller, &request.channel, Scope::Publish)
             .await?;
-        self.writer.check_quotas(caller, &channel, now).await?;
+        self.upsert_in(caller, &channel, request, create_only).await
+    }
+
+    /// [`Self::upsert`] in a channel the caller was already authorised to publish in,
+    /// for one request writing several elements to it (RFC 0003): one channel read,
+    /// not one per element. `channel` must be the one `authorize` returned for
+    /// `request.channel` within the same request.
+    #[tracing::instrument(
+        name = "upsert",
+        skip_all,
+        fields(channel = %request.channel, external_id = %request.external_id)
+    )]
+    pub(crate) async fn upsert_in(
+        &self,
+        caller: &Caller,
+        channel: &notify_domain::Channel,
+        request: UpsertRequest,
+        create_only: bool,
+    ) -> Result<Upserted, Failure> {
+        // A channel authorised for another request is never a licence for this one.
+        if channel.id != request.channel {
+            return Err(DomainError::ScopeMissing { scope: "publish" }.into());
+        }
+        let now = self.writer.clock.now();
+        let mut charged = false;
 
         // Every lost race (insert, next seq, deleted between read and write) is answered by
-        // re-reading; bounded so constant contention fails instead of spinning.
+        // re-reading; bounded so constant contention fails instead of spinning. A
+        // create-only loser re-reads, finds the winner, and skips.
         for _ in 0..UPSERT_ATTEMPTS {
             let existing = self
                 .writer
                 .notifications
                 .find_by_external_id(&request.channel, &request.external_id)
                 .await?;
+            if create_only && let Some(notification) = &existing {
+                return Ok(Upserted::Skipped(notification.id));
+            }
+            if !charged {
+                self.writer.check_quotas(caller, channel, now).await?;
+                charged = true;
+            }
 
             let outcome = match existing {
                 Some(notification) => {
                     self.writer
-                        .revise(caller, &channel, notification, request.draft.clone(), now)
+                        .revise(caller, channel, notification, request.draft.clone(), now)
                         .await
                 }
                 None => {
                     self.writer
                         .create(
                             caller,
-                            &channel,
+                            channel,
                             Some(request.external_id.clone()),
                             request.draft.clone(),
                             now,
@@ -468,7 +531,7 @@ impl UpsertNotification {
 
             match outcome {
                 Err(Failure::Port(PortError::Conflict { .. })) => {}
-                other => return other,
+                other => return other.map(|published| Upserted::Written(Box::new(published))),
             }
         }
 
@@ -477,6 +540,14 @@ impl UpsertNotification {
         }
         .into())
     }
+}
+
+/// What an upsert did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Upserted {
+    Written(Box<Published>),
+    /// The external id already had a live notification; nothing was written.
+    Skipped(NotificationId),
 }
 
 #[cfg(test)]
@@ -784,6 +855,76 @@ mod tests {
         assert_eq!(started.notification.id, finished.notification.id);
         assert_eq!(finished.revision.seq, 2);
         assert_eq!(finished.notification.status(), Status::Success);
+    }
+
+    #[tokio::test]
+    async fn a_create_only_upsert_skips_a_live_external_id_without_spending_quota() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let request = || UpsertRequest {
+            channel: channel_id(),
+            external_id: ExternalId::parse("mlab-news:n1").unwrap(),
+            draft: RevisionDraft::lifecycle(State::Open, ContentDraft::titled("CVE")),
+        };
+
+        let Upserted::Written(first) = fixture
+            .upsert
+            .create_or_skip(&caller, request())
+            .await
+            .unwrap()
+        else {
+            panic!("a miss creates");
+        };
+        let checks = fixture.limiter.seen().len();
+        // Even with the quota spent: a retry skips before the check.
+        fixture.limiter.limit(Quota::PublishPerKey {
+            key: fixture.alice.reference(),
+        });
+        let second = fixture
+            .upsert
+            .create_or_skip(&caller, request())
+            .await
+            .unwrap();
+
+        assert_eq!(second, Upserted::Skipped(first.notification.id));
+        assert_eq!(fixture.limiter.seen().len(), checks, "no quota checked");
+        let stored = fixture
+            .store
+            .find_by_external_id(&channel_id(), &ExternalId::parse("mlab-news:n1").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.revision_count, 1, "no revision written");
+    }
+
+    #[tokio::test]
+    async fn a_channel_authorised_for_another_request_writes_nothing() {
+        let fixture = fixture(ChannelPolicy::default());
+        let caller = Caller::member(fixture.alice.clone());
+        let elsewhere = Channel::dynamic(ChannelId::parse("elsewhere").unwrap(), None).unwrap();
+
+        let refused = fixture
+            .upsert
+            .upsert_in(
+                &caller,
+                &elsewhere,
+                UpsertRequest {
+                    channel: channel_id(),
+                    external_id: ExternalId::parse("x").unwrap(),
+                    draft: RevisionDraft::simple(ContentDraft::titled("t")),
+                },
+                false,
+            )
+            .await;
+
+        assert!(matches!(
+            refused,
+            Err(Failure::Domain(DomainError::ScopeMissing { .. }))
+        ));
+        assert!(
+            fixture.limiter.seen().is_empty(),
+            "refused before any quota"
+        );
     }
 
     #[tokio::test]

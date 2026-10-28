@@ -213,6 +213,7 @@ impl State {
                     notification: notification.id,
                     thumbnail: after.thumbnail,
                     attempts: 0,
+                    closure: false,
                 },
                 queued_at: revision.received_at,
                 leased_until: None,
@@ -736,6 +737,58 @@ impl NotificationRepository for InMemory {
         Ok(claimed)
     }
 
+    async fn close(
+        &self,
+        id: NotificationId,
+        at: OffsetDateTime,
+        by: &notify_domain::Author,
+    ) -> PortResult<Option<Cursor>> {
+        let mut state = self.state();
+        let Some(channel) = state
+            .notifications
+            .iter()
+            .find(|row| {
+                row.value.id == id
+                    && row.value.deleted_at.is_none()
+                    && row.value.head.state.is_live()
+            })
+            .map(|row| row.value.channel.clone())
+        else {
+            return Ok(None);
+        };
+        let cursor = state.append(
+            Audience::Channel { id: channel },
+            EventPayload::Closure {
+                notification_id: id,
+                closed_at: at,
+                closed_by: Some(by.clone()),
+            },
+            at,
+        );
+        if let Some(row) = state
+            .notifications
+            .iter_mut()
+            .find(|row| row.value.id == id)
+        {
+            row.value.close(at, Some(by.clone()));
+            row.cursor = cursor;
+        }
+        state.fanout_outbox.push(OutboxRow {
+            pending: PendingFanout {
+                cursor,
+                notification: id,
+                thumbnail: None,
+                attempts: 0,
+                closure: true,
+            },
+            queued_at: at,
+            leased_until: None,
+            retry_at: None,
+            dead: false,
+        });
+        Ok(Some(cursor))
+    }
+
     async fn close_stale(
         &self,
         deadlines: &[(ChannelId, OffsetDateTime)],
@@ -770,6 +823,7 @@ impl NotificationRepository for InMemory {
                 EventPayload::Closure {
                     notification_id: id,
                     closed_at: at,
+                    closed_by: None,
                 },
                 at,
             );
@@ -779,7 +833,7 @@ impl NotificationRepository for InMemory {
                 .iter_mut()
                 .find(|row| row.value.id == id)
             {
-                row.value.close(at);
+                row.value.close(at, None);
                 row.cursor = cursor;
             }
             closed.push(ClosedNotification { id, channel });

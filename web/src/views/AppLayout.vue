@@ -133,7 +133,14 @@ onMounted(async () => {
   const onMessage = (event: MessageEvent) => {
     const message = event.data as { type?: string; envelope?: unknown } | null;
     if (message?.type === "push" && message.envelope) {
-      toasts.pushed(message.envelope as { title?: string });
+      const envelope = message.envelope as {
+        title?: string;
+        closure?: boolean;
+      };
+      // A closure (RFC 0004) already reached this tab on the stream: no toast.
+      if (!envelope.closure) {
+        toasts.pushed(envelope);
+      }
       // The worker shows the OS notification itself unless told this tab took
       // it — a visible tab with no shell mounted (the login page) never answers.
       event.ports[0]?.postMessage(true);

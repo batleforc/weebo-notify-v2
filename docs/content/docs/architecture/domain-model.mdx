@@ -101,6 +101,22 @@ everywhere principals do. The last revision keeps saying what the publisher said
 A publisher that comes back to life reopens it with its next revision, exactly as it
 would after any other closure.
 
+### Closing by hand
+
+A person who holds `publish` or `manage` in the channel can close a live notification
+too: the web's **Close notification** button, `POST /notifications/{id}/close`
+([RFC 0004](/docs/rfc/0004-closing-a-notification-from-the-web)). It is the same kind
+of closure as the server's — no revision, the publisher's content and buttons kept, a
+`closure` event — except that it names the closer in `closed_by`. `publish` already
+allowed deleting, which is stronger; `manage` gains exactly this, because a channel's
+administrator is who its readers turn to when something is left open. A subscriber
+cannot close. Closing a closed notification writes nothing, and the publisher's next
+revision with a live `state` reopens it and clears `closed_by`.
+
+Browsers that are not looking get a silent Web Push that replaces the alert on the lock
+screen ("Closed by Alice"); a visible tab takes the closure from its stream. Native
+clients learn it at their next sync.
+
 ## Where a notification comes from
 
 Every notification is written by a **publisher**: a user, a service account, a
@@ -151,6 +167,9 @@ notification's behalf.
 | `ack` | idempotent per (user, key) — clicking twice records once |
 | `choice` | exclusive per (user, key), last pick wins |
 | `reply` | none; replies are comments and accumulate |
+
+An `ack` records a per-user acknowledgement for the publisher to read back; it closes
+nothing. Ending a notification is the scoped act of [closing by hand](#closing-by-hand).
 
 ## Errors
 

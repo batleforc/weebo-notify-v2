@@ -75,6 +75,25 @@ pub(crate) async fn record(
     Ok(())
 }
 
+/// The fan-out row of a hand closure (RFC 0004), in the closing transaction. The
+/// row's `notification` holds the id only: the drain re-reads the rest.
+pub(crate) async fn record_closure(
+    transaction: &mut Transaction<'_, Postgres>,
+    notification: NotificationId,
+    at: Cursor,
+) -> PortResult<()> {
+    sqlx::query(
+        "INSERT INTO fanout_outbox (cursor_seq, notification, closure)
+         VALUES ($1, jsonb_build_object('id', $2::text), true)",
+    )
+    .bind(sequence(at))
+    .bind(notification.to_string())
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| fail("fanout", error))?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl FanoutOutbox for PgStore {
     async fn claim_fanout(
@@ -134,7 +153,7 @@ impl FanoutOutbox for PgStore {
                      FOR UPDATE SKIP LOCKED
               )
               RETURNING cursor_seq, notification ->> 'id' AS notification_id, thumbnail,
-                        attempts",
+                        attempts, closure",
         )
         .bind(now)
         .bind(i64::from(limit))
@@ -276,6 +295,7 @@ fn decode(row: &sqlx::postgres::PgRow) -> PortResult<PendingFanout> {
         .map_err(|e| fail("fanout", e))?;
     let thumbnail: Option<String> = row.try_get("thumbnail").map_err(|e| fail("fanout", e))?;
     let attempts: i32 = row.try_get("attempts").map_err(|e| fail("fanout", e))?;
+    let closure: bool = row.try_get("closure").map_err(|e| fail("fanout", e))?;
     Ok(PendingFanout {
         cursor: cursor(seq),
         notification: parse(
@@ -287,6 +307,7 @@ fn decode(row: &sqlx::postgres::PgRow) -> PortResult<PendingFanout> {
             .map(|id| parse("fanout.thumbnail", &id, str::parse::<AttachmentId>))
             .transpose()?,
         attempts: u32::try_from(attempts).unwrap_or(0),
+        closure,
     })
 }
 

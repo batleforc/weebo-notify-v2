@@ -40,6 +40,16 @@ pub enum PushMessage {
         /// The body, in whichever form fitted.
         body: PushBody,
     },
+    /// A person closed it (RFC 0004): replace the alert in place, silently. Web Push
+    /// only; the relayed transports do not know this kind.
+    Closure {
+        /// Which channel it came from.
+        channel: ChannelId,
+        /// Which notification.
+        notification_id: NotificationId,
+        /// The closer's display name, or reference when they have none.
+        closed_by: Option<String>,
+    },
     /// "12 notifications while you were away (2 failure)", ending a quiet period (§7.4).
     Digest {
         /// How many were held back.
@@ -55,6 +65,7 @@ impl PushMessage {
     pub const fn priority(&self) -> Priority {
         match self {
             Self::Notification { priority, .. } => *priority,
+            Self::Closure { .. } => Priority::Min,
             Self::Digest { .. } => Priority::Default,
         }
     }
@@ -75,7 +86,7 @@ impl PushMessage {
                 priority: *priority,
                 body: PushBody::Poke,
             },
-            Self::Digest { .. } => self.clone(),
+            Self::Closure { .. } | Self::Digest { .. } => self.clone(),
         }
     }
 
@@ -105,6 +116,16 @@ impl PushMessage {
                 }
                 value
             }
+            Self::Closure {
+                channel,
+                notification_id,
+                closed_by,
+            } => serde_json::json!({
+                "kind": "closure",
+                "channel": channel,
+                "notification_id": notification_id,
+                "closed_by": closed_by,
+            }),
             Self::Digest { total, failures } => serde_json::json!({
                 "kind": "digest",
                 "total": total,

@@ -29,10 +29,10 @@ mod e2e {
     use notify_ports::{
         Allowance, ApiKeyRepository, AttachmentRegistry, AuditEntry, AuditLog, AuditQuery,
         ChannelRepository, Claim, Declaration, DeclarationKind, DeclarationStore, DeviceRepository,
-        EmailMatch, EventPayload, EventStore, IdempotencyStore, InboxQuery, InteractionRepository,
-        LeaderElection, NotificationRepository, PageRequest, PreferenceRepository, Quota,
-        RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery, ServiceAccountRepository,
-        StoredApiKey, SyncQuery, UnreadCount, UserRepository, Visibility,
+        EmailMatch, EventPayload, EventStore, FanoutOutbox, IdempotencyStore, InboxQuery,
+        InteractionRepository, LeaderElection, NotificationRepository, PageRequest,
+        PreferenceRepository, Quota, RateLimiter, ReceiptRepository, ReplayGuard, SearchQuery,
+        ServiceAccountRepository, StoredApiKey, SyncQuery, UnreadCount, UserRepository, Visibility,
     };
     use time::{Duration, OffsetDateTime};
 
@@ -1497,6 +1497,89 @@ mod e2e {
             )),
             "a closure nobody is told about is a notification that stays open on \
              every screen already showing it"
+        );
+    }
+
+    /// A hand closure (RFC 0004): the four columns, the event naming the closer and
+    /// one closure fan-out row, in one transaction; nothing on a closed row.
+    #[tokio::test]
+    async fn close_by_hand_names_the_closer_once() {
+        store!(store);
+        let (alice_id, alice) = user();
+        let channel = seeded_channel(&store, &alice).await;
+        let (published, _) = publish_with(
+            &store,
+            &channel,
+            &alice,
+            RevisionDraft::lifecycle(State::Open, ContentDraft::titled("CVE-2026-1234")),
+            None,
+            now(),
+        )
+        .await;
+        let by = Author {
+            principal: alice.clone(),
+            display_name: Some("Alice Martin".to_owned()),
+        };
+        let before = EventStore::head(&store).await.unwrap();
+        let at = now();
+
+        let cursor = NotificationRepository::close(&store, published.id, at, &by)
+            .await
+            .unwrap();
+        assert!(cursor.is_some());
+        assert_eq!(
+            NotificationRepository::close(&store, published.id, at, &by)
+                .await
+                .unwrap(),
+            None,
+            "a closed row writes nothing"
+        );
+
+        let reloaded = NotificationRepository::get(&store, published.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.head.state, State::Closed);
+        assert_eq!(reloaded.closed_by, Some(by.clone()));
+        assert!(reloaded.expires_at().is_some());
+
+        let backlog = store
+            .sync(
+                alice_id,
+                &SyncQuery {
+                    after: Some(before),
+                    channels: vec![channel.clone()],
+                    groups: Vec::new(),
+                    page: PageRequest::first(),
+                },
+            )
+            .await
+            .unwrap();
+        let closures: Vec<_> = backlog
+            .events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::Closure { closed_by, .. } => Some(closed_by.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(closures, [Some(by)]);
+
+        let claimed = FanoutOutbox::claim_fanout(
+            &store,
+            at,
+            100,
+            at + Duration::minutes(1),
+            10,
+            at - Duration::days(1),
+        )
+        .await
+        .unwrap();
+        assert!(
+            claimed
+                .iter()
+                .any(|row| row.notification == published.id && row.closure),
+            "{claimed:?}"
         );
     }
 

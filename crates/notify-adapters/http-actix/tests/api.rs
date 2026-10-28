@@ -14,8 +14,8 @@ use base64::Engine as _;
 use notify_app::{
     Attribution, Authenticate, Authorizer, BrowseAudit, ChannelInventory, CountUnread,
     CreateApiKey, CreateChannel, CreateServiceAccount, DeactivateServiceAccount, DeleteChannel,
-    DeleteNotification, EnrolDevice, Fanout, GetNotification, ListApiKeys, ListChannels,
-    ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts,
+    DeleteNotification, EnrolDevice, Fanout, GetNotification, IngestJson, ListApiKeys,
+    ListChannels, ListDevices, ListInbox, ListInteractions, ListRevisions, ListServiceAccounts,
     ListTrustPolicies, ManageMembers, PostReceipt, PresignAttachment, PublishNotification,
     ReadAvatar, ReadChannel, ReadDnd, ReadProfile, ReadReceipts, ReadReconciliation,
     ReconciliationLog, RecordInteraction, ResolveStreamStart, RevokeApiKey, RevokeDevice,
@@ -33,14 +33,31 @@ use notify_ports::test_utils::{
 use notify_ports::{
     AttachmentStore as _, ChannelRepository, Clock as _, UserRepository, VerifiedClaims,
 };
+use notify_transform_cel::{CelTransform, Slots, TransformSpec};
 use serde_json::{Value, json};
 use time::Duration;
 use url::Url;
 use utoipa_actix_web::AppExt as _;
 
+/// The declared transforms (RFC 0003), set by the test after the harness is built.
+#[derive(Clone, Default)]
+struct TestTransforms(Arc<std::sync::Mutex<Vec<Arc<CelTransform>>>>);
+
+impl notify_ports::TransformRegistry for TestTransforms {
+    fn get(&self, id: &str) -> Option<Arc<dyn notify_ports::Transform>> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|transform| transform.spec().id == id)
+            .map(|transform| Arc::clone(transform) as Arc<dyn notify_ports::Transform>)
+    }
+}
+
 /// Everything a test needs to reach behind the HTTP layer.
 struct Harness {
     store: InMemory,
+    transforms: TestTransforms,
     clock: TestClock,
     tokens: StaticTokenVerifier,
     limiter: TestRateLimiter,
@@ -89,6 +106,17 @@ impl Harness {
             .unwrap()
             .unwrap();
         actix_web::rt::spawn(live.clone().run(pokes));
+        let upsert = UpsertNotification::new(
+            Arc::new(store.clone()),
+            Arc::new(store.clone()),
+            Arc::new(store.clone()),
+            Arc::new(limiter.clone()),
+            Arc::new(clock.clone()),
+            authorizer.clone(),
+            fanout.clone(),
+            attribution.clone(),
+        );
+        let transforms = TestTransforms::default();
         let state = ApiState {
             live,
             // Measured where the exporter lives (`notify-metrics-prometheus`).
@@ -115,21 +143,26 @@ impl Harness {
                 fanout.clone(),
                 attribution.clone(),
             ),
-            upsert: UpsertNotification::new(
-                Arc::new(store.clone()),
-                Arc::new(store.clone()),
-                Arc::new(store.clone()),
-                Arc::new(limiter.clone()),
-                Arc::new(clock.clone()),
+            upsert: upsert.clone(),
+            ingest_json: IngestJson::new(
                 authorizer.clone(),
-                fanout.clone(),
-                attribution.clone(),
+                upsert,
+                Arc::new(transforms.clone()),
+                Arc::new(notify_ports::NoMetrics),
             ),
             delete_notification: DeleteNotification::new(
                 Arc::new(store.clone()),
                 authorizer.clone(),
                 Arc::new(clock.clone()),
                 fanout.clone(),
+            ),
+            close_notification: notify_app::CloseNotification::new(
+                Arc::new(store.clone()),
+                authorizer.clone(),
+                Arc::new(clock.clone()),
+                fanout.clone(),
+                attribution.clone(),
+                Arc::new(notify_ports::NoMetrics),
             ),
             inbox: ListInbox::new(Arc::new(store.clone()), authorizer.clone()),
             notification: get.clone(),
@@ -328,6 +361,7 @@ impl Harness {
 
         let harness = Self {
             store,
+            transforms,
             clock,
             tokens,
             limiter,
@@ -1998,6 +2032,7 @@ async fn the_openapi_document_covers_every_route_that_is_registered() {
         "/api/v1/compat/ntfy",
         "/api/v1/compat/ntfy/{channel}",
         "/api/v1/compat/alertmanager/{channel}",
+        "/api/v1/compat/json/{transform}/{channel}",
     ] {
         assert!(
             paths.iter().any(|path| path.as_str() == expected),
@@ -2073,6 +2108,7 @@ async fn every_operation_design_8_lists_is_served_and_not_only_its_path() {
         ("post", "/api/v1/compat/ntfy/{channel}"),
         ("put", "/api/v1/compat/ntfy/{channel}"),
         ("post", "/api/v1/compat/alertmanager/{channel}"),
+        ("post", "/api/v1/compat/json/{transform}/{channel}"),
     ] {
         let item =
             api.paths.paths.get(path).unwrap_or_else(|| {
@@ -2695,5 +2731,392 @@ async fn an_oversized_idempotency_key_is_refused_before_it_is_stored() {
     assert_eq!(
         test::call_service(&app, request).await.status(),
         StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+// --- JSON webhooks mapped by declared transforms (RFC 0003 §6.P) ---
+
+const MLAB_AUDIT: &str = include_str!("fixtures/mlab-audit.json");
+const MLAB_NEWS: &str = include_str!("fixtures/mlab-news.json");
+
+impl Harness {
+    /// Declare the RFC 0003 §1 transforms, both serving `channels`.
+    fn declare_mlab(&self, channels: &[&str], max_items: Option<usize>) {
+        let channels: Vec<ChannelId> = channels
+            .iter()
+            .map(|id| ChannelId::parse(id).unwrap())
+            .collect();
+        let audit = TransformSpec {
+            id: "mlab-audit".to_owned(),
+            channels: channels.clone(),
+            title: r#"body.data.label + ": " + body.data.target"#.to_owned(),
+            body: Some(r#""`" + body.event + "` · `" + body.data.action + "`""#.to_owned()),
+            external_id: Some("body.delivery_id".to_owned()),
+            tags: Some(r#"["audit", body.event]"#.to_owned()),
+            status: Some(
+                r#"body.data.action.endsWith(".deleted") ? "warning" : "info""#.to_owned(),
+            ),
+            raw: notify_ports::RawMode::Payload,
+            ..TransformSpec::default()
+        };
+        let news = TransformSpec {
+            id: "mlab-news".to_owned(),
+            channels,
+            split: Some("body.items".to_owned()),
+            max_items,
+            title: "item.title".to_owned(),
+            body: Some(r#"item.source + " · " + item.published_at"#.to_owned()),
+            link: Some("item.url".to_owned()),
+            external_id: Some("item.id".to_owned()),
+            group_key: Some(r#""mlab-news""#.to_owned()),
+            tags: Some(r#"["news", item.source]"#.to_owned()),
+            priority: Some(
+                r#"(item.title.matches("CVE-\\d{4}-\\d+") && item.severity in ["high", "critical"])
+                    ? "high"
+                    : {"info": "low", "medium": "default", "high": "high", "critical": "urgent"}[item.severity]"#
+                    .to_owned(),
+            ),
+            status: Some(r#"item.severity in ["high", "critical"] ? "warning" : "info""#.to_owned()),
+            state: Some(
+                r#"(item.title.matches("CVE-\\d{4}-\\d+") && item.severity in ["high", "critical"]) ? "open" : null"#
+                    .to_owned(),
+            ),
+            ack: Some(r#"item.title.matches("CVE-") ? "Vu" : null"#.to_owned()),
+            ..TransformSpec::default()
+        };
+        *self.transforms.0.lock().unwrap() = vec![
+            Arc::new(CelTransform::compile(audit, Slots::new(2)).unwrap()),
+            Arc::new(CelTransform::compile(news, Slots::new(2)).unwrap()),
+        ];
+    }
+}
+
+/// POST `body` to `/compat/json/{path}?token={key}`.
+macro_rules! post_json {
+    ($app:expr, $path:expr, $key:expr, $body:expr) => {{
+        let request = test::TestRequest::post()
+            .uri(&format!("/api/v1/compat/json/{}?token={}", $path, $key))
+            .insert_header(("Content-Type", "application/json"))
+            .set_payload($body.to_owned())
+            .to_request();
+        test::call_service(&$app, request).await
+    }};
+}
+
+/// Every notification in the caller's inbox, newest first.
+macro_rules! inbox {
+    ($app:expr) => {{
+        let request = test::TestRequest::get()
+            .uri("/api/v1/notifications")
+            .insert_header(AUTH)
+            .to_request();
+        let page: Value = test::call_and_read_body_json(&$app, request).await;
+        page["items"].as_array().unwrap().clone()
+    }};
+}
+
+#[actix_web::test]
+async fn a_json_webhook_is_mapped_and_its_retry_is_silent() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("security").await;
+    harness.declare_mlab(&["security"], None);
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["security"]);
+
+    let response = post_json!(app, "mlab-audit/security", key, MLAB_AUDIT);
+    assert_eq!(response.status(), StatusCode::OK);
+    let first: Value = test::read_body_json(response).await;
+    let notification = &first[0]["notification"];
+    assert_eq!(
+        notification["external_id"],
+        "mlab-audit:35d9f387-e22b-4174-99ef-e42abdf95f2a"
+    );
+    let content = &notification["head"]["content"];
+    assert_eq!(content["title"], "Webhook created: mlab-evt");
+    assert_eq!(notification["head"]["status"], "info");
+    assert_eq!(content["tags"], json!(["audit", "audit.webhooks"]));
+    assert!(content["body"].as_str().unwrap().contains("```json\n"));
+    assert!(
+        content["body"]
+            .as_str()
+            .unwrap()
+            .contains("\"delivery_id\"")
+    );
+
+    // §6.P 2: the same delivery again writes nothing and answers the same id.
+    let response = post_json!(app, "mlab-audit/security", key, MLAB_AUDIT);
+    assert_eq!(response.status(), StatusCode::OK);
+    let second: Value = test::read_body_json(response).await;
+    assert_eq!(
+        second,
+        json!([{ "notification_id": notification["id"], "skipped": true }])
+    );
+    let items = inbox!(app);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["last_seq"], 1);
+}
+
+#[actix_web::test]
+async fn a_json_webhook_splits_and_decides_by_conditions() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("security").await;
+    harness.declare_mlab(&["security"], None);
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["security"]);
+
+    let response = post_json!(app, "mlab-news/security", key, MLAB_NEWS);
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let items = inbox!(app);
+    assert_eq!(items.len(), 3);
+    let email = items
+        .iter()
+        .find(|n| n["external_id"] == "mlab-news:news-8814")
+        .unwrap();
+    assert_eq!(email["head"]["priority"], "high");
+    assert_eq!(email["head"]["status"], "warning");
+    let actions = email["head"]["content"]["actions"].as_array().unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0]["url"], "https://news.mlab.sh/a/news-8814");
+    for item in &items {
+        assert_eq!(item["kind"], "simple", "no state was mapped: {item}");
+        let body = item["head"]["content"]["body"].as_str().unwrap();
+        assert!(!body.contains("published_at"), "raw is off: {body}");
+    }
+
+    // §6.P 4, up to RFC 0004's button: a CVE of severity high stays open with an ack.
+    let cve = r#"{"items":[{"id":"cve-1","title":"CVE-2026-1234 in libfoo","source":"s",
+        "published_at":"x","url":"https://news.mlab.sh/a/cve-1","severity":"high"}]}"#;
+    assert_eq!(
+        post_json!(app, "mlab-news/security", key, cve).status(),
+        StatusCode::OK
+    );
+    let items = inbox!(app);
+    let cve = items
+        .iter()
+        .find(|n| n["external_id"] == "mlab-news:cve-1")
+        .unwrap();
+    assert_eq!(cve["head"]["state"], "open");
+    assert_eq!(cve["head"]["priority"], "high");
+    assert_eq!(cve["kind"], "lifecycle");
+    assert_eq!(cve["head"]["content"]["actions"][1]["type"], "ack");
+
+    // §6.P 5: both producers share the channel without revising each other.
+    post_json!(app, "mlab-audit/security", key, MLAB_AUDIT);
+    assert_eq!(inbox!(app).len(), 5);
+}
+
+#[actix_web::test]
+async fn a_json_webhook_refuses_before_evaluating() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("security").await;
+    harness.with_alice_in("veille").await;
+    harness.declare_mlab(&["security"], Some(50));
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["security"]);
+    let veille_key = mint_key!(app, harness, ["veille"]);
+
+    // §6.P 6: no credential.
+    let request = test::TestRequest::post()
+        .uri("/api/v1/compat/json/mlab-news/security")
+        .set_payload(MLAB_NEWS)
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // §6.P 7: no `publish` on the channel, listed or not.
+    for path in ["mlab-news/security", "mlab-news/nope", "nope/security"] {
+        assert_eq!(
+            post_json!(app, path, veille_key, MLAB_NEWS).status(),
+            StatusCode::FORBIDDEN,
+            "{path}"
+        );
+    }
+
+    // §6.P 9 and 10: an unknown id and an unlisted channel answer the same bytes,
+    // and a malformed body to the unlisted pair is not even parsed.
+    let unknown = post_json!(app, "nope/security", key, MLAB_NEWS);
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    let unknown = test::read_body(unknown).await;
+    let unlisted = post_json!(app, "mlab-audit/veille", veille_key, "not json");
+    assert_eq!(unlisted.status(), StatusCode::NOT_FOUND);
+    assert_eq!(test::read_body(unlisted).await, unknown);
+
+    // §6.P 8: shapes.
+    let not_a_list = post_json!(app, "mlab-news/security", key, r#"{"items":{"a":1}}"#);
+    assert_eq!(not_a_list.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let fifty_one =
+        json!({ "items": vec![json!({"id": "x", "title": "t", "severity": "info"}); 51] });
+    assert_eq!(
+        post_json!(app, "mlab-news/security", key, fifty_one.to_string()).status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let form = test::TestRequest::post()
+        .uri(&format!(
+            "/api/v1/compat/json/mlab-news/security?token={key}"
+        ))
+        .insert_header(("Content-Type", "application/x-www-form-urlencoded"))
+        .set_payload("items=1")
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, form).await.status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    let huge = format!(r#"{{"items":[],"pad":"{}"}}"#, "x".repeat(300 * 1024));
+    assert_eq!(
+        post_json!(app, "mlab-news/security", key, huge).status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    assert_eq!(
+        post_json!(app, "mlab-news/security", key, deep).status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Nothing above wrote anything.
+    assert_eq!(inbox!(app), [] as [serde_json::Value; 0]);
+}
+
+#[actix_web::test]
+async fn a_backtick_run_in_the_body_cannot_close_the_raw_block() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("security").await;
+    harness.declare_mlab(&["security"], None);
+    let app = service!(state);
+    let key = mint_key!(app, harness, ["security"]);
+    let mut audit: Value = serde_json::from_str(MLAB_AUDIT).unwrap();
+    audit["data"]["label"] = json!("```\n# injected");
+
+    let response = post_json!(app, "mlab-audit/security", key, audit.to_string());
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = inbox!(app)[0]["head"]["content"]["body"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let fence = body.lines().find(|line| line.ends_with("json")).unwrap();
+    assert_eq!(fence, "````json", "{body}");
+    assert!(body.ends_with("\n````"), "{body}");
+}
+
+#[actix_web::test]
+async fn the_native_upsert_may_not_claim_a_transforms_prefix() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("security").await;
+    harness.declare_mlab(&["security"], None);
+    let app = service!(state);
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/channels/security/notifications/mlab-news:x")
+        .insert_header(AUTH)
+        .set_json(json!({ "title": "squatting" }))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(inbox!(app), [] as [serde_json::Value; 0]);
+
+    // Without `publish` there, a reserved prefix answers as any other id: the
+    // refusal must not tell which transform ids exist (T9).
+    harness.with_alice_in("veille").await;
+    let outsider = mint_key!(app, harness, ["veille"]);
+    let mut answers = Vec::new();
+    for external_id in ["mlab-news:x", "nope:x"] {
+        let request = test::TestRequest::put()
+            .uri(&format!(
+                "/api/v1/channels/security/notifications/{external_id}"
+            ))
+            .insert_header(("Authorization", format!("Bearer {outsider}")))
+            .set_json(json!({ "title": "probe" }))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{external_id}");
+        answers.push(test::read_body(response).await);
+    }
+    assert_eq!(answers[0], answers[1]);
+}
+
+// --- Closing a notification from the web (RFC 0004) ---
+
+#[actix_web::test]
+async fn a_writer_closes_by_hand_and_a_reader_is_refused_like_an_unknown_id() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("security").await;
+    let app = service!(state);
+    let request = test::TestRequest::post()
+        .uri("/api/v1/apikeys")
+        .insert_header(AUTH)
+        .set_json(json!({
+            "owner": { "owner": "user", "id": harness.alice.to_string() },
+            "scopes": ["subscribe"],
+            "channels": ["security"],
+        }))
+        .to_request();
+    let minted: Value = test::call_and_read_body_json(&app, request).await;
+    let reader = format!("Bearer {}", minted["secret"].as_str().unwrap());
+
+    let request = test::TestRequest::put()
+        .uri("/api/v1/channels/security/notifications/cve-1")
+        .insert_header(AUTH)
+        .set_json(json!({ "state": "open", "title": "CVE-2026-1234" }))
+        .to_request();
+    let published: Value = test::call_and_read_body_json(&app, request).await;
+    let id = published["notification"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{published}"))
+        .to_owned();
+    let close = |credential: &str, id: &str| {
+        test::TestRequest::post()
+            .uri(&format!("/api/v1/notifications/{id}/close"))
+            .insert_header(("Authorization", credential.to_owned()))
+            .to_request()
+    };
+
+    // A reader, and an id that does not exist: the same 403, byte for byte.
+    let refused = test::call_service(&app, close(&reader, &id)).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let refused = test::read_body(refused).await;
+    let unknown = notify_domain::NotificationId::generate().to_string();
+    let missing = test::call_service(&app, close(&reader, &unknown)).await;
+    assert_eq!(missing.status(), StatusCode::FORBIDDEN);
+    assert_eq!(test::read_body(missing).await, refused);
+    let not_an_id = test::call_service(&app, close("Bearer alice-token", "nope")).await;
+    assert_eq!(not_an_id.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let closed = test::call_service(&app, close("Bearer alice-token", &id)).await;
+    assert_eq!(closed.status(), StatusCode::OK);
+    let closed: Value = test::read_body_json(closed).await;
+    assert_eq!(closed["head"]["state"], "closed");
+    assert_eq!(closed["closed_by"]["display_name"], "Alice Martin");
+    assert_eq!(
+        closed["head"]["content"]["title"], "CVE-2026-1234",
+        "no revision: the publisher's content stays"
+    );
+    assert_eq!(closed["last_seq"], 1);
+
+    let again = test::call_service(&app, close("Bearer alice-token", &id)).await;
+    assert_eq!(again.status(), StatusCode::OK);
+    let again: Value = test::read_body_json(again).await;
+    assert_eq!(again["closed_at"], closed["closed_at"]);
+}
+
+#[actix_web::test]
+async fn the_channel_list_carries_the_callers_own_scopes() {
+    let (harness, state) = Harness::new();
+    harness.with_alice_in("security").await;
+    let app = service!(state);
+
+    let request = test::TestRequest::get()
+        .uri("/api/v1/channels")
+        .insert_header(AUTH)
+        .to_request();
+    let page: Value = test::call_and_read_body_json(&app, request).await;
+
+    assert_eq!(page["items"][0]["id"], "security");
+    assert_eq!(
+        page["items"][0]["my_scopes"],
+        json!(["subscribe", "publish", "manage"])
     );
 }

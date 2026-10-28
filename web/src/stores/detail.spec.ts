@@ -16,7 +16,9 @@ const {
   listInteractionsMock,
   readershipMock,
   receiptMock,
+  closeOneMock,
 } = vi.hoisted(() => ({
+  closeOneMock: vi.fn(),
   getOneMock: vi.fn(),
   revisionsMock: vi.fn(),
   listInteractionsMock: vi.fn(),
@@ -32,6 +34,7 @@ vi.mock("@/api/generated", () => ({
   receipt: receiptMock,
   record: vi.fn(),
   silence: vi.fn(),
+  closeOne: closeOneMock,
 }));
 
 const NOTIFICATION: Notification = {
@@ -105,6 +108,7 @@ beforeEach(() => {
     listInteractionsMock,
     readershipMock,
     receiptMock,
+    closeOneMock,
   ]) {
     mock.mockReset();
   }
@@ -274,5 +278,64 @@ describe("opening while the stream keeps talking", () => {
 
     expect(detail.notification?.head.state).toBe("closed");
     expect(detail.revisions.map((one) => one.seq)).toEqual([2]);
+  });
+});
+
+describe("closing it by hand (RFC 0004)", () => {
+  const closure = (closedBy?: unknown) =>
+    ({
+      cursor: "evt_3",
+      audience: "channel",
+      channel_id: "ci-infra",
+      logged_at: "2026-08-01T10:07:00Z",
+      event: "closure",
+      notification_id: "ntf_1",
+      closed_at: "2026-08-01T10:07:00Z",
+      ...(closedBy ? { closed_by: closedBy } : {}),
+    }) as StreamEvent;
+
+  it("turns closed from the stream, naming the closer when a person did it", async () => {
+    readershipMock.mockResolvedValue({ data: null });
+    const detail = await opened();
+
+    detail.ingest(closure({ kind: "user", id: "usr_2", display_name: "Bob" }));
+
+    expect(detail.notification?.head.state).toBe("closed");
+    expect(detail.notification?.closed_at).toBe("2026-08-01T10:07:00Z");
+    expect(detail.notification?.closed_by?.display_name).toBe("Bob");
+    expect(detail.notification?.head.content.title).toBe("etcd degraded");
+  });
+
+  it("shows a server closure with nobody named", async () => {
+    readershipMock.mockResolvedValue({ data: null });
+    const detail = await opened();
+
+    detail.ingest(closure());
+
+    expect(detail.notification?.head.state).toBe("closed");
+    expect(detail.notification?.closed_by).toBeNull();
+  });
+
+  it("takes the server's answer, and hands back a refusal's message", async () => {
+    readershipMock.mockResolvedValue({ data: null });
+    const detail = await opened();
+    closeOneMock.mockResolvedValueOnce({
+      data: {
+        ...NOTIFICATION,
+        closed_at: "2026-08-01T10:07:00Z",
+        closed_by: { kind: "user", id: "usr_1", display_name: "Alice" },
+        head: { ...NOTIFICATION.head, state: "closed" },
+      },
+    });
+
+    expect(await detail.closeNotification()).toBeNull();
+    expect(closeOneMock).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "ntf_1" } }),
+    );
+    expect(detail.notification?.head.state).toBe("closed");
+
+    closeOneMock.mockRejectedValueOnce(new Error("forbidden"));
+    expect(await detail.closeNotification()).toBeTruthy();
+    expect(detail.acting).toBeNull();
   });
 });

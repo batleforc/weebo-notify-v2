@@ -20,7 +20,8 @@ pub mod dto {
     pub use crate::routes::channels::{AddMemberBody, ChannelPolicyBody, CreateChannelBody};
     pub use crate::routes::client_config::ClientConfig;
     pub use crate::routes::compat::{
-        Alert, AlertmanagerBody, CompatQuery, GotifyBody, GotifyMessage, NtfyBody, NtfyMessage,
+        Alert, AlertmanagerBody, CompatQuery, GotifyBody, GotifyMessage, JsonIngested, NtfyBody,
+        NtfyMessage,
     };
     pub use crate::routes::connections::Connection;
     pub use crate::routes::identity::{

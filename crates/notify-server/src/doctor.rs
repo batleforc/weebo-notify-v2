@@ -144,6 +144,42 @@ pub(crate) fn review(config: &Config) -> Vec<Finding> {
         None => {}
     }
 
+    // ── JSON webhook transforms (RFC 0003 §4.3) ──────────────────────────────
+    for transform in &config.transforms {
+        let id = &transform.id;
+        for channel in &transform.channels {
+            if !config.channels.managed.iter().any(|c| &c.id == channel) {
+                findings.push(Finding::note(
+                    format!(
+                        "[[transforms]] `{id}` lists channel `{channel}`, which is not a managed \
+                         channel"
+                    ),
+                    "fine if it is a dynamic channel; otherwise a typo, and the transform \
+                     serves nothing there",
+                ));
+            }
+        }
+        if transform.raw != crate::config::RawBody::Off {
+            findings.push(Finding::note(
+                format!(
+                    "[[transforms]] `{id}` appends the received JSON to every notification \
+                     (raw): whatever identifiers it holds reach devices, lock screens and sinks"
+                ),
+                "prefer mapping the fields you need; keep `raw = \"item\"` over `\"payload\"`",
+            ));
+        }
+        if transform.external_id.is_none() {
+            findings.push(Finding::note(
+                format!(
+                    "[[transforms]] `{id}` has no external_id: each element is identified by a \
+                     digest of its content, so a body with a changing field publishes again \
+                     on every retry"
+                ),
+                "map a stable producer id, such as a delivery or item id",
+            ));
+        }
+    }
+
     // ── Documentation surface ────────────────────────────────────────────────
     if config.server.docs {
         findings.push(Finding::note(

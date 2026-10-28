@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 
 use notify_domain::{
-    ChannelId, Cursor, InteractionRecord, NotificationId, Receipt, TombstoneReason, UserId,
+    Author, ChannelId, Cursor, InteractionRecord, NotificationId, Receipt, TombstoneReason, UserId,
 };
 use utoipa::openapi::{
     AllOfBuilder, Array, KnownFormat, Object, ObjectBuilder, OneOf, Ref, RefOr, Schema,
@@ -54,6 +54,7 @@ impl ToSchema for Event {
         register::<UserId>(schemas);
         register::<NotificationId>(schemas);
         register::<TombstoneReason>(schemas);
+        register::<Author>(schemas);
         register::<RevisionEvent>(schemas);
         register::<Receipt>(schemas);
         register::<InteractionRecord>(schemas);
@@ -102,9 +103,10 @@ fn closure() -> ObjectBuilder {
     envelope("closure", Reach::Channel)
         .title(Some(branch_title("closure")))
         .description(Some(
-            "A lifecycle notification was closed by the server because nothing had \
-             happened to it for longer than its channel allows; clients mark their \
-             copy closed rather than dropping it.",
+            "A lifecycle notification was closed without a revision: by the server \
+             because nothing had happened to it for longer than its channel allows, or \
+             by a person (`closed_by`); clients mark their copy closed rather than \
+             dropping it.",
         ))
         .property(
             "notification_id",
@@ -124,6 +126,15 @@ fn closure() -> ObjectBuilder {
                 )),
         )
         .required("closed_at")
+        .property(
+            "closed_by",
+            OneOf::builder()
+                .item(Object::builder().schema_type(Type::Null))
+                .item(Ref::from_schema_name(Author::name()))
+                .description(Some(
+                    "Who closed it by hand (RFC 0004); absent when the server did.",
+                )),
+        )
 }
 
 /// What every event carries: cursor, append time, audience and kind.
@@ -316,6 +327,7 @@ mod tests {
                 EventPayload::Closure {
                     notification_id: NotificationId::generate(),
                     closed_at: now(),
+                    closed_by: None,
                 },
             ),
             (

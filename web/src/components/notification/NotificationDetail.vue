@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** The detail panel (§10.4): empty, loading, gone (deleted vs expired, §7.2bis), or the notification. */
-import { Check, Copy, Eye } from "@lucide/vue";
+import { Check, CircleCheck, Copy, Eye, LoaderCircle } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -18,6 +18,7 @@ import {
 } from "@/lib/notification";
 import { useChannels } from "@/stores/channels";
 import { useDetail } from "@/stores/detail";
+import { useToasts } from "@/stores/toasts";
 import ActionBar from "./ActionBar.vue";
 import Markdown from "./Markdown.vue";
 import NotificationImage from "./NotificationImage.vue";
@@ -26,9 +27,13 @@ import StatusDot from "./StatusDot.vue";
 
 const detail = useDetail();
 const channels = useChannels();
+const toasts = useToasts();
 const { t } = useI18n();
 
 const copied = ref(false);
+const heading = ref<HTMLElement | null>(null);
+/** Hidden after a refusal: `my_scopes` was stale, and the server said no. */
+const closeRefused = ref(false);
 
 const head = computed(() => detail.notification?.head ?? null);
 const image = computed(() => head.value?.content.image ?? null);
@@ -39,6 +44,29 @@ const showsReceipts = computed(() =>
     ? channels.collectsReceipts(detail.notification.channel)
     : false,
 );
+
+/** RFC 0004: live, and the caller holds `publish` or `manage` in its channel. */
+const canClose = computed(
+  () =>
+    !closeRefused.value &&
+    head.value !== null &&
+    head.value.state !== "closed" &&
+    detail.notification !== null &&
+    channels.mayClose(detail.notification.channel),
+);
+
+async function closeNotification(): Promise<void> {
+  const refused = await detail.closeNotification();
+  if (refused) {
+    closeRefused.value = true;
+    toasts.push({
+      title: t("notification.detail.closeRefused"),
+      body: refused,
+    });
+  }
+  // The button is gone either way: keep focus in the panel.
+  heading.value?.focus();
+}
 
 /** Same principal fallback as the timeline and inbox (§2.4). */
 const readers = computed(() =>
@@ -68,6 +96,7 @@ async function copyPermalink(): Promise<void> {
 watch(
   () => detail.id,
   (id) => {
+    closeRefused.value = false;
     if (id) {
       void detail.markSeen();
     }
@@ -130,7 +159,12 @@ watch(
         <!-- `pr-12` clears AppLayout's mobile close button. -->
         <div class="flex items-start gap-3 pr-12 xl:pr-0">
           <StatusDot :status="head.status" :state="head.state" class="mt-1.5" />
-          <h2 class="flex-1 text-xl leading-snug [overflow-wrap:anywhere]" data-selectable>
+          <h2
+            ref="heading"
+            tabindex="-1"
+            class="flex-1 text-xl leading-snug outline-none [overflow-wrap:anywhere]"
+            data-selectable
+          >
             {{ head.content.title }}
           </h2>
           <Tooltip>
@@ -223,11 +257,27 @@ watch(
           {{ t("notification.detail.createdAt", { at: exact(detail.notification.created_at) }) }}
           <template v-if="detail.notification.closed_at">
             {{ t("notification.detail.closedAt", { at: exact(detail.notification.closed_at) }) }}
+            <template v-if="detail.notification.closed_by">
+              {{ t("notification.detail.closedBy", { name: authorLabel(detail.notification.closed_by) }) }}
+            </template>
           </template>
           <template v-if="detail.notification.ttl">
             {{ t("notification.detail.ttl", { ttl: detail.notification.ttl }) }}
           </template>
         </p>
+
+        <Button
+          v-if="canClose"
+          variant="secondary"
+          size="sm"
+          :disabled="detail.acting === 'close-notification'"
+          :aria-busy="detail.acting === 'close-notification'"
+          @click="closeNotification"
+        >
+          <LoaderCircle v-if="detail.acting === 'close-notification'" class="animate-spin" />
+          <CircleCheck v-else />
+          {{ t("notification.detail.closeNotification") }}
+        </Button>
       </header>
 
       <section class="space-y-4 border-t border-rule px-5 py-5">

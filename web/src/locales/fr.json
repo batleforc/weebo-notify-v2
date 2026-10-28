@@ -330,6 +330,9 @@
       "deviceCount": "Le compte est en personnes, jamais en devices (§7.3) · {count} device(s) l'ont reçue.",
       "createdAt": "Créée le {at}",
       "closedAt": "· fermée le {at}",
+      "closedBy": "par {name}",
+      "closeNotification": "Clore la notification",
+      "closeRefused": "Impossible de clore cette notification",
       "ttl": "· rétention {ttl}",
       "noBody": "Pas de corps — le titre dit tout.",
       "timelineHeading": "Timeline · {count} révision(s)"

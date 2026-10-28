@@ -43,6 +43,33 @@ struct OutcomeLabel {
     outcome: &'static str,
 }
 
+/// `{transform="mlab-news",outcome="ok"}`: an operator-declared id, unknown ids
+/// already folded into `_unknown` by the caller.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct TransformOutcomeLabel {
+    transform: String,
+    outcome: &'static str,
+}
+
+/// `{transform="mlab-news"}`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct TransformLabel {
+    transform: String,
+}
+
+/// `{transform="mlab-news",hash="…"}`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct TransformInfoLabel {
+    transform: String,
+    hash: String,
+}
+
+/// `{reason="manual"}`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ReasonLabel {
+    reason: &'static str,
+}
+
 /// `{transport="webpush"}`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct TransportLabel {
@@ -88,6 +115,16 @@ pub struct PrometheusMetrics {
     job_failures: Family<JobLabel, Counter>,
     reconcile_refused: Counter,
     feeds: FeedMetrics,
+    transforms: TransformMetrics,
+    closed: Family<ReasonLabel, Counter>,
+}
+
+#[derive(Debug)]
+struct TransformMetrics {
+    requests: Family<TransformOutcomeLabel, Counter>,
+    items: Family<TransformOutcomeLabel, Counter>,
+    eval: Family<TransformLabel, Histogram>,
+    info: Family<TransformInfoLabel, Gauge>,
 }
 
 #[derive(Debug)]
@@ -106,6 +143,10 @@ impl Default for PrometheusMetrics {
 impl PrometheusMetrics {
     /// Build the registry with every family this build publishes.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one registration per family; the newer ones already live in helpers"
+    )]
     pub fn new() -> Self {
         let mut registry = Registry::default();
 
@@ -193,6 +234,13 @@ impl PrometheusMetrics {
 
         let (fanout_rows, fanout_age) = register_fanout(&mut registry);
         let feeds = register_feeds(&mut registry);
+        let transforms = register_transforms(&mut registry);
+        let closed = Family::<ReasonLabel, Counter>::default();
+        registry.register(
+            "notifications_closed",
+            "Live notifications closed without a revision, by a person or for inactivity",
+            closed.clone(),
+        );
         let watermark_lag = Gauge::default();
         registry.register_with_unit(
             "event_watermark_lag",
@@ -219,7 +267,46 @@ impl PrometheusMetrics {
             job_failures,
             reconcile_refused,
             feeds,
+            transforms,
+            closed,
         }
+    }
+}
+
+/// RFC 0003 §10.1. The `transform` label is an operator-declared id.
+fn register_transforms(registry: &mut Registry) -> TransformMetrics {
+    let requests = Family::<TransformOutcomeLabel, Counter>::default();
+    registry.register(
+        "transform_requests",
+        "JSON webhook requests, by transform and how they ended",
+        requests.clone(),
+    );
+    let items = Family::<TransformOutcomeLabel, Counter>::default();
+    registry.register(
+        "transform_items",
+        "JSON webhook elements, by transform and what became of them",
+        items.clone(),
+    );
+    let eval = Family::<TransformLabel, Histogram>::new_with_constructor(|| {
+        Histogram::new([0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0])
+    });
+    registry.register_with_unit(
+        "transform_eval",
+        "One request's evaluation, the wait for a slot included",
+        prometheus_client::registry::Unit::Seconds,
+        eval.clone(),
+    );
+    let info = Family::<TransformInfoLabel, Gauge>::default();
+    registry.register(
+        "transform_info",
+        "1 per loaded transform, under a digest of its declaration",
+        info.clone(),
+    );
+    TransformMetrics {
+        requests,
+        items,
+        eval,
+        info,
     }
 }
 
@@ -406,10 +493,59 @@ impl Metrics for PrometheusMetrics {
             .inc_by(count);
     }
 
+    fn notification_closed(&self, reason: &'static str, count: u64) {
+        self.closed
+            .get_or_create(&ReasonLabel { reason })
+            .inc_by(count);
+    }
+
     fn feed_failing(&self, feeds: u64) {
         self.feeds
             .failing
             .set(i64::try_from(feeds).unwrap_or(i64::MAX));
+    }
+
+    fn transform_request(&self, transform: &str, outcome: &'static str) {
+        self.transforms
+            .requests
+            .get_or_create(&TransformOutcomeLabel {
+                transform: transform.to_owned(),
+                outcome,
+            })
+            .inc();
+    }
+
+    fn transform_items(&self, transform: &str, outcome: &'static str, count: u64) {
+        self.transforms
+            .items
+            .get_or_create(&TransformOutcomeLabel {
+                transform: transform.to_owned(),
+                outcome,
+            })
+            .inc_by(count);
+    }
+
+    fn transform_eval_seconds(&self, transform: &str, seconds: f64) {
+        self.transforms
+            .eval
+            .get_or_create(&TransformLabel {
+                transform: transform.to_owned(),
+            })
+            .observe(seconds);
+    }
+
+    fn transforms_loaded(&self, loaded: &[(String, String)]) {
+        // Cleared first, so the previous declaration's hash stops being reported.
+        self.transforms.info.clear();
+        for (transform, hash) in loaded {
+            self.transforms
+                .info
+                .get_or_create(&TransformInfoLabel {
+                    transform: transform.clone(),
+                    hash: hash.clone(),
+                })
+                .set(1);
+        }
     }
 
     fn render(&self) -> String {
@@ -484,6 +620,31 @@ mod tests {
         assert!(rendered.contains("feed_polls_total{outcome=\"refused_address\"} 1"));
         assert!(rendered.contains("feed_items_total{outcome=\"published\"} 3"));
         assert!(rendered.contains("feed_failing 2"));
+    }
+
+    #[test]
+    fn transforms_are_counted_by_their_declared_id_and_outcome() {
+        let metrics = PrometheusMetrics::new();
+        metrics.transform_request("mlab-news", "ok");
+        metrics.transform_request("_unknown", "unlisted");
+        metrics.transform_items("mlab-news", "skipped", 2);
+        metrics.transform_eval_seconds("mlab-news", 0.002);
+        metrics.transforms_loaded(&[("mlab-news".to_owned(), "old".to_owned())]);
+        metrics.transforms_loaded(&[("mlab-news".to_owned(), "abc".to_owned())]);
+        metrics.notification_closed("manual", 1);
+
+        let rendered = metrics.render();
+        for line in [
+            r#"transform_requests_total{transform="mlab-news",outcome="ok"} 1"#,
+            r#"transform_requests_total{transform="_unknown",outcome="unlisted"} 1"#,
+            r#"transform_items_total{transform="mlab-news",outcome="skipped"} 2"#,
+            r#"transform_eval_seconds_count{transform="mlab-news"} 1"#,
+            r#"transform_info{transform="mlab-news",hash="abc"} 1"#,
+            r#"notifications_closed_total{reason="manual"} 1"#,
+        ] {
+            assert!(rendered.contains(line), "{line}\n{rendered}");
+        }
+        assert!(!rendered.contains(r#"hash="old""#), "{rendered}");
     }
 
     #[test]

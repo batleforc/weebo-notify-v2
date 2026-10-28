@@ -155,24 +155,37 @@ impl Authorizer {
             return Err(Self::refuse(scope));
         };
 
-        let allowed = match &caller.grant {
-            // Both doors (§11): named membership, or a group the token carries.
-            Grant::Membership => found.allows(&caller.principal, &caller.groups, scope),
-            // A key's rights come from itself; a personal key is also capped by its owner's
-            // membership, so it does not outlive their removal.
-            grant @ Grant::ApiKey { owner_groups, .. } => {
-                grant.carries(channel, scope)
-                    && (!matches!(caller.principal, Principal::User { .. })
-                        || found.allows(&caller.principal, owner_groups, scope))
-            }
-            grant @ Grant::Federated { .. } => grant.carries(channel, scope),
-        };
-
-        if allowed {
+        if Self::allows(caller, &found, scope) {
             Ok(found)
         } else {
             Err(Self::refuse(scope))
         }
+    }
+
+    /// Whether the caller holds `scope` in `channel`, already fetched.
+    fn allows(caller: &Caller, channel: &Channel, scope: Scope) -> bool {
+        match &caller.grant {
+            // Both doors (§11): named membership, or a group the token carries.
+            Grant::Membership => channel.allows(&caller.principal, &caller.groups, scope),
+            // A key's rights come from itself; a personal key is also capped by its owner's
+            // membership, so it does not outlive their removal.
+            grant @ Grant::ApiKey { owner_groups, .. } => {
+                grant.carries(&channel.id, scope)
+                    && (!matches!(caller.principal, Principal::User { .. })
+                        || channel.allows(&caller.principal, owner_groups, scope))
+            }
+            grant @ Grant::Federated { .. } => grant.carries(&channel.id, scope),
+        }
+    }
+
+    /// The scopes the caller holds in `channel` (RFC 0004 decision 4), so a client
+    /// shows only the controls it may use.
+    #[must_use]
+    pub fn scopes_in(caller: &Caller, channel: &Channel) -> Vec<Scope> {
+        [Scope::Subscribe, Scope::Publish, Scope::Manage]
+            .into_iter()
+            .filter(|scope| Self::allows(caller, channel, *scope))
+            .collect()
     }
 
     /// Every channel the caller manages through membership, named or by group.

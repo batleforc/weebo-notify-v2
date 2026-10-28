@@ -249,9 +249,11 @@ impl Fanout {
         owners.sort_unstable();
         owners.dedup();
         let quiet: Vec<UserId> = futures::stream::iter(owners)
-            .map(
-                |owner| async move { self.stays_quiet(owner, notification).await.then_some(owner) },
-            )
+            .map(|owner| async move {
+                self.stays_quiet(owner, notification, true)
+                    .await
+                    .then_some(owner)
+            })
             .buffer_unordered(PUSH_CONCURRENCY)
             .filter_map(core::future::ready)
             .collect()
@@ -278,6 +280,59 @@ impl Fanout {
                     {
                         tracing::warn!(?error, device = %id, "push not recorded; a retry repeats it");
                     }
+                }
+            })
+            .await;
+    }
+
+    /// Tell the Web Push devices of a notification's channel that a person closed it
+    /// (RFC 0004): `min` priority, after silences and do-not-disturb, never counted
+    /// into a digest. The relayed transports do not know this kind, so get nothing.
+    /// Not recorded per device: a repeat replaces the same alert, silently.
+    async fn push_closure(&self, notification: &Notification, by: &notify_domain::Author) {
+        let mut targets = match self.devices.delivery_targets(&notification.channel).await {
+            Ok(targets) => targets,
+            Err(error) => {
+                tracing::warn!(?error, "could not resolve delivery targets");
+                return;
+            }
+        };
+        targets.retain(|device| matches!(device.transport, PushTransport::WebPush { .. }));
+        let message = PushMessage::Closure {
+            channel: notification.channel.clone(),
+            notification_id: notification.id,
+            closed_by: Some(by.label()),
+        };
+        // Once per person, as for a revision; never counted into a digest.
+        let mut owners: Vec<UserId> = targets
+            .iter()
+            .filter_map(|device| device.owner.as_user())
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        let quiet: Vec<UserId> = futures::stream::iter(owners)
+            .map(|owner| async move {
+                self.stays_quiet(owner, notification, false)
+                    .await
+                    .then_some(owner)
+            })
+            .buffer_unordered(PUSH_CONCURRENCY)
+            .filter_map(core::future::ready)
+            .collect()
+            .await;
+        futures::stream::iter(targets)
+            .filter(|device| {
+                core::future::ready(
+                    device
+                        .owner
+                        .as_user()
+                        .is_none_or(|owner| !quiet.contains(&owner)),
+                )
+            })
+            .for_each_concurrent(PUSH_CONCURRENCY, |device| {
+                let message = &message;
+                async move {
+                    self.push_one(device, message).await;
                 }
             })
             .await;
@@ -314,7 +369,7 @@ impl Fanout {
     /// Whether a person asked not to be bothered: a silence (§2.3) or a do-not-disturb
     /// (§7.4). Only the push is suppressed. Both are per user; a service account has no
     /// attention to protect (§5.2bis).
-    async fn stays_quiet(&self, id: UserId, notification: &Notification) -> bool {
+    async fn stays_quiet(&self, id: UserId, notification: &Notification, defer: bool) -> bool {
         let now = self.clock.now();
 
         match self.interactions.active_silences(id, now).await {
@@ -347,7 +402,7 @@ impl Fanout {
             }
         };
 
-        if muted {
+        if muted && defer {
             // The only moment that knows a push was held back; the closing digest counts them (§7.4).
             // Keyed by revision, so a retried row or a second device counts once.
             if let Err(error) = self
@@ -589,14 +644,22 @@ impl DrainFanout {
             return Ok(());
         }
 
-        // Skip whoever an earlier attempt at this same head already reached.
-        let already = self
-            .outbox
-            .delivered_devices(notification.id, notification.head.seq)
-            .await?;
-        self.fanout
-            .push_remaining(&notification, &already, Some(self.outbox.as_ref()))
-            .await;
+        if rows.iter().any(|row| !row.closure) {
+            // Skip whoever an earlier attempt at this same head already reached.
+            let already = self
+                .outbox
+                .delivered_devices(notification.id, notification.head.seq)
+                .await?;
+            self.fanout
+                .push_remaining(&notification, &already, Some(self.outbox.as_ref()))
+                .await;
+        }
+        // Only while it is still closed by hand: a reopening since owes no closure.
+        if rows.iter().any(|row| row.closure)
+            && let Some(by) = &notification.closed_by
+        {
+            self.fanout.push_closure(&notification, by).await;
+        }
 
         let mut thumbnails: Vec<AttachmentId> =
             rows.iter().filter_map(|row| row.thumbnail).collect();
@@ -1143,6 +1206,49 @@ mod tests {
         NotificationRepository::insert_with(store, notification, &notification.head, &after)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_hand_closure_pushes_quietly_to_web_push_devices_only() {
+        let store = InMemory::new();
+        let clock = TestClock::new();
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        let browser = seed(&store, &alice, webpush(), clock.now());
+        store.seed_device(
+            Device::enrol(
+                DeviceId::generate(),
+                alice.clone(),
+                "phone",
+                PushTransport::UnifiedPush {
+                    endpoint: Url::parse("https://up.example/x").unwrap(),
+                },
+                Some(notify_domain::DevicePublicKey::from_bytes([7_u8; 32])),
+                clock.now(),
+            )
+            .unwrap(),
+        );
+        let notification = notification(&alice, None, clock.now());
+        publish(&store, &clock, &notification).await;
+        drain(&store, &clock).execute().await.unwrap();
+        let before = store.pushes().len();
+
+        let by = notify_domain::Author::anonymous(alice.clone());
+        NotificationRepository::close(&store, notification.id, clock.now(), &by)
+            .await
+            .unwrap()
+            .unwrap();
+        drain(&store, &clock).execute().await.unwrap();
+
+        let closures: Vec<_> = store.pushes().split_off(before);
+        let [(device, PushMessage::Closure { closed_by, .. })] = closures.as_slice() else {
+            panic!("one closure, to the browser only: {closures:?}");
+        };
+        assert_eq!(*device, browser);
+        assert_eq!(closed_by.as_deref(), Some(by.label().as_str()));
+        assert_eq!(closures[0].1.priority(), notify_domain::Priority::Min);
+        assert_eq!(store.pending_fanout(), [] as [PendingFanout; 0]);
     }
 
     #[tokio::test]

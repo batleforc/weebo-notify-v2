@@ -7,6 +7,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import {
+  closeOne,
   readership as fetchReadership,
   revisions as fetchRevisions,
   getOne,
@@ -212,6 +213,32 @@ export const useDetail = defineStore("detail", () => {
     }
   }
 
+  /**
+   * Close it by hand (RFC 0004); needs `publish` or `manage`. Resolves to the
+   * refusal's message, or `null` once closed.
+   */
+  async function closeNotification(): Promise<string | null> {
+    const current = id.value;
+    if (!current || acting.value) {
+      return null;
+    }
+    acting.value = "close-notification";
+    try {
+      const answer = await closeOne({
+        path: { id: current },
+        throwOnError: true,
+      });
+      if (id.value === current) {
+        notification.value = answer.data;
+      }
+      return null;
+    } catch (caught) {
+      return failureOf(caught).message;
+    } finally {
+      acting.value = null;
+    }
+  }
+
   /** Stop being notified about this one, for this user only (§2.3, §7.4). */
   async function silence(body: SilenceBody): Promise<void> {
     const current = id.value;
@@ -262,6 +289,8 @@ export const useDetail = defineStore("detail", () => {
               event.state === "closed"
                 ? event.revised_at
                 : notification.value.closed_at,
+            // A revision speaks for the publisher: nobody closed it by hand any more.
+            closed_by: null,
             head: { ...notification.value.head, ...headFrom(event) },
           };
         }
@@ -280,6 +309,17 @@ export const useDetail = defineStore("detail", () => {
         // `null` readership = receipts off for this channel.
         if (event.notification_id === current && readership.value) {
           void refreshReadership();
+        }
+        return;
+      }
+      case "closure": {
+        if (event.notification_id === current && notification.value) {
+          notification.value = {
+            ...notification.value,
+            closed_at: event.closed_at,
+            closed_by: event.closed_by ?? null,
+            head: { ...notification.value.head, state: "closed" },
+          };
         }
         return;
       }
@@ -302,6 +342,7 @@ export const useDetail = defineStore("detail", () => {
     answers,
     audience,
     close,
+    closeNotification,
     error,
     gone,
     head,

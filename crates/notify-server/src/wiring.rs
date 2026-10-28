@@ -63,6 +63,8 @@ pub(crate) struct Application {
     pub poll_feeds: notify_app::PollFeeds,
     /// What `[[channels.managed.feeds]]` declared; swapped on `SIGHUP`.
     pub feed_routes: crate::feeds::FeedRoutes,
+    /// What `[[transforms]]` declared (RFC 0003); swapped on `SIGHUP`.
+    pub transform_routes: crate::transforms::TransformRoutes,
     /// The fan-out outbox worker (ADR-0025): on every replica, not just the leader.
     pub fanout_drain: DrainFanout,
     /// What `[[channels.managed.sinks]]` configured; shared with the fan-out and drain, swapped on `SIGHUP`.
@@ -218,6 +220,22 @@ impl Application {
             std::process::id(),
             time::OffsetDateTime::now_utc().unix_timestamp_nanos()
         );
+        // Built before the state: the JSON webhook route reads them (RFC 0003).
+        let transform_routes = crate::transforms::TransformRoutes::build(
+            config,
+            notify_transform_cel::Slots::per_core(),
+        )?;
+        transform_routes.report(metrics.as_ref());
+        let upsert = UpsertNotification::new(
+            repository.clone(),
+            repository.clone(),
+            repository.clone(),
+            repository.clone(),
+            clock.clone(),
+            authorizer.clone(),
+            fanout.clone(),
+            attribution.clone(),
+        );
         let state = ApiState {
             live,
             metrics: metrics.clone(),
@@ -255,21 +273,26 @@ impl Application {
                 fanout.clone(),
                 attribution.clone(),
             ),
-            upsert: UpsertNotification::new(
-                repository.clone(),
-                repository.clone(),
-                repository.clone(),
-                repository.clone(),
-                clock.clone(),
+            upsert: upsert.clone(),
+            ingest_json: notify_app::IngestJson::new(
                 authorizer.clone(),
-                fanout.clone(),
-                attribution.clone(),
+                upsert,
+                Arc::new(transform_routes.clone()),
+                metrics.clone(),
             ),
             delete_notification: DeleteNotification::new(
                 repository.clone(),
                 authorizer.clone(),
                 clock.clone(),
                 fanout.clone(),
+            ),
+            close_notification: notify_app::CloseNotification::new(
+                repository.clone(),
+                authorizer.clone(),
+                clock.clone(),
+                fanout.clone(),
+                attribution.clone(),
+                metrics.clone(),
             ),
 
             inbox: ListInbox::new(repository.clone(), authorizer.clone()),
@@ -481,7 +504,8 @@ impl Application {
             Arc::new(PgLeaderElection::new(store.pool().clone())),
             bus.clone(),
             clock.clone(),
-        );
+        )
+        .with_metrics(metrics.clone());
 
         // The §7.4 digest, leader-only so each push is sent once.
         let digests = SendDndDigests::new(
@@ -541,6 +565,7 @@ impl Application {
             drain,
             poll_feeds,
             feed_routes,
+            transform_routes,
             fanout_drain,
             routes,
             fleet: sinks,

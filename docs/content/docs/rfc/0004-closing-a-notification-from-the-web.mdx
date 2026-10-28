@@ -5,7 +5,7 @@ description: A person who holds publish or manage in a channel can close a live 
 
 | Field       | Value |
 | ----------- | ----- |
-| Status      | In review (2026-10-28; decisions 1 to 4 in §15, no panel run) |
+| Status      | Implemented (2026-10-28; decisions 1 to 4 in §15, no panel run; the delta is §17; §6.P 3 and 4 still to observe) |
 | Short       | Close from the web |
 | Settles     | Who may close a lifecycle notification by hand, through which endpoint, how it is recorded and announced, and how the web shows the button only to them |
 | Author      | Max Batleforc &lt;maxleriche.60@gmail.com&gt; |
@@ -660,3 +660,57 @@ None.
 | 2 | Domain `closed_by` and `close(at, by)`; port `close`, `EventPayload::Closure.closed_by`, `InMemory`; migration and conformance; `CloseNotification` with its tests; the route, its integration and T-row tests; the metric. The endpoint and its authorisation land together. |
 | 3 | The closure push: `PushMessage::Closure`, `Envelope::Closure`, the outbox column, the drain's Web Push filter, §6.P 4. `scopes_in`, `my_scopes` on `GET /channels`; spec and HeyApi client regenerated; the button, locales, `close.spec.ts` (§6.P). Usable from this phase. |
 | 4 | Docs (domain model, RFC 0003's example); status moved to `Implemented` with §17. |
+
+---
+
+## 17. Revision against the tree (2026-10-28)
+
+All four phases shipped together on `feat/rfc-0003-json-transforms`, on top of RFC
+0003. This section records where the tree differs from the text above and what was
+observed; the earlier sections are left as written.
+
+### 17.1 Where the tree differs, and why
+
+| # | The RFC says | The tree does | Why |
+| --- | --- | --- | --- |
+| 1 | `AfterWrite` gains `closure: bool` (§6.2) | `NotificationRepository::close(id, at, by)` records the closure's fan-out row itself; `AfterWrite` is unchanged and `PendingFanout` gains `closure` | A close has no revision, so none of `AfterWrite`'s sinks, thumbnail or replay applies; only the one row does |
+| 2 | The closure push is recorded per device like a revision's | not recorded: a retried row pushes the closure again | `delivered_devices` is keyed on the head's `seq`, which a close does not move, so a closure would skip every device the revision reached. A repeat replaces the same alert silently |
+| 3 | An unknown id answers `403` "as `GetNotification` does" (§4.3) | `403`, identical to a forbidden one | `GetNotification` actually answers `409` for a missing row; this route follows the §4.3 table, not that sentence |
+| 4 | `notify_notifications_closed_total` | `notifications_closed_total` | No family carries a prefix (RFC 0002 §17.1 row 2) |
+| 5 | `Metrics::notification_closed(reason)` | `notification_closed(reason, count)` | `CloseStale` closes in batches |
+| 6 | `GET /channels` items gain `my_scopes` | they do; `notify-client-core` maps them back to `Channel` | The native clients are a non-goal and their TUI types stay as they were |
+| 7 | The worker shows "the title and Closed by Alice" | the envelope carries no title: the worker reads it from the alert still shown under the same tag (`getNotifications`), and falls back to the channel id; the French text is "Fermée par …" | The server would otherwise have to put the content back in the push |
+| 8 | Order of §13: worker first, server one release later | one change | Released together, an old worker may meet a `closure` push and show its generic notification until it is replaced; ship the web image first if that matters |
+| 9 | "Any doubt about the caller's scopes is a `403`" (§10.2) | only a refusal is a `403`; the store failing during the check stays a `5xx` | A database blip answered "scope missing" to a legitimate publisher and logged nothing (code review, 2026-10-28) |
+| 10 | The answer is the notification as closed | re-read after the close | A revision that landed between the first read and the close was missing from the answer |
+
+### 17.2 Proof
+
+- `crates/notify-adapters/http-actix/tests/api.rs`:
+  `a_writer_closes_by_hand_and_a_reader_is_refused_like_an_unknown_id` (a reader and an
+  unknown id give the same `403` bytes, `422` for a bad id, `200` with `closed_by` and
+  the content untouched, `200` again with the same `closed_at`) and
+  `the_channel_list_carries_the_callers_own_scopes`.
+- `notify-app`: `publish_or_manage_closes_once_and_names_the_closer`,
+  `a_reader_a_stranger_and_an_unknown_id_are_one_refusal`, `a_deleted_notification_is_gone`,
+  `scopes_in_lists_the_callers_own`, and
+  `a_hand_closure_pushes_quietly_to_web_push_devices_only` (one `Closure` at `min`
+  priority to the Web Push device, none to the UnifiedPush one).
+- Conformance (`persistence-pg`, against Postgres 2026-10-28):
+  `close_by_hand_names_the_closer_once` — columns, event with `closed_by`, a claimable
+  closure row, `None` on a closed row.
+- Web: the `closure` case in both stores, `closeNotification`, and the worker's
+  in-place silent replacement (`sw.spec.ts`).
+- `web/e2e/close.spec.ts` covers §6.P 1, 2, 7 and 8, run on 2026-10-28 in Chromium
+  against the self-contained stack of `config/e2e.toml`: passed, as did the rest of the
+  browser suite (8 tests). The second tab signs in on its own, since the app keeps its
+  session per tab, and reads the row's state from the status matrix's accessible name.
+
+Not done: §6.P 3 (a clock-advanced `CloseStale` seen live), §6.P 4 in a real browser
+(lock-screen replacement, `Urgency: very-low` recorded by a relay), §6.P 5 with a second
+person's session (covered with a subscribe-only key), and the T6 cookie test.
+
+### 17.3 Supply chain as shipped
+
+Nothing new: `LoaderCircle` and `CircleCheck` come from `@lucide/vue`, already a
+dependency.

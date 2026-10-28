@@ -19,6 +19,8 @@ libfuzzer-sys = "0.4"
 notify-domain = { path = "../crates/notify-domain" }
 # The feed parse entry point (RFC 0002 T3); it brings reqwest along, unused here.
 notify-feeds-http = { path = "../crates/notify-adapters/feeds-http" }
+# The JSON webhook transforms (RFC 0003 T12).
+notify-transform-cel = { path = "../crates/notify-adapters/transform-cel" }
 url = "2"
 
 # One [[bin]] per target; `cargo fuzz list` reads them from here.
@@ -55,5 +57,11 @@ doc = false
 [[bin]]
 name = "fuzz_feed_parse"
 path = "fuzz_targets/fuzz_feed_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_transform"
+path = "fuzz_targets/fuzz_transform.rs"
 test = false
 doc = false

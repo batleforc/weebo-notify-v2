@@ -288,6 +288,105 @@ impl SearchNotifications {
     }
 }
 
+/// `POST /api/v1/notifications/{id}/close` — a person ends a live notification
+/// (RFC 0004): no revision, a `closure` event naming them, and a silent push that
+/// replaces the alert on browsers nobody is looking at.
+#[derive(Clone)]
+pub struct CloseNotification {
+    notifications: Arc<dyn NotificationRepository>,
+    authorizer: Authorizer,
+    clock: Arc<dyn Clock>,
+    fanout: crate::fanout::Fanout,
+    attribution: crate::attribution::Attribution,
+    metrics: Arc<dyn notify_ports::Metrics>,
+}
+
+impl core::fmt::Debug for CloseNotification {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CloseNotification").finish_non_exhaustive()
+    }
+}
+
+impl CloseNotification {
+    #[must_use]
+    pub fn new(
+        notifications: Arc<dyn NotificationRepository>,
+        authorizer: Authorizer,
+        clock: Arc<dyn Clock>,
+        fanout: crate::fanout::Fanout,
+        attribution: crate::attribution::Attribution,
+        metrics: Arc<dyn notify_ports::Metrics>,
+    ) -> Self {
+        Self {
+            notifications,
+            authorizer,
+            clock,
+            fanout,
+            attribution,
+            metrics,
+        }
+    }
+
+    /// Close, needing `publish` or `manage` in the notification's own channel. An
+    /// unknown id answers as a forbidden one, so ids cannot be probed. Idempotent: a
+    /// closed notification is returned as it stands and nothing is written.
+    pub async fn execute(
+        &self,
+        caller: &Caller,
+        id: NotificationId,
+    ) -> Result<Notification, Failure> {
+        let forbidden = || -> Failure { DomainError::ScopeMissing { scope: "publish" }.into() };
+        let Some(found) = self.notifications.get(id).await? else {
+            return Err(forbidden());
+        };
+        // Closing is weaker than deleting, which `publish` grants; `manage` gains it so
+        // a channel's administrator can end what was left open.
+        // Only a refusal falls through to `manage` and becomes the one `403`; the
+        // store failing stays a `5xx`, and is logged by the transport.
+        match self
+            .authorizer
+            .authorize(caller, &found.channel, Scope::Publish)
+            .await
+        {
+            Ok(_) => {}
+            Err(Failure::Domain(_)) => {
+                match self
+                    .authorizer
+                    .authorize(caller, &found.channel, Scope::Manage)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(Failure::Domain(_)) => return Err(forbidden()),
+                    Err(failure) => return Err(failure),
+                }
+            }
+            Err(failure) => return Err(failure),
+        }
+        let now = self.clock.now();
+        if found.is_gone(now) {
+            return Err(DomainError::NotificationGone.into());
+        }
+
+        let author = self.attribution.author(&caller.principal).await;
+        let Some(cursor) = self.notifications.close(id, now, &author).await? else {
+            // Already closed, by now or by a concurrent writer: as it stands.
+            return Ok(self.notifications.get(id).await?.unwrap_or(found));
+        };
+        tracing::debug!(notification = %id, principal = %caller.principal.reference(), "closed by hand");
+        self.metrics.notification_closed("manual", 1);
+        self.fanout.poke_channel(&found, cursor).await;
+        self.fanout.wake();
+
+        // Re-read: a revision may have landed between the first read and the close.
+        if let Some(closed) = self.notifications.get(id).await? {
+            return Ok(closed);
+        }
+        let mut closed = found;
+        closed.close(now, Some(author));
+        Ok(closed)
+    }
+}
+
 /// `DELETE /api/v1/notifications/{id}` — delete and broadcast a tombstone.
 #[derive(Clone)]
 pub struct DeleteNotification {
@@ -818,6 +917,171 @@ mod tests {
                 .await
                 .is_err(),
             "reading a channel does not entitle you to delete from it"
+        );
+    }
+
+    fn closer(fixture: &Fixture) -> CloseNotification {
+        let fanout = Fanout::new(
+            Arc::new(fixture.store.clone()),
+            Arc::new(fixture.store.clone()),
+            Arc::new(fixture.store.clone()),
+            Arc::new(fixture.store.clone()),
+            Arc::new(fixture.store.clone()),
+            Arc::new(fixture.clock.clone()),
+            4_096,
+        );
+        CloseNotification::new(
+            Arc::new(fixture.store.clone()),
+            Authorizer::new(Arc::new(fixture.store.clone())),
+            Arc::new(fixture.clock.clone()),
+            fanout,
+            crate::attribution::Attribution::new(
+                Arc::new(fixture.store.clone()),
+                Arc::new(fixture.store.clone()),
+            ),
+            Arc::new(notify_ports::NoMetrics),
+        )
+    }
+
+    /// `ci-infra` with alice (publish), a manager, a reader; and `elsewhere` without alice.
+    async fn members(fixture: &Fixture) -> (Principal, Principal) {
+        let manager = Principal::User {
+            id: UserId::generate(),
+        };
+        let reader = Principal::User {
+            id: UserId::generate(),
+        };
+        let mut channel = Channel::dynamic(channel_id("ci-infra"), None).unwrap();
+        for (who, scopes) in [
+            (
+                fixture.alice.clone(),
+                vec![Scope::Publish, Scope::Subscribe],
+            ),
+            (manager.clone(), vec![Scope::Manage]),
+            (reader.clone(), vec![Scope::Subscribe]),
+        ] {
+            channel.upsert_member(Membership::new(who, scopes).unwrap());
+        }
+        notify_ports::ChannelRepository::upsert(&fixture.store, &channel)
+            .await
+            .unwrap();
+        let mut other = Channel::dynamic(channel_id("elsewhere"), None).unwrap();
+        other.upsert_member(Membership::new(reader.clone(), vec![Scope::Publish]).unwrap());
+        fixture.store.seed_channel(other);
+        (manager, reader)
+    }
+
+    #[tokio::test]
+    async fn publish_or_manage_closes_once_and_names_the_closer() {
+        let fixture = fixture();
+        let (manager, _) = members(&fixture).await;
+        let close = closer(&fixture);
+        let first = seed(&fixture, "ci-infra", "CVE").await;
+        let second = seed(&fixture, "ci-infra", "CVE 2").await;
+
+        let closed = close
+            .execute(&Caller::member(fixture.alice.clone()), first.id)
+            .await
+            .unwrap();
+        assert_eq!(closed.state(), State::Closed);
+        assert_eq!(
+            closed.closed_by.as_ref().map(|by| by.principal.clone()),
+            Some(fixture.alice.clone())
+        );
+        let by_manager = close
+            .execute(&Caller::member(manager.clone()), second.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            by_manager.closed_by.map(|by| by.principal),
+            Some(manager.clone())
+        );
+
+        // Again, by somebody else: nothing written, the first closer kept.
+        let pokes = fixture.store.pokes().len();
+        let again = close
+            .execute(&Caller::member(manager), first.id)
+            .await
+            .unwrap();
+        assert_eq!(fixture.store.pokes().len(), pokes);
+        assert_eq!(
+            again.closed_by.map(|by| by.principal),
+            Some(fixture.alice.clone())
+        );
+        let stored = fixture.store.get(first.id).await.unwrap().unwrap();
+        assert!(stored.closed_by.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_reader_a_stranger_and_an_unknown_id_are_one_refusal() {
+        let fixture = fixture();
+        let (_, reader) = members(&fixture).await;
+        let close = closer(&fixture);
+        let notification = seed(&fixture, "ci-infra", "CVE").await;
+
+        let as_reader = close
+            .execute(&Caller::member(reader.clone()), notification.id)
+            .await
+            .unwrap_err();
+        let unknown = close
+            .execute(&Caller::member(reader), NotificationId::generate())
+            .await
+            .unwrap_err();
+        assert_eq!(as_reader.to_string(), unknown.to_string());
+        assert_eq!(as_reader.code(), Some("scope.missing"));
+        let stranger = Principal::User {
+            id: UserId::generate(),
+        };
+        assert!(
+            close
+                .execute(&Caller::member(stranger), notification.id)
+                .await
+                .is_err()
+        );
+        let stored = fixture.store.get(notification.id).await.unwrap().unwrap();
+        assert_eq!(stored.state(), State::Open);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_notification_is_gone() {
+        let fixture = fixture();
+        members(&fixture).await;
+        let notification = seed(&fixture, "ci-infra", "CVE").await;
+        let caller = Caller::member(fixture.alice.clone());
+        fixture
+            .delete
+            .execute(&caller, notification.id)
+            .await
+            .unwrap();
+
+        let refused = closer(&fixture)
+            .execute(&caller, notification.id)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), Some("notification.gone"));
+    }
+
+    #[test]
+    fn scopes_in_lists_the_callers_own() {
+        let alice = Principal::User {
+            id: UserId::generate(),
+        };
+        let bob = Principal::User {
+            id: UserId::generate(),
+        };
+        let mut channel = Channel::dynamic(channel_id("ci-infra"), None).unwrap();
+        channel.upsert_member(
+            Membership::new(alice.clone(), vec![Scope::Publish, Scope::Subscribe]).unwrap(),
+        );
+        channel.upsert_member(Membership::new(bob.clone(), vec![Scope::Manage]).unwrap());
+
+        assert_eq!(
+            Authorizer::scopes_in(&Caller::member(alice), &channel),
+            [Scope::Subscribe, Scope::Publish]
+        );
+        assert_eq!(
+            Authorizer::scopes_in(&Caller::member(bob), &channel),
+            [Scope::Manage]
         );
     }
 }

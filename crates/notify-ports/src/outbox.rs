@@ -120,6 +120,9 @@ pub struct PendingFanout {
     pub thumbnail: Option<AttachmentId>,
     /// How many times the row has been claimed, this claim included.
     pub attempts: u32,
+    /// A hand closure's row (RFC 0004): push [`crate::PushMessage::Closure`] to Web
+    /// Push devices instead of the notification.
+    pub closure: bool,
 }
 
 /// The pending fan-out rows.

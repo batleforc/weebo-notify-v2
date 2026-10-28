@@ -42,6 +42,12 @@ function load(
         shown.push({ title, options });
         return Promise.resolve();
       },
+      getNotifications: ({ tag }: { tag: string }) =>
+        Promise.resolve(
+          shown
+            .filter((one) => one.options.tag === tag)
+            .map((one) => ({ title: one.title })),
+        ),
     },
     clients: {
       claim: () => Promise.resolve(),
@@ -141,6 +147,33 @@ describe("the service worker", () => {
     // Per notification, so five revisions of one incident replace each other on
     // the lock screen instead of stacking (§2.1).
     expect(harness.shown[0]?.options.tag).toBe("notification:ntf_01J");
+  });
+
+  it("replaces the alert in place, silently, when a person closes it", async () => {
+    const alert = pushEvent({
+      kind: "notification",
+      channel: "security",
+      notification_id: "ntf_01J",
+      content: { title: "CVE-2026-1234" },
+    });
+    harness.listeners.get("push")?.(alert.event);
+    await alert.settled();
+
+    const { event, settled } = pushEvent({
+      kind: "closure",
+      channel: "security",
+      notification_id: "ntf_01J",
+      closed_by: "Alice",
+    });
+    harness.listeners.get("push")?.(event);
+    await settled();
+
+    expect(harness.shown).toHaveLength(2);
+    expect(harness.shown[1]?.title).toBe("CVE-2026-1234");
+    expect(harness.shown[1]?.options.body).toBe("Fermée par Alice");
+    expect(harness.shown[1]?.options.tag).toBe("notification:ntf_01J");
+    expect(harness.shown[1]?.options.renotify).toBe(false);
+    expect(harness.shown[1]?.options.silent).toBe(true);
   });
 
   it("says what it knows when the payload did not fit", async () => {

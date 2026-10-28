@@ -181,6 +181,25 @@ describe("folding stream events into the inbox", () => {
     expect(inbox.pendingCount).toBe(0);
   });
 
+  it("marks a row closed on a closure event, with whoever closed it (RFC 0004)", async () => {
+    const inbox = await loadedWith([notification("ntf_1")]);
+
+    inbox.ingest({
+      cursor: "evt_ntf_1_c",
+      audience: "channel",
+      channel_id: "ci-infra",
+      logged_at: "2026-08-01T10:07:00Z",
+      event: "closure",
+      notification_id: "ntf_1",
+      closed_at: "2026-08-01T10:07:00Z",
+      closed_by: { kind: "user", id: "usr_2", display_name: "Bob" },
+    });
+
+    expect(inbox.rows[0]?.head.state).toBe("closed");
+    expect(inbox.rows[0]?.closed_at).toBe("2026-08-01T10:07:00Z");
+    expect(inbox.rows[0]?.closed_by?.display_name).toBe("Bob");
+  });
+
   it("does not let the stream widen a filtered inbox", async () => {
     // `GET /stream` is narrowed by channel only, so the other filters have to be
     // applied here or a filtered view fills up with rows that do not match it.

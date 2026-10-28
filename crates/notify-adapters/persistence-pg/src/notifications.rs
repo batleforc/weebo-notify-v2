@@ -28,7 +28,7 @@ macro_rules! select_notification {
     ($($tail:literal),* $(,)?) => {
         concat!(
             "SELECT n.id, n.channel_id, n.external_id, n.kind, n.last_seq, n.revision_count,
-                    n.created_at, n.closed_at, n.deleted_at, n.ttl, n.cursor_seq,
+                    n.created_at, n.closed_at, n.closed_by, n.deleted_at, n.ttl, n.cursor_seq,
                     r.id AS head_id, r.seq AS head_seq, r.author AS head_author,
                     r.received_at AS head_received_at, n.state AS head_state,
                     r.status AS head_status, r.priority AS head_priority,
@@ -261,7 +261,8 @@ impl NotificationRepository for PgStore {
                 SET last_seq = $2, revision_count = $3, closed_at = $4, ttl = $5,
                     expires_at = $6, cursor_seq = $7, head_seq = $8, state = $9, status = $10,
                     priority = $11, priority_rank = $12, title = $13, body = $14, tags = $15,
-                    group_key = $16, has_actions = $17, search = to_tsvector('simple', $18)
+                    group_key = $16, has_actions = $17, search = to_tsvector('simple', $18),
+                    closed_by = NULL
               WHERE id = $1",
         )
         .bind(notification.id.to_string())
@@ -570,6 +571,76 @@ impl NotificationRepository for PgStore {
         Ok(claimed)
     }
 
+    async fn close(
+        &self,
+        id: NotificationId,
+        at: OffsetDateTime,
+        by: &Author,
+    ) -> PortResult<Option<Cursor>> {
+        let mut transaction = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| fail("notification", error))?;
+
+        // Locked and re-read: of two closes, or a close and a reopening revision,
+        // whichever commits last wins, and a closed row writes nothing.
+        let live: Option<(String, serde_json::Value)> = sqlx::query_as(
+            "SELECT channel_id, ttl FROM notifications
+              WHERE id = $1 AND deleted_at IS NULL AND state <> 'closed'
+                AND (expires_at IS NULL OR expires_at > $2)
+              FOR NO KEY UPDATE",
+        )
+        .bind(id.to_string())
+        .bind(at)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| fail("notification", error))?;
+        let Some((channel, ttl)) = live else {
+            return Ok(None);
+        };
+        let channel = parse("notification.channel", &channel, ChannelId::parse)?;
+        let ttl = from_json::<Ttl>("notification.ttl", ttl)?;
+        let expires_at = ttl.duration().and_then(|duration| {
+            at.checked_add(time::Duration::seconds(
+                i64::try_from(duration.as_secs()).ok()?,
+            ))
+        });
+
+        let cursor = append_event(
+            &mut transaction,
+            &Audience::Channel { id: channel },
+            &EventPayload::Closure {
+                notification_id: id,
+                closed_at: at,
+                closed_by: Some(by.clone()),
+            },
+            at,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE notifications
+                SET state = 'closed', closed_at = $2, closed_by = $3, expires_at = $4,
+                    cursor_seq = $5
+              WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(at)
+        .bind(to_json("notification.closed_by", by)?)
+        .bind(expires_at)
+        .bind(sequence(cursor))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| fail("notification", error))?;
+        crate::outbox::record_closure(&mut transaction, id, cursor).await?;
+
+        transaction
+            .commit()
+            .await
+            .map_err(|error| fail("notification", error))?;
+        Ok(Some(cursor))
+    }
+
     async fn close_stale(
         &self,
         deadlines: &[(ChannelId, OffsetDateTime)],
@@ -642,6 +713,7 @@ impl NotificationRepository for PgStore {
                 &EventPayload::Closure {
                     notification_id: notification,
                     closed_at: at,
+                    closed_by: None,
                 },
                 at,
             )
@@ -961,6 +1033,11 @@ fn hydrate(row: &PgRow) -> PortResult<Notification> {
         closed_at: row
             .try_get("closed_at")
             .map_err(|e| fail("notification", e))?,
+        closed_by: row
+            .try_get::<Option<serde_json::Value>, _>("closed_by")
+            .map_err(|e| fail("notification", e))?
+            .map(|author| from_json::<Author>("notification.closed_by", author))
+            .transpose()?,
         ttl: from_json::<Ttl>("notification.ttl", ttl)?,
         deleted_at: row
             .try_get("deleted_at")

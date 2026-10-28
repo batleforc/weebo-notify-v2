@@ -330,6 +330,9 @@
       "deviceCount": "The count is in people, never in devices (§7.3) · {count} device(s) received it.",
       "createdAt": "Created {at}",
       "closedAt": "· closed {at}",
+      "closedBy": "by {name}",
+      "closeNotification": "Close notification",
+      "closeRefused": "This notification could not be closed",
       "ttl": "· retention {ttl}",
       "noBody": "No body — the title says it all.",
       "timelineHeading": "Timeline · {count} revision(s)"

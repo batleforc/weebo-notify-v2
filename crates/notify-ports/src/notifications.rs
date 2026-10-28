@@ -188,6 +188,17 @@ pub trait NotificationRepository: Send + Sync {
     /// Hard-delete soft-deleted rows once their tombstones have reached clients (§7.2bis).
     async fn purge(&self, deleted_before: OffsetDateTime, limit: u32) -> PortResult<u64>;
 
+    /// Close one live notification by hand (RFC 0004): set `state`, `closed_at`,
+    /// `closed_by` and `expires_at`, append the closure event and one closure
+    /// fan-out row, in one transaction. `None` when it was not live, and nothing is
+    /// written.
+    async fn close(
+        &self,
+        id: NotificationId,
+        at: OffsetDateTime,
+        by: &notify_domain::Author,
+    ) -> PortResult<Option<Cursor>>;
+
     /// Close open lifecycle notifications idle past their channel's deadline (§7.2bis).
     /// Channels with [`CloseAfter::Never`] are absent from `deadlines`. Sets
     /// `state`/`closed_at` and appends a closure event (no revision).

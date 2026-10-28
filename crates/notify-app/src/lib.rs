@@ -14,6 +14,7 @@ pub mod digest;
 pub mod fanout;
 pub mod federate;
 pub mod feeds;
+pub mod ingest;
 pub mod interact;
 pub mod keys;
 pub mod live;
@@ -37,7 +38,8 @@ pub use attribution::Attribution;
 pub use auth::{Authenticate, Credential, DEFAULT_GROUP_SNAPSHOT_TTL};
 pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{
-    CreateChannel, DeleteChannel, ListChannels, ManageMembers, ReadChannel, UpdateChannel,
+    ChannelView, CreateChannel, DeleteChannel, ListChannels, ManageMembers, ReadChannel,
+    UpdateChannel,
 };
 pub use closure::{CloseStale, ClosureReport};
 pub use devices::{DEFAULT_MAX_DEVICES_PER_USER, EnrolDevice, ListDevices, RevokeDevice};
@@ -45,6 +47,7 @@ pub use digest::{DigestReport, SendDndDigests};
 pub use fanout::{DrainFanout, Fanout};
 pub use federate::{ExchangeToken, LivePolicies};
 pub use feeds::{FeedReport, PollFeeds};
+pub use ingest::{IngestError, IngestJson};
 pub use interact::{
     ListInteractions, PostReceipt, ReadReceipts, RecordInteraction, SilenceNotification,
 };
@@ -61,11 +64,11 @@ pub use platform::{
 pub use preferences::{ReadDnd, SetDnd};
 pub use profiles::{ReadAvatar, ReadProfile, SetAvatar, UpdateProfile};
 pub use publish::{
-    PublishNotification, PublishRequest, Published, UpsertNotification, UpsertRequest,
+    PublishNotification, PublishRequest, Published, UpsertNotification, UpsertRequest, Upserted,
 };
 pub use read::{
-    CountUnread, DeleteNotification, GetNotification, InboxFilters, ListInbox, ListRevisions,
-    SearchNotifications,
+    CloseNotification, CountUnread, DeleteNotification, GetNotification, InboxFilters, ListInbox,
+    ListRevisions, SearchNotifications,
 };
 pub use sinks::{DrainReport, DrainSinks, ListDeadLetters, RequeueDeadLetter};
 pub use sync::{ResolveStreamStart, SyncBacklog, SyncRequest, deferred_by};

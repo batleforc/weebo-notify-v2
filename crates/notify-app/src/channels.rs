@@ -32,12 +32,12 @@ impl ListChannels {
         }
     }
 
-    /// List the channels the caller may read.
+    /// List the channels the caller may read, each with the caller's own scopes.
     pub async fn execute(
         &self,
         caller: &Caller,
         page: PageRequest,
-    ) -> Result<Page<Channel>, Failure> {
+    ) -> Result<Page<ChannelView>, Failure> {
         let mut listed = self
             .channels
             .list_for(&caller.principal, &caller.groups, Scope::Subscribe, page)
@@ -50,8 +50,29 @@ impl ListChannels {
                 .items
                 .retain(|channel| readable.contains(&channel.id));
         }
-        Ok(listed)
+        Ok(Page {
+            items: listed
+                .items
+                .into_iter()
+                .map(|channel| ChannelView {
+                    my_scopes: Authorizer::scopes_in(caller, &channel),
+                    channel,
+                })
+                .collect(),
+            next: listed.next,
+        })
     }
+}
+
+/// A channel as `GET /channels` lists it: the channel, and what the caller may do
+/// there (RFC 0004 decision 4).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChannelView {
+    #[serde(flatten)]
+    pub channel: Channel,
+    /// The caller's own scopes here; a control needing one they lack is not shown.
+    pub my_scopes: Vec<Scope>,
 }
 
 /// Wake `member`'s live streams so they re-read what they may read: a membership writes

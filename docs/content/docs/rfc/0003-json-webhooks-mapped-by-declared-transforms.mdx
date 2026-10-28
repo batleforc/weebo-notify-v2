@@ -5,7 +5,7 @@ description: A producer that can only POST its own JSON body publishes through o
 
 | Field       | Value |
 | ----------- | ----- |
-| Status      | In review (2026-10-28, after the six-lens panel; decisions 1 to 15 in §15) |
+| Status      | Implemented (2026-10-28; reviewed by the six-lens panel, decisions 1 to 15 in §15; the delta is §17; the live news.mlab.sh push is still to record) |
 | Short       | JSON webhook transforms |
 | Settles     | How a producer that only speaks "POST my JSON to a URL" becomes notifications: where the mapping is declared, which language expresses it, how conditions on the body set priority, status and state, which channels may use it, and when the raw body is kept |
 | Author      | Max Batleforc &lt;maxleriche.60@gmail.com&gt; |
@@ -846,8 +846,8 @@ and compared with the workspace `Cargo.lock`: seven crates are new, every
 other one (`nom` 7.1.3, `regex` 1.13.1, `serde_json` 1.0.154, `thiserror`,
 `lazy_static`) is already locked at the same version. `cargo audit` on that
 scratch lockfile (RustSec database of 2026-10-28, 1 380 advisories) exits 0.
-It was **not** run on the workspace yet: phase 1 does, and records the result
-here.
+Run on the workspace at phase 1 (2026-10-28): `task audit:cargo` green; the tree
+adds nine crates, not seven (§17.4).
 
 | Dependency | Version | Why this one | Licence | Known CVEs (`cargo audit`) | Maintenance |
 | --- | --- | --- | --- | --- | --- |
@@ -964,14 +964,20 @@ release build, on the author's workstation:
 | a `filter` whose step calls `x.matches(…)` | same | **1.84 s**: the regex is compiled on every call (refused in a step, decision 9) |
 | `matches("(a\|b)*c")` once | a 2 MB string | 18 ms |
 | nested `map` inside `map` | 2 000 × 2 000 | 1.03 s |
+| a `map` whose step is `x + x` (2026-10-28, in the tree) | 12 000 to 48 000 two-letter strings, up to 240 KB; and 3 to 926 strings of 256 B to 64 KiB | 8 to 31 ms, doubling with the count; under 1 ms when the strings are long and few |
+| a `map` whose step is `x + x + …` with 256 terms, accepted before §17.1 row 18 | 3 strings of 64 KiB | **1.63 s**: each `+` recopies the string built so far |
+| `1u + 1u + …` 1 000 terms deep, accepted before §17.1 row 18 | any body | **stack overflow, the process aborts** (a debug build already at about 60 levels on a 2 MiB thread) |
+| depth by shape, straight through `cel` on a 2 MiB thread (2026-10-28) | `+`, nested ternaries, calls, lists, maps, `!`, `&&`, selects, chained `map`/`filter`/`exists`, flat `a ? b : c ? …` | release: no overflow up to 512 levels for any shape but `+` (between 512 and 1 000); the parser refuses past 96 nested brackets or ternaries with an error. Debug: the **parser** overflows at about 12 nested brackets, ternaries or calls, `+` and chained comprehensions evaluate up to 48 and overflow at 64; `&&` builds a balanced tree and stays shallow |
+| `map(x, x)`, `filter(x, x == 0u)`, `exists(x, x == 1u)` (2026-10-28, in the tree) | 10 000 to 120 000 integers, 20 to 240 KB | 3 ms to 33–40 ms each, doubling with the list: linear, the accumulator is not copied per step |
 
 - In the bounded form, a program's cost is the size of what it touches:
   ≤ 16 references, each at most the 256 KiB body, so a concatenation builds
   at most 4 MiB, an `in` scans at most one list, and a comprehension's step
   sees one element at a time.
-  Phase 2 measures the worst accepted request (50 elements, 10 programs, each
-  with 16 `in body.list` tests over a 256 KiB body) and asserts it under 1 s;
-  the figure replaces this sentence.
+  The worst accepted request was measured at phase 2: 50 elements, 7 programs
+  each scanning a 25 000-string list 16 times (`"absent" in body.l`, joined by
+  `||` so none short-circuits), over a 226 KB body: **about 0.7 s** in a release
+  build, under the 1 s a producer waits but with little margin (§17.1 row 6).
 - Memory: the parsed `Value` and its one CEL copy (each about the body's size
   times a small factor), and at most 50 drafts of ≤ 64 KiB
   (`MAX_PAYLOAD_BYTES`); times the number of slots at worst.
@@ -1163,3 +1169,86 @@ None.
 | 2 | `UpsertRequest::create_only` and `Upserted`, with the quota order of decision 11 and every existing caller updated; `Metrics` methods; `IngestJson` with tests against `StaticTransforms`; `compat::json` with its utoipa path, `JSON_BODY_LIMIT`, the `read` parameter, the `PUT` prefix check, wired in `ApiState` with an empty registry (every request `404`); spec and HeyApi client regenerated; the integration and security tests of §14 that need no config, including the T4 timing. Every §7 control lands here, with the route, and the route is unreachable until phase 3 declares a transform. |
 | 3 | Config (`ManagedTransform` with `channels`, `lang`, `update`, §4.3 validation, `reloaded_from`, `unhonoured`), the registry built from it and swapped on `SIGHUP`, `transform try` (decision 14), Prometheus metrics; §6.P 1 to 12. Usable from this phase. |
 | 4 | Docs (`clients/compat.mdx`, ops config reference, metrics, rollout advice, the `raw` privacy note, the CVE example); the live news.mlab.sh test push recorded with its `Content-Type`; status moved to `Implemented` with §17. |
+
+---
+
+## 17. Revision against the tree (2026-10-28)
+
+All four phases shipped on `feat/rfc-0003-json-transforms`, branched from
+`feat/rfc-0002-feeds`. This section records where the tree differs from the text
+above and what the proof observed; the earlier sections are left as reviewed.
+
+### 17.1 Where the tree differs, and why
+
+| # | The RFC says | The tree does | Why |
+| --- | --- | --- | --- |
+| 1 | `UpsertRequest` gains `create_only`, `execute` returns `Upserted` (§6.2) | `UpsertRequest` is unchanged; `UpsertNotification::create_or_skip` returns `Upserted`, and `execute` still returns `Published` | The four existing callers (the `PUT` route, Alertmanager, `PollFeeds`) and the test literals stay as they were. Both share one loop, with the skip read before the quota as decision 11 asks |
+| 2 | `Upserted::Written(Published)` | `Upserted::Written(Box<Published>)` | `Published` is about 1 KB and the other variant 16 bytes (clippy `large_enum_variant`) |
+| 3 | `cel` without the `json` feature (§6.4) | `features = ["regex", "json"]` | A `split` element comes back from CEL as a CEL value; `json` turns it into JSON for the digest and the raw block. Its crates (`serde_json`, `base64`) were already locked |
+| 4 | `notify_transform_*` metric names (§10.1) | `transform_requests_total`, `transform_items_total`, `transform_eval_seconds`, `transform_info` | No family carries a prefix, as RFC 0002 §17.1 row 2 found for feeds |
+| 5 | Request outcomes (§10.1) | adds `internal` (the interpreter panicked, caught by `spawn_blocking`, answered `500`) and `error` (the store failed mid-way) | A closed set needs a label for every way a request ends |
+| 6 | Worst accepted request under 1 s (§10.3) | about 0.7 s in release; the test is `#[ignore]`d in debug builds, where it times out | The 16-reference rule counts `item` too, so "16 `in body.list` tests" per program cannot load; the test uses 16 scans with a literal left side. The margin is thin: a body crafted near that bound evaluates for most of a second, and past one second the caller gets `503` while the core stays busy |
+| 7 | The first evaluation failure per (transform, field) **since the last load** is a `warn` | since the process started | `shortcut:` in `ingest.rs`; clear the set on `SIGHUP` if operators miss the warn of an edited transform |
+| 8 | The boot `info` lines (raw on, no `external_id`, unmanaged channel) | are `doctor` notes, which the startup log prints at `info` | One list for both, as §4.3's "Surfaced in" column already pairs them |
+| 9 | `lang` from RFC 0002's catalogue | the transform reuses `FeedLang` and the feed's `open_label`; the truncation marker is `_(truncated)_` / `_(tronqué)_` | One catalogue |
+| 10 | The fixtures are the bodies "byte-for-byte as received" (§6.P) | `tests/fixtures/mlab-audit.json` and `mlab-news.json` are **reconstructed** from the fields this RFC quotes | The received bodies were never committed; replace both files with the real deliveries when they are at hand |
+| 11 | `transform try` prints the external id | it prints `<id>:<result>`, or the digest when the program gives none | It does not show the digest fallback for a result `ExternalId` refuses (too long); the route does apply it |
+| 12 | The native `PUT` refuses a reserved prefix (decision 15) | it refuses it only after checking `publish` on the channel; without it, the answer is the usual `403` | Refusing first told any key which transform ids exist (code review, 2026-10-28), which the route's single `404` hides (T9) |
+| 13 | §4.3 has no reserved id | `id = "feed"` is refused at load | `feed:` is the external-id namespace of RFC 0002's feeds; a transform of that name could revise or silence a feed's notification in a shared channel |
+| 14 | `notify_transform_info` set per transform | the whole series is replaced once a set is adopted, at boot and after a `SIGHUP` that built | Set per transform, an edited one kept its old hash at `1`, a removed one stayed "loaded", and a `SIGHUP` that failed had already published the set it threw away |
+| 15 | The raw block is cut to fit `MAX_BODY_CHARS` | the mapped body is cut too when it alone fills the room left by the fences and the marker | A body already at the ceiling made the whole exceed it, so the element was refused as `invalid` on every request |
+| 16 | One `UpsertNotification::execute` per element (§4.2) | `publish` is checked once per request; each element goes through `UpsertNotification::upsert_in`, the same loop on the channel already authorised, which refuses a channel authorised for another id | Re-authorising per element read the channel and its memberships 50 more times in a 50-element request (code review, 2026-10-28) |
+| 18 | ≤ 16 references to `body`/`item` per expression (§4.3, decision 9) | the 16 count reads of a comprehension's own variables too (not the macro's `@result`), and an expression may not nest deeper than 32 levels (`MAX_DEPTH`) | Measured while checking the code review's point 10: a step `x + x + …` with 256 terms took 1.63 s on three 64 KiB strings, the terms being free under the old count; and 1 000 chained `1u +` loaded and then overflowed the evaluating thread's stack, aborting the process on the first request. Both are now refused at load. The source's bracket nesting is also capped at 32 before the parser runs, since in a debug build the parser overflows an 8 MiB stack (the main thread that compiles at boot and on `SIGHUP`) at about 60 nested brackets. Brackets inside string literals do not count; the scanner follows `cel`'s literal grammar, checked against its parser: escapes, triple quotes that end only at three quotes, and raw literals (`r"…"`, `br"…"`, any case, `b` first) where a backslash escapes nothing |
+| 17 | `TransformRegistry::ids()` lists the reserved prefixes (§6.3) | no `ids()`: the prefix before the first `:` is looked up with `get` | One map lookup per `PUT` instead of copying every id; an id never holds a `:` |
+
+### 17.2 Proof
+
+`crates/notify-adapters/http-actix/tests/api.rs`, against the in-memory store and
+the real `transform-cel` adapter:
+
+| §6.P | Test | Observed |
+| --- | --- | --- |
+| 1, 2 | `a_json_webhook_is_mapped_and_its_retry_is_silent` | title, status, tags, prefixed external id, fenced raw block; the retry answers `[{notification_id, skipped: true}]` and the notification stays at `last_seq` 1 |
+| 3, 4, 5 | `a_json_webhook_splits_and_decides_by_conditions` | three notifications, the third `high`/`warning` with one `View`; no state; no raw; a CVE of severity high is `lifecycle`, `open`, `high`, with an `ack` after the link; both producers share the channel |
+| 6–10 | `a_json_webhook_refuses_before_evaluating` | `401`; `403` for a listed pair, an unlisted one and an unknown id alike; the unknown-id and unlisted `404` bodies equal byte for byte, the latter with a non-JSON body; `422` not a list, `422` for 51 items, `415` form, `413` over 256 KiB, `422` 200-deep array; nothing written |
+| 11 | `a_backtick_run_in_the_body_cannot_close_the_raw_block` | a label holding three backticks and a heading gets a four-backtick fence |
+| 12 | `the_native_upsert_may_not_claim_a_transforms_prefix` | `PUT …/mlab-news:x` → `422`, nothing written |
+
+`notify-server transform try` was run over the news fixture with a failing `body`
+expression: three elements, each with `! body: No such key: cve`.
+
+Not done: the last step of §6.P 4 (closing with RFC 0004's button, and
+`CloseStale` leaving an open notification in a `close_after = "0"` channel); the
+quota-of-2 integration test of §14 (covered at the use-case level by
+`a_repeated_element_is_skipped_without_spending_quota` and
+`a_create_only_upsert_skips_a_live_external_id_without_spending_quota`); and the
+live news.mlab.sh test push with its `Content-Type` (decision 12).
+
+### 17.3 Threat rows against their tests
+
+| # | Proved by | Gap |
+| --- | --- | --- |
+| T1 | `publish_is_checked_before_anything_is_evaluated`; §6.P 7 | — |
+| T2 | §6.P 8 (`413`, 200-deep array `422`); `shapes_that_cannot_be_split_are_refused_whole` | — |
+| T3 | §6.P 8 (51 items, nothing written) | the 30 000-element array is refused by the same `max_items` check, not tested separately |
+| T4 | `only_bounded_comprehensions_load`, `the_seventeenth_body_reference_is_refused`, `with_every_slot_taken_the_next_request_is_busy_without_evaluating`, `the_worst_accepted_request_evaluates_within_the_deadline` (release), `a_bounded_comprehension_is_linear_in_its_list` (release: 120 000 elements under 250 ms, 4× the elements under 8× the time; refutes the code review's quadratic-accumulator concern), `a_string_step_is_linear_in_its_list` (release), `a_step_may_not_read_its_variable_more_than_sixteen_times`, `an_expression_deeper_than_the_limit_is_refused_and_the_limit_evaluates` (the deepest expression that loads evaluates through `evaluate` on tokio's blocking pool, debug build included), `the_deepest_accepted_expression_of_every_shape_evaluates` (for `+`, ternaries, calls, lists, maps, `&&` and chained comprehensions: compiled on an 8 MiB thread, evaluated on the blocking pool, debug and release), `brackets_inside_a_literal_do_not_count_as_nesting` | no test of an evaluation past 1 s keeping its slot: nothing that loads runs that long in a test |
+| T5 | `matches_needs_a_literal_pattern_that_compiles` | the 200 KiB literal-pattern timing is not asserted |
+| T6 | `a_body_made_of_cel_source_stays_text` | — |
+| T7, T13 | ops docs | none testable in code |
+| T8 | §6.P 3 (`raw = "off"`: no body holds `published_at`) | — |
+| T9 | §6.P 7, 9, 10; `an_unknown_transform_and_an_unlisted_channel_are_one_404_before_evaluation` | — |
+| T10 | `a_failing_field_is_unset_with_a_kind_that_quotes_nothing` (kinds only, on a body value `secret-8124fd73`) | logs are not captured and searched |
+| T11 | §6.P 2; `a_repeated_element_is_skipped_without_spending_quota` | the `update = true` replay that reopens is not tested |
+| T12 | `fuzz_transform`, run 60 s on 2026-10-28: 2 193 651 runs, no crash | — |
+| T14 | §6.P 12; `the_reserved_prefixes_are_the_declared_ids_and_a_colon` | — |
+| T15 | §6.P 2 (the skipped entry is `{notification_id, skipped}` only) | — |
+
+### 17.4 Supply chain as shipped
+
+`cel` 0.15.0 with `regex` and `json`, bringing `antlr4rust` 0.6.0, `borsh` and
+`borsh-derive` 1.8.1, `murmur3` 0.4.1, `pastey` 0.2.3, `typed-arena` 2.0.2, and
+`bit-set` 0.11.1 / `bit-vec` 0.10.1 beside the 0.5.3 / 0.6.3 already locked, which
+the scratch resolution of §8 did not list. `task audit:cargo` is green: `cargo
+audit` finds no advisory and `cargo deny` accepts every licence and source (the
+new duplicates are warnings, as the existing ones are). The `json` feature's
+`base64` resolves to a version already locked.
