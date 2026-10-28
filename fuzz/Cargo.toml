@@ -15,7 +15,6 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-arbitrary = "1"
 # Default features only: no `openapi`, nothing beyond the parsers.
 notify-domain = { path = "../crates/notify-domain" }
 # The feed parse entry point (RFC 0002 T3); it brings reqwest along, unused here.
