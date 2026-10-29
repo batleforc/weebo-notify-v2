@@ -85,6 +85,45 @@ fn validate_fingerprint_keys(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What `[reload] watch` compares the file against: the digest of the content the
+/// running configuration was last read from (ADR-0031).
+///
+/// The path is read anew on every poll, so a ConfigMap's `..data` symlink swap is a
+/// change like any other. A file that fails to load still moves the digest, so a
+/// broken file is reported once rather than on every poll.
+#[derive(Debug, Default)]
+pub(crate) struct FileWatch {
+    digest: Option<[u8; 32]>,
+    unreadable: bool,
+}
+
+impl FileWatch {
+    /// The file as read now: whether it differs from the last read, so warrants a
+    /// reload. An unreadable file is never a reload, and is logged once per outage.
+    pub(crate) fn observe(&mut self, read: std::io::Result<Vec<u8>>) -> bool {
+        use sha2::{Digest as _, Sha256};
+
+        match read {
+            Ok(contents) => {
+                if std::mem::take(&mut self.unreadable) {
+                    tracing::info!("the configuration file is readable again");
+                }
+                let digest: [u8; 32] = Sha256::digest(&contents).into();
+                self.digest.replace(digest) != Some(digest)
+            }
+            Err(error) => {
+                if !std::mem::replace(&mut self.unreadable, true) {
+                    tracing::warn!(
+                        ?error,
+                        "the configuration file cannot be read; keeping the running configuration"
+                    );
+                }
+                false
+            }
+        }
+    }
+}
+
 /// What the persistence adapter is handed.
 pub(crate) const fn pool(database: &Database) -> notify_persistence_pg::PoolSettings {
     notify_persistence_pg::PoolSettings {
@@ -416,5 +455,30 @@ mod tests {
 
         let error = load_isolated(&path).unwrap_err().to_string();
         assert!(error.contains("token_secret"), "{error}");
+    }
+
+    #[test]
+    fn the_watch_reloads_once_per_change_and_never_on_an_unreadable_file() {
+        let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let mut watch = FileWatch::default();
+
+        assert!(
+            watch.observe(Ok(b"a".to_vec())),
+            "the first read is the boot file"
+        );
+        assert!(!watch.observe(Ok(b"a".to_vec())), "same content, no reload");
+        assert!(
+            watch.observe(Ok(b"b".to_vec())),
+            "changed content, one reload"
+        );
+        assert!(!watch.observe(Ok(b"b".to_vec())));
+        assert!(!watch.observe(gone()), "unreadable: keep the running one");
+        assert!(!watch.observe(gone()));
+        assert!(
+            !watch.observe(Ok(b"b".to_vec())),
+            "back as it was: nothing to reload"
+        );
+        assert!(!watch.observe(gone()));
+        assert!(watch.observe(Ok(b"c".to_vec())), "back changed: reload");
     }
 }

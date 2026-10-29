@@ -70,6 +70,23 @@ removals**, logs an error and counts `reconcile_removals_refused_total`. Set
 unset it. Re-declaring a service account a pass disabled re-enables it, but its API
 keys **stay revoked** — issue new ones.
 
+## Reload
+
+```toml
+[reload]
+watch = true                 # WNK_RELOAD__WATCH
+interval = "5s"              # WNK_RELOAD__INTERVAL — at least 1s
+```
+
+The server reads its file every `interval` and, when the content changed, reloads
+exactly as on `SIGHUP`: what a reload adopts is applied, what it cannot is logged, and
+a file that does not load keeps the running configuration. It polls the path rather
+than watching the file, so a Kubernetes ConfigMap update (kubelet swaps the `..data`
+symlink, the file itself is never written) is seen like any edit, within `interval`
+of kubelet's own sync. A file that disappears or cannot be read is logged once and
+changes nothing. `SIGHUP` keeps working; `watch = false` makes it the only reload.
+`[reload]` itself is read at boot — a reload that changes it says a restart is needed.
+
 ## Devices
 
 ```toml
@@ -347,7 +364,8 @@ reach. Accepted range: `1h` to `90d`. Read at boot — a `SIGHUP` does not chang
 ## GitOps: managed versus dynamic
 
 Channels and service accounts can be **declared in the configuration**, and then the
-file is their source of truth. At boot and on `SIGHUP` the server reconciles: it
+file is their source of truth. At boot and on every reload (`SIGHUP`, or the file
+changing — see [Reload](#reload)) the server reconciles: it
 creates what is missing, corrects drift in access, TTL and receipts, and archives or
 deletes what has disappeared from the configuration according to `on_removed`.
 

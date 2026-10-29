@@ -66,6 +66,39 @@ pub struct Config {
 
     /// `[devices]` — how many devices one owner may enrol.
     pub devices: Devices,
+
+    /// `[reload]` — whether the server re-reads its file when it changes (ADR-0031).
+    pub reload: Reload,
+}
+
+/// `[reload]` — re-reading the file without a `SIGHUP` (ADR-0031).
+///
+/// The server reads the file every `interval` and reloads, exactly as on `SIGHUP`,
+/// when its content changed. Polling the path rather than watching the inode is what
+/// sees a ConfigMap update, which swaps a symlink and never writes the file. Read at
+/// boot: changing it takes a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reload {
+    /// Poll the file. `false` leaves `SIGHUP` as the only reload.
+    pub watch: bool,
+    /// How often the file is read and compared.
+    pub interval: HumanDuration,
+}
+
+impl Reload {
+    /// Under a second, the poll is a busy loop on the file for no gain: kubelet's
+    /// ConfigMap sync is a minute behind anyway.
+    const MIN_INTERVAL: u64 = 1;
+}
+
+impl Default for Reload {
+    fn default() -> Self {
+        Self {
+            watch: true,
+            interval: HumanDuration::from_secs_const(5),
+        }
+    }
 }
 
 /// `[devices]` — the ceiling on enrolment.
@@ -1053,6 +1086,9 @@ impl Config {
                 "[admin] oidc_groups — platform admins are wired at boot; restart".to_owned(),
             );
         }
+        if self.reload != file.reload {
+            moved.push("[reload] — the file watch is started at boot; restart".to_owned());
+        }
         if self.auth != file.auth {
             moved.push("[auth] — the authenticator is built at boot".to_owned());
         }
@@ -1109,6 +1145,12 @@ impl Config {
              no device receives nothing"
         );
         self.auth.validate()?;
+        anyhow::ensure!(
+            self.reload.interval.as_secs() >= Reload::MIN_INTERVAL,
+            "[reload] interval = {} is under a second; the file would be read in a busy \
+             loop, and a ConfigMap update is a minute behind anyway",
+            self.reload.interval
+        );
         anyhow::ensure!(
             !self.database.acquire_timeout.is_zero(),
             "[database] acquire_timeout = 0 would fail every request the moment the \
@@ -2163,5 +2205,52 @@ external_id = 'item.id'
             [] as [String; 0],
             "and the reload keeps the groups it booted with"
         );
+    }
+
+    #[test]
+    fn the_file_is_watched_every_five_seconds_unless_told_otherwise() {
+        let reload = parse("").unwrap().reload;
+        assert!(reload.watch);
+        assert_eq!(reload.interval.as_secs(), 5);
+
+        let reload = parse("[reload]\nwatch = false\ninterval = \"1m\"\n")
+            .unwrap()
+            .reload;
+        assert!(!reload.watch);
+        assert_eq!(reload.interval.as_secs(), 60);
+    }
+
+    #[test]
+    fn a_watch_under_a_second_is_refused() {
+        // Even switched off: the server builds its interval either way, and tokio
+        // refuses a zero period.
+        for file in [
+            "[reload]\ninterval = \"0s\"\n",
+            "[reload]\nwatch = false\ninterval = \"0s\"\n",
+        ] {
+            let error = parse(file).unwrap_err().to_string();
+            assert!(error.contains("[reload] interval"), "{error}");
+        }
+        assert!(parse("[reload]\ninterval = \"1s\"\n").is_ok());
+    }
+
+    #[test]
+    fn a_change_to_the_watch_needs_a_restart() {
+        let running = Config::default();
+        let file = Config {
+            reload: Reload {
+                watch: false,
+                ..Reload::default()
+            },
+            ..Config::default()
+        };
+
+        assert!(
+            running
+                .unreloadable(&file)
+                .iter()
+                .any(|line| line.contains("[reload]"))
+        );
+        assert!(running.reloaded_from(file).reload.watch);
     }
 }

@@ -73,12 +73,15 @@ the reloadable sections when its config file changes, exactly as on `SIGHUP`.**
   `WNK_*` env), `load_isolated` and the secret-value checks, and re-exports
   `notify_config::*` so the rest of the crate is unchanged. The env-override
   test stays there.
-- **Hot reload:** the server watches its config file — the directory, so a
-  ConfigMap's `..data` symlink swap counts — debounces the events and runs the
-  same path as `SIGHUP`: re-read, validate, `reloaded_from`, log what
-  `unreloadable` reports, keep the running config if the file fails. `SIGHUP`
-  stays. `[reload] watch = true` by default; `false` keeps the signal-only
-  behaviour.
+- **Hot reload:** the server reads its config file every `[reload] interval`
+  (default `5s`, at least `1s`) and, when the content's SHA-256 changed, runs
+  the same path as `SIGHUP`: re-read, validate, `reloaded_from`, log what
+  `unreloadable` reports, keep the running config if the file fails. It polls
+  the path instead of watching the inode — a ConfigMap update swaps the
+  `..data` symlink and never writes the file — and needs no new dependency. An
+  unreadable or missing file is logged once per outage and never reloads.
+  `SIGHUP` stays. `[reload] watch = true` by default; `false` keeps the
+  signal-only behaviour. `[reload]` is read at boot and joins `unreloadable`.
 - **`admin.oidc_groups`** joins `unreloadable`, so changing it without a
   restart logs the same warning as `[database] url`.
 
@@ -102,8 +105,8 @@ the reloadable sections when its config file changes, exactly as on `SIGHUP`.**
 - The operator links the CEL interpreter to validate transforms.
 - A secret too short or malformed is still only caught when a pod boots, and
   surfaces on the instance as a failed rollout, not as a refused resource.
-- A file watch is one more moving part, and kubelet's ConfigMap sync delay (up
-  to about a minute) still sits in front of it.
+- Every replica reads and hashes its file every `interval`, and a change lands
+  up to `interval` after kubelet's own ConfigMap sync (up to about a minute).
 - Every replica reloads on its own schedule; the existing "a replica holding an
   older config stands aside" rule (`reconcile.rs`, `is_current`) is what keeps
   that safe, and now runs more often.
@@ -114,6 +117,10 @@ the reloadable sections when its config file changes, exactly as on `SIGHUP`.**
   TTL) are copied into `notify-config`, which cannot depend on the
   application layer; a `notify-server` test holds the copies equal. Revisit
   if `notify-app` ever moves those defaults into a crate both can depend on.
+- A reload the file change triggered is journalled as `Trigger::Sighup`, and
+  its log lines say `SIGHUP:`; only an info line tells it apart. A
+  `Trigger::Watch` would touch `notify-app` and the console. Revisit when
+  someone needs to tell the two apart in the journal.
 - No crates.io release; a git tag is the version. Revisit if a third consumer
   appears.
 - Knowing *that* a pod applied a given file is ADR-0032's job (the applied

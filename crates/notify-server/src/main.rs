@@ -207,6 +207,10 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     // The stream queues the signal until the reconcile loop reads it.
     let hangups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup());
 
+    // The watch's baseline, read before the load so a change in between is one reload, not none.
+    let mut watch = config::FileWatch::default();
+    watch.observe(std::fs::read(config_path));
+
     // Read before the subscriber exists, since `[telemetry]` shapes it; failures go to stderr.
     let config = config::load(config_path)?;
     let traces = telemetry::install(config.telemetry.as_ref())?;
@@ -359,6 +363,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             transforms: application.transform_routes.clone(),
             started,
             metrics: application.metrics.clone(),
+            watch,
         },
         hangups,
         store.clone(),
@@ -431,11 +436,15 @@ struct Reconciling {
     started: health::Started,
     /// Where each pass's outcome is counted.
     metrics: std::sync::Arc<dyn notify_ports::Metrics>,
+    /// The file's content as last read, for `[reload] watch` (ADR-0031).
+    watch: config::FileWatch,
 }
 
 impl Reconciling {
     /// Re-read the file and apply it, as §11 asks of `SIGHUP`.
     async fn on_hangup(&mut self) -> bool {
+        // So the next poll compares against what this reload read, not reload it twice.
+        self.watch.observe(std::fs::read(&self.path));
         match config::load(&self.path) {
             Ok(file) => {
                 let pending = self.config.unreloadable(&file);
@@ -971,6 +980,11 @@ async fn reconcile_loop(
     let mut tick = every(RECONCILE_INTERVAL);
     tick.tick().await;
 
+    // `[reload]` is read at boot (it is in `unreloadable`), so this is fixed for the process.
+    let reload = reconciling.config.reload;
+    let mut poll = every(reload.interval.as_duration());
+    poll.tick().await;
+
     loop {
         let metrics = std::sync::Arc::clone(&reconciling.metrics);
         let ok = tokio::select! {
@@ -981,6 +995,18 @@ async fn reconcile_loop(
                     None => std::future::pending().await,
                 }
             } => std::panic::AssertUnwindSafe(reconciling.on_hangup()).catch_unwind().await,
+            // Ready only once a poll finds the file changed; the same path as `SIGHUP`.
+            () = async {
+                loop {
+                    poll.tick().await;
+                    if reconciling.watch.observe(std::fs::read(&reconciling.path)) {
+                        break;
+                    }
+                }
+            }, if reload.watch => {
+                tracing::info!("the configuration file changed; reloading as on SIGHUP");
+                std::panic::AssertUnwindSafe(reconciling.on_hangup()).catch_unwind().await
+            }
             _ = tick.tick() => {
                 std::panic::AssertUnwindSafe(reconciling.pass(notify_app::Trigger::Timer))
                     .catch_unwind()
