@@ -2,6 +2,23 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.0](https://github.com/batleforc/weebo-notify-v2/compare/9d7c5dea1a810987bb672226eff081495f6cbc12..v0.3.0) - 2026-10-29
+#### Features
+- (**auth**) a config-declared key issuer mints keys for managed service accounts (ADR-0033) - ([27bd34a](https://github.com/batleforc/weebo-notify-v2/commit/27bd34ad06efacd65a7230575f4c7713171b84d9)) - Max Batleforc, Claude Opus 5.5
+- (**server**) /healthz reports the applied config and the refused removals (ADR-0032) - ([5eb4da2](https://github.com/batleforc/weebo-notify-v2/commit/5eb4da2490a2f00cabfd87f17881f7c966bb4282)) - Max Batleforc, Claude Opus 5.5
+- (**server**) reload the config file when it changes (ADR-0031) - ([27f8bde](https://github.com/batleforc/weebo-notify-v2/commit/27f8bdebfe439245cad3b32cbe07cb2d526ecfa7)) - Max Batleforc, Claude Opus 5.5
+#### Documentation
+- (**adr**) what a Kubernetes operator needs from notify (ADR-0031 to 0033) - ([9d7c5de](https://github.com/batleforc/weebo-notify-v2/commit/9d7c5dea1a810987bb672226eff081495f6cbc12)) - Max Batleforc, Claude Opus 5.5
+#### Tests
+- (**config**) no credential in the Debug-redaction assertion at all - ([3151f0b](https://github.com/batleforc/weebo-notify-v2/commit/3151f0b779405cbc83597d054770d31d79b18e24)) - Max Batleforc, Claude Opus 5.5
+- (**config**) keep the config out of the Debug-redaction assertion message - ([99d23c6](https://github.com/batleforc/weebo-notify-v2/commit/99d23c6df9447c9100f84af768d9face591c0cbc)) - Max Batleforc, Claude Opus 5.5
+#### Refactoring
+- (**config**) move the config types into notify-config (ADR-0031) - ([130c13b](https://github.com/batleforc/weebo-notify-v2/commit/130c13b6e0305d3a78bd37ae2658bb378827dacb)) - Max Batleforc, Claude Opus 5.5
+#### Style
+- (**config**) rustfmt the Debug-redaction assertion - ([b84191a](https://github.com/batleforc/weebo-notify-v2/commit/b84191a8eda3f8a758daacd21919c74e1534db83)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.2.2](https://github.com/batleforc/weebo-notify-v2/compare/53a962647039e0704fc93d55d868598fcb8d2f3b..v0.2.2) - 2026-10-28
 #### Tests
 - (**web**) cover the inbox view beyond its groups - ([53a9626](https://github.com/batleforc/weebo-notify-v2/commit/53a962647039e0704fc93d55d868598fcb8d2f3b)) - Max Batleforc, Claude Opus 5.5

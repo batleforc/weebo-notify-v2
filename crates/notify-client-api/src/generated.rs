@@ -4163,7 +4163,7 @@ channels are omitted).*/
 
 Rich, multi-channel, multi-device notification platform. Notifications are lifecycle objects: they carry state, accumulate revisions, expose actions and collect receipts.
 
-Version: 0.2.2*/
+Version: 0.3.0*/
 pub struct Client {
     pub(crate) baseurl: String,
     pub(crate) client: reqwest::Client,
@@ -4199,7 +4199,7 @@ impl Client {
 }
 impl ClientInfo<()> for Client {
     fn api_version() -> &'static str {
-        "0.2.2"
+        "0.3.0"
     }
     fn baseurl(&self) -> &str {
         self.baseurl.as_str()

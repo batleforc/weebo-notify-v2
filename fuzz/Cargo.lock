@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "notify-client-api"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "progenitor-client",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "notify-client-core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "notify-domain"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "notify-feeds-http"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "feed-rs",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "notify-ports"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base16ct",
@@ -1287,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "notify-push-http"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "notify-domain",
  "reqwest",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "notify-transform-cel"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "cel",
