@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "notify-client-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "progenitor-client",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "notify-client-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "chrono-tz",

@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.1](https://github.com/batleforc/weebo-notify-v2/compare/da11646bfbbcf72555f1b4bf8275fa06036e858a..v0.3.1) - 2026-10-29
+#### Bug Fixes
+- (**deps**) bump tauri-plugin-updater to 2.14.1 for zip 9 (CVE-2026-115905) - ([2151285](https://github.com/batleforc/weebo-notify-v2/commit/2151285666e28c16556da5ad43b597ec3e1cc788)) - Max Batleforc, Claude Opus 5.5
+- (**deps**) force @intlify/shared 11 under vue-i18n-extensions (GHSA-83rm-6c8r-g728) - ([da11646](https://github.com/batleforc/weebo-notify-v2/commit/da11646bfbbcf72555f1b4bf8275fa06036e858a)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.0](https://github.com/batleforc/weebo-notify-v2/compare/9d7c5dea1a810987bb672226eff081495f6cbc12..v0.3.0) - 2026-10-29
 #### Features
 - (**auth**) a config-declared key issuer mints keys for managed service accounts (ADR-0033) - ([27bd34a](https://github.com/batleforc/weebo-notify-v2/commit/27bd34ad06efacd65a7230575f4c7713171b84d9)) - Max Batleforc, Claude Opus 5.5
