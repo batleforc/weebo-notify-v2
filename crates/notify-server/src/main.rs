@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
 
 /// `notify-server doctor`.
 fn doctor_report(config_path: &std::path::Path) -> anyhow::Result<()> {
-    let config = config::Config::load(config_path)?;
+    let config = config::load(config_path)?;
     if doctor::report(&config) {
         Ok(())
     } else {
@@ -111,12 +111,12 @@ fn doctor_report(config_path: &std::path::Path) -> anyhow::Result<()> {
 /// `notify-server migrate`.
 #[actix_web::main]
 async fn migrate(config_path: &std::path::Path) -> anyhow::Result<()> {
-    let config = config::Config::load(config_path)?;
+    let config = config::load(config_path)?;
     let traces = telemetry::install(config.telemetry.as_ref())?;
 
     let store = notify_persistence_pg::PgStore::connect_with(
         config.database.url.expose(),
-        &config.database.pool(),
+        &config::pool(&config.database),
     )
     .await?;
     let outcome = store.migrate().await;
@@ -208,7 +208,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let hangups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup());
 
     // Read before the subscriber exists, since `[telemetry]` shapes it; failures go to stderr.
-    let config = config::Config::load(config_path)?;
+    let config = config::load(config_path)?;
     let traces = telemetry::install(config.telemetry.as_ref())?;
 
     // Without a SIGHUP handler we keep running, but report it.
@@ -436,7 +436,7 @@ struct Reconciling {
 impl Reconciling {
     /// Re-read the file and apply it, as §11 asks of `SIGHUP`.
     async fn on_hangup(&mut self) -> bool {
-        match config::Config::load(&self.path) {
+        match config::load(&self.path) {
             Ok(file) => {
                 let pending = self.config.unreloadable(&file);
                 let candidate = self.config.reloaded_from(file);

@@ -3317,6 +3317,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "notify-config"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "notify-domain",
+ "notify-ports",
+ "notify-transform-cel",
+ "serde",
+ "serde_json",
+ "toml 1.1.8+spec-1.1.0",
+ "url",
+]
+
+[[package]]
 name = "notify-domain"
 version = "0.2.2"
 dependencies = [
@@ -3599,6 +3613,7 @@ dependencies = [
  "notify-attachments-fs",
  "notify-attachments-s3",
  "notify-avatars",
+ "notify-config",
  "notify-domain",
  "notify-eventbus-pg",
  "notify-feeds-http",

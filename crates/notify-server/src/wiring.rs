@@ -102,8 +102,11 @@ impl Application {
                   each one was handed, which is the only thing this function says"
     )]
     pub(crate) async fn build(config: &Config) -> anyhow::Result<Self> {
-        let store =
-            PgStore::connect_with(config.database.url.expose(), &config.database.pool()).await?;
+        let store = PgStore::connect_with(
+            config.database.url.expose(),
+            &crate::config::pool(&config.database),
+        )
+        .await?;
         // One LISTEN per replica, fanned out in process (see `bus`).
         let (shared, pump) =
             SharedBus::start(Arc::new(PgEventBus::new(store.pool().clone()))).await?;

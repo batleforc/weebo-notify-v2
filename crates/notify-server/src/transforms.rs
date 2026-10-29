@@ -98,7 +98,7 @@ pub(crate) fn try_one(
     id: &str,
     body: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let config = Config::load(config_path)?;
+    let config = crate::config::load(config_path)?;
     let declared = config
         .transforms
         .iter()

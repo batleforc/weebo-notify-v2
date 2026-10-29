@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/notify-domain",
     "crates/notify-ports",
+    "crates/notify-config",
     "crates/notify-app",
     "crates/notify-adapters/http-actix",
     "crates/notify-adapters/persistence-pg",
@@ -50,6 +51,7 @@ publish = false
 # --- Internal crates ---
 notify-domain = { path = "crates/notify-domain" }
 notify-ports = { path = "crates/notify-ports" }
+notify-config = { path = "crates/notify-config" }
 notify-app = { path = "crates/notify-app" }
 notify-http-actix = { path = "crates/notify-adapters/http-actix" }
 notify-persistence-pg = { path = "crates/notify-adapters/persistence-pg" }

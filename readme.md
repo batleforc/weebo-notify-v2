@@ -33,6 +33,7 @@ Log in as `alice`, `bob` or `carol`, password `weebo-dev`.
 | `crates/notify-ports` | Async traits, plus in-memory doubles for testing |
 | `crates/notify-app` | Use cases |
 | `crates/notify-adapters` | HTTP, Postgres, event bus, OIDC, object store, push transports |
+| `crates/notify-config` | `config.toml` types, structural validation, reload split (ADR-0031). No I/O. |
 | `crates/notify-server` | Composition root — one binary |
 | `crates/notify-cli` | The `notify` binary: CLI, and the TUI from M2 |
 | `crates/oidc-mock` | The development identity provider — never published, never deployed |

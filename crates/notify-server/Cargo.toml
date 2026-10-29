@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 base16ct = { workspace = true }
 notify-attachments-fs.workspace = true
+notify-config.workspace = true
 notify-attachments-s3.workspace = true
 notify-avatars.workspace = true
 notify-feeds-http.workspace = true
