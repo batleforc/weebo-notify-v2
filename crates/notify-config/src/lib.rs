@@ -2199,7 +2199,7 @@ external_id = 'item.id'
         let printed = format!("{config:?}");
 
         for secret in ["hunter2", "AKIAEXAMPLE"] {
-            assert!(!printed.contains(secret), "{secret} leaked: {printed}");
+            assert!(!printed.contains(secret), "{secret} leaked into Debug");
         }
         assert!(printed.contains("[redacted]"));
         assert_eq!(
