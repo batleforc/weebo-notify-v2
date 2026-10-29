@@ -1,0 +1,120 @@
+---
+title: ADR-0031 — The config types leave the server crate, and the server reloads its file by itself
+description: A notify-config crate holds the configuration types, their structural validation and the reload classification, so a Kubernetes operator renders and checks config.toml with notify's own rules; the server reloads the reloadable sections when its file changes, without a SIGHUP.
+---
+
+Status: proposed (2026-10-29) · Supersedes: — · Superseded by: —
+
+## Context
+
+Managed channels, service accounts, transforms, trust policies and the
+platform-admin groups exist only in `config.toml`
+(`crates/notify-server/src/config.rs`). The API deliberately refuses machine
+credentials for every admin write, so a Kubernetes operator for weebo-notify
+(the `weebo-notify` repo, built on weebo-operator-kit) drives notify by
+rendering that file from custom resources.
+
+Rendering it needs the types, and refusing a bad resource at `kubectl apply`
+needs the validation. Both live in `notify-server`, which pulls actix, the
+Postgres adapter and the whole runtime. An operator that mirrors the types by
+hand drifts from them on the first new key; one that renders untyped TOML
+learns of a mistake when a pod refuses to boot.
+
+The operator must also know which changes a running server adopts and which
+need a restart, to decide between rewriting the file and rolling the pods.
+That split is `Config::reloaded_from` and `Config::unreloadable`, also private
+to `notify-server`. And `[admin] oidc_groups` is wired once at boot
+(`wiring.rs`) but missing from `unreloadable`, so a `SIGHUP` that changes it is
+silently ignored.
+
+Only `SIGHUP` re-reads the file; the 60 s timer re-applies the copy in memory.
+A process can only send that signal to a pod through `pods/exec`, an RBAC grant
+the operator should never hold, so without a reload of its own every change to
+a channel would roll the pods. The same is true of any deployment that mounts
+its config from a ConfigMap, the Helm chart included (it rolls on
+`checksum/config` today).
+
+The configuration carries secrets (`Secret`, and the `env:`/`file:` references
+`resolve_secret` reads: the database url, the fingerprint keys, SMTP and S3
+credentials, sink secrets). The operator will not write them into a ConfigMap:
+it renders the file without them and the pods receive them as `WNK_*`
+variables or mounted files from labelled Secrets. Whatever validation the
+operator runs therefore never sees their values.
+
+## Decision
+
+**The configuration types, their defaults, their structural validation and the
+reload classification move to a new `notify-config` crate. The server reloads
+the reloadable sections when its config file changes, exactly as on `SIGHUP`.**
+
+- **Dependencies:** `serde`, `toml`, `anyhow`, `url`, `notify-domain`,
+  `notify-ports` (validation names `FingerprintKey` and
+  `AUDIT_RETENTION_FLOOR`) and `notify-transform-cel` (a managed transform
+  that does not compile is a structural error; the adapter is pure Rust and
+  does no I/O). No figment, no runtime wiring. The crate stays
+  `publish = false`; the operator takes it as a git dependency pinned to a
+  notify tag.
+- **Public surface:** the types become `pub`;
+  `Config::from_toml_str(&str)` parses one file with no env layering and no
+  disk read; `reloaded_from` and `unreloadable` are public, so the operator
+  computes its restart hash from the same split the server applies.
+- **Validation in two parts:**
+  - *structural* — shape, ranges, enums, ids, references between sections,
+    feed urls, transform compilation, everything that holds whatever a
+    secret's value is. In `notify-config`, run by the operator at admission
+    and by the server at boot.
+  - *secret values* — the checks that need a secret's bytes: resolving the
+    `env:`/`file:` references (`resolve_secret`), the length of the current
+    and previous fingerprint keys, the length of the filesystem attachment
+    store's `token_secret`. They stay in `notify-server`, after figment
+    has merged the `WNK_*` variables, and run at boot only. A secret absent
+    from the file is never a structural error.
+- **Server side:** `config.rs` keeps the figment `load()` (defaults, file,
+  `WNK_*` env), `load_isolated` and the secret-value checks, and re-exports
+  `notify_config::*` so the rest of the crate is unchanged. The env-override
+  test stays there.
+- **Hot reload:** the server watches its config file — the directory, so a
+  ConfigMap's `..data` symlink swap counts — debounces the events and runs the
+  same path as `SIGHUP`: re-read, validate, `reloaded_from`, log what
+  `unreloadable` reports, keep the running config if the file fails. `SIGHUP`
+  stays. `[reload] watch = true` by default; `false` keeps the signal-only
+  behaviour.
+- **`admin.oidc_groups`** joins `unreloadable`, so changing it without a
+  restart logs the same warning as `[database] url`.
+
+## Consequences
+
+**Positive**
+
+- The operator validates with notify's own code: a resource notify would refuse
+  is refused at admission, and a config change in notify reaches the operator
+  as a dependency bump its round-trip test checks.
+- Channels, service accounts, transforms, trust policies and sinks apply
+  without a restart in every deployment that mounts its config — operator,
+  Helm chart or a plain volume — and no one needs `pods/exec` for it.
+- The operator's "roll or rewrite" decision is notify's, not a copy of it.
+- Secret values never reach the admission webhook.
+
+**Negative**
+
+- The config types become a contract with a second consumer: renaming a key is
+  now a change the operator has to follow.
+- The operator links the CEL interpreter to validate transforms.
+- A secret too short or malformed is still only caught when a pod boots, and
+  surfaces on the instance as a failed rollout, not as a refused resource.
+- A file watch is one more moving part, and kubelet's ConfigMap sync delay (up
+  to about a minute) still sits in front of it.
+- Every replica reloads on its own schedule; the existing "a replica holding an
+  older config stands aside" rule (`reconcile.rs`, `is_current`) is what keeps
+  that safe, and now runs more often.
+
+**Accepted debt**
+
+- Two defaults owned by `notify-app` (the device cap and the group snapshot
+  TTL) are copied into `notify-config`, which cannot depend on the
+  application layer; a `notify-server` test holds the copies equal. Revisit
+  if `notify-app` ever moves those defaults into a crate both can depend on.
+- No crates.io release; a git tag is the version. Revisit if a third consumer
+  appears.
+- Knowing *that* a pod applied a given file is ADR-0032's job (the applied
+  digest in `/healthz`); until then the operator can only wait.

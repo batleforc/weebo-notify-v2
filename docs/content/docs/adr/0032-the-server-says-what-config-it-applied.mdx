@@ -1,0 +1,40 @@
+---
+title: ADR-0032 — The server says what config it applied
+description: /healthz reports the digest of the config applied last and the removals the guard refused, so whoever rewrote the file can tell when it took effect.
+---
+
+Status: proposed (2026-10-29) · Supersedes: — · Superseded by: —
+
+## Context
+
+Since ADR-0031 the server reloads its config file by itself. Whoever rewrote
+the file — a Kubernetes operator, typically — still cannot tell when a replica
+took the change: `/admin/reconciliation` is aggregate, in-memory, and needs an
+admin OIDC token. And a removal refused by the `max_removals` guard shows up
+only in a log line and the `reconcile_removals_refused_total` metric, so a
+deleted resource would look gone while its channel stays managed.
+
+## Decision
+
+**`/healthz` reports the digest of the config the replica applied last and the
+ids of the removals the guard refused in that pass.** `/healthz` stays
+unauthenticated: a digest and object ids are not secrets, and it is never
+routed through the ingress.
+
+## Consequences
+
+**Positive**
+
+- The operator confirms a change pod by pod, and keeps a finalizer on a
+  resource whose removal was refused.
+
+**Negative**
+
+- Refused ids on an unauthenticated endpoint leak channel and account ids to
+  anyone who can reach the pod port; the NetworkPolicy is what keeps that
+  in-cluster.
+
+**Accepted debt**
+
+- No per-object reconcile result (a binding waiting on a first login still
+  looks applied). Revisit if the operator needs to report it.
