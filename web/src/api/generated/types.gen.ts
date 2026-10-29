@@ -220,6 +220,34 @@ export type ApiKeyOwner = {
 export type ApiKeyPrefix = string;
 
 /**
+ * The configuration file this replica applied last (ADR-0032), so whoever rewrote
+ * it can tell, pod by pod, when the change took effect.
+ *
+ * Advanced only by a reconcile pass that ran: a file loaded but not yet applied (a
+ * replica that stood aside, or lost the lock) still shows the one before it.
+ */
+export type AppliedConfig = {
+    /**
+     * When this replica loaded that file; `null` before the first pass.
+     */
+    applied_at?: string | null;
+    /**
+     * Lowercase hex SHA-256 of the file's bytes, exactly as read. `null` with no
+     * file (an env-only deployment), or before the first pass.
+     */
+    digest?: string | null;
+    /**
+     * What that file changes that only a restart applies (`[database] url`,
+     * `[admin] oidc_groups`…), one line each; empty when nothing is pending.
+     */
+    pending_restart: Array<string>;
+    /**
+     * The removals the `max_removals` guard refused in the last pass that ran.
+     */
+    refused: Refused;
+};
+
+/**
  * An uploaded attachment, referenced by a payload rather than embedded (§2.3).
  */
 export type AttachmentId = string;
@@ -997,6 +1025,10 @@ export type GroupBinding = {
  * Liveness answer.
  */
 export type Health = {
+    /**
+     * The configuration this replica applied last.
+     */
+    config: AppliedConfig;
     /**
      * Always `"ok"` — the process answered, which is the whole question.
      */
@@ -1814,6 +1846,20 @@ export type RecordedInteraction = {
      */
     outcome: string;
     record?: InteractionRecord | null;
+};
+
+/**
+ * The ids of the removals a pass refused, which `/healthz` reports (ADR-0032).
+ */
+export type Refused = {
+    /**
+     * Managed channels that left the file and are still managed.
+     */
+    channels: Array<string>;
+    /**
+     * Managed service accounts that left the file and are still enabled.
+     */
+    service_accounts: Array<string>;
 };
 
 /**

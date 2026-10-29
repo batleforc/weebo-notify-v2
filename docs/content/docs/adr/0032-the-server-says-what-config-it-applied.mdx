@@ -21,6 +21,20 @@ ids of the removals the guard refused in that pass.** `/healthz` stays
 unauthenticated: a digest and object ids are not secrets, and it is never
 routed through the ingress.
 
+- `config.digest` is the lowercase hex SHA-256 of the file's bytes as
+  `config::load` parsed them (one read, so it is never of a later write), and
+  `null` without a file; `config.applied_at` is when that file was loaded.
+- Both advance only when a reconcile pass runs with that file. A file loaded
+  but not applied — the replica stood aside, lost the lock, or the reload's
+  trust policies did not build — leaves the previous digest, as does a file
+  that fails to load.
+- `config.pending_restart` is `unreloadable` of that file against the
+  configuration the replica **booted** with, not the running one: the running
+  one has already adopted trust-policy issuers no verifier was built for.
+- `config.refused` is `{ channels, service_accounts }` from the last pass that
+  ran, and empties on the next one the guard allows.
+- In memory, per replica; no database call, so `/healthz` stays a liveness probe.
+
 ## Consequences
 
 **Positive**

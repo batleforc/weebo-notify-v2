@@ -309,6 +309,25 @@ display priority order (§2.3).*/
             Ok(Self(value.to_string()))
         }
     }
+    /**The configuration file this replica applied last (ADR-0032), so whoever rewrote
+it can tell, pod by pod, when the change took effect.
+
+Advanced only by a reconcile pass that ran: a file loaded but not yet applied (a
+replica that stood aside, or lost the lock) still shows the one before it.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AppliedConfig {
+        ///When this replica loaded that file; `null` before the first pass.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub applied_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+        /**Lowercase hex SHA-256 of the file's bytes, exactly as read. `null` with no
+file (an env-only deployment), or before the first pass.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub digest: ::std::option::Option<::std::string::String>,
+        /**What that file changes that only a restart applies (`[database] url`,
+`[admin] oidc_groups`…), one line each; empty when nothing is pending.*/
+        pub pending_restart: ::std::vec::Vec<::std::string::String>,
+        pub refused: Refused,
+    }
     ///An uploaded attachment, referenced by a payload rather than embedded (§2.3).
     #[derive(
         ::serde::Deserialize,
@@ -1606,6 +1625,7 @@ Resolved from the token's `groups` claim at request time, never stored per user.
     ///Liveness answer.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Health {
+        pub config: AppliedConfig,
         ///Always `"ok"` — the process answered, which is the whole question.
         pub status: ::std::string::String,
         ///Version of the running binary, to tell replicas apart during a rolling update.
@@ -3217,6 +3237,14 @@ grant nothing until that person's first login (§14.1).*/
         pub outcome: ::std::string::String,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub record: ::std::option::Option<InteractionRecord>,
+    }
+    ///The ids of the removals a pass refused, which `/healthz` reports (ADR-0032).
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Refused {
+        ///Managed channels that left the file and are still managed.
+        pub channels: ::std::vec::Vec<::std::string::String>,
+        ///Managed service accounts that left the file and are still enabled.
+        pub service_accounts: ::std::vec::Vec<::std::string::String>,
     }
     ///One immutable step of a notification's life.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]

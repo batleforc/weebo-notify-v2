@@ -86,6 +86,9 @@ symlink, the file itself is never written) is seen like any edit, within `interv
 of kubelet's own sync. A file that disappears or cannot be read is logged once and
 changes nothing. `SIGHUP` keeps working; `watch = false` makes it the only reload.
 `[reload]` itself is read at boot — a reload that changes it says a restart is needed.
+`/healthz` reports the digest of the file each replica applied last, what it would
+need a restart for, and the removals the guard refused
+([high availability](/docs/ops/high-availability)).
 
 ## Devices
 

@@ -33,7 +33,26 @@ pub(crate) struct ReconcileReport {
     pub journalled: usize,
     /// Removals this pass would have made and refused, because there were more of
     /// them than `[reconcile] max_removals` allows (see [`Reconciler::execute`]).
-    pub refused: usize,
+    pub refused: Refused,
+}
+
+/// The ids of the removals a pass refused, which `/healthz` reports (ADR-0032).
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+pub(crate) struct Refused {
+    /// Managed channels that left the file and are still managed.
+    pub channels: Vec<String>,
+    /// Managed service accounts that left the file and are still enabled.
+    pub service_accounts: Vec<String>,
+}
+
+impl Refused {
+    pub(crate) fn len(&self) -> usize {
+        self.channels
+            .len()
+            .saturating_add(self.service_accounts.len())
+    }
 }
 
 impl ReconcileReport {
@@ -299,7 +318,16 @@ impl Reconciler {
                  [reconcile] allow_mass_removal = true if this is intended"
             );
             self.metrics.reconcile_removals_refused();
-            report.refused = removals;
+            report.refused = Refused {
+                channels: departed_channels
+                    .iter()
+                    .map(|channel| channel.id.as_str().to_owned())
+                    .collect(),
+                service_accounts: departed_accounts
+                    .iter()
+                    .map(|account| account.id.as_str().to_owned())
+                    .collect(),
+            };
         } else {
             let dropped = self.drop_departed(config, departed_channels).await?;
             let retired = self.retire_departed_accounts(departed_accounts).await?;
@@ -1321,7 +1349,15 @@ mod tests {
         let report = reconciler.execute(&truncated).await.unwrap();
 
         assert_eq!(report.removed, 0, "the destructive half is refused");
-        assert_eq!(report.refused, 7);
+        assert_eq!(report.refused.len(), 7);
+        // Named, so whoever deleted them keeps a finalizer on each (ADR-0032).
+        let mut refused = report.refused.channels.clone();
+        refused.sort();
+        assert_eq!(
+            refused,
+            (1..8).map(|n| format!("ch-{n}")).collect::<Vec<_>>()
+        );
+        assert_eq!(report.refused.service_accounts, [] as [String; 0]);
         assert_eq!(
             ChannelRepository::list_managed(&store).await.unwrap().len(),
             9,
@@ -1343,7 +1379,7 @@ mod tests {
         truncated.reconcile.allow_mass_removal = true;
         let report = reconciler.execute(&truncated).await.unwrap();
         assert_eq!(report.removed, 7);
-        assert_eq!(report.refused, 0);
+        assert_eq!(report.refused.len(), 0);
     }
 
     #[tokio::test]
@@ -1356,7 +1392,7 @@ mod tests {
         let report = reconciler.execute(&config(channels(1))).await.unwrap();
 
         assert_eq!(report.removed, 3, "renaming a few channels is ordinary");
-        assert_eq!(report.refused, 0);
+        assert_eq!(report.refused.len(), 0);
     }
 
     #[tokio::test]

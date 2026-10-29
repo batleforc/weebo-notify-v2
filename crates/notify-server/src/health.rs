@@ -3,14 +3,20 @@
 //! `/readyz` is bounded by [`PROBE_TIMEOUT`], skips the database when the pool is saturated
 //! (a waiting probe would drain the whole fleet under load), and, being unauthenticated,
 //! reports a fixed word while the real error goes to the log.
+//! `/healthz` also says which configuration file this replica applied (ADR-0032), from
+//! memory only, so it stays as cheap as liveness has to be.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{PoisonError, RwLock};
 
 use actix_web::{HttpResponse, Responder, web};
 use notify_persistence_pg::{PgStore, Probe};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use utoipa::ToSchema;
+
+use crate::reconcile::Refused;
 
 /// Liveness answer.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -21,6 +27,51 @@ pub(crate) struct Health {
     /// Version of the running binary, to tell replicas apart during a rolling update.
     #[schema(example = "0.1.0")]
     pub version: String,
+    /// The configuration this replica applied last.
+    pub config: AppliedConfig,
+}
+
+/// The configuration file this replica applied last (ADR-0032), so whoever rewrote
+/// it can tell, pod by pod, when the change took effect.
+///
+/// Advanced only by a reconcile pass that ran: a file loaded but not yet applied (a
+/// replica that stood aside, or lost the lock) still shows the one before it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub(crate) struct AppliedConfig {
+    /// Lowercase hex SHA-256 of the file's bytes, exactly as read. `null` with no
+    /// file (an env-only deployment), or before the first pass.
+    #[schema(example = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")]
+    pub digest: Option<String>,
+    /// When this replica loaded that file; `null` before the first pass.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub applied_at: Option<OffsetDateTime>,
+    /// What that file changes that only a restart applies (`[database] url`,
+    /// `[admin] oidc_groups`…), one line each; empty when nothing is pending.
+    pub pending_restart: Vec<String>,
+    /// The removals the `max_removals` guard refused in the last pass that ran.
+    pub refused: Refused,
+}
+
+/// The [`AppliedConfig`] `/healthz` shows, written by the reconcile loop.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConfigStatus(Arc<RwLock<AppliedConfig>>);
+
+impl ConfigStatus {
+    /// A pass applied `loaded` and refused `refused`: show both.
+    pub(crate) fn applied(&self, loaded: &AppliedConfig, refused: Refused) {
+        // A writer that panicked left a whole value behind: nothing to repair.
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = AppliedConfig {
+            refused,
+            ..loaded.clone()
+        };
+    }
+
+    fn get(&self) -> AppliedConfig {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// Readiness answer: the overall verdict plus per-dependency detail.
@@ -176,10 +227,11 @@ async fn metrics(metrics: web::Data<std::sync::Arc<dyn notify_ports::Metrics>>) 
     tag = "admin",
     responses((status = 200, description = "The process is alive", body = Health))
 )]
-async fn healthz() -> impl Responder {
+async fn healthz(config: web::Data<ConfigStatus>) -> impl Responder {
     HttpResponse::Ok().json(Health {
         status: "ok".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
+        config: config.get(),
     })
 }
 
@@ -213,7 +265,12 @@ mod tests {
     #[actix_web::test]
     async fn liveness_answers_without_touching_a_dependency() {
         // Must answer during a database outage.
-        let app = test::init_service(App::new().configure(configure)).await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(ConfigStatus::default()))
+                .configure(configure),
+        )
+        .await;
 
         let health: Health = test::call_and_read_body_json(
             &app,
@@ -223,6 +280,80 @@ mod tests {
 
         assert_eq!(health.status, "ok");
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            health.config,
+            AppliedConfig::default(),
+            "nothing applied yet"
+        );
+    }
+
+    fn loaded(digest: &str) -> AppliedConfig {
+        AppliedConfig {
+            digest: Some(digest.to_owned()),
+            applied_at: Some(OffsetDateTime::UNIX_EPOCH),
+            ..AppliedConfig::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn only_a_pass_that_ran_advances_what_is_shown() {
+        let status = ConfigStatus::default();
+        let refused = Refused {
+            channels: vec!["ci-infra".to_owned()],
+            service_accounts: vec!["bot".to_owned()],
+        };
+
+        // Boot: loaded, then applied with a refusal.
+        status.applied(&loaded("aa"), refused.clone());
+        assert_eq!(status.get().digest.as_deref(), Some("aa"));
+        assert_eq!(status.get().refused, refused);
+
+        // A reload loaded `bb`, but the pass stood aside (or a reload failed to
+        // load): nothing calls `applied`, so `aa` and its refusal are still shown.
+        assert_eq!(status.get().digest.as_deref(), Some("aa"));
+        assert_eq!(status.get().refused, refused);
+
+        // The next pass that runs applies `bb` and clears the refusal.
+        status.applied(&loaded("bb"), Refused::default());
+        assert_eq!(status.get().digest.as_deref(), Some("bb"));
+        assert_eq!(status.get().refused, Refused::default());
+    }
+
+    #[actix_web::test]
+    async fn healthz_reports_the_applied_config_in_the_shape_the_operator_reads() {
+        let status = ConfigStatus::default();
+        status.applied(
+            &AppliedConfig {
+                pending_restart: vec!["[database] url — the pool is connected at boot".to_owned()],
+                ..loaded("aa")
+            },
+            Refused {
+                channels: vec!["ci-infra".to_owned()],
+                service_accounts: Vec::new(),
+            },
+        );
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(status))
+                .configure(configure),
+        )
+        .await;
+
+        let body: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get().uri("/healthz").to_request(),
+        )
+        .await;
+
+        assert_eq!(
+            body["config"],
+            serde_json::json!({
+                "digest": "aa",
+                "applied_at": "1970-01-01T00:00:00Z",
+                "pending_restart": ["[database] url — the pool is connected at boot"],
+                "refused": { "channels": ["ci-infra"], "service_accounts": [] },
+            })
+        );
     }
 
     #[actix_web::test]

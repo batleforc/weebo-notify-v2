@@ -16,10 +16,25 @@ const ENV_PREFIX: &str = "WNK_";
 
 /// Read the layered configuration; a missing file is fine (env-only deployments are supported).
 pub(crate) fn load(path: &Path) -> anyhow::Result<Config> {
+    load_digested(path).map(|(config, _)| config)
+}
+
+/// [`load`], and the SHA-256 of the file's bytes exactly as they were parsed (`None`
+/// with no file), which `/healthz` reports so a renderer can match its own (ADR-0032).
+pub(crate) fn load_digested(path: &Path) -> anyhow::Result<(Config, Option<[u8; 32]>)> {
+    use sha2::{Digest as _, Sha256};
+
     let mut figment = Figment::from(Serialized::defaults(Config::default()));
+    let mut digest = None;
 
     if path.exists() {
-        figment = figment.merge(Toml::file(path));
+        // Read once, so the digest is of the bytes parsed and not of a later write.
+        let bytes = std::fs::read(path)
+            .map_err(|error| anyhow::anyhow!("{} cannot be read: {error}", path.display()))?;
+        digest = Some(Sha256::digest(&bytes).into());
+        let text = String::from_utf8(bytes)
+            .map_err(|error| anyhow::anyhow!("{} is not UTF-8: {error}", path.display()))?;
+        figment = figment.merge(Toml::string(&text));
     } else {
         tracing::warn!(path = %path.display(), "no configuration file; using defaults and WNK_*");
     }
@@ -27,11 +42,16 @@ pub(crate) fn load(path: &Path) -> anyhow::Result<Config> {
     // `split("__")` maps `WNK_OIDC__ISSUER` to `[oidc] issuer`, for every key (§11).
     let config: Config = figment
         .merge(Env::prefixed(ENV_PREFIX).split("__"))
-        .extract()?;
+        .extract()
+        // `Toml::string` does not name the file the way `Toml::file` did.
+        .map_err(|error| match digest {
+            Some(_) => anyhow::anyhow!("{}: {error}", path.display()),
+            None => error.into(),
+        })?;
 
     config.validate()?;
     validate_secrets(&config)?;
-    Ok(config)
+    Ok((config, digest))
 }
 
 /// The checks that need a secret's value, so cannot run where the file is
@@ -480,5 +500,39 @@ mod tests {
         );
         assert!(!watch.observe(gone()));
         assert!(watch.observe(Ok(b"c".to_vec())), "back changed: reload");
+    }
+
+    #[test]
+    fn the_digest_is_of_the_bytes_parsed_and_absent_without_a_file() {
+        use sha2::{Digest as _, Sha256};
+
+        let contents = "[reconcile]\nmax_removals = 7\n";
+        let path = with_config("digest", contents);
+        let mut loaded = None;
+        #[expect(
+            clippy::result_large_err,
+            reason = "the signature belongs to figment::Jail"
+        )]
+        figment::Jail::expect_with(|_| {
+            loaded = Some((
+                load_digested(&path).unwrap(),
+                load_digested(Path::new("/nonexistent/config.toml")).unwrap(),
+            ));
+            Ok(())
+        });
+        let ((config, digest), (_, none)) = loaded.unwrap();
+
+        assert_eq!(config.reconcile.max_removals, 7);
+        // What `sha256sum config.toml` prints, so the operator's hash matches.
+        assert_eq!(digest, Some(Sha256::digest(contents).into()));
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn a_parse_error_still_names_the_file() {
+        let path = with_config("named", "[reconcile]\nmax_removals = \"many\"\n");
+        let error = load_isolated(&path).unwrap_err().to_string();
+        assert!(error.contains("config.toml"), "{error}");
+        assert!(error.contains("max_removals"), "{error}");
     }
 }

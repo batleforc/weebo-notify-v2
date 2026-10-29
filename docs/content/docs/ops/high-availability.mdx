@@ -82,6 +82,32 @@ never returns a raw database error (it is logged instead), and does not queue be
 a saturated pool — a busy pool is reported healthy so a burst cannot take every
 replica out of the load balancer at once. A `SIGHUP` received during boot is queued,
 not fatal.
+
+`/healthz` also says which configuration file the replica **applied** (ADR-0032), from
+memory, with no database call:
+
+```json
+{
+  "status": "ok",
+  "version": "0.3.0",
+  "config": {
+    "digest": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "applied_at": "2026-10-29T14:02:11Z",
+    "pending_restart": ["[database] url — the pool is connected at boot"],
+    "refused": { "channels": ["ci-infra"], "service_accounts": [] }
+  }
+}
+```
+
+`digest` is the SHA-256 of the file's bytes as read — what `sha256sum config.toml`
+prints — and `null` without a file (env-only) or before the first pass; `applied_at` is
+when the replica loaded it. Both move only when a reconcile pass runs with that file:
+a replica that stood aside, lost the lock or failed to load the new file still shows
+the one before. `pending_restart` lists what the file changes that only a restart
+applies, against the configuration the replica booted with. `refused` names the
+removals the `max_removals` guard refused in the last pass, and empties on the next
+pass that is allowed. Those ids are why `/healthz`, like `/metrics`, must stay
+[in-cluster](/docs/ops/hardening#metrics-is-private-only-because-of-how-you-route).
 On `SIGTERM` a replica **drains** — stops accepting connections, closes its streams
 cleanly so clients reconnect elsewhere, and finishes in-flight requests within the
 termination grace period.

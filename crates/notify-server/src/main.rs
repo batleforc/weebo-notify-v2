@@ -212,7 +212,12 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     watch.observe(std::fs::read(config_path));
 
     // Read before the subscriber exists, since `[telemetry]` shapes it; failures go to stderr.
-    let config = config::load(config_path)?;
+    let (config, digest) = config::load_digested(config_path)?;
+    let loaded = health::AppliedConfig {
+        digest: digest.map(|digest| base16ct::lower::encode_string(&digest)),
+        applied_at: Some(OffsetDateTime::now_utc()),
+        ..health::AppliedConfig::default()
+    };
     let traces = telemetry::install(config.telemetry.as_ref())?;
 
     // Without a SIGHUP handler we keep running, but report it.
@@ -252,6 +257,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         notify_persistence_pg::PgLeaderElection::new(application.store.pool().clone()),
     );
     let started = health::Started::default();
+    let config_status = health::ConfigStatus::default();
 
     if application.routes.len() > 0 {
         // Counts and kinds only: URLs key the sink secrets.
@@ -277,6 +283,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
     let state = actix_web::web::Data::new(application.state);
     let streams = std::sync::Arc::clone(&state.streams);
     let bus = application.pokes.clone();
+    let config_status_data = actix_web::web::Data::new(config_status.clone());
     let readiness = actix_web::web::Data::new(health::Dependencies::new(
         application.store.clone(),
         application.transports.names(),
@@ -303,6 +310,7 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
             .openapi(openapi::base())
             .app_data(state.clone())
             .app_data(readiness.clone())
+            .app_data(config_status_data.clone())
             .app_data(exporter.clone())
             .map(|app| {
                 app.wrap(cors)
@@ -352,7 +360,10 @@ async fn run(config_path: &std::path::Path) -> anyhow::Result<()> {
         Reconciling {
             reconciler: application.reconciler,
             log: application.reconciliation_log,
+            boot: config.clone(),
             config,
+            loaded,
+            status: config_status,
             path: config_path.to_path_buf(),
             policies: application.policies,
             election,
@@ -416,6 +427,13 @@ struct Reconciling {
     reconciler: reconcile::Reconciler,
     log: notify_app::ReconciliationLog,
     config: config::Config,
+    /// The configuration as booted, which `pending_restart` is measured against:
+    /// the running one has adopted new trust-policy issuers no verifier was built for.
+    boot: config::Config,
+    /// The file `config` was last loaded from, shown once a pass applies it (ADR-0032).
+    loaded: health::AppliedConfig,
+    /// What `/healthz` shows.
+    status: health::ConfigStatus,
     /// The path, re-read on `SIGHUP`.
     path: std::path::PathBuf,
     /// The set the token exchange consults, swapped on reload (§5.3).
@@ -445,9 +463,9 @@ impl Reconciling {
     async fn on_hangup(&mut self) -> bool {
         // So the next poll compares against what this reload read, not reload it twice.
         self.watch.observe(std::fs::read(&self.path));
-        match config::load(&self.path) {
-            Ok(file) => {
-                let pending = self.config.unreloadable(&file);
+        match config::load_digested(&self.path) {
+            Ok((file, digest)) => {
+                let pending = self.boot.unreloadable(&file);
                 let candidate = self.config.reloaded_from(file);
                 // Built before the swap: the pass journals the file's policies, so adopting a
                 // file whose policies are not enforced would audit a removal that never took
@@ -465,10 +483,16 @@ impl Reconciling {
                     }
                 };
                 // Named before anything is applied, so the operator learns it was ignored.
-                for pending in pending {
+                for pending in &pending {
                     tracing::warn!(%pending, "changed in the file, not adopted by a reload");
                 }
                 self.config = candidate;
+                self.loaded = health::AppliedConfig {
+                    digest: digest.map(|digest| base16ct::lower::encode_string(&digest)),
+                    applied_at: Some(OffsetDateTime::now_utc()),
+                    pending_restart: pending,
+                    refused: reconcile::Refused::default(),
+                };
                 // Swapped before the pass, so the journal dates the change correctly (§13).
                 self.policies.adopt(policies);
 
@@ -583,7 +607,8 @@ impl Reconciling {
             Ok(report) => {
                 // Refused removals stay in the snapshot, so `is_current` answers false on
                 // every replica: still owed, or the timer would stand aside until a SIGHUP.
-                self.owed = report.refused > 0;
+                self.owed = report.refused.len() > 0;
+                self.status.applied(&self.loaded, report.refused.clone());
                 self.started.finish();
                 // Recorded only on success, keeping the last good pass on the console.
                 self.log
@@ -592,7 +617,7 @@ impl Reconciling {
                     channels = report.channels,
                     accounts = report.accounts,
                     removed = report.removed,
-                    refused = report.refused,
+                    refused = report.refused.len(),
                     journalled = report.journalled,
                     ?trigger,
                     "reconcile pass complete"
