@@ -4,22 +4,6 @@
 # says what takes it back out.
 
 [advisories]
-ignore = [
-    # RUSTSEC-2026-0367, -0368, -0369 — `zip` < 9: extraction keeps SUID/SGID bits,
-    # follows attacker-chosen symlinks, and applies permissions through them.
-    #
-    # `zip` 4.6.1 is pulled only by `tauri-plugin-updater` 2.14.0 (the latest), only
-    # on Windows, to unpack the update it just downloaded. `download()` checks the
-    # minisign signature against the key in tauri.conf.json before returning the
-    # bytes, and `download_and_install` (lib.rs) extracts only those. A hostile
-    # archive therefore needs our release key — whoever holds it can already ship
-    # any binary, so the extraction bugs add nothing. SUID/SGID and the symlink
-    # cases are also Unix semantics on an extraction that only runs on Windows.
-    # Checked 2026-10-24.
-    #
-    # REVISIT when `tauri-plugin-updater` requires zip >= 9 (`task audit:suppressions`
-    # reports it), or if this app ever extracts a zip it did not verify first.
-    "RUSTSEC-2026-0367",
-    "RUSTSEC-2026-0368",
-    "RUSTSEC-2026-0369",
-]
+# Nothing ignored. The zip < 9 ignores (RUSTSEC-2026-0367..0369) went with
+# tauri-plugin-updater 2.14.1, which requires zip ^9.
+ignore = []

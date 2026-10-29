@@ -46,14 +46,6 @@ tasks:
             done
           fi
 
-          # RUSTSEC-2026-0367..0369 (web/src-tauri/.cargo/audit.toml): zip 4 under the updater.
-          zip="$(grep -A1 '^name = "zip"$' web/src-tauri/Cargo.lock | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
-          case "${zip:-none}" in
-            none)      echo "    zip is no longer in web/src-tauri/Cargo.lock — the zip ignores can go" ;;
-            [0-8].*)   echo "    zip ${zip} — still under tauri-plugin-updater; the zip ignores still apply" ;;
-            *)         echo "    zip ${zip} — REVISIT: past the fix, so the zip ignores can go" ;;
-          esac
-
           # GHSA-wrw7-89jp-8q8g: pinned by Tauri's GTK3 stack, not by us.
           gtk="$(grep -A1 'name = "gtk"' web/src-tauri/Cargo.lock 2>/dev/null | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
           case "${gtk:-none}" in
