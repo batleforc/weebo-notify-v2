@@ -26,6 +26,11 @@ overrides:
   # this repository produces — but "only a build tool" is how a supply-chain
   # problem gets waved through, and the fix is one line.
   js-yaml: ^4.3.2
+  # GHSA-83rm-6c8r-g728 (Vue I18n escapeParameter XSS through srcdoc) in
+  # @intlify/shared 10.0.8, which @intlify/vue-i18n-extensions 8.0.0 still pins
+  # under the build-time @intlify/unplugin-vue-i18n. The runtime already runs
+  # the 11.x line; the extensions only use its type guards, so they get it too.
+  "@intlify/vue-i18n-extensions>@intlify/shared": ^11.4.16
 
 # Same supply-chain gate CI's pnpm enforces: never resolve a version published less
 # than a day ago, so a local install cannot produce a lockfile CI then refuses.
