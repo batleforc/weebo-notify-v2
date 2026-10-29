@@ -32,6 +32,9 @@ pub enum Grant {
         /// channels do not get the union of every policy's scopes.
         grants: Vec<(ChannelId, Vec<Scope>)>,
     },
+    /// A `[[key_issuers]]` token (ADR-0033): no rights in any channel. Only the key
+    /// use cases accept it, and only for managed service accounts.
+    KeyIssuer,
 }
 
 impl Grant {
@@ -40,7 +43,7 @@ impl Grant {
     #[must_use]
     pub fn carries(&self, channel: &ChannelId, scope: Scope) -> bool {
         match self {
-            Self::Membership => false,
+            Self::Membership | Self::KeyIssuer => false,
             Self::ApiKey {
                 scopes, channels, ..
             } => scopes.contains(&scope) && channels.contains(channel),
@@ -174,7 +177,9 @@ impl Authorizer {
                     && (!matches!(caller.principal, Principal::User { .. })
                         || channel.allows(&caller.principal, owner_groups, scope))
             }
-            grant @ Grant::Federated { .. } => grant.carries(&channel.id, scope),
+            grant @ (Grant::Federated { .. } | Grant::KeyIssuer) => {
+                grant.carries(&channel.id, scope)
+            }
         }
     }
 
@@ -248,6 +253,7 @@ impl Authorizer {
                 .filter(|(_, scopes)| scopes.contains(&Scope::Subscribe))
                 .map(|(channel, _)| channel.clone())
                 .collect(),
+            Grant::KeyIssuer => Vec::new(),
         })
     }
 

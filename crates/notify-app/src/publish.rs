@@ -76,7 +76,9 @@ impl Writer {
         let per_key = Quota::PublishPerKey {
             key: match &caller.grant {
                 Grant::ApiKey { id, .. } => format!("apikey:{id}"),
-                Grant::Membership | Grant::Federated { .. } => caller.principal.reference(),
+                Grant::Membership | Grant::Federated { .. } | Grant::KeyIssuer => {
+                    caller.principal.reference()
+                }
             },
         };
         let per_channel = Quota::PublishPerChannel {
@@ -88,7 +90,7 @@ impl Writer {
             Grant::ApiKey {
                 publish_per_minute, ..
             } => *publish_per_minute,
-            Grant::Membership | Grant::Federated { .. } => None,
+            Grant::Membership | Grant::Federated { .. } | Grant::KeyIssuer => None,
         };
 
         for (quota, configured) in [

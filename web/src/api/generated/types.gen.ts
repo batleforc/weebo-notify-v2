@@ -1499,6 +1499,12 @@ export type Principal = {
      * The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.
      */
     subject: string;
+} | {
+    /**
+     * Its `id` in the configuration.
+     */
+    id: string;
+    kind: 'key_issuer';
 };
 
 /**

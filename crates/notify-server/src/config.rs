@@ -105,6 +105,26 @@ fn validate_fingerprint_keys(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Each `[[key_issuers]]` id with its secret, resolved and checked (ADR-0033). At
+/// boot only: the section is unreloadable, so a reload never re-reads a token.
+pub(crate) fn key_issuer_secrets(config: &Config) -> anyhow::Result<Vec<(String, String)>> {
+    config
+        .key_issuers
+        .iter()
+        .map(|issuer| {
+            let what = format!("[[key_issuers]] `{}` token", issuer.id);
+            let secret = resolve_secret(&what, &issuer.token)?;
+            anyhow::ensure!(
+                secret.len() >= KeyIssuer::MIN_SECRET_BYTES,
+                "{what} must be at least {} bytes; generate one with \
+                 `openssl rand -base64 48`",
+                KeyIssuer::MIN_SECRET_BYTES
+            );
+            Ok((issuer.id.clone(), secret))
+        })
+        .collect()
+}
+
 /// What `[reload] watch` compares the file against: the digest of the content the
 /// running configuration was last read from (ADR-0031).
 ///
@@ -534,5 +554,48 @@ mod tests {
         let error = load_isolated(&path).unwrap_err().to_string();
         assert!(error.contains("config.toml"), "{error}");
         assert!(error.contains("max_removals"), "{error}");
+    }
+
+    #[test]
+    fn a_key_issuer_token_is_resolved_at_boot_and_refused_when_short() {
+        let file = with_config("issuer", "");
+        let dir = file.parent().unwrap();
+        let issuer = |name: &str, contents: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, contents).unwrap();
+            KeyIssuer {
+                id: "weebo-operator".to_owned(),
+                token: format!("file:{}", path.display()),
+            }
+        };
+
+        let long = Config {
+            key_issuers: vec![issuer("long", "correct-horse-battery-staple-0123\n")],
+            ..Config::default()
+        };
+        assert_eq!(
+            key_issuer_secrets(&long).unwrap(),
+            [(
+                "weebo-operator".to_owned(),
+                "correct-horse-battery-staple-0123".to_owned()
+            )],
+            "trimmed, like every `file:` secret"
+        );
+
+        let short = Config {
+            key_issuers: vec![issuer("short", "too-short")],
+            ..Config::default()
+        };
+        let error = key_issuer_secrets(&short).unwrap_err().to_string();
+        assert!(error.contains("at least 32 bytes"), "{error}");
+
+        let missing = Config {
+            key_issuers: vec![KeyIssuer {
+                id: "weebo-operator".to_owned(),
+                token: "file:/nonexistent/issuer".to_owned(),
+            }],
+            ..Config::default()
+        };
+        assert!(key_issuer_secrets(&missing).is_err());
     }
 }

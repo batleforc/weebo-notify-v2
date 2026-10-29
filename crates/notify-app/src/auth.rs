@@ -21,6 +21,10 @@ const LAST_USED_GRANULARITY: time::Duration = time::Duration::minutes(1);
 /// only its owner's direct memberships.
 pub const DEFAULT_GROUP_SNAPSHOT_TTL: time::Duration = time::Duration::days(7);
 
+/// How a key issuer's token starts (ADR-0033): `wki_<issuer id>_<secret>`. Issuer ids
+/// have no `_`, so the first one after the scheme ends the id.
+pub const KEY_ISSUER_SCHEME: &str = "wki_";
+
 /// What arrived on the request.
 #[derive(Debug, Clone)]
 pub enum Credential {
@@ -28,6 +32,26 @@ pub enum Credential {
     Bearer(String),
     /// An API key, however it was presented (design §5.2).
     ApiKey(String),
+    /// A key issuer's token, `wki_<id>_<secret>` (ADR-0033).
+    KeyIssuer(String),
+}
+
+/// A `[[key_issuers]]` entry as the authenticator holds it: the id, and the hash of
+/// its secret, never the secret itself.
+#[derive(Clone)]
+pub struct KeyIssuer {
+    /// Its configured id, the audit actor of what it mints and revokes.
+    pub id: String,
+    /// [`SecretHasher::hash`] of the secret half of its token.
+    pub secret_hash: String,
+}
+
+impl core::fmt::Debug for KeyIssuer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("KeyIssuer")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Resolve a credential into a caller.
@@ -40,6 +64,8 @@ pub struct Authenticate {
     platform_admins: Vec<String>,
     /// See [`DEFAULT_GROUP_SNAPSHOT_TTL`].
     group_snapshot_ttl: time::Duration,
+    /// `[[key_issuers]]` (ADR-0033); empty means none.
+    key_issuers: Vec<KeyIssuer>,
     users: Arc<dyn UserRepository>,
     accounts: Arc<dyn ServiceAccountRepository>,
     keys: Arc<dyn ApiKeyRepository>,
@@ -70,6 +96,7 @@ impl Authenticate {
             federation: None,
             platform_admins: Vec::new(),
             group_snapshot_ttl: DEFAULT_GROUP_SNAPSHOT_TTL,
+            key_issuers: Vec::new(),
             users,
             accounts,
             keys,
@@ -102,11 +129,60 @@ impl Authenticate {
         self
     }
 
+    /// The tokens of `[[key_issuers]]` (ADR-0033). Configuration only, read at boot.
+    #[must_use]
+    pub fn with_key_issuers(mut self, issuers: Vec<KeyIssuer>) -> Self {
+        self.key_issuers = issuers;
+        self
+    }
+
+    /// Every route but the key routes. A key issuer is refused here, with a `403`
+    /// once its token checks out, so a route that forgets about issuers refuses them.
     pub async fn execute(&self, credential: Credential) -> Result<Caller, Failure> {
+        let caller = self.execute_for_keys(credential).await?;
+        if caller.grant == Grant::KeyIssuer {
+            return Err(DomainError::KeyIssuerOnly.into());
+        }
+        Ok(caller)
+    }
+
+    /// The key routes (mint, list, revoke) only: [`Authenticate::execute`], plus the
+    /// key issuers, which those use cases bound to managed service accounts.
+    pub async fn execute_for_keys(&self, credential: Credential) -> Result<Caller, Failure> {
         match credential {
             Credential::Bearer(token) => self.bearer(&token).await,
             Credential::ApiKey(presented) => self.api_key(&presented).await,
+            Credential::KeyIssuer(token) => self.key_issuer(&token).await,
         }
+    }
+
+    /// A `wki_<id>_<secret>` token: the issuer by id, then its secret against the
+    /// stored hash, in constant time (ADR-0033). Every mismatch is the same 401.
+    async fn key_issuer(&self, token: &str) -> Result<Caller, Failure> {
+        let invalid = || Failure::Domain(DomainError::InvalidCredential);
+        let (id, secret) = token
+            .strip_prefix(KEY_ISSUER_SCHEME)
+            .and_then(|rest| rest.split_once('_'))
+            .ok_or_else(invalid)?;
+        let issuer = self
+            .key_issuers
+            .iter()
+            .find(|issuer| issuer.id == id)
+            .ok_or_else(invalid)?;
+        if !self.hasher.verify(secret, &issuer.secret_hash).await? {
+            return Err(invalid());
+        }
+        Ok(Caller {
+            principal: Principal::KeyIssuer {
+                id: issuer.id.clone(),
+            },
+            grant: Grant::KeyIssuer,
+            // A member of nothing, and never the platform role.
+            groups: Vec::new(),
+            platform_admin: false,
+            // Rotated by changing the secret and restarting (ADR-0033).
+            expires_at: None,
+        })
     }
 
     /// How long `caller`'s credential stays valid, by this use case's clock.
@@ -1074,6 +1150,63 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    // --- Key issuers (ADR-0033) ---------------------------------------------
+
+    fn with_issuer(fixture: Fixture) -> Authenticate {
+        fixture.auth.with_key_issuers(vec![KeyIssuer {
+            id: "weebo-operator".to_owned(),
+            secret_hash: "stub$correct-horse-battery-staple-0123".to_owned(),
+        }])
+    }
+
+    #[tokio::test]
+    async fn a_key_issuer_is_a_caller_only_on_the_key_routes() {
+        let auth = with_issuer(fixture());
+        let token = || {
+            Credential::KeyIssuer("wki_weebo-operator_correct-horse-battery-staple-0123".to_owned())
+        };
+
+        let caller = auth.execute_for_keys(token()).await.unwrap();
+        assert_eq!(caller.grant, Grant::KeyIssuer);
+        assert_eq!(
+            caller.principal,
+            Principal::KeyIssuer {
+                id: "weebo-operator".to_owned()
+            }
+        );
+        assert!(!caller.platform_admin && caller.groups.is_empty());
+
+        // Every other route goes through `execute`: a 403 naming why, not a 401.
+        let failure = auth.execute(token()).await.unwrap_err();
+        assert_eq!(failure.code(), Some("credential.key_issuer_only"));
+    }
+
+    #[tokio::test]
+    async fn a_wrong_or_unknown_issuer_token_is_the_same_401() {
+        let auth = with_issuer(fixture());
+        for token in [
+            "wki_weebo-operator_wrong",
+            "wki_somebody-else_correct-horse-battery-staple-0123",
+            "wki_weebo-operator",
+            "wki_",
+        ] {
+            let failure = auth
+                .execute_for_keys(Credential::KeyIssuer(token.to_owned()))
+                .await
+                .unwrap_err();
+            assert_eq!(failure.code(), Some("auth.invalid_credential"), "{token}");
+        }
+        // No issuer configured: nothing matches.
+        let failure = fixture()
+            .auth
+            .execute_for_keys(Credential::KeyIssuer(
+                "wki_weebo-operator_correct-horse-battery-staple-0123".to_owned(),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), Some("auth.invalid_credential"));
     }
 }
 

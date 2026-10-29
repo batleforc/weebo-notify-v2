@@ -132,7 +132,11 @@ impl Harness {
                 Arc::new(StubSecretHasher),
                 Arc::new(clock.clone()),
             )
-            .with_platform_admins(vec!["platform-admins".to_owned()]),
+            .with_platform_admins(vec!["platform-admins".to_owned()])
+            .with_key_issuers(vec![notify_app::KeyIssuer {
+                id: "weebo-operator".to_owned(),
+                secret_hash: format!("stub${ISSUER_SECRET}"),
+            }]),
             publish: PublishNotification::new(
                 Arc::new(store.clone()),
                 Arc::new(store.clone()),
@@ -444,6 +448,11 @@ macro_rules! service {
 }
 
 const AUTH: (&str, &str) = ("Authorization", "Bearer alice-token");
+const ISSUER_SECRET: &str = "correct-horse-battery-staple-0123";
+const ISSUER_AUTH: (&str, &str) = (
+    "Authorization",
+    "Bearer wki_weebo-operator_correct-horse-battery-staple-0123",
+);
 const ADMIN_AUTH: (&str, &str) = ("Authorization", "Bearer alice-admin-token");
 
 /// A stand-in VAPID key; nothing decodes it, it only has to reach the browser unchanged.
@@ -3119,4 +3128,182 @@ async fn the_channel_list_carries_the_callers_own_scopes() {
         page["items"][0]["my_scopes"],
         json!(["subscribe", "publish", "manage"])
     );
+}
+
+// --- Key issuers (ADR-0033) -------------------------------------------------
+
+#[actix_web::test]
+async fn a_key_issuer_is_refused_on_every_route_but_the_key_routes() {
+    // Walked from the OpenAPI document, so a route added later is covered too.
+    let (_, api) = App::new()
+        .into_utoipa_app()
+        .configure(notify_http_actix::configure)
+        .split_for_parts();
+    let (_, state) = Harness::new();
+    let app = service!(state);
+    // Mint, list and revoke; the use cases bound those (see `keys.rs`).
+    let admitted = [
+        ("POST", "/api/v1/apikeys"),
+        ("GET", "/api/v1/apikeys"),
+        ("DELETE", "/api/v1/apikeys/{id}"),
+    ];
+
+    let mut checked = 0_usize;
+    for (path, item) in &api.paths.paths {
+        for (method, operation) in [
+            ("GET", &item.get),
+            ("POST", &item.post),
+            ("PUT", &item.put),
+            ("PATCH", &item.patch),
+            ("DELETE", &item.delete),
+        ] {
+            let Some(operation) = operation else { continue };
+            // Only routes that take a credential at all: `security(())` is an
+            // anonymous route, which the credential cannot change.
+            let anonymous = operation.security.as_ref().is_none_or(|security| {
+                security.is_empty()
+                    || security
+                        .iter()
+                        .any(|requirement| serde_json::to_value(requirement).unwrap() == json!({}))
+            });
+            if anonymous || admitted.contains(&(method, path.as_str())) {
+                continue;
+            }
+            let uri = path
+                .split('/')
+                .map(|segment| {
+                    if segment.starts_with('{') {
+                        "x1"
+                    } else {
+                        segment
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            let response = test::call_service(
+                &app,
+                test::TestRequest::with_uri(&uri)
+                    .method(method.parse().unwrap())
+                    .insert_header(ISSUER_AUTH)
+                    .set_json(json!({}))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {path} did not refuse a key issuer"
+            );
+            let body: Value = test::read_body_json(response).await;
+            assert_eq!(
+                body["code"], "credential.key_issuer_only",
+                "{method} {path}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 30, "only {checked} routes were walked");
+}
+
+#[actix_web::test]
+async fn a_key_issuer_mints_lists_and_revokes_a_managed_accounts_key() {
+    let (harness, state) = Harness::new();
+    let channel = harness.with_alice_in("ci-infra").await;
+    let bot = notify_domain::ServiceAccountId::parse("bot-argocd").unwrap();
+    notify_ports::ServiceAccountRepository::upsert(
+        &harness.store,
+        &notify_domain::ServiceAccount::new(
+            bot.clone(),
+            None,
+            None,
+            Origin::Managed,
+            None,
+            harness.clock.now(),
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut row = ChannelRepository::get(&harness.store, &channel)
+        .await
+        .unwrap()
+        .unwrap();
+    row.members.push(Membership {
+        principal: Principal::ServiceAccount { id: bot },
+        scopes: vec![Scope::Publish],
+    });
+    ChannelRepository::upsert(&harness.store, &row)
+        .await
+        .unwrap();
+    let app = service!(state);
+
+    let minted = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/apikeys")
+            .insert_header(ISSUER_AUTH)
+            .set_json(json!({
+                "owner": { "owner": "service_account", "id": "bot-argocd" },
+                "scopes": ["publish"],
+                "channels": ["ci-infra"],
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(minted.status(), StatusCode::CREATED);
+    let minted: Value = test::read_body_json(minted).await;
+    assert!(minted["secret"].as_str().unwrap().starts_with("wnk_"));
+    let id = minted["id"].as_str().unwrap();
+
+    let listed: Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/apikeys")
+            .insert_header(ISSUER_AUTH)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+
+    let revoked = test::call_service(
+        &app,
+        test::TestRequest::delete()
+            .uri(&format!("/api/v1/apikeys/{id}"))
+            .insert_header(ISSUER_AUTH)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    // A person's key is not the issuer's to mint.
+    let personal = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/apikeys")
+            .insert_header(ISSUER_AUTH)
+            .set_json(json!({
+                "owner": { "owner": "user", "id": harness.alice.to_string() },
+                "scopes": ["publish"],
+                "channels": ["ci-infra"],
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(personal.status(), StatusCode::FORBIDDEN);
+}
+
+#[actix_web::test]
+async fn a_wrong_issuer_secret_is_a_401_like_any_bad_credential() {
+    let (_, state) = Harness::new();
+    let app = service!(state);
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/apikeys")
+            .insert_header(("Authorization", "Bearer wki_weebo-operator_wrong"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

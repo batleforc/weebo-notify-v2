@@ -69,6 +69,55 @@ pub struct Config {
 
     /// `[reload]` — whether the server re-reads its file when it changes (ADR-0031).
     pub reload: Reload,
+
+    /// `[[key_issuers]]` — tokens that mint keys for managed service accounts (ADR-0033).
+    pub key_issuers: Vec<KeyIssuer>,
+}
+
+/// One `[[key_issuers]]` entry (ADR-0033): a token, presented as
+/// `wki_<id>_<secret>`, that may mint, list and revoke the keys of managed service
+/// accounts and nothing else. Read at boot; rotating it is a restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyIssuer {
+    /// A slug of letters, digits and `-`, unique among issuers; the audit actor.
+    pub id: String,
+    /// `env:NAME` or `file:/path` to the secret, at least
+    /// [`KeyIssuer::MIN_SECRET_BYTES`] bytes. Never inline: this file is a ConfigMap.
+    pub token: String,
+}
+
+impl KeyIssuer {
+    /// Same floor as the fingerprint keys.
+    pub const MIN_SECRET_BYTES: usize = 32;
+
+    fn validate(&self) -> anyhow::Result<()> {
+        // `_` ends the id in `wki_<id>_<secret>`, so it cannot be part of one.
+        anyhow::ensure!(
+            !self.id.is_empty()
+                && self.id.len() <= 64
+                && self
+                    .id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                && !self.id.starts_with('-')
+                && !self.id.ends_with('-'),
+            "[[key_issuers]] id `{}` must be 1 to 64 lowercase letters, digits and `-`, \
+             not starting or ending with `-`",
+            self.id
+        );
+        let reference = self
+            .token
+            .strip_prefix("env:")
+            .or_else(|| self.token.strip_prefix("file:"));
+        anyhow::ensure!(
+            reference.is_some_and(|rest| !rest.is_empty()),
+            "[[key_issuers]] `{}` token must be `env:NAME` or `file:/path`; an inline \
+             token would put the secret in the file",
+            self.id
+        );
+        Ok(())
+    }
 }
 
 /// `[reload]` — re-reading the file without a `SIGHUP` (ADR-0031).
@@ -1086,6 +1135,11 @@ impl Config {
                 "[admin] oidc_groups — platform admins are wired at boot; restart".to_owned(),
             );
         }
+        if self.key_issuers != file.key_issuers {
+            moved.push(
+                "[[key_issuers]] — the tokens are read at boot; rotate by restarting".to_owned(),
+            );
+        }
         if self.reload != file.reload {
             moved.push("[reload] — the file watch is started at boot; restart".to_owned());
         }
@@ -1199,6 +1253,7 @@ impl Config {
         self.validate_smtp()?;
 
         self.validate_managed_ids()?;
+        self.validate_key_issuers()?;
         self.validate_transforms()?;
         for channel in &self.channels.managed {
             // Zero would refuse every publish with a misleading `429`; omit `limits` for the default (§8.2).
@@ -1262,6 +1317,20 @@ impl Config {
                 accounts.insert(id),
                 "[[service_accounts]] id `{}` is declared twice",
                 account.id
+            );
+        }
+        Ok(())
+    }
+
+    /// Each `[[key_issuers]]` entry on its own, and no id declared twice (ADR-0033).
+    fn validate_key_issuers(&self) -> anyhow::Result<()> {
+        let mut ids = std::collections::HashSet::new();
+        for issuer in &self.key_issuers {
+            issuer.validate()?;
+            anyhow::ensure!(
+                ids.insert(issuer.id.as_str()),
+                "[[key_issuers]] id `{}` is declared twice",
+                issuer.id
             );
         }
         Ok(())
@@ -2252,5 +2321,62 @@ external_id = 'item.id'
                 .any(|line| line.contains("[reload]"))
         );
         assert!(running.reloaded_from(file).reload.watch);
+    }
+
+    #[test]
+    fn a_key_issuer_names_its_token_and_never_holds_it() {
+        let config = parse(
+            "[[key_issuers]]\nid = \"weebo-operator\"\ntoken = \"env:WNK_KEY_ISSUER\"\n\
+             [[key_issuers]]\nid = \"backup\"\ntoken = \"file:/var/run/secrets/issuer\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.key_issuers.len(), 2);
+
+        for (file, why) in [
+            (
+                "[[key_issuers]]\nid = \"op\"\ntoken = \"wki_op_0123456789\"\n",
+                "env:NAME",
+            ),
+            (
+                "[[key_issuers]]\nid = \"op\"\ntoken = \"env:\"\n",
+                "env:NAME",
+            ),
+            (
+                "[[key_issuers]]\nid = \"op\"\ntoken = \"env:A\"\n\
+                 [[key_issuers]]\nid = \"op\"\ntoken = \"env:B\"\n",
+                "declared twice",
+            ),
+            (
+                "[[key_issuers]]\nid = \"my_op\"\ntoken = \"env:A\"\n",
+                "lowercase letters",
+            ),
+            (
+                "[[key_issuers]]\nid = \"op\"\ntoken = \"env:A\"\nsecret = \"x\"\n",
+                "unknown field",
+            ),
+        ] {
+            let error = format!("{:#}", parse(file).unwrap_err());
+            assert!(error.contains(why), "{file}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_change_to_the_key_issuers_needs_a_restart() {
+        let running = Config::default();
+        let file = Config {
+            key_issuers: vec![KeyIssuer {
+                id: "op".to_owned(),
+                token: "env:A".to_owned(),
+            }],
+            ..Config::default()
+        };
+
+        assert!(
+            running
+                .unreloadable(&file)
+                .iter()
+                .any(|line| line.contains("[[key_issuers]]"))
+        );
+        assert_eq!(running.reloaded_from(file).key_issuers, []);
     }
 }

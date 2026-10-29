@@ -14,20 +14,45 @@ use crate::problem::ApiError;
 use crate::state::ApiState;
 
 /// An authenticated caller, extracted from `Authorization`; there is no anonymous path.
+/// A key issuer (ADR-0033) is refused here with a `403`: only [`KeyAdministrator`] admits one.
 #[derive(Debug, Clone)]
 pub struct Authenticated(pub Caller);
+
+/// [`Authenticated`], plus the key issuers; for the mint, list and revoke key routes
+/// only, whose use cases bound an issuer to managed service accounts (ADR-0033).
+#[derive(Debug, Clone)]
+pub struct KeyAdministrator(pub Caller);
+
+impl FromRequest for KeyAdministrator {
+    type Error = ApiError;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        let state = req.app_data::<web::Data<ApiState>>().cloned();
+        let presented = authorization(req);
+        Box::pin(async move {
+            let Some(state) = state else {
+                return Err(PortError::NotConfigured { what: "http.state" }.into());
+            };
+            let credential = credential_from(presented.as_deref())?;
+            Ok(Self(state.authenticate.execute_for_keys(credential).await?))
+        })
+    }
+}
+
+fn authorization(req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+}
 
 impl FromRequest for Authenticated {
     type Error = ApiError;
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        let presented = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        authenticate(req, presented)
+        authenticate(req, authorization(req))
     }
 }
 
@@ -48,7 +73,7 @@ pub(crate) fn authenticate(
 }
 
 /// Read the `Authorization` header: keys and tokens both arrive as `Bearer` (design §8),
-/// told apart by our minted `wnk_` prefix so a JWT is never mistaken for a key.
+/// told apart by our minted `wnk_` and `wki_` prefixes so a JWT is never mistaken for a key.
 pub(crate) fn credential_from(header: Option<&str>) -> Result<Credential, DomainError> {
     let raw = header.ok_or(DomainError::InvalidCredential)?;
     // The scheme is case-insensitive (RFC 7235 §2.1): `BEARER x` is the same header.
@@ -64,6 +89,8 @@ pub(crate) fn credential_from(header: Option<&str>) -> Result<Credential, Domain
 
     if token.starts_with(PresentedApiKey::SCHEME) {
         Ok(Credential::ApiKey(token.to_owned()))
+    } else if token.starts_with(notify_app::KEY_ISSUER_SCHEME) {
+        Ok(Credential::KeyIssuer(token.to_owned()))
     } else {
         Ok(Credential::Bearer(token.to_owned()))
     }
@@ -118,6 +145,9 @@ mod tests {
     fn a_key_and_a_token_arrive_the_same_way_and_are_told_apart_by_shape() {
         let key = credential_from(Some("Bearer wnk_abcd1234_thesecret")).unwrap();
         assert!(matches!(key, Credential::ApiKey(_)));
+
+        let issuer = credential_from(Some("Bearer wki_weebo-operator_thesecret")).unwrap();
+        assert!(matches!(issuer, Credential::KeyIssuer(_)));
 
         let token = credential_from(Some("Bearer eyJhbGciOiJFUzI1NiJ9.e30.sig")).unwrap();
         assert!(matches!(token, Credential::Bearer(_)));

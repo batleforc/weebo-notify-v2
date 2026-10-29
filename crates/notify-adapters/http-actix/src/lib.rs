@@ -8,7 +8,7 @@ mod routes;
 mod slots;
 mod state;
 
-pub use extract::Authenticated;
+pub use extract::{Authenticated, KeyAdministrator};
 pub use problem::{ApiError, Problem};
 pub use routes::configure;
 pub use slots::StreamSlots;

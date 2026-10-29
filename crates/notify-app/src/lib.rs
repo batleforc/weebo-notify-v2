@@ -35,7 +35,9 @@ pub use attachments::{
     is_allowed_attachment_type, normalised_content_type,
 };
 pub use attribution::Attribution;
-pub use auth::{Authenticate, Credential, DEFAULT_GROUP_SNAPSHOT_TTL};
+pub use auth::{
+    Authenticate, Credential, DEFAULT_GROUP_SNAPSHOT_TTL, KEY_ISSUER_SCHEME, KeyIssuer,
+};
 pub use authz::{Authorizer, Caller, Grant};
 pub use channels::{
     ChannelView, CreateChannel, DeleteChannel, ListChannels, ManageMembers, ReadChannel,

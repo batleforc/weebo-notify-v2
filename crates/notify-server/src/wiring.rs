@@ -128,6 +128,14 @@ impl Application {
         let verifier = Arc::new(OidcVerifier::new(oidc, clock.clone())?);
         // Argon2id behind memoisation and admission control (`notify_oidc::guard`).
         let hasher = Arc::new(GuardedSecretHasher::new(Argon2SecretHasher));
+        // Hashed once here, so the process holds no issuer secret past boot (ADR-0033).
+        let mut key_issuers = Vec::new();
+        for (id, secret) in crate::config::key_issuer_secrets(config)? {
+            key_issuers.push(notify_app::KeyIssuer {
+                secret_hash: notify_ports::SecretHasher::hash(hasher.as_ref(), &secret).await?,
+                id,
+            });
+        }
 
         // One metrics registry per process (§13).
         let metrics: Arc<dyn notify_ports::Metrics> = Arc::new(PrometheusMetrics::new());
@@ -258,7 +266,8 @@ impl Application {
                 )
                 // GitOps only (§5.4); empty means no platform admins.
                 .with_platform_admins(config.admin.oidc_groups.clone())
-                .with_group_snapshot_ttl(config.auth.group_snapshot_ttl.as_duration().try_into()?);
+                .with_group_snapshot_ttl(config.auth.group_snapshot_ttl.as_duration().try_into()?)
+                .with_key_issuers(key_issuers);
 
                 match federation.clone() {
                     Some(tokens) => base.with_federation(tokens),

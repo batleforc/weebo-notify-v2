@@ -41,8 +41,10 @@ impl Attribution {
                 Ok(Some(account)) => account.display_name,
                 _ => None,
             },
-            // No profile exists for these two, by design.
-            Principal::ChannelKey { .. } | Principal::CiJob { .. } => None,
+            // No profile exists for these, by design.
+            Principal::ChannelKey { .. }
+            | Principal::CiJob { .. }
+            | Principal::KeyIssuer { .. } => None,
         };
 
         name.and_then(|name| Author::named(principal.clone(), &name).ok())

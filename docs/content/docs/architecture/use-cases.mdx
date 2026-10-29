@@ -197,6 +197,10 @@ Who may mint, see and revoke a key:
   token, so after that it keeps only its owner's direct memberships.
 - A key's **publish quota** is its own, so a ceiling on one key does not throttle
   its owner's other keys.
+- A **key issuer** (`[[key_issuers]]`, ADR-0033) is the one exception to "only a
+  session mints": it mints, lists and revokes the keys of **managed** service
+  accounts, with no scope the account does not hold itself, and is refused
+  (`credential.key_issuer_only`) everywhere else.
 
 ## Testing
 

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use notify_domain::{
-    ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, ChannelId, DomainError, PresentedApiKey,
+    ApiKey, ApiKeyId, ApiKeyOwner, ApiKeyPrefix, ChannelId, DomainError, Origin, PresentedApiKey,
     Principal, Scope, ServiceAccount,
 };
 use notify_ports::{
@@ -52,6 +52,24 @@ async fn manages_all(
         }
     }
     Ok(!channels.is_empty())
+}
+
+/// The managed, active service account a key issuer is asking about, or a refusal
+/// that does not say which of "missing", "dynamic" or "disabled" it was (ADR-0033).
+async fn managed_account(
+    accounts: &dyn ServiceAccountRepository,
+    owner: &ApiKeyOwner,
+) -> Result<ServiceAccount, Failure> {
+    let ApiKeyOwner::ServiceAccount { id } = owner else {
+        // Never a person's key, a channel's, or its own.
+        return Err(DomainError::KeyIssuerOnly.into());
+    };
+    match accounts.get(id).await? {
+        Some(account) if account.origin == Origin::Managed && account.disabled_at.is_none() => {
+            Ok(account)
+        }
+        _ => Err(refuse()),
+    }
 }
 
 /// Whether `caller` may see and revoke `key`: whoever it acts as, or — for a
@@ -165,6 +183,19 @@ impl CreateApiKey {
             .into());
         }
 
+        if caller.grant == Grant::KeyIssuer {
+            // A managed account only, and never more than the account itself holds: the
+            // issuer has no rights of its own to bound the key with (ADR-0033).
+            let account = managed_account(self.accounts.as_ref(), &request.owner).await?;
+            let owner = Caller::member(account.principal());
+            for channel in &request.channels {
+                for scope in &request.scopes {
+                    self.authorizer.authorize(&owner, channel, *scope).await?;
+                }
+            }
+            return self.mint(caller, request).await;
+        }
+
         // Only a person's session mints: a key minting keys would outlive its own revocation.
         if caller.grant != Grant::Membership {
             return Err(refuse());
@@ -209,6 +240,11 @@ impl CreateApiKey {
             }
         }
 
+        self.mint(caller, request).await
+    }
+
+    /// Generate, store and audit a key `caller` was found entitled to.
+    async fn mint(&self, caller: &Caller, request: NewApiKey) -> Result<MintedApiKey, Failure> {
         let (prefix, secret) = self.generator.generate();
         let secret_hash = self.hasher.hash(&secret).await?;
         let now = self.clock.now();
@@ -288,6 +324,16 @@ impl ListApiKeys {
     /// A session only: a key listing its owner's keys is the first step of using
     /// one leaked credential to find and switch off the others.
     pub async fn execute(&self, caller: &Caller) -> Result<Vec<ApiKey>, Failure> {
+        if caller.grant == Grant::KeyIssuer {
+            // Every managed account's keys, which is all an issuer can act on (ADR-0033).
+            let mut keys = Vec::new();
+            for account in self.accounts.list().await? {
+                if account.origin == Origin::Managed {
+                    keys.extend(self.keys.list_for(&account.principal()).await?);
+                }
+            }
+            return Ok(keys);
+        }
         caller.ensure_session()?;
         let mut keys = self.keys.list_for(&caller.principal).await?;
         for channel in self.authorizer.managed_channels(caller).await? {
@@ -355,15 +401,29 @@ impl RevokeApiKey {
     /// channel's or account's admins may too.
     pub async fn execute(&self, caller: &Caller, id: ApiKeyId) -> Result<bool, Failure> {
         let itself = matches!(&caller.grant, Grant::ApiKey { id: own, .. } if *own == id);
-        if !itself {
+        let issuer = caller.grant == Grant::KeyIssuer;
+        if !itself && !issuer {
             caller.ensure_session()?;
         }
         let Some(key) = self.keys.get(id).await? else {
             return Ok(false);
         };
-        if !itself
-            && !administers_key(&self.authorizer, self.accounts.as_ref(), caller, &key).await?
-        {
+        let allowed = if itself {
+            true
+        } else if issuer {
+            // A disabled managed account's keys may still be revoked: that is cleanup.
+            match &key.owner {
+                ApiKeyOwner::ServiceAccount { id } => self
+                    .accounts
+                    .get(id)
+                    .await?
+                    .is_some_and(|account| account.origin == Origin::Managed),
+                ApiKeyOwner::User { .. } | ApiKeyOwner::Channel { .. } => false,
+            }
+        } else {
+            administers_key(&self.authorizer, self.accounts.as_ref(), caller, &key).await?
+        };
+        if !allowed {
             // Same answer as "no such key", so ids cannot be probed.
             return Ok(false);
         }
@@ -531,6 +591,11 @@ mod tests {
     }
 
     fn fixture(scopes: Vec<Scope>) -> Fixture {
+        fixture_with(scopes, Vec::new())
+    }
+
+    /// [`fixture`], with more members in the channel.
+    fn fixture_with(scopes: Vec<Scope>, others: Vec<Membership>) -> Fixture {
         let store = InMemory::new();
         let clock = TestClock::new();
         let alice = Principal::User {
@@ -539,6 +604,9 @@ mod tests {
 
         let mut channel = Channel::dynamic(channel_id(), None).unwrap();
         channel.upsert_member(Membership::new(alice.clone(), scopes).unwrap());
+        for member in others {
+            channel.upsert_member(member);
+        }
         store.seed_channel(channel);
 
         Fixture {
@@ -1160,6 +1228,194 @@ mod tests {
             .unwrap();
 
         assert_eq!(cleared.publish_per_minute, None);
+    }
+
+    // --- Key issuers (ADR-0033) ---------------------------------------------
+
+    fn issuer() -> Caller {
+        Caller {
+            principal: Principal::KeyIssuer {
+                id: "weebo-operator".to_owned(),
+            },
+            grant: Grant::KeyIssuer,
+            groups: Vec::new(),
+            platform_admin: false,
+            expires_at: None,
+        }
+    }
+
+    /// A channel where the managed `bot-argocd` may publish, and alice may do anything.
+    async fn issuer_fixture() -> (Fixture, ServiceAccountId) {
+        let bot = Principal::ServiceAccount {
+            id: ServiceAccountId::parse("bot-argocd").unwrap(),
+        };
+        let fixture = fixture_with(
+            vec![Scope::Publish, Scope::Manage],
+            vec![Membership::new(bot, vec![Scope::Publish]).unwrap()],
+        );
+        let account = seed_account(&fixture, None).await;
+        (fixture, account)
+    }
+
+    #[tokio::test]
+    async fn an_issuer_mints_a_managed_accounts_key_within_what_the_account_holds() {
+        let (fixture, account) = issuer_fixture().await;
+        let owner = ApiKeyOwner::ServiceAccount { id: account };
+
+        let minted = fixture
+            .create
+            .execute(&issuer(), request(owner.clone(), vec![Scope::Publish]))
+            .await
+            .unwrap();
+        assert!(minted.secret.starts_with("wnk_"));
+        let audited = fixture.store.audit_entries();
+        assert_eq!(audited.len(), 1);
+        assert_eq!(audited[0].action, actions::APIKEY_CREATED);
+        assert_eq!(audited[0].actor.reference(), "key_issuer:weebo-operator");
+
+        // The account cannot manage, so neither can a key minted for it.
+        let failure = fixture
+            .create
+            .execute(&issuer(), request(owner, vec![Scope::Manage]))
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), Some("scope.missing"));
+    }
+
+    #[tokio::test]
+    async fn an_issuer_mints_for_nobody_but_a_managed_active_account() {
+        let (fixture, _) = issuer_fixture().await;
+        let alice = alice_id(&fixture);
+
+        for owner in [
+            ApiKeyOwner::User { id: alice },
+            ApiKeyOwner::Channel { id: channel_id() },
+        ] {
+            let failure = fixture
+                .create
+                .execute(&issuer(), request(owner, vec![Scope::Publish]))
+                .await
+                .unwrap_err();
+            assert_eq!(failure.code(), Some("credential.key_issuer_only"));
+        }
+
+        // A dynamic account is a person's to key, and a disabled one keys nothing.
+        let dynamic = ServiceAccount::new(
+            ServiceAccountId::parse("bot-mine").unwrap(),
+            None,
+            None,
+            Origin::Dynamic,
+            Some(alice),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        let mut disabled = ServiceAccount::new(
+            ServiceAccountId::parse("bot-retired").unwrap(),
+            None,
+            None,
+            Origin::Managed,
+            None,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        disabled.disable(OffsetDateTime::UNIX_EPOCH);
+        for account in [dynamic, disabled] {
+            ServiceAccountRepository::upsert(&fixture.store, &account)
+                .await
+                .unwrap();
+            let failure = fixture
+                .create
+                .execute(
+                    &issuer(),
+                    request(
+                        ApiKeyOwner::ServiceAccount { id: account.id },
+                        vec![Scope::Publish],
+                    ),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(failure.code(), Some("scope.missing"));
+        }
+        assert_eq!(fixture.store.audit_entries().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_issuer_lists_and_revokes_managed_accounts_keys_only() {
+        let (fixture, account) = issuer_fixture().await;
+        let managed = fixture
+            .create
+            .execute(
+                &issuer(),
+                request(
+                    ApiKeyOwner::ServiceAccount { id: account },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+        let personal = fixture
+            .create
+            .execute(
+                &Caller::member(fixture.alice.clone()),
+                request(
+                    ApiKeyOwner::User {
+                        id: alice_id(&fixture),
+                    },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+
+        let listed = fixture.list.execute(&issuer()).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|key| key.id).collect::<Vec<_>>(),
+            [managed.key.id]
+        );
+
+        assert!(
+            !fixture
+                .revoke
+                .execute(&issuer(), personal.key.id)
+                .await
+                .unwrap(),
+            "a person's key is out of reach, answered like a missing one"
+        );
+        assert!(
+            fixture
+                .revoke
+                .execute(&issuer(), managed.key.id)
+                .await
+                .unwrap()
+        );
+        let revoked = fixture.store.audit_entries();
+        let last = revoked.last().unwrap();
+        assert_eq!(last.action, actions::APIKEY_REVOKED);
+        assert_eq!(last.actor.reference(), "key_issuer:weebo-operator");
+    }
+
+    #[tokio::test]
+    async fn an_issuer_is_never_a_platform_admin() {
+        let (fixture, account) = issuer_fixture().await;
+        let minted = fixture
+            .create
+            .execute(
+                &issuer(),
+                request(
+                    ApiKeyOwner::ServiceAccount { id: account },
+                    vec![Scope::Publish],
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            fixture
+                .set_limit
+                .execute(&issuer(), minted.key.id, Some(10))
+                .await
+                .is_err()
+        );
     }
 
     #[test]

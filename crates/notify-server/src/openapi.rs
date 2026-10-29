@@ -46,7 +46,11 @@ impl Modify for BearerAuth {
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
                         "An OIDC access token, or an API key of the form \
-                         `wnk_<prefix>_<secret>`.",
+                         `wnk_<prefix>_<secret>`, or a key issuer's token \
+                         `wki_<issuer id>_<secret>` from `[[key_issuers]]` (ADR-0033). A \
+                         key issuer is refused with `403 credential.key_issuer_only` \
+                         everywhere but `POST /apikeys`, `GET /apikeys` and \
+                         `DELETE /apikeys/{id}`, and there only for managed service accounts.",
                     ))
                     .build(),
             ),

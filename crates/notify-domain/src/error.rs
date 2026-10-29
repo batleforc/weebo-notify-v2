@@ -193,6 +193,11 @@ pub enum DomainError {
     #[error("this action needs a person's own session, not a key or a CI token")]
     SessionRequired,
 
+    /// A key issuer (ADR-0033) may mint, list and revoke the keys of managed service
+    /// accounts, and nothing else.
+    #[error("a key issuer may only mint, list and revoke the keys of managed service accounts")]
+    KeyIssuerOnly,
+
     /// Its owner disconnected this credential from realtime; reconnecting won't help.
     #[error("this connection was disconnected by its owner")]
     StreamDisconnected,
@@ -229,6 +234,7 @@ impl DomainError {
             Self::NotAPerson => "principal.not_a_person",
             Self::NotPlatformAdmin => "platform.role_required",
             Self::SessionRequired => "credential.session_required",
+            Self::KeyIssuerOnly => "credential.key_issuer_only",
             Self::StreamDisconnected => "stream.disconnected",
         }
     }
@@ -263,6 +269,7 @@ impl DomainError {
             | Self::NotAPerson
             | Self::NotPlatformAdmin
             | Self::SessionRequired
+            | Self::KeyIssuerOnly
             | Self::StreamDisconnected => ErrorKind::Forbidden,
         }
     }
@@ -329,6 +336,7 @@ mod tests {
             DomainError::ApiKeyRevoked,
             DomainError::ServiceAccountDisabled,
             DomainError::ScopeMissing { scope: "publish" },
+            DomainError::KeyIssuerOnly,
         ]
     }
 
@@ -362,6 +370,7 @@ mod tests {
                 "apikey.revoked",
                 "service_account.disabled",
                 "scope.missing",
+                "credential.key_issuer_only",
             ]
         );
     }
@@ -390,7 +399,7 @@ mod tests {
                 | "apikey.expired"
                 | "apikey.revoked"
                 | "service_account.disabled" => ErrorKind::Unauthenticated,
-                "scope.missing" => ErrorKind::Forbidden,
+                "scope.missing" | "credential.key_issuer_only" => ErrorKind::Forbidden,
                 _ => ErrorKind::Validation,
             };
             assert_eq!(error.kind(), expected, "for {}", error.code());

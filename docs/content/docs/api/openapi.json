@@ -7273,6 +7273,26 @@
                 "description": "The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`."
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "A `[[key_issuers]]` entry (ADR-0033): mints, lists and revokes the keys of\nmanaged service accounts, and is refused everywhere else.",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Its `id` in the configuration."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "key_issuer"
+                ]
+              }
+            }
           }
         ],
         "description": "The identity behind a request, after authentication."
@@ -8567,7 +8587,7 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "An OIDC access token, or an API key of the form `wnk_<prefix>_<secret>`."
+        "description": "An OIDC access token, or an API key of the form `wnk_<prefix>_<secret>`, or a key issuer's token `wki_<issuer id>_<secret>` from `[[key_issuers]]` (ADR-0033). A key issuer is refused with `403 credential.key_issuer_only` everywhere but `POST /apikeys`, `GET /apikeys` and `DELETE /apikeys/{id}`, and there only for managed service accounts."
       }
     }
   },

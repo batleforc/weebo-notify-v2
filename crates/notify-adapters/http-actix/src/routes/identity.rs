@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 
-use crate::extract::Authenticated;
+use crate::extract::{Authenticated, KeyAdministrator};
 use crate::problem::{ApiError, Problem};
 use crate::state::ApiState;
 
@@ -170,7 +170,8 @@ pub(crate) async fn revoke_device(
 #[post("/apikeys")]
 pub(crate) async fn create_key(
     state: web::Data<ApiState>,
-    caller: Authenticated,
+    // The one place a key issuer is admitted (ADR-0033).
+    caller: KeyAdministrator,
     body: web::Json<CreateKeyBody>,
 ) -> Result<HttpResponse, ApiError> {
     let body = body.into_inner();
@@ -210,7 +211,8 @@ pub(crate) async fn create_key(
 #[get("/apikeys")]
 pub(crate) async fn list_keys(
     state: web::Data<ApiState>,
-    caller: Authenticated,
+    // The one place a key issuer is admitted (ADR-0033).
+    caller: KeyAdministrator,
 ) -> Result<web::Json<Vec<ApiKey>>, ApiError> {
     Ok(web::Json(state.keys.execute(&caller.0).await?))
 }
@@ -231,7 +233,8 @@ pub(crate) async fn list_keys(
 #[delete("/apikeys/{id}")]
 pub(crate) async fn revoke_key(
     state: web::Data<ApiState>,
-    caller: Authenticated,
+    // The one place a key issuer is admitted (ADR-0033).
+    caller: KeyAdministrator,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let id: ApiKeyId = path.into_inner().parse()?;

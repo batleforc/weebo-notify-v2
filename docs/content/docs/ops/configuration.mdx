@@ -364,6 +364,34 @@ its channels through a key nobody revoked. Lower it for a tighter bound; the pri
 that an owner who has not opened the app for that long sees their key lose its group
 reach. Accepted range: `1h` to `90d`. Read at boot — a `SIGHUP` does not change it.
 
+## Key issuers
+
+```toml
+[[key_issuers]]
+id = "weebo-operator"                 # lowercase letters, digits and `-`
+token = "env:WNK_KEY_ISSUER_TOKEN"    # or "file:/var/run/secrets/notify/issuer"
+```
+
+A key issuer is how a Kubernetes operator hands a managed service account its API
+key with no person logging in (ADR-0033). It presents
+`Authorization: Bearer wki_<id>_<secret>`, where `<secret>` is what `token` resolves
+to — at least 32 bytes (`openssl rand -base64 48`). It may only:
+
+- `POST /api/v1/apikeys` for a **managed**, active service account, with scopes the
+  account itself holds in each channel named;
+- `GET /api/v1/apikeys`, which lists the keys of managed service accounts;
+- `DELETE /api/v1/apikeys/{id}` on one of those keys.
+
+Every other route answers `403 credential.key_issuer_only`, and so do keys for a
+person, a channel, a dynamic account or the issuer itself. It is never a member of
+anything nor a platform admin. Each mint and revocation is in the audit log as
+`key_issuer:<id>`.
+
+`token` must be an `env:` or `file:` reference: an inline value is refused, because
+the file is usually a ConfigMap. The section is read at boot, the secret resolved
+then (a missing or short one stops the boot), and only its hash kept. Rotating is a
+new Secret and a restart; a reload that changes `[[key_issuers]]` says so.
+
 ## GitOps: managed versus dynamic
 
 Channels and service accounts can be **declared in the configuration**, and then the

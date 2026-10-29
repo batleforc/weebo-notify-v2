@@ -1,4 +1,4 @@
-//! Who is acting (§5): one typed value for all four identities, answering
+//! Who is acting (§5): one typed value for every identity, answering
 //! attribution (§5.2) and whether the actor is a human reader (§5.2bis).
 
 use core::fmt;
@@ -24,6 +24,8 @@ pub enum PrincipalKind {
     ChannelKey,
     /// A CI job holding a short-lived federated token (design §5.3).
     CiJob,
+    /// A credential declared in `[[key_issuers]]` that only mints keys (ADR-0033).
+    KeyIssuer,
 }
 
 impl fmt::Display for PrincipalKind {
@@ -33,6 +35,7 @@ impl fmt::Display for PrincipalKind {
             Self::ServiceAccount => "service_account",
             Self::ChannelKey => "channel_key",
             Self::CiJob => "ci_job",
+            Self::KeyIssuer => "key_issuer",
         })
     }
 }
@@ -66,6 +69,12 @@ pub enum Principal {
         /// The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.
         subject: String,
     },
+    /// A `[[key_issuers]]` entry (ADR-0033): mints, lists and revokes the keys of
+    /// managed service accounts, and is refused everywhere else.
+    KeyIssuer {
+        /// Its `id` in the configuration.
+        id: String,
+    },
 }
 
 impl Principal {
@@ -88,6 +97,7 @@ impl Principal {
             Self::ServiceAccount { .. } => PrincipalKind::ServiceAccount,
             Self::ChannelKey { .. } => PrincipalKind::ChannelKey,
             Self::CiJob { .. } => PrincipalKind::CiJob,
+            Self::KeyIssuer { .. } => PrincipalKind::KeyIssuer,
         }
     }
 
@@ -99,6 +109,9 @@ impl Principal {
             Self::ServiceAccount { id } => id.to_string(),
             Self::ChannelKey { key, .. } => key.to_string(),
             Self::CiJob { subject, .. } => subject.clone(),
+            // Prefixed: an issuer and a service account may share a slug, and the
+            // audit log is filtered on this.
+            Self::KeyIssuer { id } => format!("key_issuer:{id}"),
         }
     }
 
@@ -122,6 +135,7 @@ impl fmt::Display for Principal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ChannelKey { channel, key } => write!(f, "channel_key {key} of {channel}"),
+            Self::KeyIssuer { id } => write!(f, "key_issuer {id}"),
             other => write!(f, "{} {}", other.kind(), other.reference()),
         }
     }

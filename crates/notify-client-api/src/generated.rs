@@ -439,6 +439,14 @@ file (an env-only deployment), or before the first pass.*/
             ///The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.
             subject: ::std::string::String,
         },
+        Variant4 {
+            ///The name to show; absent for principals without a profile (clients fall back to the reference).
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+            display_name: ::std::option::Option<::std::string::String>,
+            ///Its `id` in the configuration.
+            id: ::std::string::String,
+            kind: AuthorVariant4Kind,
+        },
     }
     ///`AuthorVariant0Kind`
     #[derive(
@@ -637,6 +645,57 @@ file (an env-only deployment), or before the first pass.*/
         }
     }
     impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant3Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`AuthorVariant4Kind`
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd
+    )]
+    pub enum AuthorVariant4Kind {
+        #[serde(rename = "key_issuer")]
+        KeyIssuer,
+    }
+    impl ::std::fmt::Display for AuthorVariant4Kind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::KeyIssuer => f.write_str("key_issuer"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for AuthorVariant4Kind {
+        type Err = self::error::ConversionError;
+        fn from_str(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "key_issuer" => Ok(Self::KeyIssuer),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for AuthorVariant4Kind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &str,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for AuthorVariant4Kind {
         type Error = self::error::ConversionError;
         fn try_from(
             value: ::std::string::String,
@@ -2768,6 +2827,13 @@ when it was already there (RFC 0003 decision 11): a skip carries no content.*/
             issuer: ::std::string::String,
             ///The `subject` claim, e.g. `repo:weebo/infra:ref:refs/heads/main`.
             subject: ::std::string::String,
+        },
+        /**A `[[key_issuers]]` entry (ADR-0033): mints, lists and revokes the keys of
+managed service accounts, and is refused everywhere else.*/
+        #[serde(rename = "key_issuer")]
+        KeyIssuer {
+            ///Its `id` in the configuration.
+            id: ::std::string::String,
         },
     }
     ///How loudly a notification asks for attention (§2.2); `Urgent` only bypasses DND if the recipient opted in (§7.4).
