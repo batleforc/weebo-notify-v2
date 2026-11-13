@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.2](https://github.com/batleforc/weebo-notify-v2/compare/f6375907ac6663398bb3b3c15a2366db89fd7c96..v0.3.2) - 2026-11-13
+#### Features
+- (**feeds**) name a feed's source in its items - ([f637590](https://github.com/batleforc/weebo-notify-v2/commit/f6375907ac6663398bb3b3c15a2366db89fd7c96)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.1](https://github.com/batleforc/weebo-notify-v2/compare/da11646bfbbcf72555f1b4bf8275fa06036e858a..v0.3.1) - 2026-10-29
 #### Bug Fixes
 - (**deps**) bump tauri-plugin-updater to 2.14.1 for zip 9 (CVE-2026-115905) - ([2151285](https://github.com/batleforc/weebo-notify-v2/commit/2151285666e28c16556da5ad43b597ec3e1cc788)) - Max Batleforc, Claude Opus 5.5
