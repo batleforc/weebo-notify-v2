@@ -519,27 +519,36 @@ fn choose(
         .filter_map(|&index| keys.get(index).cloned())
         .collect();
     let mut batch = Vec::new();
+    let source = title_of(
+        [feed.name.as_deref(), fetched.title.as_deref()],
+        feed.url.host_str(),
+    );
     if !folded.is_empty() {
-        let name = title_of([fetched.title.as_deref()], feed.url.host_str());
         batch.push(PendingItem {
             key: None,
             external_id: format!("feed:{}:more:{}", key.as_str(), key.folded(&folded)),
-            title: cut_title(&summary_title(feed.lang, folded.len(), &name)),
+            title: cut_title(&summary_title(feed.lang, folded.len(), &source)),
             link: fetched.site.clone(),
+            source: Some(source.clone()),
         });
     }
     for &index in newest {
         let (Some(entry), Some(item)) = (fetched.entries.get(index), keys.get(index)) else {
             continue;
         };
+        let title = title_of(
+            [entry.title.as_deref(), fetched.title.as_deref()],
+            feed.url.host_str(),
+        );
         batch.push(PendingItem {
             key: Some(item.clone()),
             external_id: format!("feed:{item}"),
-            title: title_of(
-                [entry.title.as_deref(), fetched.title.as_deref()],
-                feed.url.host_str(),
-            ),
+            title: feed
+                .name
+                .as_deref()
+                .map_or(title.clone(), |name| prefixed(name, &title)),
             link: entry.link.clone(),
+            source: Some(source.clone()),
         });
     }
     (batch, folded)
@@ -564,6 +573,40 @@ fn cut_title(title: &str) -> String {
     title.chars().take(MAX_TITLE_CHARS).collect()
 }
 
+/// `"<name> · <title>"`, cut to the title ceiling; the title alone when it already
+/// starts with the name as a word (`"Traefik v3.2"`, not `"Gopls"` for `Go`), so
+/// the source is never said twice.
+fn prefixed(name: &str, title: &str) -> String {
+    let named = title
+        .to_lowercase()
+        .strip_prefix(&name.to_lowercase())
+        .is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_none_or(|next| !next.is_alphanumeric())
+        });
+    if named {
+        return title.to_owned();
+    }
+    cut_title(&format!("{name} · {title}"))
+}
+
+/// The body naming an item's source, in the feed's language. The name is escaped,
+/// so a feed title cannot inject Markdown.
+fn source_body(lang: FeedLang, source: &str) -> String {
+    let escaped: String = source
+        .chars()
+        .flat_map(|c| {
+            let escape = c.is_ascii_punctuation() && !matches!(c, '.' | ',' | '-' | '\'');
+            escape.then_some('\\').into_iter().chain(std::iter::once(c))
+        })
+        .collect();
+    match lang {
+        FeedLang::En => format!("Source: **{escaped}**"),
+        FeedLang::Fr => format!("Source : **{escaped}**"),
+    }
+}
+
 /// `"<n> more items from <feed>"`, in the feed's language (decision 14).
 fn summary_title(lang: FeedLang, count: usize, feed: &str) -> String {
     match (lang, count) {
@@ -581,8 +624,9 @@ pub(crate) const fn open_label(lang: FeedLang) -> &'static str {
     }
 }
 
-/// The revision an item becomes: its title, a *View* link, the feed's tags and the
-/// feed key as group. Body, priority and TTL are left to the channel policy.
+/// The revision an item becomes: its title, a body naming its source, a *View*
+/// link, the feed's tags and the feed key as group. Priority and TTL are left to
+/// the channel policy.
 fn draft_for(item: &PendingItem, feed: &DeclaredFeed) -> RevisionDraft {
     let actions = item
         .link
@@ -597,6 +641,10 @@ fn draft_for(item: &PendingItem, feed: &DeclaredFeed) -> RevisionDraft {
         .unwrap_or_default();
     RevisionDraft::simple(ContentDraft {
         title: item.title.clone(),
+        body: item
+            .source
+            .as_deref()
+            .map(|source| source_body(feed.lang, source)),
         actions,
         tags: feed.tags.clone(),
         group_key: Some(feed.key().as_str().to_owned()),
@@ -653,6 +701,7 @@ mod tests {
             position: 0,
             url: "https://blog.example.org/feed.xml".parse().unwrap(),
             redacted: "https://blog.example.org#x".to_owned(),
+            name: None,
             publisher: ServiceAccountId::parse("bot-feeds").unwrap(),
             every: Duration::minutes(30),
             tags: vec!["blog".to_owned()],
@@ -837,6 +886,7 @@ mod tests {
                 external_id: "feed:k".to_owned(),
                 title: "post".to_owned(),
                 link: Some("https://blog.example.org/post".parse().unwrap()),
+                source: Some("The Blog".to_owned()),
             },
             &feed,
         );
@@ -846,13 +896,88 @@ mod tests {
             draft.content.group_key.as_deref(),
             Some(feed.key().as_str())
         );
-        assert_eq!(draft.content.body, None);
+        assert_eq!(draft.content.body.as_deref(), Some("Source: **The Blog**"));
         assert_eq!(draft.priority, None);
         assert_eq!(draft.ttl, None);
         assert!(matches!(
             draft.content.actions.as_slice().first(),
             Some(Action::View { label, .. }) if label == "Open"
         ));
+    }
+
+    #[test]
+    fn a_named_feed_prefixes_its_titles_and_names_itself_in_the_body() {
+        let mut feed = feed();
+        feed.name = Some("Traefik".to_owned());
+        let key = feed.key();
+        let mut fetched = fetched(vec![
+            entry("c", Some(3)),
+            entry("b", Some(2)),
+            entry("a", Some(1)),
+        ]);
+        fetched.entries[0].title = Some("traefik v3.2".to_owned());
+        let item_keys: Vec<String> = fetched.entries.iter().map(|e| key.item(&e.id)).collect();
+
+        let (batch, _) = choose(&feed, &key, &fetched, &item_keys, &[0, 1, 2]);
+
+        let titles: Vec<&str> = batch.iter().map(|item| item.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "1 more item from Traefik",
+                "Traefik · post b",
+                "traefik v3.2"
+            ],
+            "the summary names the feed, and a title already naming it is kept"
+        );
+        assert!(
+            batch
+                .iter()
+                .all(|item| item.source.as_deref() == Some("Traefik"))
+        );
+    }
+
+    #[test]
+    fn a_prefix_is_skipped_only_for_a_title_starting_with_the_name_as_a_word() {
+        assert_eq!(prefixed("Go", "Go 1.24 is released"), "Go 1.24 is released");
+        assert_eq!(prefixed("Go", "Gopls v0.17"), "Go · Gopls v0.17");
+        assert_eq!(prefixed("Go", "go1.23.4"), "Go · go1.23.4");
+        assert_eq!(prefixed("Traefik", "traefik"), "traefik");
+        assert_eq!(
+            prefixed("T", &"x".repeat(MAX_TITLE_CHARS)).chars().count(),
+            MAX_TITLE_CHARS
+        );
+    }
+
+    #[test]
+    fn an_unnamed_feed_keeps_its_titles_and_names_its_own_title_in_the_body() {
+        let feed = feed();
+        let key = feed.key();
+        let fetched = fetched(vec![entry("a", Some(1))]);
+        let item_keys: Vec<String> = fetched.entries.iter().map(|e| key.item(&e.id)).collect();
+
+        let (batch, _) = choose(&feed, &key, &fetched, &item_keys, &[0]);
+
+        assert_eq!(batch[0].title, "post a");
+        assert_eq!(batch[0].source.as_deref(), Some("The Blog"));
+    }
+
+    #[test]
+    fn the_source_body_is_in_the_feed_language_and_escapes_markdown() {
+        assert_eq!(source_body(FeedLang::Fr, "Go"), "Source : **Go**");
+        assert_eq!(
+            source_body(FeedLang::En, "a*b_[c](x) v1.2, l'x-y"),
+            r"Source: **a\*b\_\[c\]\(x\) v1.2, l'x-y**"
+        );
+    }
+
+    #[test]
+    fn a_batch_stored_before_sources_reads_back_without_a_body() {
+        let item: PendingItem =
+            serde_json::from_str(r#"{"key":null,"external_id":"feed:x","title":"t","link":null}"#)
+                .unwrap();
+        assert_eq!(item.source, None);
+        assert_eq!(draft_for(&item, &feed()).content.body, None);
     }
 
     #[test]

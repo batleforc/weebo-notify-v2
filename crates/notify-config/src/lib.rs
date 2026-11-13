@@ -603,6 +603,11 @@ pub struct ManagedChannel {
 #[serde(deny_unknown_fields)]
 pub struct Feed {
     pub url: String,
+    /// The source as readers know it (`"Traefik"`): prefixes each item's title and
+    /// names the source in its body. Absent, titles are left as the feed writes them
+    /// and the body names the feed's own title.
+    #[serde(default)]
+    pub name: Option<String>,
     /// A `[[service_accounts]]` id holding `publish` on this channel.
     pub publisher: String,
     #[serde(default)]
@@ -735,6 +740,8 @@ impl Feed {
     const MAX_EVERY: std::time::Duration = std::time::Duration::from_hours(24);
     pub const DEFAULT_MAX_PER_POLL: u32 = 10;
     const MAX_MAX_PER_POLL: u32 = 50;
+    /// Characters of a `name`: a prefix, so it leaves the item's own title room.
+    const MAX_NAME_CHARS: usize = 64;
 
     pub fn every(&self) -> std::time::Duration {
         self.every
@@ -786,6 +793,21 @@ impl Feed {
             ..notify_domain::ContentDraft::default()
         })
         .map_err(|error| anyhow::anyhow!("{at} has tags the publish path refuses: {error}"))?;
+        if let Some(name) = &self.name {
+            let clean = notify_domain::hygiene::sanitize(
+                name,
+                notify_domain::hygiene::TextKind::SingleLine,
+            );
+            anyhow::ensure!(
+                !clean.trim().is_empty() && clean == *name,
+                "{at} has a name that is empty or carries control characters"
+            );
+            anyhow::ensure!(
+                name.chars().count() <= Self::MAX_NAME_CHARS,
+                "{at} has a name longer than {} characters",
+                Self::MAX_NAME_CHARS
+            );
+        }
         anyhow::ensure!(
             (1..=Self::MAX_MAX_PER_POLL).contains(&self.max_per_poll()),
             "{at} has max_per_poll = {}; it must be between 1 and {}",
@@ -1759,6 +1781,21 @@ mod tests {
                 "feed-max-high",
                 &format!("{FEED}\nmax_per_poll = 51"),
                 "max_per_poll",
+            ),
+            (
+                "feed-name-blank",
+                &format!("{FEED}\nname = \"  \""),
+                "name that is empty",
+            ),
+            (
+                "feed-name-newline",
+                &format!("{FEED}\nname = \"a\\nb\""),
+                "control characters",
+            ),
+            (
+                "feed-name-long",
+                &format!("{FEED}\nname = \"{}\"", "n".repeat(65)),
+                "longer than 64",
             ),
             (
                 "feed-tag-long",

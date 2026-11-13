@@ -36,6 +36,7 @@ fn declared(max_per_poll: u32) -> DeclaredFeed {
         position: 0,
         url: "https://blog.example.org/feed.xml".parse().unwrap(),
         redacted: "https://blog.example.org#0".to_owned(),
+        name: None,
         publisher: publisher(),
         every: Duration::minutes(30),
         tags: vec!["blog".to_owned()],
@@ -521,6 +522,7 @@ async fn an_item_the_domain_refuses_does_not_block_the_ones_behind_it() {
         external_id: "feed:bad\u{7}".to_owned(),
         title: "x".to_owned(),
         link: None,
+        source: None,
     }];
     assert!(fixture.store.save(&state).await.unwrap());
 

@@ -51,6 +51,7 @@ impl FeedRoutes {
                     position,
                     url,
                     redacted,
+                    name: feed.name.clone(),
                     publisher: ServiceAccountId::parse(&feed.publisher)?,
                     every: time::Duration::try_from(feed.every())?,
                     tags: feed.tags.clone(),

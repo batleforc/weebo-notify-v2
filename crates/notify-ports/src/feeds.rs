@@ -125,6 +125,8 @@ pub struct DeclaredFeed {
     pub url: Url,
     /// The URL as logs may show it: [`crate::redact_url`]'s fingerprint.
     pub redacted: String,
+    /// The operator's name for the source (`name`), already validated.
+    pub name: Option<String>,
     pub publisher: ServiceAccountId,
     pub every: time::Duration,
     pub tags: Vec<String>,
@@ -224,6 +226,10 @@ pub struct PendingItem {
     /// Final, already fallen back and cut.
     pub title: String,
     pub link: Option<Url>,
+    /// The source the body names: the feed's `name`, else its own title, else its
+    /// host. Absent from batches stored before it existed, which publish no body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// What the poller knows of one feed.

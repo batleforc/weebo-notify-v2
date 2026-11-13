@@ -354,6 +354,7 @@ mod e2e {
             external_id: "feed:x".to_owned(),
             title: "C".to_owned(),
             link: Some("https://example.org/c".parse().unwrap()),
+            source: Some("Example".to_owned()),
         }];
         state.etag = Some("\"v1\"\r\nx-injected: 1".to_owned());
         state.last_modified = Some("Tue, 27 Oct 2026 10:00:00 GMT".to_owned());

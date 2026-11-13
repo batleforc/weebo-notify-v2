@@ -164,6 +164,7 @@ id = "veille-rust"
 
   [[channels.managed.feeds]]
   url = "https://blog.rust-lang.org/feed.xml"  # http(s) only; no user:pass@
+  name = "Rust"                     # optional, ≤ 64 chars: prefixes titles, named in the body
   publisher = "bot-feeds"           # required, a [[service_accounts]] id
   every = "30m"                     # default 30m, from 5m to 24h
   tags = ["blog"]                   # added to every item; default none
@@ -177,12 +178,15 @@ What to expect:
 - **The first poll publishes nothing.** It records what is already in the feed, and
   logs `feed primed` with the item count. Changing a feed's `url` makes it a new
   feed, which primes again.
-- **Each new item is one notification**: its title, an *Open* link to the item, the
-  feed's `tags`, and the feed as `group_key`. No body; priority and TTL come from the
-  channel policy. An item is published once even if its notification is later
+- **Each new item is one notification**: its title, a body naming its source
+  ("Source: **Rust**"), an *Open* link to the item, the feed's `tags`, and the feed as
+  `group_key`. Priority and TTL come from the channel policy. With a `name`, the title
+  reads "*name* · *item title*" (unless the item title already starts with the name),
+  so a GitHub release `v1.2.3` says which project it is; without one the title is the
+  item's own and the body names the feed's title, else its host. An item is published once even if its notification is later
   deleted or expires while it is still in the feed.
 - **More than `max_per_poll` new items** publish the newest `max_per_poll`, preceded by
-  one summary notification, "*n* more items from *feed*", linking to the feed's site.
+  one summary notification, "*n* more items from *feed*" (its `name`, else its title), linking to the feed's site.
 - **A later poll where every item is new** publishes nothing and counts
   `outcome="suspicious"`: a feed whose ids change on every fetch would otherwise flood
   the channel. If a busy feed outruns its window between polls, lower `every`.
