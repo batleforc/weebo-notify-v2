@@ -31,6 +31,17 @@ overrides:
   # under the build-time @intlify/unplugin-vue-i18n. The runtime already runs
   # the 11.x line; the extensions only use its type guards, so they get it too.
   "@intlify/vue-i18n-extensions>@intlify/shared": ^11.4.16
+  # Glob's AbortSignal cancellation bypass (glob >=9 <=14.0.1) and minimatch's
+  # globparts amplification DoS (minimatch >=7 <11.0.1). Test-only: reached through
+  # @vue/test-utils > js-beautify, whose latest (2.0.3) still asks for glob ^13 and
+  # editorconfig ^3. editorconfig 4 is what carries minimatch ~11.0.4. Drop both
+  # once a js-beautify release requires glob >= 14.0.2 and editorconfig >= 4.
+  "js-beautify>glob": ^14.0.2
+  "js-beautify>editorconfig": ^4.0.0
+  # Same minimatch advisory, build-time only: @intlify/unplugin-vue-i18n >
+  # @typescript-eslint/typescript-estree, whose latest (8.72.2) still asks for
+  # ^10.2.2. It only calls `minimatch()`, unchanged in 11. Drop once it asks for ^11.
+  "@typescript-eslint/typescript-estree>minimatch": ^11.0.1
 
 # Same supply-chain gate CI's pnpm enforces: never resolve a version published less
 # than a day ago, so a local install cannot produce a lockfile CI then refuses.
