@@ -52,12 +52,18 @@ RUN pnpm build
 # one, and listens on :8080 accordingly.
 FROM docker.io/nginxinc/nginx-unprivileged:1.31-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS runtime
 
-# shortcut: CVE-2026-111497 is fixed in Alpine's brotli-libs 1.2.1-r0, and
-# CVE-2026-92392 (HTTP/2 upload use-after-free, HIGH) in curl/libcurl 8.23.0-r0, but
-# neither yet in the digest above; drop each once a rebuilt nginx-unprivileged ships
-# it (`task deps:images`). `USER 101` at the end of this stage drops root again.
+# shortcut: fixed in Alpine 3.24 but not yet in the digest above, which is still the
+# newest `1.31-alpine` (checked 2026-11-14):
+#   brotli-libs 1.2.1-r0 — CVE-2026-111497 (CRITICAL)
+#   curl/libcurl 8.23.0-r0 — CVE-2026-92392 (HTTP/2 upload use-after-free)
+#   libexpat 2.10.0-r0 — CVE-2026-113351, -115506, -117610, -118370
+#   libxslt 1.1.43-r4 — CVE-2026-9947, -87636, -125350
+#   musl/musl-utils 1.2.6-r3 — CVE-2026-107891
+#   zlib >= 1.3.2-r1 — CVE-2026-85091
+# Drop each once a rebuilt nginx-unprivileged ships it (`task deps:images`).
+# `USER 101` at the end of this stage drops root again.
 USER root
-RUN apk upgrade --no-cache brotli-libs curl libcurl
+RUN apk upgrade --no-cache brotli-libs curl libcurl libexpat libxslt musl musl-utils zlib
 
 # The entrypoint envsubst's `/etc/nginx/templates/*.template` into `conf.d/`. The
 # filter is not decoration: without it envsubst rewrites every `$name` in the file,

@@ -93,7 +93,7 @@ RUN cargo build --release --locked --target "$(cat /rust-target)" -p notify-serv
 #
 # `nonroot` is the tag, not a runtime flag: the image has no shell, no package
 # manager and no root user to drop from.
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e AS runtime
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2 AS runtime
 
 COPY --from=builder /out/notify-server /usr/local/bin/notify-server
 
