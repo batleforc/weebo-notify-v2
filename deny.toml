@@ -11,8 +11,8 @@ all-features = true
 # RustSec advisories. Yanked crates are an error too: a yank usually means the
 # author found something, and pinning to one is a decision, not an accident.
 yanked = "deny"
-# `.cargo/audit.toml` is empty: cargo-audit only warns on unmaintained crates, so the
-# entries below exist for cargo-deny alone. RUSTSEC-2023-0071 (`rsa`) left with the
+# cargo-audit only warns on unmaintained crates, so the zbus entries below exist for
+# cargo-deny alone; RUSTSEC-2026-0459 mirrors `.cargo/audit.toml`, where its reasoning is. RUSTSEC-2023-0071 (`rsa`) left with the
 # RustCrypto JWT backend; `[bans]` below keeps it out.
 #
 # Unmaintained, not vulnerable (checked 2026-10-24): zbus 6 absorbed these three crates,
@@ -25,6 +25,7 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus 6; reached via notify-rust/secret-service on zbus 5, no upgrade yet" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus 6; same path, same retirement" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus 6; same path, same retirement" },
+    { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys < 0.39: client store only, opens its own db; sqlx 0.9 caps it below the fix (see .cargo/audit.toml)" },
 ]
 
 [licenses]

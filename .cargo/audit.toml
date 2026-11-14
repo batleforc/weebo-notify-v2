@@ -5,8 +5,27 @@
 # says what would make us take it back out. The same list is mirrored in
 # deny.toml, because cargo-deny reads its own.
 #
-# Empty since 2026-10-24: RUSTSEC-2023-0071 (`rsa`) went with jsonwebtoken's
-# RustCrypto backend, and deny.toml's `[bans]` keeps it from coming back.
+# RUSTSEC-2023-0071 (`rsa`) left on 2026-10-24 with jsonwebtoken's RustCrypto
+# backend, and deny.toml's `[bans]` keeps it from coming back.
+#
+# RUSTSEC-2026-0459 / CVE-2026-119375 / GHSA-72w2-rjgg-q729 (libsqlite3-sys 0.37,
+# bundled SQLite < 3.54): opening a database together with a crafted `-wal` whose page
+# size differs can return uninitialised page-cache memory. Local vector, needs the
+# victim to open files a less trusted party wrote.
+#
+# NOT FIXABLE FROM HERE (checked 2026-11-14): the fix is libsqlite3-sys >= 0.39
+# (rusqlite >= 0.41), but sqlx 0.9.0, the latest, depends on sqlx-sqlite, which caps
+# libsqlite3-sys at < 0.38; `links = "sqlite3"` is checked across the whole lockfile,
+# optional dependencies included, so rusqlite cannot move even though the server
+# never enables sqlx's `sqlite` feature.
+#
+# Does not reach the server: SQLite is linked only by `notify-client-core`'s local
+# store (the CLI/TUI and the desktop shell). That store only ever opens its own
+# database in the user's profile directory; a party able to plant a `-wal` there can
+# already read and write the user's files. Residual risk accepted for the clients.
+#
+# REVISIT IF: a sqlx release accepts libsqlite3-sys >= 0.39 (bump rusqlite with it and
+# drop this ignore), or the store starts opening databases it did not create.
 
 [advisories]
-ignore = []
+ignore = ["RUSTSEC-2026-0459"]

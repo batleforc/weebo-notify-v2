@@ -46,6 +46,17 @@ tasks:
             done
           fi
 
+          # RUSTSEC-2026-0459 (.cargo/audit.toml): libsqlite3-sys < 0.39, held there by sqlx-sqlite.
+          sqlx_req="$(curl -fsS -A weebo-notify-audit "https://crates.io/api/v1/crates/sqlx-sqlite" 2>/dev/null \
+            | jq -r '.crate.max_stable_version' 2>/dev/null \
+            | xargs -I{} curl -fsS -A weebo-notify-audit "https://crates.io/api/v1/crates/sqlx-sqlite/{}/dependencies" 2>/dev/null \
+            | jq -r '.dependencies[] | select(.crate_id == "libsqlite3-sys") | .req' 2>/dev/null || true)"
+          case "${sqlx_req:-unknown}" in
+            *"<0.38"*|*"< 0.38"*) echo "    sqlx-sqlite latest still caps libsqlite3-sys (${sqlx_req}) — the SQLite ignore still applies" ;;
+            unknown) echo "    sqlx-sqlite: crates.io not reachable — check its libsqlite3-sys requirement by hand" ;;
+            *)       echo "    sqlx-sqlite latest requires libsqlite3-sys ${sqlx_req} — REVISIT: bump sqlx and rusqlite, then drop RUSTSEC-2026-0459" ;;
+          esac
+
           # GHSA-wrw7-89jp-8q8g: pinned by Tauri's GTK3 stack, not by us.
           gtk="$(grep -A1 'name = "gtk"' web/src-tauri/Cargo.lock 2>/dev/null | grep version | head -1 | tr -d ' "' | cut -d= -f2 || true)"
           case "${gtk:-none}" in

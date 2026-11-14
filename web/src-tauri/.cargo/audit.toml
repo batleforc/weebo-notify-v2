@@ -3,7 +3,12 @@
 # the root `.cargo/audit.toml`: an ignore claims the advisory cannot reach us, and
 # says what takes it back out.
 
+# The zip < 9 ignores (RUSTSEC-2026-0367..0369) went with tauri-plugin-updater
+# 2.14.1, which requires zip ^9.
+#
+# RUSTSEC-2026-0459 (libsqlite3-sys): the shell links `notify-client-core`, whose
+# rusqlite is the workspace's, pinned by sqlx. The full reasoning, and what takes it
+# out, is in the root `.cargo/audit.toml`; both go together.
+
 [advisories]
-# Nothing ignored. The zip < 9 ignores (RUSTSEC-2026-0367..0369) went with
-# tauri-plugin-updater 2.14.1, which requires zip ^9.
-ignore = []
+ignore = ["RUSTSEC-2026-0459"]

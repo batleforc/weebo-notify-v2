@@ -40,6 +40,20 @@ vulnerabilities:
     paths:
       - "web/src-tauri/Cargo.lock"
 
+  # CVE-2026-119375 / GHSA-72w2-rjgg-q729 / RUSTSEC-2026-0459 — bundled SQLite in
+  # libsqlite3-sys 0.37. Client store only; sqlx 0.9 caps the fix out of reach. The
+  # reasoning and the REVISIT condition are in `.cargo/audit.toml`.
+  - id: CVE-2026-119375
+    paths:
+      - "Cargo.lock"
+      - "web/src-tauri/Cargo.lock"
+      - "fuzz/Cargo.lock"
+  - id: GHSA-72w2-rjgg-q729
+    paths:
+      - "Cargo.lock"
+      - "web/src-tauri/Cargo.lock"
+      - "fuzz/Cargo.lock"
+
 secrets:
   # jwt-token in `crates/notify-adapters/oidc/src/federation.rs` — a JWT literal
   # inside a `#[cfg(test)]` assertion, signed with a key generated in the same test.
