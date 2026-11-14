@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.4](https://github.com/batleforc/weebo-notify-v2/compare/0f8785ecd66791eace0069735b1ef5437c96dc1a..v0.3.4) - 2026-11-14
+#### Bug Fixes
+- (**image**) clear the release image scan (distroless zlib, nginx alpine packages) - ([0f8785e](https://github.com/batleforc/weebo-notify-v2/commit/0f8785ecd66791eace0069735b1ef5437c96dc1a)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.3](https://github.com/batleforc/weebo-notify-v2/compare/20607a725907221f68ecfe57750ac668acdc96e6..v0.3.3) - 2026-11-14
 #### Bug Fixes
 - (**deps**) clear the release audit (async-executor, follow-redirects, glob, minimatch) - ([bac219b](https://github.com/batleforc/weebo-notify-v2/commit/bac219bda3498bd99c77fa73c924a8fce7e5813a)) - Max Batleforc, Claude Opus 5.5
