@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.3](https://github.com/batleforc/weebo-notify-v2/compare/20607a725907221f68ecfe57750ac668acdc96e6..v0.3.3) - 2026-11-14
+#### Bug Fixes
+- (**deps**) clear the release audit (async-executor, follow-redirects, glob, minimatch) - ([bac219b](https://github.com/batleforc/weebo-notify-v2/commit/bac219bda3498bd99c77fa73c924a8fce7e5813a)) - Max Batleforc, Claude Opus 5.5
+- (**deps**) bump actix-http to 3.21 and actix-web to 4.19 - ([20607a7](https://github.com/batleforc/weebo-notify-v2/commit/20607a725907221f68ecfe57750ac668acdc96e6)) - Max Batleforc, Claude Opus 5.5
+#### Miscellaneous Chores
+- (**audit**) accept RUSTSEC-2026-0459 (bundled SQLite) until sqlx allows the fix - ([8d37ce2](https://github.com/batleforc/weebo-notify-v2/commit/8d37ce27578229b25b3d648a21afd79b705c8356)) - Max Batleforc, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.2](https://github.com/batleforc/weebo-notify-v2/compare/f6375907ac6663398bb3b3c15a2366db89fd7c96..v0.3.2) - 2026-11-13
 #### Features
 - (**feeds**) name a feed's source in its items - ([f637590](https://github.com/batleforc/weebo-notify-v2/commit/f6375907ac6663398bb3b3c15a2366db89fd7c96)) - Max Batleforc, Claude Opus 5.5
